@@ -1,0 +1,21 @@
+[Unit]
+Description=VPS Sentinel Security Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/vps-sentinel daemon --config /etc/vps-sentinel/config.toml
+Restart=always
+RestartSec=5
+User=root
+Group=root
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=false
+ReadWritePaths=/var/lib/vps-sentinel /var/log/vps-sentinel
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=multi-user.target

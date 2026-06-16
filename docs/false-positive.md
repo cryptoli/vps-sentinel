@@ -1,0 +1,22 @@
+# False Positive Handling
+
+Security monitoring should be useful without waking users for expected operations.
+
+## Common Sources
+
+- Package upgrades changing systemd units or config files.
+- Admin-created users and SSH keys.
+- Public ports intentionally exposed for services.
+- Framework files containing strings that resemble shell helpers.
+- Web vulnerability probes that never succeeded.
+
+## Mitigation
+
+- Add expected users, IPs, ports, file paths, or process paths to `[allowlist]`.
+- Keep baselines fresh after planned maintenance.
+- Route noisy rules at `Low` or `Medium`.
+- Investigate correlations before taking destructive action.
+
+## Safe Response
+
+Do not delete files or kill processes solely from one finding. Preserve evidence first, then validate from a trusted session.

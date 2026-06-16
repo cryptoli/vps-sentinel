@@ -1,0 +1,141 @@
+[agent]
+host_id = ""
+hostname = ""
+scan_interval_seconds = 60
+full_scan_interval_seconds = 3600
+data_dir = "/var/lib/vps-sentinel"
+log_level = "info"
+
+[privacy]
+upload_logs = false
+mask_ip = false
+mask_command_args = false
+
+[storage]
+type = "sqlite"
+path = "/var/lib/vps-sentinel/sentinel.db"
+retention_days = 30
+
+[ssh]
+enabled = true
+auth_log_paths = ["/var/log/auth.log", "/var/log/secure"]
+monitor_authorized_keys = true
+alert_on_root_login = true
+alert_on_password_login = true
+failed_login_threshold = 10
+failed_login_window_seconds = 300
+
+[file_integrity]
+enabled = true
+max_file_size_mb = 5
+max_depth = 8
+paths = [
+  "/etc/passwd",
+  "/etc/shadow",
+  "/etc/group",
+  "/etc/sudoers",
+  "/etc/sudoers.d",
+  "/etc/ssh/sshd_config",
+  "/etc/ssh/sshd_config.d",
+  "/etc/systemd/system",
+  "/etc/crontab",
+  "/etc/cron.d",
+  "/var/spool/cron",
+  "/root/.ssh",
+  "/home/*/.ssh"
+]
+
+[web]
+enabled = true
+web_roots = ["/var/www", "/srv", "/opt"]
+log_paths = [
+  "/var/log/nginx/access.log",
+  "/var/log/nginx/error.log",
+  "/var/log/caddy/access.log",
+  "/var/log/apache2/access.log"
+]
+
+[process]
+enabled = true
+scan_interval_seconds = 30
+high_cpu_threshold_percent = 80.0
+high_cpu_duration_seconds = 120
+suspicious_dirs = ["/tmp", "/var/tmp", "/dev/shm", "/run"]
+
+[network]
+enabled = true
+scan_interval_seconds = 30
+alert_on_new_listening_port = true
+public_listen_allowlist = [22, 80, 443]
+
+[persistence]
+enabled = true
+monitor_cron = true
+monitor_systemd = true
+monitor_shell_profile = true
+monitor_ld_preload = true
+
+[docker]
+enabled = true
+alert_on_privileged_container = true
+alert_on_docker_socket_mount = true
+alert_on_host_network = true
+
+[notifications.telegram]
+enabled = false
+bot_token = ""
+chat_id = ""
+min_severity = "Medium"
+
+[notifications.email]
+enabled = false
+smtp_host = ""
+smtp_port = 587
+username = ""
+password = ""
+from = ""
+to = []
+min_severity = "High"
+
+[notifications.webhook]
+enabled = false
+url = ""
+secret = ""
+min_severity = "Medium"
+
+[notifications.ntfy]
+enabled = false
+server = "https://ntfy.sh"
+topic = ""
+token = ""
+min_severity = "Medium"
+
+[notifications.gotify]
+enabled = false
+server = ""
+token = ""
+min_severity = "Medium"
+
+[notifications.bark]
+enabled = false
+server = "https://api.day.app"
+device_key = ""
+min_severity = "Medium"
+
+[notifications.serverchan]
+enabled = false
+send_key = ""
+min_severity = "Medium"
+
+[noise_control]
+dedup_window_seconds = 600
+max_alerts_per_hour = 30
+quiet_hours = []
+
+[allowlist]
+users = []
+ips = []
+process_paths = []
+listening_ports = []
+file_paths = []
+web_paths = []
