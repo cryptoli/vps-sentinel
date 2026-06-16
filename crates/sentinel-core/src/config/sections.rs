@@ -272,6 +272,7 @@ pub struct AllowlistConfig {
     pub users: Vec<String>,
     pub ips: Vec<String>,
     pub process_paths: Vec<PathBuf>,
+    pub process_command_contains: Vec<String>,
     pub listening_ports: Vec<u16>,
     pub file_paths: Vec<PathBuf>,
     pub web_paths: Vec<PathBuf>,

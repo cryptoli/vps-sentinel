@@ -14,6 +14,7 @@ ENABLE_SERVICE="${ENABLE_SERVICE:-no}"
 RUN_DOCTOR="${RUN_DOCTOR:-yes}"
 BOOTSTRAP_BASELINE="${BOOTSTRAP_BASELINE:-yes}"
 RUN_FIRST_SCAN="${RUN_FIRST_SCAN:-yes}"
+SYSTEMD_UNIT_INSTALLED=0
 
 if [ ! -f "$BIN_PATH" ]; then
   echo "binary not found at $BIN_PATH; run cargo build --release first" >&2
@@ -108,20 +109,37 @@ write_systemd_unit() {
   fi
 
   install -d "$(dirname "$SERVICE_PATH")"
+  tmp="${SERVICE_PATH}.tmp.$$"
   sed \
     -e "s|@BIN_PATH@|$(escape_sed_replacement "$PREFIX/bin/vps-sentinel")|g" \
     -e "s|@CONFIG_PATH@|$(escape_sed_replacement "$CONFIG_DIR/config.toml")|g" \
     -e "s|@DATA_DIR@|$(escape_sed_replacement "$DATA_DIR")|g" \
     -e "s|@LOG_DIR@|$(escape_sed_replacement "$LOG_DIR")|g" \
-    "$SYSTEMD_TEMPLATE" > "$SERVICE_PATH"
+    "$SYSTEMD_TEMPLATE" > "$tmp"
+  if [ -f "$SERVICE_PATH" ] && cmp -s "$tmp" "$SERVICE_PATH"; then
+    rm -f "$tmp"
+    echo "kept existing systemd unit"
+  else
+    mv "$tmp" "$SERVICE_PATH"
+    echo "installed systemd unit at $SERVICE_PATH"
+  fi
   chmod 0644 "$SERVICE_PATH"
 }
 
-post_install_setup
-
-if should_install_systemd; then
+install_systemd_unit_file() {
+  if ! should_install_systemd; then
+    echo "skipped systemd service installation"
+    return
+  fi
   write_systemd_unit
   systemctl daemon-reload
+  SYSTEMD_UNIT_INSTALLED=1
+}
+
+activate_systemd_service() {
+  if [ "$SYSTEMD_UNIT_INSTALLED" -ne 1 ]; then
+    return
+  fi
   case "$ENABLE_SERVICE" in
     yes|true|1)
       systemctl enable "$SERVICE_NAME"
@@ -139,6 +157,8 @@ if should_install_systemd; then
       exit 1
       ;;
   esac
-else
-  echo "skipped systemd service installation"
-fi
+}
+
+install_systemd_unit_file
+post_install_setup
+activate_systemd_service

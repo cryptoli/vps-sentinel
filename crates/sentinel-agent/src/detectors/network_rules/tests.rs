@@ -36,6 +36,38 @@ fn reports_suspicious_process_on_expected_web_port() {
 }
 
 #[test]
+fn ignores_plain_forwarding_command_on_expected_port() {
+    let findings = detect_with_default_config(vec![RawEvent::new("network", "listening_socket")
+        .with_field("protocol", "tcp")
+        .with_field("local_addr", "0.0.0.0")
+        .with_field("local_port", "443")
+        .with_field("process_name", "forwarder")
+        .with_field("executable", "/usr/bin/forwarder")
+        .with_field("cmdline", "forwarder tcp-listen:8443 tcp:example.com:443")]);
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn command_allowlist_suppresses_listener_process_risk() {
+    let mut config = SentinelConfig::default();
+    config
+        .allowlist
+        .process_command_contains
+        .push("trusted-forwarder".to_string());
+    let findings = detect(
+        config,
+        vec![RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "0.0.0.0")
+            .with_field("local_port", "443")
+            .with_field("process_name", "sh")
+            .with_field("executable", "/tmp/.x/sh")
+            .with_field("cmdline", "trusted-forwarder tcp-listen:443 exec:/bin/sh")],
+    );
+    assert!(findings.is_empty());
+}
+
+#[test]
 fn reports_non_suspicious_owner_change_on_expected_web_port() {
     let findings = detect_with_default_config(vec![RawEvent::new(
         "baseline",

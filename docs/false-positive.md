@@ -13,8 +13,9 @@ Security monitoring should be useful without waking users for expected operation
 ## Mitigation
 
 - Add expected users, IPs, ports, file paths, or process paths to `[allowlist]`.
+- For legitimate forwarding or tunneling commands, prefer `allowlist.process_paths`; use `allowlist.process_command_contains` only with a precise identifying fragment.
 - Put normal public service ports such as HTTP/HTTPS in `network.expected_public_ports`; they still receive process-risk and baseline-owner checks. Use `allowlist.listening_ports` only when a port should suppress all network findings, including high-risk exposure findings.
-- Keep baselines fresh after planned maintenance.
+- Keep baselines fresh after planned maintenance. The installer writes its own systemd unit before baseline bootstrap, and the updater can refresh an existing baseline after trusted updates.
 - Route noisy rules at `Low` or `Medium`.
 - Investigate correlations before taking destructive action.
 

@@ -3,6 +3,7 @@ use sentinel_core::{Evidence, Finding, RawEvent, SentinelConfig};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+pub mod command_profile;
 pub mod config_rules;
 pub mod docker_rules;
 pub mod file_rules;

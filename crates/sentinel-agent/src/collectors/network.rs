@@ -96,6 +96,9 @@ fn enrich_socket_owners(events: &mut [RawEvent], scan_root: &Path) {
         event
             .fields
             .insert("cmdline".to_string(), owner.cmdline.clone());
+        event
+            .fields
+            .insert("argv_json".to_string(), owner.argv_json.clone());
     }
 }
 
@@ -152,17 +155,20 @@ struct ProcessOwner {
     name: String,
     executable: String,
     cmdline: String,
+    argv_json: String,
 }
 
 impl ProcessOwner {
     fn from_pid_path(pid: &str, pid_path: &Path) -> Self {
+        let argv = read_argv(pid_path.join("cmdline"));
         Self {
             pid: pid.to_string(),
             name: read_trimmed(pid_path.join("comm")),
             executable: fs::read_link(pid_path.join("exe"))
                 .map(|path| path.to_string_lossy().to_string())
                 .unwrap_or_default(),
-            cmdline: read_cmdline(pid_path.join("cmdline")),
+            cmdline: argv.join(" "),
+            argv_json: serde_json::to_string(&argv).unwrap_or_else(|_| "[]".to_string()),
         }
     }
 }
@@ -173,7 +179,7 @@ fn read_trimmed(path: impl AsRef<Path>) -> String {
         .unwrap_or_default()
 }
 
-fn read_cmdline(path: impl AsRef<Path>) -> String {
+fn read_argv(path: impl AsRef<Path>) -> Vec<String> {
     fs::read(path)
         .map(|bytes| {
             bytes
@@ -181,7 +187,6 @@ fn read_cmdline(path: impl AsRef<Path>) -> String {
                 .filter(|part| !part.is_empty())
                 .map(|part| String::from_utf8_lossy(part).to_string())
                 .collect::<Vec<_>>()
-                .join(" ")
         })
         .unwrap_or_default()
 }

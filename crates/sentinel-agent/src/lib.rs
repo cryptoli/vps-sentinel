@@ -4,6 +4,7 @@ pub mod baseline;
 pub mod collectors;
 pub mod daemon;
 pub mod detectors;
+pub(crate) mod findings;
 pub mod notify;
 pub mod rules;
 pub mod scanner;

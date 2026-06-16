@@ -89,6 +89,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "exe_path" | "executable" => "executable",
             "risk_score" => "risk score",
             "risk_reasons" => "risk reasons",
+            "signals" => "signals",
             other => other,
         },
         NotificationLanguage::ZhCn => match key {
@@ -104,6 +105,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "exe_path" | "executable" => "可执行文件",
             "risk_score" => "风险评分",
             "risk_reasons" => "风险原因",
+            "signals" => "关联信号",
             "path" => "路径",
             "user" => "用户",
             "method" => "认证方式",

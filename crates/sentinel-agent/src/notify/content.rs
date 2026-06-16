@@ -111,9 +111,9 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
             ],
         },
         "PROC-003" => RuleMessage {
-            title: "检测到反弹 Shell 命令特征",
-            description: "进程命令行包含常见反弹 Shell 片段。",
-            impact: &["这可能表示存在远程命令执行或交互式入侵活动。"],
+            title: "检测到网络命令执行桥接",
+            description: "进程命令行同时具备网络通道以及 shell、system 或文件描述符桥接执行特征。",
+            impact: &["如果该进程不符合预期，这可能表示存在远程命令执行或交互式入侵活动。"],
             recommendations: &[
                 "如果未经授权，请隔离网络访问。",
                 "保留命令行、可执行文件和父进程证据。",

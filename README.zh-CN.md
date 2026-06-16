@@ -31,7 +31,7 @@
 | 用户与权限 | 检测新增用户、UID 0 用户、权限相关用户变化。 |
 | 文件完整性 | 监控关键路径和 Web 根目录；对限定大小内文件做哈希和内容扫描；检测关键文件变化、Web 目录可执行脚本、WebShell 风格特征。 |
 | 持久化检查 | 监控 cron、systemd、shell profile、`ld.so.preload` 等启动相关位置。 |
-| 进程检查 | 读取 procfs，识别临时目录执行、已删除可执行文件仍在运行、反向 shell 片段、挖矿和扫描器命令。 |
+| 进程检查 | 读取 procfs argv 和可执行文件元数据，识别临时目录执行、已删除可执行文件仍在运行、网络命令执行桥接、挖矿和扫描器命令。 |
 | 网络检查 | 读取监听 socket 与所属进程；检测高风险公网服务、可疑监听进程、监听 owner 基线漂移和新增公网监听。22/80/443 等预期端口会降低噪音，但不会被无脑信任。 |
 | Web 日志 | 解析常见 access log 行，检测自动化漏洞探测路径。 |
 | Rootkit 信号 | 采集轻量级本地指标，用于发现隐藏进程和可疑 procfs 行为。 |
@@ -153,8 +153,9 @@ sudo sh install.sh
 - 安装 `vps-sentinel-reload`，用于安全重载配置；
 - 仅在配置不存在时创建 `/etc/vps-sentinel/config.toml`；
 - 可通过环境变量直接写入 Telegram 配置；
+- systemd 可用时先写入 unit，使初始基线包含本程序自己的服务文件；
 - 自动校验配置、运行 `doctor`、在缺少基线时创建初始基线，并执行一次不发送通知的预热扫描；
-- systemd 可用时安装并启用服务。
+- 初始基线完成后再启用 systemd 服务。
 
 可通过环境变量自定义：
 
@@ -208,7 +209,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-更新脚本会拉取 GitHub 最新代码、重新构建、保留已有配置、校验配置、刷新 systemd unit，并在服务已启用时 reload 或 restart 服务。
+更新脚本会拉取 GitHub 最新代码、重新构建、保留已有配置、校验配置、刷新 systemd unit，并在服务已启用时 reload 或 restart 服务；可信更新完成后会刷新已有基线。systemd unit 内容未变化时不会重写文件，避免例行更新造成 unit mtime 变化。
 
 常用更新变量：
 
@@ -224,6 +225,7 @@ sudo sh update.sh
 | `INSTALL_SYSTEMD` | `auto` | 设为 `no` 可跳过 unit 刷新。 |
 | `RESTART_SERVICE` | `auto` | `auto`、`yes` 或 `no`，控制是否 reload/restart 服务。 |
 | `VALIDATE_CONFIG` | `yes` | 服务 reload/restart 前校验已有配置。 |
+| `REFRESH_BASELINE` | `auto` | 可信更新后刷新已有基线；设为 `no` 时保留漂移，方便人工检查。 |
 
 ## 重载配置
 
@@ -359,8 +361,21 @@ users = ["deploy"]
 ips = ["203.0.113.10"]
 listening_ports = [22, 80, 443, 8080]
 process_paths = ["/usr/local/bin/my-service"]
+process_command_contains = ["trusted-forwarder tcp-listen:8443"]
 file_paths = ["/etc/systemd/system/my-service.service"]
 ```
+
+`process_command_contains` 用于已知合法的长驻命令片段。建议填写足够精确、能识别目标命令的片段，不要填写过宽泛的进程名。
+
+`PROC-003` 不会因为转发工具名、IP 地址、监听参数或单独的 `/bin/sh -c` 触发。检测器会基于 `/proc/<pid>/cmdline` 的 argv 构建命令画像，并要求出现高置信行为组合，例如：
+
+- `/dev/tcp` 叠加交互式 shell 和文件描述符重定向；
+- 网络通道通过 `-e`、`--exec`、`EXEC:` 或 `SHELL:` 直接桥接到 shell 目标；
+- 网络通道桥接到 `SYSTEM:` 命令执行器；
+- 内联解释器同时使用 socket API、fd duplication 和 shell 目标；
+- 网络命令为 shell 分配 TTY。
+
+正常服务包装命令，例如 `/bin/sh -c '/usr/local/bin/app --listen 0.0.0.0:443'`，以及普通 TCP/UDP 转发命令不应触发 `PROC-003`。
 
 ## 告警内容
 
@@ -385,7 +400,7 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 - `SSH-005`：`authorized_keys` 相对基线发生变化。
 - `USER-002`：UID 0 用户新增或变更。
 - `PERSIST-002`：可疑启动命令。
-- `PROC-003`：反向 shell 命令模式。
+- `PROC-003`：网络命令执行桥接。
 - `NET-001`：相对基线新增的公网监听端口。
 - `NET-002`：公网监听端口背后的进程相对基线发生变化。
 - `NET-003`：公网监听端口背后存在可疑进程。

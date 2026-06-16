@@ -48,7 +48,9 @@ pub fn collect_processes(root: &ProcfsRoot) -> SentinelResult<Vec<RawEvent>> {
             None => continue,
         };
         let process_dir = entry.path();
-        let cmdline = read_cmdline(&process_dir);
+        let argv = read_argv(&process_dir);
+        let cmdline = argv.join(" ");
+        let argv_json = serde_json::to_string(&argv).unwrap_or_else(|_| "[]".to_string());
         let exe_path = fs::read_link(process_dir.join("exe"))
             .map(|path| path_string(&path))
             .unwrap_or_default();
@@ -62,21 +64,22 @@ pub fn collect_processes(root: &ProcfsRoot) -> SentinelResult<Vec<RawEvent>> {
                 .with_field("ppid", ppid)
                 .with_field("name", name)
                 .with_field("cmdline", cmdline)
+                .with_field("argv_json", argv_json)
                 .with_field("exe_path", exe_path),
         );
     }
     Ok(events)
 }
 
-fn read_cmdline(process_dir: &Path) -> String {
+fn read_argv(process_dir: &Path) -> Vec<String> {
     fs::read(process_dir.join("cmdline"))
         .map(|bytes| {
             bytes
                 .split(|byte| *byte == 0)
                 .filter_map(|part| std::str::from_utf8(part).ok())
                 .filter(|part| !part.is_empty())
+                .map(str::to_string)
                 .collect::<Vec<_>>()
-                .join(" ")
         })
         .unwrap_or_default()
 }

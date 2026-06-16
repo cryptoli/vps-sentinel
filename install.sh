@@ -23,6 +23,7 @@ TELEGRAM_MIN_SEVERITY="${TELEGRAM_MIN_SEVERITY:-Medium}"
 RUN_NOTIFY_TEST="${RUN_NOTIFY_TEST:-auto}"
 VPS_NAME="${VPS_NAME:-}"
 CONFIG_CREATED=0
+SYSTEMD_UNIT_INSTALLED=0
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "please run as root, for example: sudo sh install.sh" >&2
@@ -211,8 +212,9 @@ build_and_install() {
 
   configure_agent_identity
   configure_telegram
+  install_systemd_unit_file
   post_install_setup
-  install_systemd_unit
+  activate_systemd_service
 }
 
 yes_enabled() {
@@ -273,16 +275,24 @@ write_systemd_unit() {
   fi
 
   install -d "$(dirname "$SERVICE_PATH")"
+  tmp="${SERVICE_PATH}.tmp.$$"
   sed \
     -e "s|@BIN_PATH@|$(escape_sed_replacement "$PREFIX/bin/vps-sentinel")|g" \
     -e "s|@CONFIG_PATH@|$(escape_sed_replacement "$CONFIG_DIR/config.toml")|g" \
     -e "s|@DATA_DIR@|$(escape_sed_replacement "$DATA_DIR")|g" \
     -e "s|@LOG_DIR@|$(escape_sed_replacement "$LOG_DIR")|g" \
-    "$SYSTEMD_TEMPLATE" > "$SERVICE_PATH"
+    "$SYSTEMD_TEMPLATE" > "$tmp"
+  if [ -f "$SERVICE_PATH" ] && cmp -s "$tmp" "$SERVICE_PATH"; then
+    rm -f "$tmp"
+    echo "kept existing systemd unit"
+  else
+    mv "$tmp" "$SERVICE_PATH"
+    echo "installed systemd unit at $SERVICE_PATH"
+  fi
   chmod 0644 "$SERVICE_PATH"
 }
 
-install_systemd_unit() {
+install_systemd_unit_file() {
   if ! should_install_systemd; then
     echo "skipped systemd service installation"
     return
@@ -290,6 +300,14 @@ install_systemd_unit() {
 
   write_systemd_unit
   systemctl daemon-reload
+  SYSTEMD_UNIT_INSTALLED=1
+}
+
+activate_systemd_service() {
+  if [ "$SYSTEMD_UNIT_INSTALLED" -ne 1 ]; then
+    return
+  fi
+
   case "$ENABLE_SERVICE" in
     yes|true|1)
       systemctl enable "$SERVICE_NAME"

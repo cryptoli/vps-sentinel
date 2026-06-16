@@ -1,7 +1,8 @@
+use crate::detectors::command_profile::network_execution_assessment_from_event;
 use crate::detectors::process_rules::{
-    contains_miner_or_scanner, contains_reverse_shell_pattern, path_in_suspicious_dirs,
+    command_matches_allowlist, contains_miner_or_scanner, path_in_suspicious_dirs,
 };
-use crate::detectors::{evidence, string_field, DetectContext, Detector};
+use crate::detectors::{evidence, path_is_allowlisted, string_field, DetectContext, Detector};
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
 use std::collections::BTreeSet;
@@ -149,6 +150,9 @@ fn suspicious_listener(
         let mut items = socket_evidence(event);
         items.push(evidence("risk_score", profile.score.to_string()));
         items.push(evidence("risk_reasons", profile.reasons.join("; ")));
+        if !profile.features.is_empty() {
+            items.push(evidence("risk_features", profile.features.join(", ")));
+        }
         items
     })
     .with_impact(vec![
@@ -292,6 +296,7 @@ fn known_port_profile(port: u16) -> Option<&'static str> {
 struct ListenerRiskProfile {
     score: u16,
     reasons: Vec<String>,
+    features: Vec<String>,
 }
 
 impl ListenerRiskProfile {
@@ -299,8 +304,14 @@ impl ListenerRiskProfile {
         let executable = string_field(event, "executable");
         let cmdline = string_field(event, "cmdline");
         let process_name = string_field(event, "process_name");
+        if path_is_allowlisted(&executable, &ctx.config.allowlist.process_paths)
+            || command_matches_allowlist(&cmdline, &ctx.config.allowlist.process_command_contains)
+        {
+            return None;
+        }
         let mut score = 0;
         let mut reasons = Vec::new();
+        let mut features = Vec::new();
 
         if path_in_suspicious_dirs(&executable, &ctx.config.process.suspicious_dirs) {
             score += 50;
@@ -310,19 +321,19 @@ impl ListenerRiskProfile {
             score += 40;
             reasons.push("executable appears deleted while still running".to_string());
         }
-        if contains_reverse_shell_pattern(&cmdline) {
+        let command_assessment = network_execution_assessment_from_event(event);
+        if command_assessment.is_suspicious() {
             score += 70;
-            reasons.push("command line contains reverse-shell fragments".to_string());
+            reasons.push(command_assessment.reason_text());
+            features.push(command_assessment.feature_names());
         }
         if contains_miner_or_scanner(&cmdline) {
             score += 70;
             reasons.push("command line contains miner or scanner indicators".to_string());
         }
-        if is_shell_or_pipe_tool(&process_name) {
+        if is_shell_process_name(&process_name) {
             score += 35;
-            reasons.push(
-                "listener process name is commonly used for ad-hoc shells or tunnels".to_string(),
-            );
+            reasons.push("listener process name is an interactive shell".to_string());
         }
         if event.kind == "listening_socket_owner_changed" && score > 0 {
             score += 20;
@@ -330,17 +341,21 @@ impl ListenerRiskProfile {
         }
 
         if score >= 50 {
-            Some(Self { score, reasons })
+            Some(Self {
+                score,
+                reasons,
+                features,
+            })
         } else {
             None
         }
     }
 }
 
-fn is_shell_or_pipe_tool(name: &str) -> bool {
+fn is_shell_process_name(name: &str) -> bool {
     matches!(
         name,
-        "sh" | "bash" | "dash" | "zsh" | "nc" | "ncat" | "netcat" | "socat" | "busybox"
+        "sh" | "bash" | "dash" | "zsh" | "fish" | "ksh" | "busybox"
     )
 }
 

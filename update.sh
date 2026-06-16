@@ -14,6 +14,7 @@ SYSTEMD_TEMPLATE="${SYSTEMD_TEMPLATE:-packaging/systemd/vps-sentinel.service}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-auto}"
 RESTART_SERVICE="${RESTART_SERVICE:-auto}"
 VALIDATE_CONFIG="${VALIDATE_CONFIG:-yes}"
+REFRESH_BASELINE="${REFRESH_BASELINE:-auto}"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "please run as root, for example: sudo sh update.sh" >&2
@@ -73,12 +74,20 @@ write_systemd_unit() {
   fi
 
   install -d "$(dirname "$SERVICE_PATH")"
+  tmp="${SERVICE_PATH}.tmp.$$"
   sed \
     -e "s|@BIN_PATH@|$(escape_sed_replacement "$PREFIX/bin/vps-sentinel")|g" \
     -e "s|@CONFIG_PATH@|$(escape_sed_replacement "$CONFIG_DIR/config.toml")|g" \
     -e "s|@DATA_DIR@|$(escape_sed_replacement "$DATA_DIR")|g" \
     -e "s|@LOG_DIR@|$(escape_sed_replacement "$LOG_DIR")|g" \
-    "$SYSTEMD_TEMPLATE" > "$SERVICE_PATH"
+    "$SYSTEMD_TEMPLATE" > "$tmp"
+  if [ -f "$SERVICE_PATH" ] && cmp -s "$tmp" "$SERVICE_PATH"; then
+    rm -f "$tmp"
+    echo "kept existing systemd unit"
+  else
+    mv "$tmp" "$SERVICE_PATH"
+    echo "updated systemd unit at $SERVICE_PATH"
+  fi
   chmod 0644 "$SERVICE_PATH"
 }
 
@@ -106,6 +115,26 @@ refresh_systemd_unit() {
       ;;
     *)
       echo "invalid RESTART_SERVICE value: $RESTART_SERVICE" >&2
+      exit 1
+      ;;
+  esac
+}
+
+refresh_baseline() {
+  case "$REFRESH_BASELINE" in
+    auto)
+      if "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" baseline show >/dev/null 2>&1; then
+        "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" baseline create
+      else
+        echo "skipped baseline refresh; no existing baseline"
+      fi
+      ;;
+    yes|true|1)
+      "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" baseline create
+      ;;
+    no|false|0) ;;
+    *)
+      echo "invalid REFRESH_BASELINE value: $REFRESH_BASELINE" >&2
       exit 1
       ;;
   esac
@@ -144,5 +173,6 @@ case "$VALIDATE_CONFIG" in
 esac
 
 refresh_systemd_unit
+refresh_baseline
 
 echo "vps-sentinel updated from $REPO_URL ($BRANCH)"

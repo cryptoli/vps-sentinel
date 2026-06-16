@@ -31,7 +31,7 @@ It is not:
 | User and privilege checks | Detects new users, UID 0 users, and privilege-relevant user changes. |
 | File integrity | Watches configured critical paths and web roots; hashes bounded file content; detects modified files, executable scripts in web roots, and WebShell-style markers. |
 | Persistence checks | Monitors cron, systemd, shell profile, and preload-related locations for new or suspicious startup entries. |
-| Process checks | Reads procfs to flag temporary-path executables, deleted executables still running, reverse-shell fragments, miners, and scanner-like commands. |
+| Process checks | Reads procfs argv and executable metadata to flag temporary-path executables, deleted executables still running, network command-execution bridges, miners, and scanner-like commands. |
 | Network checks | Reads listening sockets and owning process details; flags high-risk public services, suspicious listener processes, baseline owner drift, and ordinary new public listeners. Expected web/SSH ports such as 22, 80, and 443 reduce noise but are not blindly trusted. |
 | Web log checks | Parses common access log lines and detects common automated probing paths. |
 | Rootkit signals | Collects lightweight local indicators for hidden process and suspicious procfs behavior. |
@@ -153,8 +153,9 @@ The installer:
 - installs `vps-sentinel-reload` for safe config reloads;
 - creates `/etc/vps-sentinel/config.toml` only if it does not already exist;
 - optionally writes Telegram settings from environment variables;
+- installs the systemd unit before baseline bootstrap when systemd is available;
 - validates config, runs `doctor`, creates the first baseline when missing, and runs one no-notify warm-up scan;
-- installs and enables the systemd service when systemd is available.
+- enables the systemd service after the baseline includes the installed unit.
 
 Configuration can be customized through environment variables:
 
@@ -210,7 +211,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-The update script pulls the selected branch, rebuilds the binary, preserves the existing config, validates it, refreshes the systemd unit when available, and reloads or restarts the service if it is enabled.
+The update script pulls the selected branch, rebuilds the binary, preserves the existing config, validates it, refreshes the systemd unit when available, reloads or restarts the service if it is enabled, and refreshes the baseline after a trusted update. Unchanged systemd unit content is not rewritten, so routine updates do not churn unit file mtimes.
 
 Useful update switches:
 
@@ -226,6 +227,7 @@ Useful update switches:
 | `INSTALL_SYSTEMD` | `auto` | Set to `no` to skip unit refresh. |
 | `RESTART_SERVICE` | `auto` | `auto`, `yes`, or `no` for reload/restart behavior. |
 | `VALIDATE_CONFIG` | `yes` | Validate existing config before service reload/restart. |
+| `REFRESH_BASELINE` | `auto` | Refresh an existing baseline after a trusted update. Use `no` when you want to inspect drift manually first. |
 
 ## Reload Configuration
 
@@ -361,8 +363,21 @@ users = ["deploy"]
 ips = ["203.0.113.10"]
 listening_ports = [22, 80, 443, 8080]
 process_paths = ["/usr/local/bin/my-service"]
+process_command_contains = ["trusted-forwarder tcp-listen:8443"]
 file_paths = ["/etc/systemd/system/my-service.service"]
 ```
+
+`process_command_contains` is a substring-based escape hatch for known-good long-running commands. Prefer exact enough fragments that identify your intended command instead of broad process names.
+
+`PROC-003` is not triggered by a forwarding tool name, an IP address, a listening argument, or `/bin/sh -c` by itself. The detector builds a command profile from `/proc/<pid>/cmdline` argv and requires high-confidence behavior combinations such as:
+
+- `/dev/tcp` plus an interactive shell and file-descriptor redirection;
+- a network channel bridged directly to a shell target through `-e`, `--exec`, `EXEC:`, or `SHELL:`;
+- a network channel bridged to a `SYSTEM:` command runner;
+- an inline interpreter using socket APIs, fd duplication, and a shell target;
+- a network command allocating a TTY for a shell.
+
+Normal service wrappers such as `/bin/sh -c '/usr/local/bin/app --listen 0.0.0.0:443'` and ordinary TCP/UDP forwarding commands should not trigger `PROC-003`.
 
 ## Alert Format
 
@@ -387,7 +402,7 @@ Example rules:
 - `SSH-005`: `authorized_keys` changed relative to baseline.
 - `USER-002`: UID 0 user added or changed.
 - `PERSIST-002`: Suspicious startup command detected.
-- `PROC-003`: Reverse shell command pattern detected.
+- `PROC-003`: Network command execution bridge detected.
 - `NET-001`: New public listening port detected relative to baseline.
 - `NET-002`: Public listener process changed relative to baseline.
 - `NET-003`: Suspicious process behind a public listener.
