@@ -197,10 +197,31 @@ pub(crate) fn command_matches_allowlist(command: &str, allowlist: &[String]) -> 
 }
 
 pub(crate) fn contains_miner_or_scanner(command: &str) -> bool {
-    let lowered = command.to_ascii_lowercase();
-    ["xmrig", "kinsing", "masscan", "zmap"]
-        .iter()
-        .any(|marker| lowered.contains(marker))
+    command
+        .split_whitespace()
+        .map(command_token_basename)
+        .any(|name| matches_known_tool_name(&name))
+}
+
+fn command_token_basename(token: &str) -> String {
+    let trimmed = token.trim_matches(|ch: char| {
+        ch.is_ascii_whitespace()
+            || matches!(
+                ch,
+                '"' | '\'' | '`' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}'
+            )
+    });
+    trimmed
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(trimmed)
+        .to_ascii_lowercase()
+}
+
+fn matches_known_tool_name(name: &str) -> bool {
+    const KNOWN_TOOL_NAMES: &[&str] = &["xmrig", "kinsing", "masscan", "zmap"];
+    let normalized = name.strip_suffix(".exe").unwrap_or(name);
+    KNOWN_TOOL_NAMES.contains(&normalized)
 }
 
 #[cfg(test)]
@@ -222,7 +243,10 @@ mod tests {
                 .is_suspicious()
         );
         assert!(contains_miner_or_scanner("/tmp/xmrig -o pool"));
+        assert!(contains_miner_or_scanner("/opt/tools/masscan --rate 1000"));
+        assert!(contains_miner_or_scanner("C:\\temp\\zmap.exe -p 22"));
         assert!(!contains_miner_or_scanner("/usr/bin/sshd"));
+        assert!(!contains_miner_or_scanner("/opt/company/xmrigate --worker"));
     }
 
     #[test]

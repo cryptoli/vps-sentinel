@@ -31,7 +31,7 @@ It is not:
 | User and privilege checks | Detects new users, UID 0 users, and privilege-relevant user changes. |
 | File integrity | Watches configured critical paths and web roots; hashes bounded file content; detects modified files, executable scripts in web roots, and WebShell-style markers. |
 | Persistence checks | Monitors cron, systemd, shell profile, and preload-related locations for new or suspicious startup entries. |
-| Process checks | Reads procfs argv and executable metadata to flag temporary-path executables, deleted executables still running, network command-execution bridges, miners, and scanner-like commands. |
+| Process checks | Reads procfs argv and executable metadata to flag temporary-path executables, deleted executables still running, network command-execution bridges, and known miner/scanner tool names matched at token or executable-basename boundaries. |
 | Network checks | Reads listening sockets and owning process details; flags high-risk public services, suspicious listener processes, baseline owner drift, and ordinary new public listeners. Expected web/SSH ports such as 22, 80, and 443 reduce noise but are not blindly trusted. |
 | Web log checks | Parses common access log lines and detects common automated probing paths. |
 | Rootkit signals | Collects lightweight local indicators for hidden process and suspicious procfs behavior. |
@@ -40,6 +40,12 @@ It is not:
 | Noise control | Uses allowlists, minimum severity, finding deduplication, and configurable retention windows. |
 | Notifications | Sends alerts through Telegram, Email SMTP, generic webhook, ntfy, Gotify, Bark, and ServerChan. |
 | Operations | Provides a single CLI binary, JSON logs, systemd unit, one-command installer, and update script. |
+
+## Detection Model
+
+The command-execution rules are behavior-profile rules, not simple tool-name or port-name rules. vps-sentinel keeps argv as structured data from `/proc/<pid>/cmdline`, builds a small command profile, and only raises `PROC-003`/`NET-003` when high-risk features combine, such as network channels bridged into shell targets, `SYSTEM:` command runners, fd duplication, inline socket code, or TTY allocation.
+
+Known miner/scanner detection is intentionally narrower: `PROC-004` matches known tool names such as `xmrig`, `masscan`, and `zmap` only at command token or executable basename boundaries, including `.exe` suffixes. It does not treat arbitrary substrings inside longer normal names as a hit.
 
 ## Notification Channels
 
