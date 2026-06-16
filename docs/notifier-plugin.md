@@ -15,7 +15,8 @@ pub trait Notifier: Send + Sync {
 
 - Do not log tokens, passwords, secrets, or webhook credentials.
 - Return a structured error when required configuration is missing.
-- Use `render_finding_with_language` or `render_alert_with_language` for standard message content that honors `notifications.language`.
+- Use `MessageTemplate` for standard message content that honors `notifications.language` and `agent.display_name`.
+- Prefer the richest template the channel safely supports: Telegram-compatible HTML for Telegram, Markdown for Markdown-aware push channels, and plain text for simple push payloads.
 - Honor `minimum_severity`.
 - Keep retries and rate limiting outside the detector path.
 

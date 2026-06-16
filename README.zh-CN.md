@@ -49,13 +49,13 @@
 | --- | --- | --- | --- |
 | Telegram | `[notifications.telegram]` | `enabled`, `bot_token`, `chat_id` | 通过 Telegram bot 给个人或团队发送告警。 |
 | Email SMTP | `[notifications.email]` | `enabled`, `smtp_host`, `smtp_port`, `from`, `to` | 邮件告警，支持 STARTTLS、隐式 TLS 和无认证本地 SMTP 中继。 |
-| Webhook | `[notifications.webhook]` | `enabled`, `url` | 自定义 HTTP 接收端、自动化平台、自建告警路由。 |
+| Webhook | `[notifications.webhook]` | `enabled`, `url` | 自定义 HTTP 接收端、自动化平台、自建告警路由；发送原始 `Finding` JSON，并附带 `X-Vps-Sentinel-Vps-Name`。 |
 | ntfy | `[notifications.ntfy]` | `enabled`, `server`, `topic` | ntfy.sh 或自建 ntfy 推送。 |
 | Gotify | `[notifications.gotify]` | `enabled`, `server`, `token` | 自建 Gotify 推送。 |
 | Bark | `[notifications.bark]` | `enabled`, `server`, `device_key` | Bark iOS 推送。 |
 | ServerChan | `[notifications.serverchan]` | `enabled`, `send_key` | ServerChan 通知。 |
 
-每个渠道都支持 `min_severity`，可以让低风险 finding 只保存在本地，高风险 finding 才发送出去。HTTP 类通知渠道统一使用 `notifications.request_timeout_seconds` 控制请求超时，默认 15 秒。邮件通知会同时发送纯文本和 HTML 正文，其他面向人的渠道复用统一标题与正文渲染器。
+每个渠道都支持 `min_severity`，可以让低风险 finding 只保存在本地，高风险 finding 才发送出去。HTTP 类通知渠道统一使用 `notifications.request_timeout_seconds` 控制请求超时，默认 15 秒。面向人的通知渠道使用模板策略：Telegram 使用兼容 Telegram 的 HTML，Email 同时发送纯文本和完整 HTML，ServerChan 与 Gotify 使用 Markdown，ntfy/Bark 使用兼容性最好的纯文本。
 
 通知文本支持英文和简体中文：
 
@@ -64,6 +64,17 @@
 request_timeout_seconds = 15
 language = "zh_cn" # en 或 zh_cn
 ```
+
+告警标题会包含配置的 VPS 名称，方便多台服务器同时部署时快速区分来源：
+
+```toml
+[agent]
+display_name = "prod-web-1"
+hostname = "prod-web-1.example.com"
+host_id = "prod-web-1"
+```
+
+`display_name` 是通知标题里展示的人类可读 VPS 名称。`host_id` 是用于 finding、存储和去重的稳定技术标识。`display_name` 为空时会依次回退到 `hostname`、`host_id`、`local-host`。
 
 Telegram 示例：
 
@@ -157,6 +168,7 @@ sudo REPO_URL=https://github.com/cryptoli/vps-sentinel.git \
 sudo TELEGRAM_BOT_TOKEN="<telegram-bot-token>" \
   TELEGRAM_CHAT_ID="<telegram-chat-id>" \
   TELEGRAM_MIN_SEVERITY=Medium \
+  VPS_NAME=prod-web-1 \
   sh install.sh
 ```
 
@@ -177,6 +189,7 @@ sudo TELEGRAM_BOT_TOKEN="<telegram-bot-token>" \
 | `RUN_DOCTOR` | `yes` | 安装过程中运行环境检查。 |
 | `BOOTSTRAP_BASELINE` | `yes` | 没有基线时自动创建初始基线。 |
 | `RUN_FIRST_SCAN` | `yes` | 执行一次 `scan --no-notify`，完整输出写入 `<LOG_DIR>/first-scan.log`。 |
+| `VPS_NAME` | 空 | 可选的人类可读 VPS 名称，会写入 `agent.display_name` 并展示在通知标题中。 |
 | `TELEGRAM_BOT_TOKEN` | 空 | 写入本地配置的 Telegram bot token。 |
 | `TELEGRAM_CHAT_ID` | 空 | 写入本地配置的 Telegram chat ID。 |
 | `TELEGRAM_MIN_SEVERITY` | `Medium` | Telegram 通知的最低等级。 |
@@ -308,6 +321,30 @@ type = "sqlite"
 path = "/var/lib/vps-sentinel/sentinel.db"
 retention_days = 30
 ```
+
+告警中的 VPS 身份：
+
+```toml
+[agent]
+display_name = "prod-web-1"
+hostname = "prod-web-1.example.com"
+host_id = "prod-web-1"
+```
+
+网络告警策略：
+
+```toml
+[network]
+alert_on_new_listening_port = true
+expected_public_ports = [22, 80, 443]
+high_risk_public_ports = [2375, 2376, 3306, 5432, 6379, 9200, 27017]
+public_listen_allowlist = [22, 80, 443]
+```
+
+- `expected_public_ports` 用于压制 SSH、HTTP、HTTPS 等正常公网服务的通用监听噪音。
+- `high_risk_public_ports` 是可配置的高风险服务端口列表；除非显式加入白名单，否则会从当前 socket 状态直接告警。
+- `public_listen_allowlist` 和 `[allowlist].listening_ports` 会压制已确认合法的端口，包括有意公网暴露的高风险端口。
+- `NET-001` 只会在普通公网端口相对已保存基线新增时触发，不会对每次扫描都存在的稳定监听端口重复告警。
 
 白名单示例：
 

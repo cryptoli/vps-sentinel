@@ -1,5 +1,8 @@
-use super::{render_alert, render_finding, render_finding_with_language, NotificationFormat};
-use sentinel_core::{Category, Evidence, Finding, NotificationLanguage, Severity};
+use super::{
+    render_alert, render_alert_for_config, render_finding, render_finding_with_language,
+    NotificationFormat,
+};
+use sentinel_core::{Category, Evidence, Finding, NotificationLanguage, SentinelConfig, Severity};
 
 #[test]
 fn renders_standard_alert_body() {
@@ -31,6 +34,27 @@ fn renders_html_without_raw_markup_in_values() {
     let alert = render_alert(&finding);
     assert!(alert.html.contains("&lt;script&gt;"));
     assert!(!alert.html.contains("<script>"));
+}
+
+#[test]
+fn renders_configured_vps_name_in_subject() {
+    let mut config = SentinelConfig::default();
+    config.agent.display_name = "prod-web-1".to_string();
+    let alert = render_alert_for_config(&sample_finding(), &config);
+    assert!(alert.subject.starts_with("[prod-web-1][High]"));
+    assert!(alert.plain_text.contains("VPS: prod-web-1"));
+}
+
+#[test]
+fn renders_telegram_html_without_full_html_document() {
+    let finding = sample_finding().with_evidence(vec![Evidence::new("path", "<script>")]);
+    let mut config = SentinelConfig::default();
+    config.agent.display_name = "prod-web-1".to_string();
+    let alert = render_alert_for_config(&finding, &config);
+    assert!(alert.telegram_html.contains("<b>VPS Sentinel Alert</b>"));
+    assert!(alert.telegram_html.contains("&lt;script&gt;"));
+    assert!(!alert.telegram_html.contains("<table"));
+    assert!(!alert.telegram_html.contains("<script>"));
 }
 
 fn sample_finding() -> Finding {

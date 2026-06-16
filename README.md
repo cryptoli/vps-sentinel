@@ -32,7 +32,7 @@ It is not:
 | File integrity | Watches configured critical paths and web roots; hashes bounded file content; detects modified files, executable scripts in web roots, and WebShell-style markers. |
 | Persistence checks | Monitors cron, systemd, shell profile, and preload-related locations for new or suspicious startup entries. |
 | Process checks | Reads procfs to flag temporary-path executables, deleted executables still running, reverse-shell fragments, miners, and scanner-like commands. |
-| Network checks | Reads listening sockets and owning processes; flags new public listeners, non-allowlisted ports, and high-risk public service ports. |
+| Network checks | Reads listening sockets; flags high-risk public service ports immediately and reports ordinary new public listeners only when they appear relative to the stored baseline. Expected web/SSH ports such as 22, 80, and 443 are quiet by default. |
 | Web log checks | Parses common access log lines and detects common automated probing paths. |
 | Rootkit signals | Collects lightweight local indicators for hidden process and suspicious procfs behavior. |
 | Docker context | Detects Docker availability and emits initial container-surface context; deeper inspection is planned for later releases. |
@@ -49,13 +49,13 @@ All notification channels are disabled by default. Enable only the channels you 
 | --- | --- | --- | --- |
 | Telegram | `[notifications.telegram]` | `enabled`, `bot_token`, `chat_id` | Personal or team security alerts through a Telegram bot. |
 | Email SMTP | `[notifications.email]` | `enabled`, `smtp_host`, `smtp_port`, `from`, `to` | Traditional mailbox alerts for operations teams. Supports STARTTLS, implicit TLS, and local plaintext relays. |
-| Webhook | `[notifications.webhook]` | `enabled`, `url` | Custom HTTP receivers, automation platforms, or self-hosted alert routers. |
+| Webhook | `[notifications.webhook]` | `enabled`, `url` | Custom HTTP receivers, automation platforms, or self-hosted alert routers. Sends raw `Finding` JSON plus `X-Vps-Sentinel-Vps-Name`. |
 | ntfy | `[notifications.ntfy]` | `enabled`, `server`, `topic` | Push notifications through ntfy.sh or self-hosted ntfy. |
 | Gotify | `[notifications.gotify]` | `enabled`, `server`, `token` | Self-hosted push notifications. |
 | Bark | `[notifications.bark]` | `enabled`, `server`, `device_key` | iOS push notifications through Bark. |
 | ServerChan | `[notifications.serverchan]` | `enabled`, `send_key` | WeChat-style notifications through ServerChan. |
 
-Each channel supports `min_severity`, so low-priority findings can be kept local while higher-risk findings are sent out. HTTP-based channels share `notifications.request_timeout_seconds`, which defaults to 15 seconds. Email alerts are sent as multipart messages with plain-text and HTML bodies; other human-facing channels use the same normalized alert title and body renderer.
+Each channel supports `min_severity`, so low-priority findings can be kept local while higher-risk findings are sent out. HTTP-based channels share `notifications.request_timeout_seconds`, which defaults to 15 seconds. Human-facing channels use a template strategy: Telegram uses Telegram-compatible HTML, Email sends multipart plain-text plus full HTML, ServerChan and Gotify use Markdown, and ntfy/Bark use plain text for maximum client compatibility.
 
 Notification text supports English and Simplified Chinese:
 
@@ -64,6 +64,17 @@ Notification text supports English and Simplified Chinese:
 request_timeout_seconds = 15
 language = "en" # en or zh_cn
 ```
+
+Alert subjects include the configured VPS name so multi-server deployments are easy to scan:
+
+```toml
+[agent]
+display_name = "prod-web-1"
+hostname = "prod-web-1.example.com"
+host_id = "prod-web-1"
+```
+
+`display_name` is the human-readable VPS name used in notification titles. `host_id` stays the stable technical identifier used in findings, storage, and deduplication. If `display_name` is empty, vps-sentinel falls back to `hostname`, then `host_id`, then `local-host`.
 
 Telegram example:
 
@@ -157,6 +168,7 @@ Install with Telegram enabled in one command:
 sudo TELEGRAM_BOT_TOKEN="<telegram-bot-token>" \
   TELEGRAM_CHAT_ID="<telegram-chat-id>" \
   TELEGRAM_MIN_SEVERITY=Medium \
+  VPS_NAME=prod-web-1 \
   sh install.sh
 ```
 
@@ -177,6 +189,7 @@ Useful installer switches:
 | `RUN_DOCTOR` | `yes` | Run runtime environment checks during install. |
 | `BOOTSTRAP_BASELINE` | `yes` | Create the first baseline if no baseline exists. |
 | `RUN_FIRST_SCAN` | `yes` | Run one `scan --no-notify` and write full output to `<LOG_DIR>/first-scan.log`. |
+| `VPS_NAME` | empty | Optional human-readable VPS name written to `agent.display_name`; shown in notification subjects. |
 | `TELEGRAM_BOT_TOKEN` | empty | Telegram bot token to write into local config. |
 | `TELEGRAM_CHAT_ID` | empty | Telegram chat ID to write into local config. |
 | `TELEGRAM_MIN_SEVERITY` | `Medium` | Minimum severity for Telegram notifications. |
@@ -311,6 +324,30 @@ path = "/var/lib/vps-sentinel/sentinel.db"
 retention_days = 30
 ```
 
+VPS identity in alerts:
+
+```toml
+[agent]
+display_name = "prod-web-1"
+hostname = "prod-web-1.example.com"
+host_id = "prod-web-1"
+```
+
+Network alert policy:
+
+```toml
+[network]
+alert_on_new_listening_port = true
+expected_public_ports = [22, 80, 443]
+high_risk_public_ports = [2375, 2376, 3306, 5432, 6379, 9200, 27017]
+public_listen_allowlist = [22, 80, 443]
+```
+
+- `expected_public_ports` suppresses generic public-listener noise for normal exposed services such as SSH, HTTP, and HTTPS.
+- `high_risk_public_ports` is the configurable high-risk service list. These ports are reported from the current socket state unless explicitly allowlisted.
+- `public_listen_allowlist` and `[allowlist].listening_ports` suppress network findings for approved ports, including high-risk ports that are intentionally exposed.
+- `NET-001` is emitted only for ordinary public ports that are new relative to the stored baseline, not for every stable listening socket on every scan.
+
 Allowlist example:
 
 ```toml
@@ -327,6 +364,7 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 Every alert includes:
 
 - event ID;
+- VPS display name;
 - host ID;
 - timestamp;
 - module/category;
@@ -346,7 +384,7 @@ Example rules:
 - `USER-002`: UID 0 user added or changed.
 - `PERSIST-002`: Suspicious startup command detected.
 - `PROC-003`: Reverse shell command pattern detected.
-- `NET-001`: Public listening port detected.
+- `NET-001`: New public listening port detected relative to baseline.
 - `FILE-002`: WebShell-like file content detected.
 - `CONFIG-003`: High-risk public service port exposed.
 

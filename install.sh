@@ -21,6 +21,8 @@ TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
 TELEGRAM_CHAT_ID="${TELEGRAM_CHAT_ID:-}"
 TELEGRAM_MIN_SEVERITY="${TELEGRAM_MIN_SEVERITY:-Medium}"
 RUN_NOTIFY_TEST="${RUN_NOTIFY_TEST:-auto}"
+VPS_NAME="${VPS_NAME:-}"
+CONFIG_CREATED=0
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "please run as root, for example: sudo sh install.sh" >&2
@@ -149,6 +151,24 @@ configure_telegram() {
   echo "configured Telegram notifications in $config_path"
 }
 
+detect_hostname() {
+  hostname -f 2>/dev/null || hostname 2>/dev/null || printf '%s\n' "local-host"
+}
+
+configure_agent_identity() {
+  config_path="$CONFIG_DIR/config.toml"
+  detected_hostname="$(detect_hostname)"
+  if [ "$CONFIG_CREATED" -eq 1 ] && [ -n "$detected_hostname" ]; then
+    set_toml_value "$config_path" "agent" "hostname" "$(toml_string "$detected_hostname")"
+  fi
+  if [ -n "$VPS_NAME" ]; then
+    set_toml_value "$config_path" "agent" "display_name" "$(toml_string "$VPS_NAME")"
+  elif [ "$CONFIG_CREATED" -eq 1 ] && [ -n "$detected_hostname" ]; then
+    set_toml_value "$config_path" "agent" "display_name" "$(toml_string "$detected_hostname")"
+  fi
+  chmod 0600 "$config_path"
+}
+
 ensure_rust() {
   if command -v cargo >/dev/null 2>&1; then
     return
@@ -183,11 +203,13 @@ build_and_install() {
 
   if [ ! -f "$CONFIG_DIR/config.toml" ]; then
     install -m 0600 config/config.example.toml "$CONFIG_DIR/config.toml"
+    CONFIG_CREATED=1
     echo "created $CONFIG_DIR/config.toml"
   else
     echo "kept existing $CONFIG_DIR/config.toml"
   fi
 
+  configure_agent_identity
   configure_telegram
   post_install_setup
   install_systemd_unit

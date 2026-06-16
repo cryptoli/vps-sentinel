@@ -1,6 +1,4 @@
-use crate::notify::{
-    http_client, render_alert_with_language, transport_error, Notifier, NotifyContext,
-};
+use crate::notify::{http_client, transport_error, MessageTemplate, Notifier, NotifyContext};
 use async_trait::async_trait;
 use sentinel_core::{GotifyConfig, SentinelError, SentinelResult, Severity};
 use serde_json::json;
@@ -39,7 +37,7 @@ impl Notifier for GotifyNotifier {
                 "gotify server and token are required when gotify is enabled".to_string(),
             ));
         }
-        let alert = render_alert_with_language(finding, ctx.config.notifications.language);
+        let message = MessageTemplate::Markdown.render(finding, ctx);
         let url = format!(
             "{}/message?token={}",
             self.config.server.trim_end_matches('/'),
@@ -49,9 +47,14 @@ impl Notifier for GotifyNotifier {
             .client
             .post(url)
             .json(&json!({
-                "title": alert.subject,
-                "message": alert.plain_text,
+                "title": message.subject,
+                "message": message.body,
                 "priority": gotify_priority(finding.severity),
+                "extras": {
+                    "client::display": {
+                        "contentType": "text/markdown"
+                    }
+                }
             }))
             .send()
             .await

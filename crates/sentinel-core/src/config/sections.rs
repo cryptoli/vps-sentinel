@@ -16,6 +16,7 @@ impl SentinelPaths {
 pub struct AgentConfig {
     pub host_id: String,
     pub hostname: String,
+    pub display_name: String,
     pub scan_interval_seconds: u64,
     pub full_scan_interval_seconds: u64,
     pub data_dir: PathBuf,
@@ -27,6 +28,7 @@ impl Default for AgentConfig {
         Self {
             host_id: String::new(),
             hostname: String::new(),
+            display_name: String::new(),
             scan_interval_seconds: 60,
             full_scan_interval_seconds: 3600,
             data_dir: PathBuf::from(SentinelPaths::DATA_DIR),
@@ -168,6 +170,11 @@ pub struct NetworkConfig {
     pub enabled: bool,
     pub scan_interval_seconds: u64,
     pub alert_on_new_listening_port: bool,
+    #[serde(default = "default_expected_public_ports")]
+    pub expected_public_ports: Vec<u16>,
+    #[serde(default = "default_high_risk_public_ports")]
+    pub high_risk_public_ports: Vec<u16>,
+    #[serde(default = "default_public_listen_allowlist")]
     pub public_listen_allowlist: Vec<u16>,
 }
 
@@ -177,9 +184,26 @@ impl Default for NetworkConfig {
             enabled: true,
             scan_interval_seconds: 30,
             alert_on_new_listening_port: true,
-            public_listen_allowlist: vec![22, 80, 443],
+            expected_public_ports: default_expected_public_ports(),
+            high_risk_public_ports: default_high_risk_public_ports(),
+            public_listen_allowlist: default_public_listen_allowlist(),
         }
     }
+}
+
+fn default_expected_public_ports() -> Vec<u16> {
+    vec![22, 80, 443]
+}
+
+fn default_high_risk_public_ports() -> Vec<u16> {
+    vec![
+        11211, 2375, 2376, 2379, 2380, 3000, 3306, 3389, 5432, 5601, 5672, 5900, 5901, 5984, 5985,
+        5986, 6379, 6443, 9090, 9200, 9300, 10250, 10255, 15672, 27017, 27018, 27019,
+    ]
+}
+
+fn default_public_listen_allowlist() -> Vec<u16> {
+    vec![22, 80, 443]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

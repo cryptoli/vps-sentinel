@@ -1,12 +1,17 @@
 use super::i18n::{catalog, severity_label, MessageCatalog};
-use sentinel_core::{Finding, NotificationLanguage, Severity};
+use sentinel_core::{Finding, NotificationLanguage, SentinelConfig, Severity};
 use std::borrow::Cow;
+
+mod escape;
+mod telegram;
+use escape::{html_escape, markdown_escape};
 
 /// Output format for rendered notification bodies.
 #[derive(Debug, Clone, Copy)]
 pub enum NotificationFormat {
     Markdown,
     Html,
+    TelegramHtml,
     PlainText,
 }
 
@@ -16,6 +21,24 @@ pub struct RenderedAlert {
     pub plain_text: String,
     pub markdown: String,
     pub html: String,
+    pub telegram_html: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AlertRenderOptions {
+    pub language: NotificationLanguage,
+    pub vps_name: String,
+}
+
+impl AlertRenderOptions {
+    pub fn new(language: NotificationLanguage, vps_name: impl Into<String>) -> Self {
+        let vps_name = vps_name.into();
+        Self { language, vps_name }
+    }
+
+    pub fn from_config(config: &SentinelConfig) -> Self {
+        Self::new(config.notifications.language, config.display_name())
+    }
 }
 
 /// Render a finding in the standard alert shape.
@@ -32,6 +55,7 @@ pub fn render_finding_with_language(
     match format {
         NotificationFormat::Markdown => alert.markdown,
         NotificationFormat::Html => alert.html,
+        NotificationFormat::TelegramHtml => alert.telegram_html,
         NotificationFormat::PlainText => alert.plain_text,
     }
 }
@@ -44,17 +68,30 @@ pub fn render_alert_with_language(
     finding: &Finding,
     language: NotificationLanguage,
 ) -> RenderedAlert {
-    let catalog = catalog(language);
+    render_alert_with_options(
+        finding,
+        &AlertRenderOptions::new(language, finding.host_id.clone()),
+    )
+}
+
+pub fn render_alert_for_config(finding: &Finding, config: &SentinelConfig) -> RenderedAlert {
+    render_alert_with_options(finding, &AlertRenderOptions::from_config(config))
+}
+
+pub fn render_alert_with_options(finding: &Finding, options: &AlertRenderOptions) -> RenderedAlert {
+    let catalog = catalog(options.language);
     let subject = format!(
-        "[{}] {}",
-        severity_label(finding.severity, language),
+        "[{}][{}] {}",
+        options.vps_name,
+        severity_label(finding.severity, options.language),
         finding.title
     );
     RenderedAlert {
         subject: subject.clone(),
-        plain_text: render_plain_text(finding, &subject, &catalog, language),
-        markdown: render_markdown(finding, &subject, &catalog, language),
-        html: render_html(finding, &subject, &catalog, language),
+        plain_text: render_plain_text(finding, &subject, &catalog, options),
+        markdown: render_markdown(finding, &subject, &catalog, options),
+        html: render_html(finding, &subject, &catalog, options),
+        telegram_html: telegram::render_telegram_html(finding, &subject, &catalog, options),
     }
 }
 
@@ -78,11 +115,15 @@ enum ListStyle {
 fn alert_fields<'a>(
     finding: &'a Finding,
     catalog: &MessageCatalog,
-    language: NotificationLanguage,
+    options: &'a AlertRenderOptions,
 ) -> Vec<AlertField<'a>> {
     let mut fields = vec![
-        borrowed_value_field(catalog.severity, severity_label(finding.severity, language)),
-        borrowed_field(catalog.host, &finding.host_id),
+        borrowed_field(catalog.vps, &options.vps_name),
+        borrowed_value_field(
+            catalog.severity,
+            severity_label(finding.severity, options.language),
+        ),
+        borrowed_field(catalog.host_id, &finding.host_id),
         owned_field(catalog.time, finding.timestamp.to_rfc3339()),
         owned_field(catalog.category, finding.category.to_string()),
         borrowed_field(catalog.rule, &finding.rule_id),
@@ -147,7 +188,7 @@ fn render_plain_text(
     finding: &Finding,
     subject: &str,
     catalog: &MessageCatalog,
-    language: NotificationLanguage,
+    options: &AlertRenderOptions,
 ) -> String {
     let mut out = String::new();
     out.push_str(catalog.heading);
@@ -155,7 +196,7 @@ fn render_plain_text(
     out.push_str("==================\n\n");
     out.push_str(subject);
     out.push_str("\n\n");
-    for field in alert_fields(finding, catalog, language) {
+    for field in alert_fields(finding, catalog, options) {
         write_plain_field(&mut out, field.label, field.value.as_ref());
     }
     for list in alert_lists(finding, catalog) {
@@ -174,7 +215,7 @@ fn render_markdown(
     finding: &Finding,
     subject: &str,
     catalog: &MessageCatalog,
-    language: NotificationLanguage,
+    options: &AlertRenderOptions,
 ) -> String {
     let mut out = String::new();
     out.push_str("## ");
@@ -183,7 +224,7 @@ fn render_markdown(
     out.push_str("**");
     out.push_str(&markdown_escape(subject));
     out.push_str("**\n\n");
-    for field in alert_fields(finding, catalog, language) {
+    for field in alert_fields(finding, catalog, options) {
         write_markdown_field(&mut out, field.label, field.value.as_ref());
     }
     for list in alert_lists(finding, catalog) {
@@ -202,7 +243,7 @@ fn render_html(
     finding: &Finding,
     subject: &str,
     catalog: &MessageCatalog,
-    language: NotificationLanguage,
+    options: &AlertRenderOptions,
 ) -> String {
     let accent = severity_color(&finding.severity);
     let mut out = String::new();
@@ -219,7 +260,7 @@ fn render_html(
     ));
     out.push_str("<div style=\"padding:20px 22px;\">");
     out.push_str("<table style=\"width:100%;border-collapse:collapse;font-size:14px;\">");
-    for field in alert_fields(finding, catalog, language) {
+    for field in alert_fields(finding, catalog, options) {
         write_html_field(&mut out, field.label, field.value.as_ref());
     }
     out.push_str("</table>");
@@ -380,25 +421,6 @@ fn severity_color(severity: &Severity) -> &'static str {
         Severity::Low => "#047857",
         Severity::Info => "#475569",
     }
-}
-
-fn markdown_escape(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('*', "\\*")
-        .replace('_', "\\_")
-        .replace('`', "\\`")
-        .replace('[', "\\[")
-        .replace(']', "\\]")
-}
-
-fn html_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
 }
 
 #[cfg(test)]

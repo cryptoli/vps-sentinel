@@ -1,6 +1,4 @@
-use crate::notify::{
-    http_client, render_alert_with_language, transport_error, Notifier, NotifyContext,
-};
+use crate::notify::{http_client, transport_error, MessageTemplate, Notifier, NotifyContext};
 use async_trait::async_trait;
 use sentinel_core::{SentinelError, SentinelResult, Severity, TelegramConfig};
 use serde::Deserialize;
@@ -49,10 +47,11 @@ impl Notifier for TelegramNotifier {
             "https://api.telegram.org/bot{}/sendMessage",
             self.config.bot_token
         );
-        let alert = render_alert_with_language(finding, ctx.config.notifications.language);
+        let message = MessageTemplate::TelegramHtml.render(finding, ctx);
         let body = json!({
             "chat_id": self.config.chat_id,
-            "text": alert.plain_text,
+            "text": message.body,
+            "parse_mode": message.parse_mode,
             "disable_web_page_preview": true
         });
         let response = self

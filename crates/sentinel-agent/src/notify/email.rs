@@ -1,4 +1,4 @@
-use crate::notify::{render_alert_with_language, Notifier, NotifyContext};
+use crate::notify::{render_alert_for_config, Notifier, NotifyContext};
 use async_trait::async_trait;
 use lettre::message::{Mailbox, Message, MultiPart};
 use lettre::transport::smtp::authentication::Credentials;
@@ -6,7 +6,7 @@ use lettre::transport::smtp::client::Tls;
 use lettre::transport::smtp::{AsyncSmtpTransport, AsyncSmtpTransportBuilder};
 use lettre::{AsyncTransport, Tokio1Executor};
 use sentinel_core::{
-    EmailConfig, EmailTlsMode, NotificationLanguage, SentinelError, SentinelResult, Severity,
+    EmailConfig, EmailTlsMode, SentinelConfig, SentinelError, SentinelResult, Severity,
 };
 use std::time::Duration;
 
@@ -36,7 +36,7 @@ impl Notifier for EmailNotifier {
         ctx: &NotifyContext,
     ) -> SentinelResult<()> {
         validate(&self.config)?;
-        let message = build_message(&self.config, finding, ctx.config.notifications.language)?;
+        let message = build_message(&self.config, finding, &ctx.config)?;
         let mut transport_builder = smtp_transport_builder(&self.config)?.timeout(Some(
             Duration::from_secs(ctx.config.notifications.request_timeout_seconds),
         ));
@@ -77,9 +77,9 @@ fn validate(config: &EmailConfig) -> SentinelResult<()> {
 fn build_message(
     config: &EmailConfig,
     finding: &sentinel_core::Finding,
-    language: NotificationLanguage,
+    sentinel_config: &SentinelConfig,
 ) -> SentinelResult<Message> {
-    let alert = render_alert_with_language(finding, language);
+    let alert = render_alert_for_config(finding, sentinel_config);
     let from: Mailbox = config
         .from
         .parse()
@@ -142,13 +142,14 @@ fn email_transport_error(err: lettre::transport::smtp::Error) -> SentinelError {
 mod tests {
     use super::{build_message, smtp_transport_builder};
     use sentinel_core::{
-        Category, EmailConfig, EmailTlsMode, Evidence, Finding, NotificationLanguage, Severity,
+        Category, EmailConfig, EmailTlsMode, Evidence, Finding, SentinelConfig, Severity,
     };
 
     #[test]
     fn builds_multipart_email_message() {
         let config = email_config();
-        let message = match build_message(&config, &sample_finding(), NotificationLanguage::En) {
+        let sentinel_config = SentinelConfig::default();
+        let message = match build_message(&config, &sample_finding(), &sentinel_config) {
             Ok(message) => message,
             Err(err) => panic!("message should build: {err}"),
         };

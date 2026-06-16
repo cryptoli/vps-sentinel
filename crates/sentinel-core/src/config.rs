@@ -104,12 +104,23 @@ impl SentinelConfig {
     /// Resolve the host identifier, falling back to the configured hostname.
     pub fn host_id(&self) -> String {
         if !self.agent.host_id.trim().is_empty() {
-            return self.agent.host_id.clone();
+            return self.agent.host_id.trim().to_string();
         }
         if !self.agent.hostname.trim().is_empty() {
-            return self.agent.hostname.clone();
+            return self.agent.hostname.trim().to_string();
         }
         "local-host".to_string()
+    }
+
+    /// Resolve the human-readable VPS name shown in alerts.
+    pub fn display_name(&self) -> String {
+        if !self.agent.display_name.trim().is_empty() {
+            return self.agent.display_name.trim().to_string();
+        }
+        if !self.agent.hostname.trim().is_empty() {
+            return self.agent.hostname.trim().to_string();
+        }
+        self.host_id()
     }
 }
 
@@ -184,6 +195,26 @@ mod tests {
         let mut config = SentinelConfig::default();
         config.notifications.request_timeout_seconds = 0;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn display_name_prefers_configured_vps_name() {
+        let mut config = SentinelConfig::default();
+        config.agent.host_id = "host-001".to_string();
+        config.agent.hostname = "linux-host".to_string();
+        config.agent.display_name = "prod-web-1".to_string();
+        assert_eq!(config.host_id(), "host-001");
+        assert_eq!(config.display_name(), "prod-web-1");
+    }
+
+    #[test]
+    fn legacy_config_missing_network_lists_uses_policy_defaults(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let config: SentinelConfig = toml::from_str("[network]\nenabled = true\n")?;
+        assert!(config.network.expected_public_ports.contains(&443));
+        assert!(config.network.high_risk_public_ports.contains(&6379));
+        assert!(config.network.public_listen_allowlist.contains(&80));
+        Ok(())
     }
 
     #[test]

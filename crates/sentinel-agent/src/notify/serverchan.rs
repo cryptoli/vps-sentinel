@@ -1,6 +1,4 @@
-use crate::notify::{
-    http_client, render_alert_with_language, transport_error, Notifier, NotifyContext,
-};
+use crate::notify::{http_client, transport_error, MessageTemplate, Notifier, NotifyContext};
 use async_trait::async_trait;
 use sentinel_core::{SentinelError, SentinelResult, ServerChanConfig, Severity};
 
@@ -38,14 +36,14 @@ impl Notifier for ServerChanNotifier {
                 "serverchan send_key is required when serverchan is enabled".to_string(),
             ));
         }
-        let alert = render_alert_with_language(finding, ctx.config.notifications.language);
+        let message = MessageTemplate::Markdown.render(finding, ctx);
         let url = format!("https://sctapi.ftqq.com/{}.send", self.config.send_key);
         let response = self
             .client
             .post(url)
             .form(&[
-                ("title", alert.subject.as_str()),
-                ("desp", alert.markdown.as_str()),
+                ("title", message.subject.as_str()),
+                ("desp", message.body.as_str()),
             ])
             .send()
             .await

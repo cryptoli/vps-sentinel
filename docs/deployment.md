@@ -30,6 +30,7 @@ Useful variables:
 | `RUN_DOCTOR` | `yes` | Run runtime checks during install. |
 | `BOOTSTRAP_BASELINE` | `yes` | Create the initial baseline if none exists. |
 | `RUN_FIRST_SCAN` | `yes` | Run one no-notify scan and write full output to `<LOG_DIR>/first-scan.log`. |
+| `VPS_NAME` | empty | Optional human-readable VPS name written to `agent.display_name` by the root `install.sh`. |
 
 For one-command source installs, use the repository root `install.sh`; for rebuilding an existing install, use `update.sh`.
 

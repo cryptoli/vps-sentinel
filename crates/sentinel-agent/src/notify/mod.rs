@@ -11,12 +11,14 @@ pub mod ntfy;
 mod render;
 pub mod serverchan;
 pub mod telegram;
+mod template;
 pub mod webhook;
 
 pub use render::{
-    render_alert, render_alert_with_language, render_finding, render_finding_with_language,
-    NotificationFormat, RenderedAlert,
+    render_alert, render_alert_for_config, render_alert_with_language, render_finding,
+    render_finding_with_language, NotificationFormat, RenderedAlert,
 };
+pub use template::{ChannelMessage, MessageContentType, MessageTemplate};
 
 /// Context shared by notifier implementations.
 #[derive(Clone)]

@@ -29,14 +29,18 @@ impl Notifier for WebhookNotifier {
     async fn notify(
         &self,
         finding: &sentinel_core::Finding,
-        _ctx: &NotifyContext,
+        ctx: &NotifyContext,
     ) -> SentinelResult<()> {
         if self.config.url.trim().is_empty() {
             return Err(SentinelError::Config(
                 "notifications.webhook.url is required when webhook is enabled".to_string(),
             ));
         }
-        let mut request = self.client.post(&self.config.url).json(finding);
+        let mut request = self
+            .client
+            .post(&self.config.url)
+            .header("X-Vps-Sentinel-Vps-Name", ctx.config.display_name())
+            .json(finding);
         if !self.config.secret.is_empty() {
             request = request.header("X-Vps-Sentinel-Secret", &self.config.secret);
         }

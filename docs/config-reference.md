@@ -4,14 +4,14 @@ The default system configuration path is `/etc/vps-sentinel/config.toml`. A user
 
 ## Sections
 
-- `[agent]`: host ID, hostname, scan intervals, data directory, log level.
+- `[agent]`: host ID, hostname, human-readable `display_name`, scan intervals, data directory, log level. Notification subjects use `display_name`, then `hostname`, then `host_id`, then `local-host`.
 - `[privacy]`: upload and masking controls. Upload is disabled by default.
 - `[storage]`: SQLite path and retention.
 - `[ssh]`: auth log paths and SSH login thresholds.
 - `[file_integrity]`: monitored paths, scan depth, and max file size.
 - `[web]`: web roots and access log paths.
 - `[process]`: process scan thresholds and suspicious directories.
-- `[network]`: listening port policy.
+- `[network]`: listening port policy. `expected_public_ports` suppresses ordinary exposed-service noise, `high_risk_public_ports` controls ports that are risky when public, and `alert_on_new_listening_port` reports ordinary new listeners only when they appear relative to the stored baseline.
 - `[persistence]`: cron, systemd, shell profile, and preload monitoring.
 - `[docker]`: Docker risk flags.
 - `[notifications]`: shared notification options such as request timeout and message language. `language` accepts `en` or `zh_cn`.

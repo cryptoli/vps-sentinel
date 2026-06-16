@@ -2,8 +2,9 @@ use sentinel_core::{NotificationLanguage, Severity};
 
 pub struct MessageCatalog {
     pub heading: &'static str,
+    pub vps: &'static str,
     pub severity: &'static str,
-    pub host: &'static str,
+    pub host_id: &'static str,
     pub time: &'static str,
     pub category: &'static str,
     pub rule: &'static str,
@@ -20,8 +21,9 @@ pub fn catalog(language: NotificationLanguage) -> MessageCatalog {
     match language {
         NotificationLanguage::En => MessageCatalog {
             heading: "VPS Sentinel Alert",
+            vps: "VPS",
             severity: "Severity",
-            host: "Host",
+            host_id: "Host ID",
             time: "Time",
             category: "Category",
             rule: "Rule",
@@ -35,8 +37,9 @@ pub fn catalog(language: NotificationLanguage) -> MessageCatalog {
         },
         NotificationLanguage::ZhCn => MessageCatalog {
             heading: "VPS Sentinel 告警",
+            vps: "VPS 名称",
             severity: "风险等级",
-            host: "主机",
+            host_id: "主机 ID",
             time: "时间",
             category: "分类",
             rule: "规则",

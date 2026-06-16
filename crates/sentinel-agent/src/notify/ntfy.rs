@@ -1,6 +1,4 @@
-use crate::notify::{
-    http_client, render_alert_with_language, transport_error, Notifier, NotifyContext,
-};
+use crate::notify::{http_client, transport_error, MessageTemplate, Notifier, NotifyContext};
 use async_trait::async_trait;
 use sentinel_core::{NtfyConfig, SentinelError, SentinelResult, Severity};
 
@@ -38,7 +36,7 @@ impl Notifier for NtfyNotifier {
                 "notifications.ntfy.topic is required when ntfy is enabled".to_string(),
             ));
         }
-        let alert = render_alert_with_language(finding, ctx.config.notifications.language);
+        let message = MessageTemplate::PlainText.render(finding, ctx);
         let url = format!(
             "{}/{}",
             self.config.server.trim_end_matches('/'),
@@ -47,9 +45,9 @@ impl Notifier for NtfyNotifier {
         let mut request = self
             .client
             .post(url)
-            .header("Title", alert.subject.as_str())
+            .header("Title", message.subject.as_str())
             .header("Tags", finding.severity.to_string())
-            .body(alert.plain_text);
+            .body(message.body);
         if !self.config.token.is_empty() {
             request = request.bearer_auth(&self.config.token);
         }
