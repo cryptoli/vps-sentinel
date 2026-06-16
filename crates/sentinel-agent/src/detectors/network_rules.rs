@@ -327,7 +327,7 @@ impl ListenerRiskProfile {
             reasons.push(command_assessment.reason_text());
             features.push(command_assessment.feature_names());
         }
-        if contains_miner_or_scanner(&cmdline) {
+        if contains_miner_or_scanner(&cmdline, &ctx.config.process.known_bad_tool_names) {
             score += 70;
             reasons.push("command line contains miner or scanner indicators".to_string());
         }

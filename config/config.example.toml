@@ -62,6 +62,7 @@ scan_interval_seconds = 30
 high_cpu_threshold_percent = 80.0
 high_cpu_duration_seconds = 120
 suspicious_dirs = ["/tmp", "/var/tmp", "/dev/shm", "/run"]
+known_bad_tool_names = ["xmrig", "kinsing", "masscan", "zmap"]
 
 [network]
 enabled = true

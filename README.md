@@ -361,6 +361,15 @@ public_listen_allowlist = [22, 80, 443]
 - `public_listen_allowlist` is treated as a legacy alias for expected public ports. Use `[allowlist].listening_ports` only when you intentionally want to suppress all network findings for a port.
 - `NET-001` is emitted only for ordinary public ports that are new relative to the stored baseline, not for every stable listening socket on every scan.
 
+Process indicator policy:
+
+```toml
+[process]
+known_bad_tool_names = ["xmrig", "kinsing", "masscan", "zmap"]
+```
+
+`known_bad_tool_names` controls the `PROC-004` known miner/scanner indicator list. Values are matched at command token or executable basename boundaries, with `.exe` suffixes accepted, instead of arbitrary substring matching.
+
 Allowlist example:
 
 ```toml

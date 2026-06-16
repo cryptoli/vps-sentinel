@@ -359,6 +359,15 @@ public_listen_allowlist = [22, 80, 443]
 - `public_listen_allowlist` 作为旧配置兼容项处理，语义等同预期公网端口。只有 `[allowlist].listening_ports` 表示你明确希望压制该端口的所有网络告警。
 - `NET-001` 只会在普通公网端口相对已保存基线新增时触发，不会对每次扫描都存在的稳定监听端口重复告警。
 
+进程指标策略：
+
+```toml
+[process]
+known_bad_tool_names = ["xmrig", "kinsing", "masscan", "zmap"]
+```
+
+`known_bad_tool_names` 控制 `PROC-004` 的已知挖矿/扫描器指标词表。它按命令 token 或可执行文件 basename 边界匹配，并兼容 `.exe` 后缀，不会做任意子串匹配。
+
 白名单示例：
 
 ```toml

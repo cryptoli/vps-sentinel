@@ -147,6 +147,8 @@ pub struct ProcessConfig {
     pub high_cpu_threshold_percent: f32,
     pub high_cpu_duration_seconds: u64,
     pub suspicious_dirs: Vec<PathBuf>,
+    #[serde(default = "default_known_bad_tool_names")]
+    pub known_bad_tool_names: Vec<String>,
 }
 
 impl Default for ProcessConfig {
@@ -160,8 +162,16 @@ impl Default for ProcessConfig {
                 .into_iter()
                 .map(PathBuf::from)
                 .collect(),
+            known_bad_tool_names: default_known_bad_tool_names(),
         }
     }
+}
+
+fn default_known_bad_tool_names() -> Vec<String> {
+    ["xmrig", "kinsing", "masscan", "zmap"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

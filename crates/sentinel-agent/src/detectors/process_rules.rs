@@ -70,7 +70,7 @@ impl Detector for ProcessDetector {
             if network_execution_assessment_from_event(event).is_suspicious() {
                 findings.push(network_execution_bridge(event, ctx));
             }
-            if contains_miner_or_scanner(&cmdline) {
+            if contains_miner_or_scanner(&cmdline, &ctx.config.process.known_bad_tool_names) {
                 findings.push(miner_or_scanner(event, ctx));
             }
         }
@@ -196,11 +196,11 @@ pub(crate) fn command_matches_allowlist(command: &str, allowlist: &[String]) -> 
         .any(|item| command.contains(item))
 }
 
-pub(crate) fn contains_miner_or_scanner(command: &str) -> bool {
+pub(crate) fn contains_miner_or_scanner(command: &str, known_tool_names: &[String]) -> bool {
     command
         .split_whitespace()
         .map(command_token_basename)
-        .any(|name| matches_known_tool_name(&name))
+        .any(|name| matches_known_tool_name(&name, known_tool_names))
 }
 
 fn command_token_basename(token: &str) -> String {
@@ -218,16 +218,25 @@ fn command_token_basename(token: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn matches_known_tool_name(name: &str) -> bool {
-    const KNOWN_TOOL_NAMES: &[&str] = &["xmrig", "kinsing", "masscan", "zmap"];
+fn matches_known_tool_name(name: &str, known_tool_names: &[String]) -> bool {
     let normalized = name.strip_suffix(".exe").unwrap_or(name);
-    KNOWN_TOOL_NAMES.contains(&normalized)
+    known_tool_names.iter().any(|tool| {
+        let tool = tool.trim();
+        !tool.is_empty() && normalized.eq_ignore_ascii_case(tool)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{command_matches_allowlist, contains_miner_or_scanner};
     use crate::detectors::command_profile::assess_network_execution_command;
+
+    fn known_tools() -> Vec<String> {
+        ["xmrig", "kinsing", "masscan", "zmap"]
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    }
 
     #[test]
     fn process_patterns_match_known_bad_fragments() {
@@ -242,11 +251,24 @@ mod tests {
             assess_network_execution_command("tool TCP:203.0.113.10:4444 EXEC:/bin/sh")
                 .is_suspicious()
         );
-        assert!(contains_miner_or_scanner("/tmp/xmrig -o pool"));
-        assert!(contains_miner_or_scanner("/opt/tools/masscan --rate 1000"));
-        assert!(contains_miner_or_scanner("C:\\temp\\zmap.exe -p 22"));
-        assert!(!contains_miner_or_scanner("/usr/bin/sshd"));
-        assert!(!contains_miner_or_scanner("/opt/company/xmrigate --worker"));
+        let known_tools = known_tools();
+        assert!(contains_miner_or_scanner(
+            "/tmp/xmrig -o pool",
+            &known_tools
+        ));
+        assert!(contains_miner_or_scanner(
+            "/opt/tools/masscan --rate 1000",
+            &known_tools
+        ));
+        assert!(contains_miner_or_scanner(
+            "C:\\temp\\zmap.exe -p 22",
+            &known_tools
+        ));
+        assert!(!contains_miner_or_scanner("/usr/bin/sshd", &known_tools));
+        assert!(!contains_miner_or_scanner(
+            "/opt/company/xmrigate --worker",
+            &known_tools
+        ));
     }
 
     #[test]
