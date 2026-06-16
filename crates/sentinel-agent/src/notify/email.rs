@@ -146,17 +146,15 @@ mod tests {
     };
 
     #[test]
-    fn builds_multipart_email_message() {
+    fn builds_multipart_email_message() -> Result<(), Box<dyn std::error::Error>> {
         let config = email_config();
         let sentinel_config = SentinelConfig::default();
-        let message = match build_message(&config, &sample_finding(), &sentinel_config) {
-            Ok(message) => message,
-            Err(err) => panic!("message should build: {err}"),
-        };
+        let message = build_message(&config, &sample_finding(), &sentinel_config)?;
         let formatted = String::from_utf8_lossy(&message.formatted()).to_string();
         assert!(formatted.contains("multipart/alternative"));
         assert!(formatted.contains("VPS Sentinel Alert"));
         assert!(formatted.contains("text/html"));
+        Ok(())
     }
 
     #[test]

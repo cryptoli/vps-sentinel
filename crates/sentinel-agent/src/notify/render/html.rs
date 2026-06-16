@@ -1,5 +1,7 @@
 use super::escape::html_escape;
-use super::{alert_fields, alert_lists, technical_fields, AlertRenderOptions, ListStyle};
+use super::{
+    alert_fields, alert_lists, non_empty_items, technical_fields, AlertRenderOptions, ListStyle,
+};
 use crate::notify::content::LocalizedFinding;
 use crate::notify::i18n::MessageCatalog;
 use sentinel_core::{Finding, Severity};
@@ -106,16 +108,6 @@ fn write_technical_details(
         ));
     }
     out.push_str("</div>");
-}
-
-fn non_empty_items<I>(items: I) -> Vec<String>
-where
-    I: IntoIterator<Item = String>,
-{
-    items
-        .into_iter()
-        .filter(|item| !item.trim().is_empty())
-        .collect()
 }
 
 fn severity_color(severity: &Severity) -> &'static str {

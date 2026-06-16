@@ -35,3 +35,11 @@ fn ignores_non_shell_exec_bridges() {
     )
     .is_suspicious());
 }
+
+#[test]
+fn tty_detection_requires_pty_option_boundary() {
+    assert!(
+        !assess_network_execution_command("tool TCP:203.0.113.10:4444 /bin/sh empty")
+            .is_suspicious()
+    );
+}

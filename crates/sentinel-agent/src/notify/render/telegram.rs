@@ -1,5 +1,5 @@
 use super::escape::html_escape;
-use super::{alert_fields, alert_lists, technical_fields, AlertRenderOptions};
+use super::{alert_fields, alert_lists, non_empty_items, technical_fields, AlertRenderOptions};
 use crate::notify::content::LocalizedFinding;
 use crate::notify::i18n::MessageCatalog;
 use sentinel_core::Finding;
@@ -44,10 +44,7 @@ fn write_list<I>(out: &mut String, title: &str, items: I)
 where
     I: IntoIterator<Item = String>,
 {
-    let items: Vec<_> = items
-        .into_iter()
-        .filter(|item| !item.trim().is_empty())
-        .collect();
+    let items = non_empty_items(items);
     if items.is_empty() {
         return;
     }

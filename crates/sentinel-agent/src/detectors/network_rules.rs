@@ -1,6 +1,6 @@
 use crate::detectors::command_profile::network_execution_assessment_from_event;
 use crate::detectors::process_rules::{
-    command_matches_allowlist, contains_miner_or_scanner, path_in_suspicious_dirs,
+    command_matches_allowlist, event_contains_miner_or_scanner, path_in_suspicious_dirs,
 };
 use crate::detectors::{evidence, path_is_allowlisted, string_field, DetectContext, Detector};
 use crate::rules::model::RuleMetadata;
@@ -327,7 +327,7 @@ impl ListenerRiskProfile {
             reasons.push(command_assessment.reason_text());
             features.push(command_assessment.feature_names());
         }
-        if contains_miner_or_scanner(&cmdline, &ctx.config.process.known_bad_tool_names) {
+        if event_contains_miner_or_scanner(event, &ctx.config.process.known_bad_tool_names) {
             score += 70;
             reasons.push("command line contains miner or scanner indicators".to_string());
         }

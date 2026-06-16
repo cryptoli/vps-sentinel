@@ -10,7 +10,7 @@ The default system configuration path is `/etc/vps-sentinel/config.toml`. A user
 - `[ssh]`: auth log paths and SSH login thresholds.
 - `[file_integrity]`: monitored paths, scan depth, and max file size.
 - `[web]`: web roots and access log paths.
-- `[process]`: process scan thresholds and suspicious directories. `PROC-003` profiles `/proc/<pid>/cmdline` argv and requires high-confidence network command-execution bridge behavior, not traffic-forwarding tool names alone. `PROC-004` is a known-tool indicator rule that matches miner/scanner names at token or executable-basename boundaries instead of arbitrary substrings.
+- `[process]`: process scan thresholds and suspicious directories. `PROC-003` profiles `/proc/<pid>/cmdline` argv and requires high-confidence network command-execution bridge behavior, not traffic-forwarding tool names alone. `PROC-004` is a known-tool indicator rule that matches miner/scanner names against process identity fields such as executable path, process name, and structured `argv[0]`; legacy events without structured identity fall back to command token basename matching.
 - `[network]`: listening port policy. `expected_public_ports` suppresses ordinary exposed-service noise but still allows process-risk and baseline-owner checks, `high_risk_public_ports` controls ports that are risky when public, and `alert_on_new_listening_port` reports ordinary new listeners only when they appear relative to the stored baseline. `public_listen_allowlist` is kept as a legacy alias for expected public ports; use `[allowlist].listening_ports` to suppress all network findings for a port.
 - `[persistence]`: cron, systemd, shell profile, and preload monitoring.
 - `[docker]`: Docker risk flags.

@@ -70,7 +70,7 @@ impl Detector for ProcessDetector {
             if network_execution_assessment_from_event(event).is_suspicious() {
                 findings.push(network_execution_bridge(event, ctx));
             }
-            if contains_miner_or_scanner(&cmdline, &ctx.config.process.known_bad_tool_names) {
+            if event_contains_miner_or_scanner(event, &ctx.config.process.known_bad_tool_names) {
                 findings.push(miner_or_scanner(event, ctx));
             }
         }
@@ -196,9 +196,47 @@ pub(crate) fn command_matches_allowlist(command: &str, allowlist: &[String]) -> 
         .any(|item| command.contains(item))
 }
 
+pub(crate) fn event_contains_miner_or_scanner(
+    event: &RawEvent,
+    known_tool_names: &[String],
+) -> bool {
+    let candidates = process_identity_tokens(event);
+    if !candidates.is_empty() {
+        return args_contain_miner_or_scanner(
+            candidates.iter().map(String::as_str),
+            known_tool_names,
+        );
+    }
+    contains_miner_or_scanner(event.field("cmdline").unwrap_or_default(), known_tool_names)
+}
+
+fn process_identity_tokens(event: &RawEvent) -> Vec<String> {
+    let mut candidates = ["exe_path", "executable", "name", "process_name"]
+        .into_iter()
+        .filter_map(|key| event.field(key))
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if let Some(first_arg) = event
+        .field("argv_json")
+        .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
+        .and_then(|args| args.into_iter().next())
+        .filter(|value| !value.trim().is_empty())
+    {
+        candidates.push(first_arg);
+    }
+    candidates
+}
+
 pub(crate) fn contains_miner_or_scanner(command: &str, known_tool_names: &[String]) -> bool {
-    command
-        .split_whitespace()
+    args_contain_miner_or_scanner(command.split_whitespace(), known_tool_names)
+}
+
+fn args_contain_miner_or_scanner<'a, I>(args: I, known_tool_names: &[String]) -> bool
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    args.into_iter()
         .map(command_token_basename)
         .any(|name| matches_known_tool_name(&name, known_tool_names))
 }
@@ -221,15 +259,19 @@ fn command_token_basename(token: &str) -> String {
 fn matches_known_tool_name(name: &str, known_tool_names: &[String]) -> bool {
     let normalized = name.strip_suffix(".exe").unwrap_or(name);
     known_tool_names.iter().any(|tool| {
-        let tool = tool.trim();
+        let tool = command_token_basename(tool);
+        let tool = tool.strip_suffix(".exe").unwrap_or(&tool);
         !tool.is_empty() && normalized.eq_ignore_ascii_case(tool)
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{command_matches_allowlist, contains_miner_or_scanner};
+    use super::{
+        command_matches_allowlist, contains_miner_or_scanner, event_contains_miner_or_scanner,
+    };
     use crate::detectors::command_profile::assess_network_execution_command;
+    use sentinel_core::RawEvent;
 
     fn known_tools() -> Vec<String> {
         ["xmrig", "kinsing", "masscan", "zmap"]
@@ -269,6 +311,28 @@ mod tests {
             "/opt/company/xmrigate --worker",
             &known_tools
         ));
+    }
+
+    #[test]
+    fn process_tool_indicators_prefer_structured_argv() {
+        let tools = vec!["xmrig.exe".to_string(), "/opt/tools/masscan".to_string()];
+        let argv = serde_json::to_string(&vec!["/opt/company tools/xmrig".to_string()])
+            .unwrap_or_default();
+        let event = RawEvent::new("process", "process_snapshot")
+            .with_field("argv_json", argv)
+            .with_field("cmdline", "/opt/company tools/xmrig --pool");
+        assert!(event_contains_miner_or_scanner(&event, &tools));
+
+        let benign_argv = serde_json::to_string(&vec![
+            "/usr/local/bin/worker".to_string(),
+            "--profile".to_string(),
+            "xmrig".to_string(),
+        ])
+        .unwrap_or_default();
+        let benign = RawEvent::new("process", "process_snapshot")
+            .with_field("argv_json", benign_argv)
+            .with_field("cmdline", "/usr/local/bin/worker --profile xmrig");
+        assert!(!event_contains_miner_or_scanner(&benign, &tools));
     }
 
     #[test]

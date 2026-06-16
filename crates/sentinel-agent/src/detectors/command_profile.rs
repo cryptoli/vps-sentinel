@@ -5,6 +5,36 @@ mod parsing;
 use parsing::{contains_ipv4_literal, normalize_text, split_shell_like};
 
 const SUSPICIOUS_NETWORK_EXECUTION_SCORE: u16 = 70;
+const NETWORK_CHANNEL_MARKERS: &[&str] = &[
+    "tcp:",
+    "tcp4:",
+    "tcp6:",
+    "udp:",
+    "udp4:",
+    "udp6:",
+    "tcp-listen:",
+    "tcp4-listen:",
+    "tcp6-listen:",
+    "udp-listen:",
+    "udp4-listen:",
+    "udp6-listen:",
+    "connect:",
+    "listen:",
+    "://",
+];
+const EXEC_BRIDGE_MARKERS: &[&str] = &["exec:", ",exec:", "shell:", ",shell:"];
+const SYSTEM_BRIDGE_MARKERS: &[&str] = &["system:", ",system:"];
+const SHELL_TARGET_MARKERS: &[&str] = &[
+    "/bin/sh",
+    "/bin/bash",
+    "/usr/bin/sh",
+    "/usr/bin/bash",
+    "busybox sh",
+    "busybox ash",
+    "cmd.exe",
+    "powershell",
+];
+const SHELL_TARGET_NAMES: &[&str] = &["sh", "bash", "dash", "zsh", "ash"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum CommandFeature {
@@ -284,51 +314,23 @@ fn has_dev_tcp(profile: &CommandProfile) -> bool {
 
 fn has_network_channel(profile: &CommandProfile) -> bool {
     has_dev_tcp(profile)
-        || profile.any_arg_contains(&[
-            "tcp:",
-            "tcp4:",
-            "tcp6:",
-            "udp:",
-            "udp4:",
-            "udp6:",
-            "tcp-listen:",
-            "tcp4-listen:",
-            "tcp6-listen:",
-            "udp-listen:",
-            "udp4-listen:",
-            "udp6-listen:",
-            "connect:",
-            "listen:",
-            "://",
-        ])
+        || profile.any_arg_contains(NETWORK_CHANNEL_MARKERS)
         || contains_ipv4_literal(&profile.lowered)
 }
 
 fn has_exec_bridge(profile: &CommandProfile) -> bool {
     profile.has_arg("-e")
         || profile.has_arg("--exec")
-        || profile.any_arg_contains(&["exec:", ",exec:", "shell:", ",shell:"])
+        || profile.any_arg_contains(EXEC_BRIDGE_MARKERS)
 }
 
 fn has_system_bridge(profile: &CommandProfile) -> bool {
-    profile.any_arg_contains(&["system:", ",system:"])
+    profile.any_arg_contains(SYSTEM_BRIDGE_MARKERS)
 }
 
 fn has_shell_target(profile: &CommandProfile) -> bool {
-    profile.any_arg_contains(&[
-        "/bin/sh",
-        "/bin/bash",
-        "/usr/bin/sh",
-        "/usr/bin/bash",
-        "busybox sh",
-        "busybox ash",
-        "cmd.exe",
-        "powershell",
-    ]) || profile.has_arg("sh")
-        || profile.has_arg("bash")
-        || profile.has_arg("dash")
-        || profile.has_arg("zsh")
-        || profile.has_arg("ash")
+    profile.any_arg_contains(SHELL_TARGET_MARKERS)
+        || SHELL_TARGET_NAMES.iter().any(|name| profile.has_arg(name))
 }
 
 fn has_interactive_shell(profile: &CommandProfile) -> bool {
@@ -359,7 +361,10 @@ fn has_socket_api(profile: &CommandProfile) -> bool {
 }
 
 fn has_tty_allocation(profile: &CommandProfile) -> bool {
-    profile.any_arg_contains(&[",pty", "pty,", "pty"])
+    profile
+        .args
+        .iter()
+        .any(|arg| arg.split(',').any(|part| part == "pty"))
 }
 
 #[cfg(test)]

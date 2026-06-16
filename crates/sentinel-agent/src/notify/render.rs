@@ -7,7 +7,7 @@ use std::borrow::Cow;
 mod escape;
 mod html;
 mod telegram;
-use escape::markdown_escape;
+mod text;
 
 /// Output format for rendered notification bodies.
 #[derive(Debug, Clone, Copy)]
@@ -104,8 +104,8 @@ pub fn render_alert_with_options(finding: &Finding, options: &AlertRenderOptions
     );
     RenderedAlert {
         subject: subject.clone(),
-        plain_text: render_plain_text(finding, &display, &subject, &catalog, options),
-        markdown: render_markdown(finding, &display, &subject, &catalog, options),
+        plain_text: text::render_plain_text(finding, &display, &subject, &catalog, options),
+        markdown: text::render_markdown(finding, &display, &subject, &catalog, options),
         html: html::render_html(finding, &display, &subject, &catalog, options),
         telegram_html: telegram::render_telegram_html(
             finding, &display, &subject, &catalog, options,
@@ -130,7 +130,7 @@ pub(super) enum ListStyle {
     Numbered,
 }
 
-fn alert_fields<'a>(
+pub(super) fn alert_fields<'a>(
     finding: &'a Finding,
     display: &'a LocalizedFinding,
     catalog: &MessageCatalog,
@@ -155,7 +155,7 @@ fn alert_fields<'a>(
     fields
 }
 
-fn alert_lists(
+pub(super) fn alert_lists(
     finding: &Finding,
     display: &LocalizedFinding,
     catalog: &MessageCatalog,
@@ -210,6 +210,16 @@ pub(super) fn technical_fields<'a>(
     ]
 }
 
+pub(super) fn non_empty_items<I>(items: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    items
+        .into_iter()
+        .filter(|item| !item.trim().is_empty())
+        .collect()
+}
+
 fn borrowed_field<'a>(label: &'static str, value: &'a str) -> AlertField<'a> {
     AlertField {
         label,
@@ -229,63 +239,6 @@ fn owned_field(label: &'static str, value: String) -> AlertField<'static> {
         label,
         value: Cow::Owned(value),
     }
-}
-
-fn render_plain_text(
-    finding: &Finding,
-    display: &LocalizedFinding,
-    subject: &str,
-    catalog: &MessageCatalog,
-    options: &AlertRenderOptions,
-) -> String {
-    let mut out = String::new();
-    out.push_str(catalog.heading);
-    out.push('\n');
-    out.push_str("==================\n\n");
-    out.push_str(subject);
-    out.push_str("\n\n");
-    for field in alert_fields(finding, display, catalog, options) {
-        write_plain_field(&mut out, field.label, field.value.as_ref());
-    }
-    for list in alert_lists(finding, display, catalog, options) {
-        match list.style {
-            ListStyle::Bulleted => write_plain_list(&mut out, list.title, list.items),
-            ListStyle::Numbered => write_plain_numbered_list(&mut out, list.title, list.items),
-        }
-    }
-    for field in technical_fields(finding, catalog, options) {
-        write_plain_field(&mut out, field.label, field.value.as_ref());
-    }
-    out
-}
-
-fn render_markdown(
-    finding: &Finding,
-    display: &LocalizedFinding,
-    subject: &str,
-    catalog: &MessageCatalog,
-    options: &AlertRenderOptions,
-) -> String {
-    let mut out = String::new();
-    out.push_str("## ");
-    out.push_str(catalog.heading);
-    out.push_str("\n\n");
-    out.push_str("**");
-    out.push_str(&markdown_escape(subject));
-    out.push_str("**\n\n");
-    for field in alert_fields(finding, display, catalog, options) {
-        write_markdown_field(&mut out, field.label, field.value.as_ref());
-    }
-    for list in alert_lists(finding, display, catalog, options) {
-        match list.style {
-            ListStyle::Bulleted => write_markdown_list(&mut out, list.title, list.items),
-            ListStyle::Numbered => write_markdown_numbered_list(&mut out, list.title, list.items),
-        }
-    }
-    for field in technical_fields(finding, catalog, options) {
-        write_markdown_field(&mut out, field.label, field.value.as_ref());
-    }
-    out
 }
 
 fn format_timestamp(finding: &Finding, time_zone: NotificationTimeZone) -> String {
@@ -319,86 +272,6 @@ fn category_label(category: &sentinel_core::Category, language: NotificationLang
             sentinel_core::Category::ConfigRisk => "配置风险".to_string(),
             sentinel_core::Category::System => "系统".to_string(),
         },
-    }
-}
-
-fn write_plain_field(out: &mut String, label: &str, value: &str) {
-    if !value.trim().is_empty() {
-        out.push_str(&format!("{label}: {value}\n"));
-    }
-}
-
-fn write_plain_list<I>(out: &mut String, title: &str, items: I)
-where
-    I: IntoIterator<Item = String>,
-{
-    let items: Vec<_> = items
-        .into_iter()
-        .filter(|item| !item.trim().is_empty())
-        .collect();
-    if items.is_empty() {
-        return;
-    }
-    out.push_str(&format!("\n{title}:\n"));
-    for item in items {
-        out.push_str(&format!("- {item}\n"));
-    }
-}
-
-fn write_plain_numbered_list<I>(out: &mut String, title: &str, items: I)
-where
-    I: IntoIterator<Item = String>,
-{
-    let items: Vec<_> = items
-        .into_iter()
-        .filter(|item| !item.trim().is_empty())
-        .collect();
-    if items.is_empty() {
-        return;
-    }
-    out.push_str(&format!("\n{title}:\n"));
-    for (index, item) in items.into_iter().enumerate() {
-        out.push_str(&format!("{}. {item}\n", index + 1));
-    }
-}
-
-fn write_markdown_field(out: &mut String, label: &str, value: &str) {
-    if !value.trim().is_empty() {
-        out.push_str(&format!("**{label}:** {}\n", markdown_escape(value)));
-    }
-}
-
-fn write_markdown_list<I>(out: &mut String, title: &str, items: I)
-where
-    I: IntoIterator<Item = String>,
-{
-    let items: Vec<_> = items
-        .into_iter()
-        .filter(|item| !item.trim().is_empty())
-        .collect();
-    if items.is_empty() {
-        return;
-    }
-    out.push_str(&format!("\n**{title}**\n"));
-    for item in items {
-        out.push_str(&format!("- {}\n", markdown_escape(&item)));
-    }
-}
-
-fn write_markdown_numbered_list<I>(out: &mut String, title: &str, items: I)
-where
-    I: IntoIterator<Item = String>,
-{
-    let items: Vec<_> = items
-        .into_iter()
-        .filter(|item| !item.trim().is_empty())
-        .collect();
-    if items.is_empty() {
-        return;
-    }
-    out.push_str(&format!("\n**{title}**\n"));
-    for (index, item) in items.into_iter().enumerate() {
-        out.push_str(&format!("{}. {}\n", index + 1, markdown_escape(&item)));
     }
 }
 
