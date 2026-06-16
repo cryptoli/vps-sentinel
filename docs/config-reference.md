@@ -25,4 +25,8 @@ The default system configuration path is `/etc/vps-sentinel/config.toml`. A user
 - `[noise_control]`: dedup and alert volume controls.
 - `[allowlist]`: trusted users, IPs, paths, and ports.
 
+`noise_control.quiet_hours` entries use local server time in `HH:MM-HH:MM` format. Time windows may wrap across midnight, for example `["22:00-07:00"]`. During quiet hours, non-critical notifications are suppressed while critical findings still notify.
+
+`noise_control.max_alerts_per_hour` limits notification delivery attempts across enabled channels. Attempts are counted from local SQLite notification logs.
+
 See [config/config.example.toml](../config/config.example.toml) for a complete example.

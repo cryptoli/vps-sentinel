@@ -127,7 +127,10 @@ sudo sh install.sh
 - 默认克隆源码到 `/opt/vps-sentinel-src`；
 - 执行 release 构建；
 - 安装二进制到 `/usr/local/bin/vps-sentinel`；
+- 安装 `vps-sentinel-reload`，用于安全重载配置；
 - 仅在配置不存在时创建 `/etc/vps-sentinel/config.toml`；
+- 可通过环境变量直接写入 Telegram 配置；
+- 自动校验配置、运行 `doctor`、在缺少基线时创建初始基线，并执行一次不发送通知的预热扫描；
 - systemd 可用时安装并启用服务。
 
 可通过环境变量自定义：
@@ -137,6 +140,15 @@ sudo REPO_URL=https://github.com/cryptoli/vps-sentinel.git \
   BRANCH=main \
   WORK_DIR=/opt/vps-sentinel-src \
   PREFIX=/usr/local \
+  sh install.sh
+```
+
+安装时直接启用 Telegram：
+
+```bash
+sudo TELEGRAM_BOT_TOKEN="<telegram-bot-token>" \
+  TELEGRAM_CHAT_ID="<telegram-chat-id>" \
+  TELEGRAM_MIN_SEVERITY=Medium \
   sh install.sh
 ```
 
@@ -154,6 +166,13 @@ sudo REPO_URL=https://github.com/cryptoli/vps-sentinel.git \
 | `INSTALL_DEPS` | `yes` | 设为 `no` 可跳过系统依赖安装。 |
 | `INSTALL_SYSTEMD` | `auto` | `auto`、`yes` 或 `no`，控制是否安装 systemd unit。 |
 | `ENABLE_SERVICE` | `yes` | 设为 `no` 时只安装 unit，不启动服务。 |
+| `RUN_DOCTOR` | `yes` | 安装过程中运行环境检查。 |
+| `BOOTSTRAP_BASELINE` | `yes` | 没有基线时自动创建初始基线。 |
+| `RUN_FIRST_SCAN` | `yes` | 执行一次 `scan --no-notify`，完整输出写入 `<LOG_DIR>/first-scan.log`。 |
+| `TELEGRAM_BOT_TOKEN` | 空 | 写入本地配置的 Telegram bot token。 |
+| `TELEGRAM_CHAT_ID` | 空 | 写入本地配置的 Telegram chat ID。 |
+| `TELEGRAM_MIN_SEVERITY` | `Medium` | Telegram 通知的最低等级。 |
+| `RUN_NOTIFY_TEST` | `auto` | `auto`、`yes` 或 `no`；`auto` 会在提供 Telegram 环境变量时发送测试通知。 |
 | `SERVICE_NAME` | `vps-sentinel` | systemd 服务名。 |
 | `SERVICE_PATH` | `/etc/systemd/system/<SERVICE_NAME>.service` | systemd unit 路径。 |
 
@@ -164,7 +183,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-更新脚本会拉取 GitHub 最新代码、重新构建、保留已有配置、刷新 systemd unit，并在服务已启用时重启服务。
+更新脚本会拉取 GitHub 最新代码、重新构建、保留已有配置、校验配置、刷新 systemd unit，并在服务已启用时 reload 或 restart 服务。
 
 常用更新变量：
 
@@ -178,7 +197,24 @@ sudo sh update.sh
 | `DATA_DIR` | `/var/lib/vps-sentinel` | 生成 systemd unit 时使用的数据目录。 |
 | `LOG_DIR` | `/var/log/vps-sentinel` | 生成 systemd unit 时使用的日志目录。 |
 | `INSTALL_SYSTEMD` | `auto` | 设为 `no` 可跳过 unit 刷新。 |
-| `RESTART_SERVICE` | `auto` | `auto`、`yes` 或 `no`，控制是否重启服务。 |
+| `RESTART_SERVICE` | `auto` | `auto`、`yes` 或 `no`，控制是否 reload/restart 服务。 |
+| `VALIDATE_CONFIG` | `yes` | 服务 reload/restart 前校验已有配置。 |
+
+## 重载配置
+
+修改 `/etc/vps-sentinel/config.toml` 后执行：
+
+```bash
+sudo vps-sentinel-reload
+```
+
+等价的 systemd 命令：
+
+```bash
+sudo systemctl reload vps-sentinel
+```
+
+重载前会先校验 TOML。校验失败时，daemon 会继续使用旧的内存配置。
 
 ## 手动构建
 
@@ -238,6 +274,7 @@ sudo journalctl -u vps-sentinel -f
 | `vps-sentinel rules list` | 列出内置检测规则、默认等级和描述。 |
 | `vps-sentinel rules test <rule_id>` | 检查指定内置规则 ID 是否存在并可加载。 |
 | `vps-sentinel notify test --config <path>` | 构造一条 Info 级别测试 finding 并发送到已启用通知渠道，用于验证凭据和路由。 |
+| `vps-sentinel-reload` | 校验 `/etc/vps-sentinel/config.toml` 并重载运行中的 systemd 服务。 |
 
 ## 配置
 
@@ -324,6 +361,8 @@ systemd unit 使用：
 - SQLite 本地存储；
 - 文件内容扫描有大小限制，只提取特征；
 - token、密码、密钥应只放在本地配置文件中，不应提交到仓库。
+
+启用 `privacy.mask_ip` 或 `privacy.mask_command_args` 后，事件、finding 和通知证据会在持久化与发送前脱敏。
 
 详情见 [docs/privacy.md](docs/privacy.md) 和 [docs/threat-model.md](docs/threat-model.md)。
 

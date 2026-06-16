@@ -33,7 +33,7 @@ pub async fn run_notify(config: SentinelConfig, command: NotifyCommand) -> Resul
             let ctx = NotifyContext {
                 config: Arc::new(config),
             };
-            let results = manager.notify_all(&[finding], &ctx).await;
+            let results = manager.notify_test(&finding, &ctx).await;
             let mut failures = 0;
             for (_finding_id, channel, result) in results {
                 match result {

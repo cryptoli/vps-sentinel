@@ -6,6 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=@BIN_PATH@ daemon --config @CONFIG_PATH@
+ExecReload=@BIN_PATH@ config validate --config @CONFIG_PATH@
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5
 User=root

@@ -234,6 +234,37 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn notification_attempt_count_since(&self, since: DateTime<Utc>) -> SentinelResult<usize> {
+        let conn = self.connection()?;
+        let count = conn
+            .query_row(
+                "SELECT COUNT(*) FROM notification_logs WHERE attempted_at >= ?1",
+                [since.to_rfc3339()],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        Ok(count.max(0) as usize)
+    }
+
+    pub fn prune_older_than(&self, retention_days: u32) -> SentinelResult<usize> {
+        let cutoff = Utc::now() - chrono::Duration::days(retention_days as i64);
+        let cutoff = cutoff.to_rfc3339();
+        let conn = self.connection()?;
+        let mut deleted = 0;
+        for (table, column) in [
+            ("raw_events", "timestamp"),
+            ("findings", "timestamp"),
+            ("notification_logs", "attempted_at"),
+            ("scan_runs", "finished_at"),
+        ] {
+            let sql = format!("DELETE FROM {table} WHERE {column} < ?1");
+            deleted += conn
+                .execute(&sql, [&cutoff])
+                .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        }
+        Ok(deleted)
+    }
+
     fn connection(&self) -> SentinelResult<Connection> {
         Connection::open(&self.path).map_err(|err| SentinelError::Storage(err.to_string()))
     }
@@ -281,6 +312,8 @@ impl SqliteStore {
                 attempted_at TEXT NOT NULL,
                 error TEXT NOT NULL DEFAULT ''
             );
+            CREATE INDEX IF NOT EXISTS idx_notification_logs_attempted
+              ON notification_logs(attempted_at);
             CREATE TABLE IF NOT EXISTS rule_states (
                 rule_id TEXT PRIMARY KEY,
                 state_json TEXT NOT NULL
@@ -309,6 +342,7 @@ impl SqliteStore {
 #[cfg(test)]
 mod tests {
     use super::SqliteStore;
+    use chrono::Utc;
     use sentinel_core::{Category, Finding, Severity};
 
     #[test]
@@ -330,6 +364,18 @@ mod tests {
         assert_eq!(
             store.get_finding(&finding.id)?.map(|item| item.id),
             Some(finding.id)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn counts_notification_attempts() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        store.record_notification_log("finding", "telegram", "ok", "")?;
+        assert_eq!(
+            store.notification_attempt_count_since(Utc::now() - chrono::Duration::minutes(1))?,
+            1
         );
         Ok(())
     }

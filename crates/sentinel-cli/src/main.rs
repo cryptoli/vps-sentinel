@@ -82,9 +82,12 @@ async fn main() -> Result<()> {
         Command::Scan { no_notify } => {
             run_scan_command(load_config(cli.config.as_deref())?, !no_notify).await
         }
-        Command::Daemon => sentinel_agent::daemon::run_daemon(load_config(cli.config.as_deref())?)
-            .await
-            .map_err(Into::into),
+        Command::Daemon => {
+            let (config, path) = load_config_with_path(cli.config.as_deref())?;
+            sentinel_agent::daemon::run_daemon(config, path)
+                .await
+                .map_err(Into::into)
+        }
         Command::Baseline { command } => {
             run_baseline(load_config(cli.config.as_deref())?, command).await
         }
@@ -110,17 +113,21 @@ fn init_logging(log_level: &str) -> Result<()> {
 }
 
 fn load_config(path: Option<&Path>) -> Result<SentinelConfig> {
+    Ok(load_config_with_path(path)?.0)
+}
+
+fn load_config_with_path(path: Option<&Path>) -> Result<(SentinelConfig, Option<PathBuf>)> {
     if let Some(path) = path {
-        return Ok(SentinelConfig::load(path)?);
+        return Ok((SentinelConfig::load(path)?, Some(path.to_path_buf())));
     }
     for candidate in default_config_candidates() {
         if candidate.exists() {
-            return Ok(SentinelConfig::load(&candidate)?);
+            return Ok((SentinelConfig::load(&candidate)?, Some(candidate)));
         }
     }
     let config = SentinelConfig::default();
     config.validate()?;
-    Ok(config)
+    Ok((config, None))
 }
 
 fn default_config_candidates() -> Vec<PathBuf> {

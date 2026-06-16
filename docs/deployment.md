@@ -14,6 +14,7 @@ sudo systemctl enable --now vps-sentinel
 ```
 
 The package-time installer copies the binary, creates data/log/config directories, installs the systemd unit when available, and keeps an existing config file untouched.
+It also validates the config, creates the first baseline when missing, runs a no-notify warm-up scan, and installs `vps-sentinel-reload` when `reload.sh` is present.
 
 Useful variables:
 
@@ -26,8 +27,25 @@ Useful variables:
 | `LOG_DIR` | `/var/log/vps-sentinel` | Log directory. |
 | `INSTALL_SYSTEMD` | `auto` | `auto`, `yes`, or `no` for systemd unit installation. |
 | `ENABLE_SERVICE` | `no` | Set to `yes` to enable and start the service. |
+| `RUN_DOCTOR` | `yes` | Run runtime checks during install. |
+| `BOOTSTRAP_BASELINE` | `yes` | Create the initial baseline if none exists. |
+| `RUN_FIRST_SCAN` | `yes` | Run one no-notify scan and write full output to `<LOG_DIR>/first-scan.log`. |
 
 For one-command source installs, use the repository root `install.sh`; for rebuilding an existing install, use `update.sh`.
+
+## Reload Config
+
+```bash
+sudo vps-sentinel-reload
+```
+
+or:
+
+```bash
+sudo systemctl reload vps-sentinel
+```
+
+Both paths validate the config before sending SIGHUP to the daemon.
 
 ## First Run
 

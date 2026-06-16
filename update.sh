@@ -13,6 +13,7 @@ SERVICE_PATH="${SERVICE_PATH:-/etc/systemd/system/${SERVICE_NAME}.service}"
 SYSTEMD_TEMPLATE="${SYSTEMD_TEMPLATE:-packaging/systemd/vps-sentinel.service}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-auto}"
 RESTART_SERVICE="${RESTART_SERVICE:-auto}"
+VALIDATE_CONFIG="${VALIDATE_CONFIG:-yes}"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "please run as root, for example: sudo sh update.sh" >&2
@@ -92,7 +93,7 @@ refresh_systemd_unit() {
   case "$RESTART_SERVICE" in
     auto)
       if systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
-        systemctl restart "$SERVICE_NAME"
+        systemctl reload-or-restart "$SERVICE_NAME"
       else
         echo "updated systemd unit; service is not enabled"
       fi
@@ -123,10 +124,24 @@ cd "$WORK_DIR"
 cargo build --release --locked
 install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
 install -m 0755 target/release/vps-sentinel "$PREFIX/bin/vps-sentinel"
+if [ -f reload.sh ]; then
+  install -m 0755 reload.sh "$PREFIX/bin/vps-sentinel-reload"
+fi
 
 if [ ! -f "$CONFIG_DIR/config.toml" ]; then
   install -m 0600 config/config.example.toml "$CONFIG_DIR/config.toml"
 fi
+
+case "$VALIDATE_CONFIG" in
+  yes|true|1)
+    "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" config validate
+    ;;
+  no|false|0) ;;
+  *)
+    echo "invalid VALIDATE_CONFIG value: $VALIDATE_CONFIG" >&2
+    exit 1
+    ;;
+esac
 
 refresh_systemd_unit
 

@@ -127,7 +127,10 @@ The installer:
 - clones this repository to `/opt/vps-sentinel-src` by default;
 - builds `vps-sentinel` in release mode;
 - installs the binary to `/usr/local/bin/vps-sentinel`;
+- installs `vps-sentinel-reload` for safe config reloads;
 - creates `/etc/vps-sentinel/config.toml` only if it does not already exist;
+- optionally writes Telegram settings from environment variables;
+- validates config, runs `doctor`, creates the first baseline when missing, and runs one no-notify warm-up scan;
 - installs and enables the systemd service when systemd is available.
 
 Configuration can be customized through environment variables:
@@ -137,6 +140,15 @@ sudo REPO_URL=https://github.com/cryptoli/vps-sentinel.git \
   BRANCH=main \
   WORK_DIR=/opt/vps-sentinel-src \
   PREFIX=/usr/local \
+  sh install.sh
+```
+
+Install with Telegram enabled in one command:
+
+```bash
+sudo TELEGRAM_BOT_TOKEN="<telegram-bot-token>" \
+  TELEGRAM_CHAT_ID="<telegram-chat-id>" \
+  TELEGRAM_MIN_SEVERITY=Medium \
   sh install.sh
 ```
 
@@ -154,6 +166,13 @@ Useful installer switches:
 | `INSTALL_DEPS` | `yes` | Set to `no` to skip package manager dependency installation. |
 | `INSTALL_SYSTEMD` | `auto` | `auto`, `yes`, or `no` for systemd unit installation. |
 | `ENABLE_SERVICE` | `yes` | Set to `no` to install the unit without starting it. |
+| `RUN_DOCTOR` | `yes` | Run runtime environment checks during install. |
+| `BOOTSTRAP_BASELINE` | `yes` | Create the first baseline if no baseline exists. |
+| `RUN_FIRST_SCAN` | `yes` | Run one `scan --no-notify` and write full output to `<LOG_DIR>/first-scan.log`. |
+| `TELEGRAM_BOT_TOKEN` | empty | Telegram bot token to write into local config. |
+| `TELEGRAM_CHAT_ID` | empty | Telegram chat ID to write into local config. |
+| `TELEGRAM_MIN_SEVERITY` | `Medium` | Minimum severity for Telegram notifications. |
+| `RUN_NOTIFY_TEST` | `auto` | `auto`, `yes`, or `no`; `auto` sends a test when Telegram env vars are provided. |
 | `SERVICE_NAME` | `vps-sentinel` | systemd service name. |
 | `SERVICE_PATH` | `/etc/systemd/system/<SERVICE_NAME>.service` | systemd unit path. |
 
@@ -166,7 +185,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-The update script pulls the selected branch, rebuilds the binary, preserves the existing config, refreshes the systemd unit when available, and restarts the service if it is enabled.
+The update script pulls the selected branch, rebuilds the binary, preserves the existing config, validates it, refreshes the systemd unit when available, and reloads or restarts the service if it is enabled.
 
 Useful update switches:
 
@@ -180,7 +199,24 @@ Useful update switches:
 | `DATA_DIR` | `/var/lib/vps-sentinel` | SQLite data directory for the generated unit. |
 | `LOG_DIR` | `/var/log/vps-sentinel` | Log directory for the generated unit. |
 | `INSTALL_SYSTEMD` | `auto` | Set to `no` to skip unit refresh. |
-| `RESTART_SERVICE` | `auto` | `auto`, `yes`, or `no` for restart behavior. |
+| `RESTART_SERVICE` | `auto` | `auto`, `yes`, or `no` for reload/restart behavior. |
+| `VALIDATE_CONFIG` | `yes` | Validate existing config before service reload/restart. |
+
+## Reload Configuration
+
+After editing `/etc/vps-sentinel/config.toml`, reload safely:
+
+```bash
+sudo vps-sentinel-reload
+```
+
+Equivalent systemd command:
+
+```bash
+sudo systemctl reload vps-sentinel
+```
+
+The reload path validates the TOML first. If validation fails, the daemon keeps the previous in-memory configuration.
 
 ## Manual Build
 
@@ -240,6 +276,7 @@ Commands:
 | `vps-sentinel rules list` | List built-in detection rules, severity, and descriptions. |
 | `vps-sentinel rules test <rule_id>` | Verify that a built-in rule ID exists and can be loaded. |
 | `vps-sentinel notify test --config <path>` | Send a synthetic Info finding through enabled notification channels. Use this to verify credentials and routing. |
+| `vps-sentinel-reload` | Validate `/etc/vps-sentinel/config.toml` and reload the running systemd service. |
 
 ## Configuration
 
@@ -328,6 +365,8 @@ Defaults:
 - notification channels disabled;
 - bounded file-content scanning;
 - no default destructive remediation.
+
+When `privacy.mask_ip` or `privacy.mask_command_args` is enabled, stored events, findings, and notification evidence are redacted before persistence and delivery.
 
 Secrets such as tokens, passwords, and webhook keys belong in local config files and should not be committed.
 

@@ -47,6 +47,18 @@ fn print_report(report: &sentinel_agent::ScanReport) {
             report.notification_failure_count
         );
     }
+    if report.quiet_suppressed_count > 0 {
+        println!(
+            "quiet-hours suppressed findings: {}",
+            report.quiet_suppressed_count
+        );
+    }
+    if report.notification_rate_limited_count > 0 {
+        println!(
+            "rate-limited notifications: {}",
+            report.notification_rate_limited_count
+        );
+    }
     if !report.collector_errors.is_empty() {
         println!("collector warnings:");
         for error in &report.collector_errors {

@@ -135,7 +135,7 @@ min_severity = "Medium"
 [noise_control]
 dedup_window_seconds = 600
 max_alerts_per_hour = 30
-quiet_hours = []
+quiet_hours = [] # Example: ["22:00-07:00"]
 
 [allowlist]
 users = []

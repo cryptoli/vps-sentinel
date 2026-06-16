@@ -114,15 +114,41 @@ impl NotificationManager {
         self.notifiers.len()
     }
 
+    pub fn planned_delivery_count(&self, findings: &[Finding]) -> usize {
+        findings
+            .iter()
+            .map(|finding| {
+                self.notifiers
+                    .iter()
+                    .filter(|notifier| finding.severity.meets(notifier.minimum_severity()))
+                    .count()
+            })
+            .sum()
+    }
+
     pub async fn notify_all(
         &self,
         findings: &[Finding],
         ctx: &NotifyContext,
     ) -> Vec<(String, String, SentinelResult<()>)> {
+        self.notify_all_limited(findings, ctx, None).await
+    }
+
+    pub async fn notify_all_limited(
+        &self,
+        findings: &[Finding],
+        ctx: &NotifyContext,
+        limit: Option<usize>,
+    ) -> Vec<(String, String, SentinelResult<()>)> {
         let mut results = Vec::new();
+        let mut attempted = 0;
         for finding in findings {
             for notifier in &self.notifiers {
                 if finding.severity.meets(notifier.minimum_severity()) {
+                    if limit.is_some_and(|limit| attempted >= limit) {
+                        return results;
+                    }
+                    attempted += 1;
                     results.push((
                         finding.id.clone(),
                         notifier.name().to_string(),
@@ -132,5 +158,58 @@ impl NotificationManager {
             }
         }
         results
+    }
+
+    pub async fn notify_test(
+        &self,
+        finding: &Finding,
+        ctx: &NotifyContext,
+    ) -> Vec<(String, String, SentinelResult<()>)> {
+        let mut results = Vec::new();
+        for notifier in &self.notifiers {
+            results.push((
+                finding.id.clone(),
+                notifier.name().to_string(),
+                notifier.notify(finding, ctx).await,
+            ));
+        }
+        results
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::NotificationManager;
+    use sentinel_core::{Category, Finding, SentinelConfig, Severity};
+
+    #[test]
+    fn planned_delivery_count_respects_channel_severity() {
+        let mut config = SentinelConfig::default();
+        config.notifications.telegram.enabled = true;
+        config.notifications.telegram.min_severity = Severity::High;
+        config.notifications.webhook.enabled = true;
+        config.notifications.webhook.min_severity = Severity::Medium;
+        let manager = NotificationManager::from_config(&config);
+        let findings = vec![
+            Finding::new(
+                "host",
+                "medium",
+                "desc",
+                Severity::Medium,
+                Category::System,
+                "T-1",
+                "a",
+            ),
+            Finding::new(
+                "host",
+                "high",
+                "desc",
+                Severity::High,
+                Category::System,
+                "T-2",
+                "b",
+            ),
+        ];
+        assert_eq!(manager.planned_delivery_count(&findings), 3);
     }
 }

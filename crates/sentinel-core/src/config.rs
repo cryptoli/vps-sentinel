@@ -2,6 +2,7 @@ mod notifications;
 mod sections;
 
 use crate::error::{SentinelError, SentinelResult};
+use crate::MinuteWindow;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
@@ -64,6 +65,11 @@ impl SentinelConfig {
                 self.storage.r#type
             )));
         }
+        if self.storage.retention_days == 0 {
+            return Err(SentinelError::Config(
+                "storage.retention_days must be greater than 0".to_string(),
+            ));
+        }
         if self.ssh.failed_login_threshold == 0 {
             return Err(SentinelError::Config(
                 "ssh.failed_login_threshold must be greater than 0".to_string(),
@@ -78,6 +84,18 @@ impl SentinelConfig {
             return Err(SentinelError::Config(
                 "notifications.request_timeout_seconds must be greater than 0".to_string(),
             ));
+        }
+        if self.noise_control.max_alerts_per_hour == 0 {
+            return Err(SentinelError::Config(
+                "noise_control.max_alerts_per_hour must be greater than 0".to_string(),
+            ));
+        }
+        for quiet_hour in &self.noise_control.quiet_hours {
+            quiet_hour.parse::<MinuteWindow>().map_err(|err| {
+                SentinelError::Config(format!(
+                    "noise_control.quiet_hours entry '{quiet_hour}' is invalid: {err}"
+                ))
+            })?;
         }
         validate_notifications(&self.notifications)?;
         Ok(())
@@ -155,9 +173,23 @@ mod tests {
     }
 
     #[test]
+    fn invalid_storage_retention_is_rejected() {
+        let mut config = SentinelConfig::default();
+        config.storage.retention_days = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
     fn invalid_notification_timeout_is_rejected() {
         let mut config = SentinelConfig::default();
         config.notifications.request_timeout_seconds = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_quiet_hour_window_is_rejected() {
+        let mut config = SentinelConfig::default();
+        config.noise_control.quiet_hours = vec!["25:00-26:00".to_string()];
         assert!(config.validate().is_err());
     }
 
