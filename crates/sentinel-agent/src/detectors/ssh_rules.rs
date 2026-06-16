@@ -102,11 +102,12 @@ fn successful_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
         Severity::Medium,
         Category::Ssh,
         "SSH-004",
-        format!("{user}@{ip}"),
+        login_subject(&user, &ip, event),
     )
     .with_evidence(vec![
         evidence("user", user),
         evidence("source_ip", ip),
+        evidence("port", string_field(event, "port")),
         evidence("method", string_field(event, "method")),
         evidence("log_source", string_field(event, "log_source")),
     ])
@@ -125,11 +126,12 @@ fn root_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
         Severity::High,
         Category::Ssh,
         "SSH-001",
-        format!("root@{ip}"),
+        login_subject("root", &ip, event),
     )
     .with_evidence(vec![
         evidence("user", "root"),
         evidence("source_ip", ip),
+        evidence("port", string_field(event, "port")),
         evidence("method", string_field(event, "method")),
         evidence("log_source", string_field(event, "log_source")),
     ])
@@ -153,11 +155,12 @@ fn password_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
         Severity::Medium,
         Category::Ssh,
         "SSH-002",
-        format!("{user}@{ip}"),
+        login_subject(&user, &ip, event),
     )
     .with_evidence(vec![
         evidence("user", user),
         evidence("source_ip", ip),
+        evidence("port", string_field(event, "port")),
         evidence("method", "password"),
         evidence("log_source", string_field(event, "log_source")),
     ])
@@ -169,6 +172,13 @@ fn password_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
         "Prefer key-based SSH authentication and disable password login when practical."
             .to_string(),
     ])
+}
+
+fn login_subject(user: &str, ip: &str, event: &RawEvent) -> String {
+    match event.field("port").filter(|port| !port.trim().is_empty()) {
+        Some(port) => format!("{user}@{ip}:{port}"),
+        None => format!("{user}@{ip}"),
+    }
 }
 
 fn bruteforce_finding(
@@ -214,6 +224,7 @@ mod tests {
         let findings = detector.detect(&[success_event("deploy", "publickey")], &ctx);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, "SSH-004");
+        assert_eq!(findings[0].subject, "deploy@203.0.113.10:54122");
     }
 
     #[test]
@@ -235,6 +246,7 @@ mod tests {
             .with_field("method", method)
             .with_field("user", user)
             .with_field("source_ip", "203.0.113.10")
+            .with_field("port", "54122")
             .with_field("log_source", "/var/log/auth.log")
     }
 }

@@ -81,6 +81,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
         NotificationLanguage::En => match key {
             "local_addr" => "local address",
             "local_port" => "local port",
+            "port" => "port",
             "process_name" => "process",
             "previous_process_name" => "previous process",
             "previous_executable" => "previous executable",
@@ -96,6 +97,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "protocol" => "协议",
             "local_addr" => "监听地址",
             "local_port" => "监听端口",
+            "port" => "端口",
             "process_name" => "进程",
             "previous_process_name" => "原进程",
             "previous_executable" => "原可执行文件",
