@@ -8,9 +8,9 @@ Scope:
 - Positive detector cases: each rule must fire for a controlled malicious or risky input.
 - Negative detector cases: each rule must stay silent for a realistic benign or below-threshold input.
 - Notification rendering: every positive finding is rendered through the same alert renderer used before Telegram, Email, Markdown, and plain-text delivery.
-- VPS smoke test: service deployment, config validation, service restart, and `scan --no-notify`.
+- VPS smoke test: service deployment, config validation, service restart, `scan --no-notify`, and one live notification channel check.
 
-Transport note: the matrix verifies every rule's rendered Telegram HTML payload without sending 28 synthetic alerts to the live Telegram chat. Live channel reachability should be verified with one `vps-sentinel notify test` run when needed.
+Transport note: the matrix verifies every rule's rendered Telegram HTML payload without sending 28 synthetic alerts to the live Telegram chat. Live channel reachability was verified separately with one `vps-sentinel notify test` run; the Telegram transport returned `ok`.
 
 ## Result Summary
 
@@ -31,6 +31,9 @@ Transport note: the matrix verifies every rule's rendered Telegram HTML payload 
 | Installer/update/reload/stop script syntax | Passed |
 | Secret scan for provided Telegram credentials | Passed |
 | Static scan for panic/unwrap/expect/debug leftovers | Passed |
+| VPS config validation | Passed |
+| VPS dry scan | Passed: 0 findings, 0 notifications |
+| Live Telegram test notification | Passed |
 
 ## Rule Matrix
 
