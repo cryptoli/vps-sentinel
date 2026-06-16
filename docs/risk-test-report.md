@@ -1,0 +1,96 @@
+# Risk Rule Test Report
+
+Date: 2026-06-17
+
+Scope:
+
+- All 28 built-in rules returned by `vps-sentinel rules list`.
+- Positive detector cases: each rule must fire for a controlled malicious or risky input.
+- Negative detector cases: each rule must stay silent for a realistic benign or below-threshold input.
+- Notification rendering: every positive finding is rendered through the same alert renderer used before Telegram, Email, Markdown, and plain-text delivery.
+- VPS smoke test: service deployment, config validation, service restart, and `scan --no-notify`.
+
+Transport note: the matrix verifies every rule's rendered Telegram HTML payload without sending 28 synthetic alerts to the live Telegram chat. Live channel reachability should be verified with one `vps-sentinel notify test` run when needed.
+
+## Result Summary
+
+| Area | Result |
+| --- | --- |
+| Rule count | 28 built-in rules |
+| Positive rule coverage | Passed |
+| Negative rule coverage | Passed |
+| Telegram HTML rendering | Passed |
+| Chinese message rendering | Passed |
+| Technical fields hidden by default | Passed |
+| Technical fields shown when enabled | Passed |
+| Rule ID uniqueness and format | Passed |
+| Rust formatting | Passed |
+| Clippy with warnings denied | Passed |
+| Workspace tests | Passed: 97 tests |
+| Locked release build | Passed |
+| Installer/update/reload/stop script syntax | Passed |
+| Secret scan for provided Telegram credentials | Passed |
+| Static scan for panic/unwrap/expect/debug leftovers | Passed |
+
+## Rule Matrix
+
+| Rule | Positive case | Negative case |
+| --- | --- | --- |
+| `SSH-001` | root public-key SSH success | non-root SSH success |
+| `SSH-002` | non-root password SSH success | non-root public-key SSH success |
+| `SSH-003` | 10 failed SSH attempts from one IP | 9 failed SSH attempts from one IP |
+| `SSH-004` | ordinary non-root public-key SSH success | root login, which is classified as `SSH-001` |
+| `SSH-005` | `.ssh/authorized_keys` baseline hash drift | unrelated `/tmp/authorized_keys` drift |
+| `FILE-001` | `/etc/passwd` baseline drift | non-critical application file drift |
+| `FILE-002` | monitored file with webshell markers | clean web file snapshot |
+| `FILE-003` | executable file in configured web path | executable outside web path |
+| `USER-001` | new non-root local user | UID 0 user, which is classified as `USER-002` |
+| `USER-002` | non-root account with UID 0 | normal UID user |
+| `USER-003` | user account modified relative to baseline | current user snapshot without baseline drift |
+| `PERSIST-001` | new or changed systemd persistence file | current persistence snapshot |
+| `PERSIST-002` | startup command downloads data and pipes it to shell | cloud-init style plain `bash -c` wrapper |
+| `PERSIST-003` | `ld.so.preload` baseline drift | ordinary systemd persistence drift |
+| `PROC-001` | process executable under `/tmp` | standard `/usr/sbin/sshd` process |
+| `PROC-002` | deleted executable under `/dev/shm` | standard systemd deleted-executable package-upgrade residue |
+| `PROC-003` | `/dev/tcp` interactive shell bridge | plain traffic forwarding command |
+| `PROC-004` | known miner identity in executable/process name | known tool name appears only as a regular argument |
+| `NET-001` | new public listener from baseline drift | current unbaselined listener without baseline drift |
+| `NET-002` | public listener owner changed from baseline | private listener owner changed |
+| `NET-003` | public listener owned by suspicious temp executable | ordinary public web listener |
+| `CONFIG-003` | high-risk public Redis port | ordinary public HTTPS port |
+| `WEB-001` | request for `/.env` probe path | ordinary static asset request |
+| `WEB-002` | 20 web 404 responses from one IP | 19 web 404 responses from one IP |
+| `CONFIG-001` | `PasswordAuthentication yes` | `PasswordAuthentication no` |
+| `CONFIG-004` | `PermitRootLogin yes` | `PermitRootLogin no` |
+| `DOCKER-001` | Docker socket event present | no Docker socket event |
+| `ROOTKIT-003` | active `ld.so.preload` entries | empty `ld.so.preload` entries |
+
+## Message Checks
+
+For every positive finding, the automated matrix verifies:
+
+- Subject contains the configured VPS name.
+- Telegram HTML body contains the configured VPS name.
+- Telegram HTML body is not a full HTML document.
+- Chinese rendering does not contain common mojibake markers.
+- Technical fields such as rule ID, event ID, and dedup key are hidden by default.
+- Technical fields appear when `include_technical_fields = true`.
+
+## Findings From This Round
+
+No new detector false-positive or false-negative behavior was found by the matrix. The main gap was test coverage: previous tests covered many individual rule families, but not a single full-rule matrix with positive and negative cases for every built-in rule. That gap is now covered by `detectors::rule_matrix_tests::every_builtin_risk_rule_has_positive_and_negative_coverage`.
+
+The review did not identify a reason to change runtime detector logic in this round. Existing detector modules already separate collection, rule evaluation, risk scoring, finding coalescing, notification rendering, and delivery concerns. This change keeps runtime behavior unchanged and adds a regression guard around every built-in rule so later tuning is less likely to reintroduce noisy or missing detections.
+
+## Commands
+
+The final verification set for this round:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --all-targets
+cargo build --release --locked
+bash -n install.sh update.sh reload.sh stop.sh packaging/install.sh
+git diff --check
+```

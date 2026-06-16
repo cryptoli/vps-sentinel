@@ -16,6 +16,9 @@ pub mod ssh_rules;
 pub mod user_rules;
 pub mod web_rules;
 
+#[cfg(test)]
+mod rule_matrix_tests;
+
 /// Immutable detection context.
 #[derive(Clone)]
 pub struct DetectContext {
