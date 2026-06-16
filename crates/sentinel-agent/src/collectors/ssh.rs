@@ -3,6 +3,7 @@ use crate::utils::fs::{path_string, read_tail};
 use async_trait::async_trait;
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone};
 use sentinel_core::{RawEvent, SentinelResult};
+use std::process::Command;
 
 const MAX_AUTH_LOG_BYTES: u64 = 1024 * 1024;
 
@@ -22,11 +23,13 @@ impl Collector for SshLogCollector {
         let mut events = Vec::new();
         let now = Local::now();
         let lookback = Duration::seconds(ctx.config.ssh.auth_log_lookback_seconds as i64);
+        let mut existing_auth_logs = 0usize;
         for configured_path in &ctx.config.ssh.auth_log_paths {
             let path = ctx.resolve(configured_path);
             if !path.exists() {
                 continue;
             }
+            existing_auth_logs += 1;
             let source = path_string(configured_path);
             let content = read_tail(&path, MAX_AUTH_LOG_BYTES)?;
             events.extend(
@@ -36,8 +39,38 @@ impl Collector for SshLogCollector {
                     .filter_map(|line| parse_ssh_line(line, &source)),
             );
         }
+        if existing_auth_logs == 0 {
+            events.extend(collect_journalctl_ssh(now, lookback));
+        }
         Ok(events)
     }
+}
+
+fn collect_journalctl_ssh(now: DateTime<Local>, lookback: Duration) -> Vec<RawEvent> {
+    let since_arg = format!("@{}", (now - lookback).timestamp());
+    let Ok(output) = Command::new("journalctl")
+        .args([
+            "-u",
+            "ssh.service",
+            "-u",
+            "sshd.service",
+            "--since",
+            &since_arg,
+            "--no-pager",
+            "-o",
+            "short-iso",
+        ])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| parse_ssh_line(line, "journalctl:ssh"))
+        .collect()
 }
 
 fn auth_line_is_recent(line: &str, now: DateTime<Local>, lookback: Duration) -> bool {
@@ -147,6 +180,17 @@ mod tests {
         assert_eq!(event.field("method"), Some("password"));
         assert_eq!(event.field("user"), Some("root"));
         assert_eq!(event.field("source_ip"), Some("203.0.113.10"));
+        Ok(())
+    }
+
+    #[test]
+    fn parses_journalctl_short_iso_login() -> Result<(), Box<dyn std::error::Error>> {
+        let line = "2026-06-16T10:00:01+08:00 host sshd[123]: Accepted publickey for deploy from 203.0.113.10 port 54122 ssh2";
+        let event = parse_ssh_line(line, "journalctl:ssh").ok_or("expected ssh event")?;
+        assert_eq!(event.field("outcome"), Some("success"));
+        assert_eq!(event.field("method"), Some("publickey"));
+        assert_eq!(event.field("user"), Some("deploy"));
+        assert_eq!(event.field("log_source"), Some("journalctl:ssh"));
         Ok(())
     }
 

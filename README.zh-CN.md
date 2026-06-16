@@ -360,7 +360,7 @@ alert_on_successful_login = true
 auth_log_lookback_seconds = 300
 ```
 
-`alert_on_successful_login` 覆盖未被 root 登录或密码登录规则覆盖的普通成功 SSH 登录，并不只针对陌生 IP。`auth_log_lookback_seconds` 限制每次扫描读取认证日志时向前回看的时间窗口，避免旧登录日志反复产生通知。
+`alert_on_successful_login` 覆盖未被 root 登录或密码登录规则覆盖的普通成功 SSH 登录，并不只针对陌生 IP。`auth_log_lookback_seconds` 限制每次扫描读取认证日志时向前回看的时间窗口，避免旧登录日志反复产生通知。当 `/var/log/auth.log` 和 `/var/log/secure` 等配置的认证日志文件不存在时，vps-sentinel 会回退读取 `ssh.service` 和 `sshd.service` 的 `journalctl` 日志。
 
 告警中的 VPS 身份：
 

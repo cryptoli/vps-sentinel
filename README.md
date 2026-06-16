@@ -362,7 +362,7 @@ alert_on_successful_login = true
 auth_log_lookback_seconds = 300
 ```
 
-`alert_on_successful_login` covers ordinary successful SSH logins that are not already reported by the root-login or password-login rules. It is not limited to unfamiliar IP addresses. `auth_log_lookback_seconds` limits how far back the auth-log tail is considered on each scan so old login lines do not keep generating notifications.
+`alert_on_successful_login` covers ordinary successful SSH logins that are not already reported by the root-login or password-login rules. It is not limited to unfamiliar IP addresses. `auth_log_lookback_seconds` limits how far back auth logs are considered on each scan so old login lines do not keep generating notifications. When configured auth log files such as `/var/log/auth.log` and `/var/log/secure` are absent, vps-sentinel falls back to `journalctl` for `ssh.service` and `sshd.service`.
 
 VPS identity in alerts:
 
