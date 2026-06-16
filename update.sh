@@ -15,6 +15,7 @@ INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-auto}"
 RESTART_SERVICE="${RESTART_SERVICE:-auto}"
 VALIDATE_CONFIG="${VALIDATE_CONFIG:-yes}"
 REFRESH_BASELINE="${REFRESH_BASELINE:-auto}"
+SYSTEMD_UNIT_INSTALLED=0
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "please run as root, for example: sudo sh update.sh" >&2
@@ -91,7 +92,7 @@ write_systemd_unit() {
   chmod 0644 "$SERVICE_PATH"
 }
 
-refresh_systemd_unit() {
+install_systemd_unit_file() {
   if ! should_install_systemd; then
     echo "skipped systemd service update"
     return
@@ -99,6 +100,14 @@ refresh_systemd_unit() {
 
   write_systemd_unit
   systemctl daemon-reload
+  SYSTEMD_UNIT_INSTALLED=1
+}
+
+reload_updated_service() {
+  if [ "$SYSTEMD_UNIT_INSTALLED" -ne 1 ]; then
+    return
+  fi
+
   case "$RESTART_SERVICE" in
     auto)
       if systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
@@ -172,7 +181,8 @@ case "$VALIDATE_CONFIG" in
     ;;
 esac
 
-refresh_systemd_unit
+install_systemd_unit_file
 refresh_baseline
+reload_updated_service
 
 echo "vps-sentinel updated from $REPO_URL ($BRANCH)"
