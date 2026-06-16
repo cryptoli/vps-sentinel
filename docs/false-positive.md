@@ -16,7 +16,7 @@ Security monitoring should be useful without waking users for expected operation
 - For legitimate forwarding or tunneling commands, prefer `allowlist.process_paths`; use `allowlist.process_command_contains` only with a precise identifying fragment.
 - For known miner/scanner findings, confirm the executable basename first. The rule matches process identity fields such as executable path, process name, and structured `argv[0]`, so ordinary arguments or longer unrelated names should not be treated as matches.
 - Put normal public service ports such as HTTP/HTTPS in `network.expected_public_ports`; they still receive process-risk and baseline-owner checks. Use `allowlist.listening_ports` only when a port should suppress all network findings, including high-risk exposure findings.
-- Keep baselines fresh after planned maintenance. The installer writes its own systemd unit before baseline bootstrap, and the updater can refresh an existing baseline after trusted updates.
+- Keep baselines fresh after planned maintenance, but only after reviewing drift. The installer writes its own systemd unit before first baseline bootstrap; `update.sh` preserves the existing baseline by default and refreshes it only when `REFRESH_BASELINE=yes` is set.
 - Route noisy rules at `Low` or `Medium`.
 - Investigate correlations before taking destructive action.
 

@@ -220,7 +220,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-The update script pulls the selected branch, rebuilds the binary, preserves the existing config, validates it, refreshes the systemd unit when available, reloads or restarts the service if it is enabled, and refreshes the baseline after a trusted update. Unchanged systemd unit content is not rewritten, so routine updates do not churn unit file mtimes.
+The update script pulls the selected branch, rebuilds the binary, preserves the existing config, validates it, refreshes the systemd unit when available, and reloads or restarts the service if it is enabled. It does not refresh an existing baseline by default, so unreviewed host drift such as `authorized_keys` changes is not silently trusted during an update. Unchanged systemd unit content is not rewritten, so routine updates do not churn unit file mtimes.
 
 Useful update switches:
 
@@ -236,7 +236,7 @@ Useful update switches:
 | `INSTALL_SYSTEMD` | `auto` | Set to `no` to skip unit refresh. |
 | `RESTART_SERVICE` | `auto` | `auto`, `yes`, or `no` for reload/restart behavior. |
 | `VALIDATE_CONFIG` | `yes` | Validate existing config before service reload/restart. |
-| `REFRESH_BASELINE` | `auto` | Refresh an existing baseline after a trusted update. Use `no` when you want to inspect drift manually first. |
+| `REFRESH_BASELINE` | `no` | Set to `yes` only after you have reviewed current drift and want the update to refresh the existing baseline. |
 
 ## Reload Configuration
 
@@ -416,9 +416,10 @@ Noise control:
 [noise_control]
 dedup_window_seconds = 3600
 max_alerts_per_hour = 30
+rate_limit_bypass_min_severity = "High"
 ```
 
-`dedup_window_seconds` suppresses repeated findings with the same stable dedup key. The default one-hour window is intended to prevent persistent host-state risks from sending the same message every few minutes while still allowing new subjects, sources, or rules to notify.
+`dedup_window_seconds` suppresses repeated findings with the same stable dedup key. The default one-hour window is intended to prevent persistent host-state risks from sending the same message every few minutes while still allowing new subjects, sources, or rules to notify. `max_alerts_per_hour` limits lower-severity notification volume; findings at or above `rate_limit_bypass_min_severity` bypass that hourly budget so high-value signals such as `SSH-005` are still delivered during noisy periods.
 
 Allowlist example:
 

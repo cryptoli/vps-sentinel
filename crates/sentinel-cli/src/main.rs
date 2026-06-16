@@ -14,6 +14,7 @@ use commands::{
 };
 use sentinel_core::SentinelConfig;
 use std::io;
+use std::panic;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
@@ -73,6 +74,7 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    install_broken_pipe_panic_hook();
     let cli = Cli::parse();
     init_logging(&cli.log_level)?;
 
@@ -99,6 +101,25 @@ async fn main() -> Result<()> {
         Command::Config { command } => run_config(cli.config.as_deref(), command),
         Command::Doctor => run_doctor(load_config(cli.config.as_deref())?),
     }
+}
+
+fn install_broken_pipe_panic_hook() {
+    let default_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        let message = if let Some(message) = info.payload().downcast_ref::<&str>() {
+            (*message).to_string()
+        } else if let Some(message) = info.payload().downcast_ref::<String>() {
+            message.clone()
+        } else {
+            info.to_string()
+        };
+        if message.contains("failed printing to stdout")
+            && (message.contains("Broken pipe") || message.contains("os error 32"))
+        {
+            std::process::exit(0);
+        }
+        default_hook(info);
+    }));
 }
 
 fn init_logging(log_level: &str) -> Result<()> {

@@ -168,20 +168,28 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             findings.clone()
         };
         let delivery_limit = notification_delivery_limit(&store, &config)?;
-        let planned_count = manager.planned_delivery_count(&notification_findings);
-        if let Some(limit) = delivery_limit {
-            notification_rate_limited_count = planned_count.saturating_sub(limit);
-            if notification_rate_limited_count > 0 {
-                warn!(
-                    planned_notifications = planned_count,
-                    allowed_notifications = limit,
-                    suppressed_notifications = notification_rate_limited_count,
-                    "notification hourly rate limit reached"
-                );
-            }
+        let plan = manager.delivery_plan(
+            &notification_findings,
+            delivery_limit,
+            config.noise_control.rate_limit_bypass_min_severity,
+        );
+        notification_rate_limited_count = plan.suppressed_by_rate_limit;
+        if notification_rate_limited_count > 0 {
+            warn!(
+                planned_notifications = plan.planned,
+                allowed_notifications = plan.allowed,
+                suppressed_notifications = notification_rate_limited_count,
+                bypass_min_severity = %config.noise_control.rate_limit_bypass_min_severity,
+                "notification hourly rate limit reached"
+            );
         }
         let notification_results = manager
-            .notify_all_limited(&notification_findings, &notify_context, delivery_limit)
+            .notify_all_with_budget(
+                &notification_findings,
+                &notify_context,
+                delivery_limit,
+                config.noise_control.rate_limit_bypass_min_severity,
+            )
             .await;
         notification_attempt_count = notification_results.len();
         for (finding_id, channel, result) in notification_results {

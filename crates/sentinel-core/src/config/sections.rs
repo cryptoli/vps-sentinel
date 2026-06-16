@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::severity::Severity;
+
 /// Default Linux paths used by the built-in configuration.
 pub struct SentinelPaths;
 
@@ -271,6 +273,7 @@ impl Default for DockerConfig {
 pub struct NoiseControlConfig {
     pub dedup_window_seconds: u64,
     pub max_alerts_per_hour: u32,
+    pub rate_limit_bypass_min_severity: Severity,
     pub quiet_hours: Vec<String>,
 }
 
@@ -279,6 +282,7 @@ impl Default for NoiseControlConfig {
         Self {
             dedup_window_seconds: 3600,
             max_alerts_per_hour: 30,
+            rate_limit_bypass_min_severity: Severity::High,
             quiet_hours: Vec::new(),
         }
     }

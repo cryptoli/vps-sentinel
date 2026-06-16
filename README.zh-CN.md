@@ -218,7 +218,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-更新脚本会拉取 GitHub 最新代码、重新构建、保留已有配置、校验配置、刷新 systemd unit，并在服务已启用时 reload 或 restart 服务；可信更新完成后会刷新已有基线。systemd unit 内容未变化时不会重写文件，避免例行更新造成 unit mtime 变化。
+更新脚本会拉取 GitHub 最新代码、重新构建、保留已有配置、校验配置、刷新 systemd unit，并在服务已启用时 reload 或 restart 服务。它默认不会刷新已有基线，避免 `authorized_keys` 等未确认漂移在更新时被静默吸收为可信状态。systemd unit 内容未变化时不会重写文件，避免例行更新造成 unit mtime 变化。
 
 常用更新变量：
 
@@ -234,7 +234,7 @@ sudo sh update.sh
 | `INSTALL_SYSTEMD` | `auto` | 设为 `no` 可跳过 unit 刷新。 |
 | `RESTART_SERVICE` | `auto` | `auto`、`yes` 或 `no`，控制是否 reload/restart 服务。 |
 | `VALIDATE_CONFIG` | `yes` | 服务 reload/restart 前校验已有配置。 |
-| `REFRESH_BASELINE` | `auto` | 可信更新后刷新已有基线；设为 `no` 时保留漂移，方便人工检查。 |
+| `REFRESH_BASELINE` | `no` | 只有在已经人工确认当前漂移可信时，才设置为 `yes` 让更新脚本刷新已有基线。 |
 
 ## 重载配置
 
@@ -414,9 +414,10 @@ suspicious_command_min_score = 70
 [noise_control]
 dedup_window_seconds = 3600
 max_alerts_per_hour = 30
+rate_limit_bypass_min_severity = "High"
 ```
 
-`dedup_window_seconds` 会抑制相同稳定去重 Key 的重复 finding。默认 1 小时窗口用于避免持续存在的主机状态风险每几分钟重复发消息，同时仍允许新的目标、来源或规则正常通知。
+`dedup_window_seconds` 会抑制相同稳定去重 Key 的重复 finding。默认 1 小时窗口用于避免持续存在的主机状态风险每几分钟重复发消息，同时仍允许新的目标、来源或规则正常通知。`max_alerts_per_hour` 只限制较低等级通知的发送量；达到或高于 `rate_limit_bypass_min_severity` 的 finding 会绕过小时预算，因此 `SSH-005` 这类高价值信号在噪声较多时仍会发送。
 
 白名单示例：
 

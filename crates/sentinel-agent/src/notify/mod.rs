@@ -69,6 +69,13 @@ pub struct NotificationManager {
     notifiers: Vec<Box<dyn Notifier>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotificationDeliveryPlan {
+    pub planned: usize,
+    pub allowed: usize,
+    pub suppressed_by_rate_limit: usize,
+}
+
 impl NotificationManager {
     pub fn from_config(config: &SentinelConfig) -> Self {
         let mut notifiers: Vec<Box<dyn Notifier>> = Vec::new();
@@ -133,6 +140,43 @@ impl NotificationManager {
             .sum()
     }
 
+    pub fn delivery_plan(
+        &self,
+        findings: &[Finding],
+        limit: Option<usize>,
+        bypass_min_severity: Severity,
+    ) -> NotificationDeliveryPlan {
+        let mut planned = 0;
+        let mut allowed = 0;
+        let mut suppressed_by_rate_limit = 0;
+        let mut limited_attempted = 0;
+
+        for finding in findings {
+            for notifier in &self.notifiers {
+                if !finding.severity.meets(notifier.minimum_severity()) {
+                    continue;
+                }
+                planned += 1;
+                if finding.severity.meets(bypass_min_severity) {
+                    allowed += 1;
+                    continue;
+                }
+                if limit.is_some_and(|limit| limited_attempted >= limit) {
+                    suppressed_by_rate_limit += 1;
+                    continue;
+                }
+                limited_attempted += 1;
+                allowed += 1;
+            }
+        }
+
+        NotificationDeliveryPlan {
+            planned,
+            allowed,
+            suppressed_by_rate_limit,
+        }
+    }
+
     pub async fn notify_all(
         &self,
         findings: &[Finding],
@@ -167,6 +211,36 @@ impl NotificationManager {
         results
     }
 
+    pub async fn notify_all_with_budget(
+        &self,
+        findings: &[Finding],
+        ctx: &NotifyContext,
+        limit: Option<usize>,
+        bypass_min_severity: Severity,
+    ) -> Vec<(String, String, SentinelResult<()>)> {
+        let mut results = Vec::new();
+        let mut limited_attempted = 0;
+        for finding in findings {
+            for notifier in &self.notifiers {
+                if !finding.severity.meets(notifier.minimum_severity()) {
+                    continue;
+                }
+                if !finding.severity.meets(bypass_min_severity) {
+                    if limit.is_some_and(|limit| limited_attempted >= limit) {
+                        continue;
+                    }
+                    limited_attempted += 1;
+                }
+                results.push((
+                    finding.id.clone(),
+                    notifier.name().to_string(),
+                    notifier.notify(finding, ctx).await,
+                ));
+            }
+        }
+        results
+    }
+
     pub async fn notify_test(
         &self,
         finding: &Finding,
@@ -186,7 +260,7 @@ impl NotificationManager {
 
 #[cfg(test)]
 mod tests {
-    use super::NotificationManager;
+    use super::{NotificationDeliveryPlan, NotificationManager};
     use sentinel_core::{Category, Finding, SentinelConfig, Severity};
 
     #[test]
@@ -218,5 +292,44 @@ mod tests {
             ),
         ];
         assert_eq!(manager.planned_delivery_count(&findings), 3);
+    }
+
+    #[test]
+    fn delivery_plan_bypasses_rate_limit_for_high_findings() {
+        let mut config = SentinelConfig::default();
+        config.notifications.telegram.enabled = true;
+        config.notifications.telegram.min_severity = Severity::Info;
+        let manager = NotificationManager::from_config(&config);
+        let findings = vec![
+            Finding::new(
+                "host",
+                "info",
+                "desc",
+                Severity::Info,
+                Category::System,
+                "T-1",
+                "a",
+            ),
+            Finding::new(
+                "host",
+                "high",
+                "desc",
+                Severity::High,
+                Category::Ssh,
+                "SSH-005",
+                "/root/.ssh/authorized_keys",
+            ),
+        ];
+
+        let plan = manager.delivery_plan(&findings, Some(0), Severity::High);
+
+        assert_eq!(
+            plan,
+            NotificationDeliveryPlan {
+                planned: 2,
+                allowed: 1,
+                suppressed_by_rate_limit: 1,
+            }
+        );
     }
 }

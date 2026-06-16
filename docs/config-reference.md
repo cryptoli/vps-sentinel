@@ -22,11 +22,11 @@ The default system configuration path is `/etc/vps-sentinel/config.toml`. A user
 - `[notifications.gotify]`: Gotify server, app token, and minimum severity.
 - `[notifications.bark]`: Bark server, device key, and minimum severity.
 - `[notifications.serverchan]`: ServerChan send key and minimum severity.
-- `[noise_control]`: dedup and alert volume controls.
+- `[noise_control]`: dedup and alert volume controls. `rate_limit_bypass_min_severity` defaults to `High`, so high-value alerts bypass the hourly budget.
 - `[allowlist]`: trusted users, IPs, paths, ports, and specific process command fragments. Use `process_command_contains` for known-good long-running commands whose full path is not stable enough for `process_paths`.
 
 `noise_control.quiet_hours` entries use local server time in `HH:MM-HH:MM` format. Time windows may wrap across midnight, for example `["22:00-07:00"]`. During quiet hours, non-critical notifications are suppressed while critical findings still notify.
 
-`noise_control.dedup_window_seconds` defaults to 3600 seconds and suppresses repeated findings with the same stable dedup key. `noise_control.max_alerts_per_hour` limits notification delivery attempts across enabled channels. Attempts are counted from local SQLite notification logs.
+`noise_control.dedup_window_seconds` defaults to 3600 seconds and suppresses repeated findings with the same stable dedup key. `noise_control.max_alerts_per_hour` limits notification delivery attempts below `rate_limit_bypass_min_severity` across enabled channels. Attempts are counted from local SQLite notification logs.
 
 See [config/config.example.toml](../config/config.example.toml) for a complete example.
