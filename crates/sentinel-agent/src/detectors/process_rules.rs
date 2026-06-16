@@ -421,9 +421,11 @@ fn is_shell_process_name(name: &str) -> bool {
 mod tests {
     use super::{
         command_matches_allowlist, contains_miner_or_scanner, deleted_executable_assessment,
-        event_contains_miner_or_scanner,
+        event_contains_miner_or_scanner, ProcessDetector,
     };
-    use crate::detectors::{command_profile::assess_network_execution_command, DetectContext};
+    use crate::detectors::{
+        command_profile::assess_network_execution_command, DetectContext, Detector,
+    };
     use sentinel_core::{RawEvent, SentinelConfig};
     use std::sync::Arc;
 
@@ -529,6 +531,37 @@ mod tests {
         );
         let assessment = deleted_executable_assessment(&event, &ctx);
         assert!(assessment.is_some_and(|assessment| !assessment.is_suspicious(70)));
+    }
+
+    #[test]
+    fn detector_ignores_standard_deleted_service_binaries() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let events = vec![
+            process_event(
+                "/usr/sbin/dockerd (deleted)",
+                "dockerd",
+                "/usr/sbin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock",
+            ),
+            process_event(
+                "/usr/lib/systemd/systemd-logind (deleted)",
+                "systemd-logind",
+                "/lib/systemd/systemd-logind",
+            ),
+            process_event(
+                "/usr/bin/python3.11 (deleted)",
+                "unattended-upgr",
+                "/usr/bin/python3 /usr/share/unattended-upgrades/unattended-upgrade-shutdown --wait-for-signal",
+            ),
+            process_event(
+                "/usr/local/bin/vps-sentinel (deleted)",
+                "vps-sentinel",
+                "/usr/local/bin/vps-sentinel daemon --config /etc/vps-sentinel/config.toml",
+            ),
+        ];
+
+        let findings = ProcessDetector.detect(&events, &ctx);
+
+        assert!(findings.is_empty());
     }
 
     #[test]

