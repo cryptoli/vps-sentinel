@@ -220,7 +220,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-The update script pulls the selected branch, rebuilds the binary, preserves the existing config, validates it, refreshes the systemd unit when available, and reloads or restarts the service if it is enabled. It does not refresh an existing baseline by default, so unreviewed host drift such as `authorized_keys` changes is not silently trusted during an update. Unchanged systemd unit content is not rewritten, so routine updates do not churn unit file mtimes.
+The update script pulls the selected branch, rebuilds the binary, preserves the existing config, validates it, refreshes the systemd unit when available, and restarts an active or enabled service so the new binary is actually running. It does not refresh an existing baseline by default, so unreviewed host drift such as `authorized_keys` changes is not silently trusted during an update. Unchanged systemd unit content is not rewritten, so routine updates do not churn unit file mtimes. Use `vps-sentinel-reload` for config-only changes that do not replace the binary.
 
 Useful update switches:
 

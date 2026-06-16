@@ -218,7 +218,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-更新脚本会拉取 GitHub 最新代码、重新构建、保留已有配置、校验配置、刷新 systemd unit，并在服务已启用时 reload 或 restart 服务。它默认不会刷新已有基线，避免 `authorized_keys` 等未确认漂移在更新时被静默吸收为可信状态。systemd unit 内容未变化时不会重写文件，避免例行更新造成 unit mtime 变化。
+更新脚本会拉取 GitHub 最新代码、重新构建、保留已有配置、校验配置、刷新 systemd unit，并在服务正在运行或已启用时 restart 服务，确保新二进制真正生效。它默认不会刷新已有基线，避免 `authorized_keys` 等未确认漂移在更新时被静默吸收为可信状态。systemd unit 内容未变化时不会重写文件，避免例行更新造成 unit mtime 变化。只修改配置、不替换二进制时使用 `vps-sentinel-reload`。
 
 常用更新变量：
 

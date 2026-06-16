@@ -147,7 +147,7 @@ activate_systemd_service() {
     yes|true|1)
       systemctl enable "$SERVICE_NAME"
       if systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
-        systemctl reload-or-restart "$SERVICE_NAME"
+        systemctl restart "$SERVICE_NAME"
       else
         systemctl start "$SERVICE_NAME"
       fi

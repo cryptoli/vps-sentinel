@@ -103,21 +103,24 @@ install_systemd_unit_file() {
   SYSTEMD_UNIT_INSTALLED=1
 }
 
-reload_updated_service() {
+restart_updated_service() {
   if [ "$SYSTEMD_UNIT_INSTALLED" -ne 1 ]; then
     return
   fi
 
   case "$RESTART_SERVICE" in
     auto)
-      if systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
-        systemctl reload-or-restart "$SERVICE_NAME"
+      if systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
+        systemctl restart "$SERVICE_NAME"
+      elif systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
+        systemctl start "$SERVICE_NAME"
       else
-        echo "updated systemd unit; service is not enabled"
+        echo "updated systemd unit; service is not active or enabled"
       fi
       ;;
     yes|true|1)
-      systemctl enable --now "$SERVICE_NAME"
+      systemctl enable "$SERVICE_NAME"
+      systemctl restart "$SERVICE_NAME"
       ;;
     no|false|0)
       echo "updated systemd unit; skipped service restart"
@@ -186,6 +189,6 @@ esac
 
 install_systemd_unit_file
 refresh_baseline
-reload_updated_service
+restart_updated_service
 
 echo "vps-sentinel updated from $REPO_URL ($BRANCH)"
