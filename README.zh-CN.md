@@ -479,7 +479,7 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 
 部分采集器需要 root 级别可见性。如果不是 root 运行，`doctor` 会报告可见性降低，相关模块会降级而不是崩溃。
 
-运行时资源占用较小。在本项目验证使用的参考 VPS 上，systemd 服务在默认 60 秒扫描循环下的 `MemoryCurrent` 约为 2.7-3.3 MiB。实际内存会受日志尾部大小、文件完整性路径范围和已启用通知渠道影响。
+作为常驻 agent，运行时资源占用较小。在当前验证 VPS 上，默认 60 秒扫描循环下 daemon 进程 RSS 约为 12-13 MiB；systemd cgroup 的 `MemoryCurrent` 可能因内核统计和近期触达的文件缓存显示为约 50-55 MiB。实际内存会受日志尾部大小、文件完整性路径范围和已启用通知渠道影响。
 
 systemd unit 使用：
 

@@ -481,7 +481,7 @@ Example rules:
 
 Some collectors need root-level visibility. If the agent runs without root permissions, `doctor` reports reduced visibility and affected modules degrade instead of crashing.
 
-Runtime footprint is intentionally small. On the reference VPS used for validation, the running systemd service used about 2.7-3.3 MiB `MemoryCurrent` during the normal 60-second scan loop. Actual memory can rise with larger log tails, broader file-integrity paths, and enabled notification channels.
+Runtime footprint is intentionally small for a continuously running agent. On the current validation VPS, the daemon process reports about 12-13 MiB RSS during the normal 60-second scan loop; systemd cgroup `MemoryCurrent` may report around 50-55 MiB depending on kernel accounting and recently touched file cache. Actual memory can rise with larger log tails, broader file-integrity paths, and enabled notification channels.
 
 The systemd unit uses:
 
