@@ -1,3 +1,6 @@
+use crate::detectors::process_rules::{
+    contains_miner_or_scanner, contains_reverse_shell_pattern, path_in_suspicious_dirs,
+};
 use crate::detectors::{evidence, string_field, DetectContext, Detector};
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
@@ -14,10 +17,24 @@ impl Detector for NetworkDetector {
         vec![
             RuleMetadata::new(
                 "NET-001",
-                "Public listening port detected",
+                "New public listening port detected",
                 Category::Network,
                 Severity::Medium,
-                "A process is listening on a public address and the port is not allowlisted.",
+                "A public listening port appeared after the stored baseline.",
+            ),
+            RuleMetadata::new(
+                "NET-002",
+                "Public listener process changed",
+                Category::Network,
+                Severity::Medium,
+                "A public listening port is still present, but the owning process changed from the baseline.",
+            ),
+            RuleMetadata::new(
+                "NET-003",
+                "Suspicious process behind public listener",
+                Category::Network,
+                Severity::High,
+                "A public listening port is owned by a process with suspicious execution traits.",
             ),
             RuleMetadata::new(
                 "CONFIG-003",
@@ -32,10 +49,12 @@ impl Detector for NetworkDetector {
     fn detect(&self, events: &[RawEvent], ctx: &DetectContext) -> Vec<Finding> {
         let mut findings = Vec::new();
         let policy = PortPolicy::from_context(ctx);
-        for event in events
-            .iter()
-            .filter(|event| event.kind == "listening_socket")
-        {
+        for event in events.iter().filter(|event| {
+            matches!(
+                event.kind.as_str(),
+                "listening_socket" | "listening_socket_owner_changed"
+            )
+        }) {
             let port = event
                 .field("local_port")
                 .and_then(|value| value.parse::<u16>().ok());
@@ -50,6 +69,10 @@ impl Detector for NetworkDetector {
             }
             if policy.is_high_risk(port) {
                 findings.push(risky_port(event, ctx, policy.service_name(port)));
+            } else if let Some(profile) = ListenerRiskProfile::from_event(event, ctx) {
+                findings.push(suspicious_listener(event, ctx, profile));
+            } else if event.kind == "listening_socket_owner_changed" {
+                findings.push(listener_owner_changed(event, ctx));
             } else if policy.is_expected_public(port) {
                 continue;
             } else if event.source == "baseline" && ctx.config.network.alert_on_new_listening_port {
@@ -63,7 +86,7 @@ impl Detector for NetworkDetector {
 fn public_listen(event: &RawEvent, ctx: &DetectContext) -> Finding {
     Finding::new(
         &ctx.host_id,
-        "Public listening port detected",
+        "New public listening port detected",
         "A new public listening port appeared after the stored baseline.",
         Severity::Medium,
         Category::Network,
@@ -79,6 +102,62 @@ fn public_listen(event: &RawEvent, ctx: &DetectContext) -> Finding {
         "Confirm the service is intended to be internet-facing.".to_string(),
         "Refresh the baseline after approved service changes.".to_string(),
         "Restrict access with firewall rules when public exposure is not required.".to_string(),
+    ])
+}
+
+fn listener_owner_changed(event: &RawEvent, ctx: &DetectContext) -> Finding {
+    Finding::new(
+        &ctx.host_id,
+        "Public listener process changed",
+        "A public listening port is still present, but the owning process changed from the stored baseline.",
+        Severity::Medium,
+        Category::Network,
+        "NET-002",
+        format!(
+            "{}:{}",
+            string_field(event, "local_addr"),
+            string_field(event, "local_port")
+        ),
+    )
+    .with_evidence(socket_evidence(event))
+    .with_recommendations(vec![
+        "Confirm the service replacement was planned.".to_string(),
+        "Review the current executable path and service unit.".to_string(),
+        "Refresh the baseline after approved service changes.".to_string(),
+    ])
+}
+
+fn suspicious_listener(
+    event: &RawEvent,
+    ctx: &DetectContext,
+    profile: ListenerRiskProfile,
+) -> Finding {
+    Finding::new(
+        &ctx.host_id,
+        "Suspicious process behind public listener",
+        "A public listening port is owned by a process with suspicious execution traits.",
+        Severity::High,
+        Category::Network,
+        "NET-003",
+        format!(
+            "{}:{}",
+            string_field(event, "local_addr"),
+            string_field(event, "local_port")
+        ),
+    )
+    .with_evidence({
+        let mut items = socket_evidence(event);
+        items.push(evidence("risk_score", profile.score.to_string()));
+        items.push(evidence("risk_reasons", profile.reasons.join("; ")));
+        items
+    })
+    .with_impact(vec![
+        "Attackers often bind backdoors or webshell launchers to normal-looking public ports."
+            .to_string(),
+    ])
+    .with_recommendations(vec![
+        "Verify the executable path, package ownership, and service unit.".to_string(),
+        "Preserve process and socket evidence before stopping the service.".to_string(),
     ])
 }
 
@@ -107,11 +186,25 @@ fn risky_port(event: &RawEvent, ctx: &DetectContext, service_name: &'static str)
 }
 
 fn socket_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
-    vec![
+    let mut items = vec![
         evidence("protocol", string_field(event, "protocol")),
         evidence("local_addr", string_field(event, "local_addr")),
         evidence("local_port", string_field(event, "local_port")),
-    ]
+    ];
+    push_evidence_if_present(&mut items, event, "process_name");
+    push_evidence_if_present(&mut items, event, "pid");
+    push_evidence_if_present(&mut items, event, "executable");
+    push_evidence_if_present(&mut items, event, "cmdline");
+    push_evidence_if_present(&mut items, event, "previous_process_name");
+    push_evidence_if_present(&mut items, event, "previous_executable");
+    items
+}
+
+fn push_evidence_if_present(items: &mut Vec<sentinel_core::Evidence>, event: &RawEvent, key: &str) {
+    let value = string_field(event, key);
+    if !value.trim().is_empty() {
+        items.push(evidence(key, value));
+    }
 }
 
 fn is_public_addr(addr: &str) -> bool {
@@ -131,7 +224,6 @@ impl PortPolicy {
             .allowlist
             .listening_ports
             .iter()
-            .chain(ctx.config.network.public_listen_allowlist.iter())
             .copied()
             .collect();
         let expected_public = ctx
@@ -139,6 +231,7 @@ impl PortPolicy {
             .network
             .expected_public_ports
             .iter()
+            .chain(ctx.config.network.public_listen_allowlist.iter())
             .copied()
             .collect();
         let high_risk_public = ctx
@@ -196,65 +289,60 @@ fn known_port_profile(port: u16) -> Option<&'static str> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::NetworkDetector;
-    use crate::detectors::{DetectContext, Detector};
-    use sentinel_core::{RawEvent, SentinelConfig};
-    use std::sync::Arc;
+struct ListenerRiskProfile {
+    score: u16,
+    reasons: Vec<String>,
+}
 
-    #[test]
-    fn suppresses_expected_web_ports() {
-        let findings = detect_with_default_config(vec![socket_event("network", 443)]);
-        assert!(findings.is_empty());
-    }
+impl ListenerRiskProfile {
+    fn from_event(event: &RawEvent, ctx: &DetectContext) -> Option<Self> {
+        let executable = string_field(event, "executable");
+        let cmdline = string_field(event, "cmdline");
+        let process_name = string_field(event, "process_name");
+        let mut score = 0;
+        let mut reasons = Vec::new();
 
-    #[test]
-    fn suppresses_stable_generic_public_ports_without_baseline_drift() {
-        let findings = detect_with_default_config(vec![socket_event("network", 4444)]);
-        assert!(findings.is_empty());
-    }
+        if path_in_suspicious_dirs(&executable, &ctx.config.process.suspicious_dirs) {
+            score += 50;
+            reasons.push("executable is under a suspicious temporary directory".to_string());
+        }
+        if executable.contains(" (deleted)") || executable.ends_with("deleted") {
+            score += 40;
+            reasons.push("executable appears deleted while still running".to_string());
+        }
+        if contains_reverse_shell_pattern(&cmdline) {
+            score += 70;
+            reasons.push("command line contains reverse-shell fragments".to_string());
+        }
+        if contains_miner_or_scanner(&cmdline) {
+            score += 70;
+            reasons.push("command line contains miner or scanner indicators".to_string());
+        }
+        if is_shell_or_pipe_tool(&process_name) {
+            score += 35;
+            reasons.push(
+                "listener process name is commonly used for ad-hoc shells or tunnels".to_string(),
+            );
+        }
+        if event.kind == "listening_socket_owner_changed" && score > 0 {
+            score += 20;
+            reasons.push("listener owner changed from baseline".to_string());
+        }
 
-    #[test]
-    fn reports_new_public_port_from_baseline_drift() {
-        let findings = detect_with_default_config(vec![socket_event("baseline", 4444)]);
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].rule_id, "NET-001");
-    }
-
-    #[test]
-    fn reports_high_risk_public_port_from_current_state() {
-        let findings = detect_with_default_config(vec![socket_event("network", 6379)]);
-        assert_eq!(findings.len(), 1);
-        assert_eq!(findings[0].rule_id, "CONFIG-003");
-        assert!(findings[0]
-            .evidence
-            .iter()
-            .any(|item| item.key == "service_profile" && item.value == "Redis"));
-    }
-
-    #[test]
-    fn allowlist_suppresses_high_risk_public_port() {
-        let mut config = SentinelConfig::default();
-        config.allowlist.listening_ports.push(6379);
-        let findings = detect(config, vec![socket_event("network", 6379)]);
-        assert!(findings.is_empty());
-    }
-
-    fn detect_with_default_config(events: Vec<RawEvent>) -> Vec<sentinel_core::Finding> {
-        detect(SentinelConfig::default(), events)
-    }
-
-    fn detect(config: SentinelConfig, events: Vec<RawEvent>) -> Vec<sentinel_core::Finding> {
-        let detector = NetworkDetector;
-        let ctx = DetectContext::new(Arc::new(config));
-        detector.detect(&events, &ctx)
-    }
-
-    fn socket_event(source: &str, port: u16) -> RawEvent {
-        RawEvent::new(source, "listening_socket")
-            .with_field("protocol", "tcp")
-            .with_field("local_addr", "0.0.0.0")
-            .with_field("local_port", port.to_string())
+        if score >= 50 {
+            Some(Self { score, reasons })
+        } else {
+            None
+        }
     }
 }
+
+fn is_shell_or_pipe_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "sh" | "bash" | "dash" | "zsh" | "nc" | "ncat" | "netcat" | "socat" | "busybox"
+    )
+}
+
+#[cfg(test)]
+mod tests;

@@ -11,10 +11,10 @@ The default system configuration path is `/etc/vps-sentinel/config.toml`. A user
 - `[file_integrity]`: monitored paths, scan depth, and max file size.
 - `[web]`: web roots and access log paths.
 - `[process]`: process scan thresholds and suspicious directories.
-- `[network]`: listening port policy. `expected_public_ports` suppresses ordinary exposed-service noise, `high_risk_public_ports` controls ports that are risky when public, and `alert_on_new_listening_port` reports ordinary new listeners only when they appear relative to the stored baseline.
+- `[network]`: listening port policy. `expected_public_ports` suppresses ordinary exposed-service noise but still allows process-risk and baseline-owner checks, `high_risk_public_ports` controls ports that are risky when public, and `alert_on_new_listening_port` reports ordinary new listeners only when they appear relative to the stored baseline. `public_listen_allowlist` is kept as a legacy alias for expected public ports; use `[allowlist].listening_ports` to suppress all network findings for a port.
 - `[persistence]`: cron, systemd, shell profile, and preload monitoring.
 - `[docker]`: Docker risk flags.
-- `[notifications]`: shared notification options such as request timeout and message language. `language` accepts `en` or `zh_cn`.
+- `[notifications]`: shared notification options such as request timeout, message language, timestamp zone, and technical-field visibility. `language` accepts `en` or `zh_cn`; `time_zone` accepts `local` or `utc`; `include_technical_fields` controls rule ID, event ID, and dedup key display.
 - `[notifications.telegram]`: Telegram bot token, chat ID, and minimum severity.
 - `[notifications.email]`: SMTP host, port, TLS mode, optional credentials, sender, recipients, subject prefix, and minimum severity. `tls_mode` accepts `start_tls`, `tls`, or `none`; plaintext mode is only valid without SMTP credentials.
 - `[notifications.webhook]`: generic HTTP webhook URL, optional shared secret header, and minimum severity.

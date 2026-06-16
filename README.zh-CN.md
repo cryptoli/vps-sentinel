@@ -32,7 +32,7 @@
 | 文件完整性 | 监控关键路径和 Web 根目录；对限定大小内文件做哈希和内容扫描；检测关键文件变化、Web 目录可执行脚本、WebShell 风格特征。 |
 | 持久化检查 | 监控 cron、systemd、shell profile、`ld.so.preload` 等启动相关位置。 |
 | 进程检查 | 读取 procfs，识别临时目录执行、已删除可执行文件仍在运行、反向 shell 片段、挖矿和扫描器命令。 |
-| 网络检查 | 读取监听 socket 与所属进程；检测新增公网监听、非白名单端口和高风险服务端口暴露。 |
+| 网络检查 | 读取监听 socket 与所属进程；检测高风险公网服务、可疑监听进程、监听 owner 基线漂移和新增公网监听。22/80/443 等预期端口会降低噪音，但不会被无脑信任。 |
 | Web 日志 | 解析常见 access log 行，检测自动化漏洞探测路径。 |
 | Rootkit 信号 | 采集轻量级本地指标，用于发现隐藏进程和可疑 procfs 行为。 |
 | Docker 上下文 | 检测 Docker 可用性并给出初始容器攻击面提示；深度容器检查计划在后续版本增强。 |
@@ -63,7 +63,11 @@
 [notifications]
 request_timeout_seconds = 15
 language = "zh_cn" # en 或 zh_cn
+time_zone = "local" # local 或 utc
+include_technical_fields = false
 ```
+
+所选语言会影响字段名以及内置规则内容，包括告警标题、说明、影响和建议。时间会统一显示为 `YYYY-MM-DD HH:MM:SS +08:00` 本地时间格式，或 `YYYY-MM-DD HH:MM:SS UTC`。规则 ID、事件 ID、去重 Key 等技术字段默认隐藏；需要排障或自动化关联时可设置 `include_technical_fields = true`。
 
 告警标题会包含配置的 VPS 名称，方便多台服务器同时部署时快速区分来源：
 
@@ -342,8 +346,9 @@ public_listen_allowlist = [22, 80, 443]
 ```
 
 - `expected_public_ports` 用于压制 SSH、HTTP、HTTPS 等正常公网服务的通用监听噪音。
-- `high_risk_public_ports` 是可配置的高风险服务端口列表；除非显式加入白名单，否则会从当前 socket 状态直接告警。
-- `public_listen_allowlist` 和 `[allowlist].listening_ports` 会压制已确认合法的端口，包括有意公网暴露的高风险端口。
+- 预期端口不会被无脑信任。程序仍会检查持有端口的进程、可执行文件路径、命令行和基线 owner 漂移，因此伪装在 80/443 后面的可疑进程仍会触发 `NET-002` 或 `NET-003`。
+- `high_risk_public_ports` 是可配置的高风险服务端口列表；除非显式加入 `[allowlist].listening_ports`，否则会从当前 socket 状态直接告警。
+- `public_listen_allowlist` 作为旧配置兼容项处理，语义等同预期公网端口。只有 `[allowlist].listening_ports` 表示你明确希望压制该端口的所有网络告警。
 - `NET-001` 只会在普通公网端口相对已保存基线新增时触发，不会对每次扫描都存在的稳定监听端口重复告警。
 
 白名单示例：
@@ -359,19 +364,19 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 
 ## 告警内容
 
-每条告警包含：
+面向用户的告警默认包含：
 
-- event ID；
-- host ID；
-- 时间戳；
+- VPS 名称；
+- 主机 ID；
+- 规范化时间；
 - 模块/分类；
-- 规则 ID；
 - 风险等级；
 - 目标对象；
 - 证据；
 - 影响；
-- 建议；
-- 去重 key。
+- 建议。
+
+当 `notifications.include_technical_fields = true` 时，告警会额外包含规则 ID、事件 ID 和去重 Key。
 
 常见规则：
 
@@ -381,7 +386,9 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 - `USER-002`：UID 0 用户新增或变更。
 - `PERSIST-002`：可疑启动命令。
 - `PROC-003`：反向 shell 命令模式。
-- `NET-001`：公网监听端口。
+- `NET-001`：相对基线新增的公网监听端口。
+- `NET-002`：公网监听端口背后的进程相对基线发生变化。
+- `NET-003`：公网监听端口背后存在可疑进程。
 - `FILE-002`：WebShell 风格文件内容。
 - `CONFIG-003`：高危服务端口公网暴露。
 

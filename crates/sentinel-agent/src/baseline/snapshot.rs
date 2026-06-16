@@ -13,6 +13,8 @@ pub struct BaselineSnapshot {
     pub users: BTreeMap<String, UserBaseline>,
     pub persistence: BTreeMap<String, PersistenceBaseline>,
     pub listening_ports: BTreeSet<String>,
+    #[serde(default)]
+    pub listening_services: BTreeMap<String, ListenerBaseline>,
 }
 
 impl Default for BaselineSnapshot {
@@ -24,6 +26,7 @@ impl Default for BaselineSnapshot {
             users: BTreeMap::new(),
             persistence: BTreeMap::new(),
             listening_ports: BTreeSet::new(),
+            listening_services: BTreeMap::new(),
         }
     }
 }
@@ -81,19 +84,26 @@ impl BaselineSnapshot {
                     }
                 }
                 "listening_socket" => {
-                    let key = format!(
-                        "{}:{}:{}",
-                        event.field("protocol").unwrap_or_default(),
-                        event.field("local_addr").unwrap_or_default(),
-                        event.field("local_port").unwrap_or_default()
-                    );
-                    snapshot.listening_ports.insert(key);
+                    let key = listener_key(event);
+                    snapshot.listening_ports.insert(key.clone());
+                    snapshot
+                        .listening_services
+                        .insert(key, ListenerBaseline::from_event(event));
                 }
                 _ => {}
             }
         }
         snapshot
     }
+}
+
+pub fn listener_key(event: &RawEvent) -> String {
+    format!(
+        "{}:{}:{}",
+        event.field("protocol").unwrap_or_default(),
+        event.field("local_addr").unwrap_or_default(),
+        event.field("local_port").unwrap_or_default()
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +128,37 @@ pub struct PersistenceBaseline {
     pub persistence_type: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListenerBaseline {
+    pub protocol: String,
+    pub local_addr: String,
+    pub local_port: String,
+    pub process_name: String,
+    pub executable: String,
+}
+
+impl ListenerBaseline {
+    fn from_event(event: &RawEvent) -> Self {
+        Self {
+            protocol: event.field("protocol").unwrap_or_default().to_string(),
+            local_addr: event.field("local_addr").unwrap_or_default().to_string(),
+            local_port: event.field("local_port").unwrap_or_default().to_string(),
+            process_name: event.field("process_name").unwrap_or_default().to_string(),
+            executable: event.field("executable").unwrap_or_default().to_string(),
+        }
+    }
+
+    pub fn has_owner(&self) -> bool {
+        !self.process_name.is_empty() || !self.executable.is_empty()
+    }
+
+    pub fn owner_changed(&self, other: &Self) -> bool {
+        self.has_owner()
+            && other.has_owner()
+            && (self.process_name != other.process_name || self.executable != other.executable)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::BaselineSnapshot;
@@ -137,5 +178,22 @@ mod tests {
         let snapshot = BaselineSnapshot::from_events(&events);
         assert!(snapshot.files.contains_key("/etc/passwd"));
         assert!(snapshot.users.contains_key("root"));
+    }
+
+    #[test]
+    fn builds_listener_service_baseline() {
+        let event = RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "0.0.0.0")
+            .with_field("local_port", "443")
+            .with_field("process_name", "nginx")
+            .with_field("executable", "/usr/sbin/nginx");
+        let snapshot = BaselineSnapshot::from_events(&[event]);
+        let service = snapshot.listening_services.get("tcp:0.0.0.0:443");
+        assert!(service.is_some());
+        assert_eq!(
+            service.map(|item| item.process_name.as_str()),
+            Some("nginx")
+        );
     }
 }

@@ -1,6 +1,7 @@
 use crate::collectors::{CollectContext, Collector};
 use async_trait::async_trait;
 use sentinel_core::{RawEvent, SentinelResult};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -32,6 +33,7 @@ impl Collector for NetworkCollector {
                 .map_err(|err| sentinel_core::SentinelError::io(&path, err))?;
             events.extend(parse_proc_net(&text, protocol));
         }
+        enrich_socket_owners(&mut events, &ctx.scan_root);
         Ok(events)
     }
 }
@@ -46,7 +48,7 @@ pub fn parse_proc_net(text: &str, protocol: &str) -> Vec<RawEvent> {
 
 fn parse_proc_net_line(line: &str, protocol: &str) -> Option<RawEvent> {
     let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 4 {
+    if parts.len() < 10 {
         return None;
     }
     let state = parts[3];
@@ -61,8 +63,127 @@ fn parse_proc_net_line(line: &str, protocol: &str) -> Option<RawEvent> {
         RawEvent::new("network", "listening_socket")
             .with_field("protocol", protocol)
             .with_field("local_addr", local_addr)
-            .with_field("local_port", local_port.to_string()),
+            .with_field("local_port", local_port.to_string())
+            .with_field("inode", parts[9]),
     )
+}
+
+fn enrich_socket_owners(events: &mut [RawEvent], scan_root: &Path) {
+    let mut needed = events
+        .iter()
+        .filter_map(|event| event.field("inode").map(str::to_string))
+        .collect::<Vec<_>>();
+    needed.sort();
+    needed.dedup();
+    if needed.is_empty() {
+        return;
+    }
+    let owners = socket_owner_map(scan_root, &needed);
+    for event in events {
+        let Some(inode) = event.field("inode") else {
+            continue;
+        };
+        let Some(owner) = owners.get(inode) else {
+            continue;
+        };
+        event.fields.insert("pid".to_string(), owner.pid.clone());
+        event
+            .fields
+            .insert("process_name".to_string(), owner.name.clone());
+        event
+            .fields
+            .insert("executable".to_string(), owner.executable.clone());
+        event
+            .fields
+            .insert("cmdline".to_string(), owner.cmdline.clone());
+    }
+}
+
+fn socket_owner_map(scan_root: &Path, inodes: &[String]) -> BTreeMap<String, ProcessOwner> {
+    let wanted = inodes.iter().map(String::as_str).collect::<BTreeSet<_>>();
+    let proc_path = scan_root.join("proc");
+    let Ok(entries) = fs::read_dir(proc_path) else {
+        return BTreeMap::new();
+    };
+    let mut owners = BTreeMap::new();
+    for entry in entries.flatten() {
+        let pid = entry.file_name().to_string_lossy().to_string();
+        if !pid.chars().all(|ch| ch.is_ascii_digit()) {
+            continue;
+        }
+        let fd_path = entry.path().join("fd");
+        let Ok(fd_entries) = fs::read_dir(fd_path) else {
+            continue;
+        };
+        let mut matched_inodes = Vec::new();
+        for fd_entry in fd_entries.flatten() {
+            let Ok(target) = fs::read_link(fd_entry.path()) else {
+                continue;
+            };
+            let target = target.to_string_lossy();
+            let Some(inode) = parse_socket_inode(&target) else {
+                continue;
+            };
+            if wanted.contains(inode) {
+                matched_inodes.push(inode.to_string());
+            }
+        }
+        if matched_inodes.is_empty() {
+            continue;
+        }
+        let owner = ProcessOwner::from_pid_path(&pid, &entry.path());
+        for inode in matched_inodes {
+            owners.entry(inode).or_insert_with(|| owner.clone());
+        }
+    }
+    owners
+}
+
+fn parse_socket_inode(target: &str) -> Option<&str> {
+    target
+        .strip_prefix("socket:[")
+        .and_then(|value| value.strip_suffix(']'))
+        .filter(|value| !value.is_empty())
+}
+
+#[derive(Debug, Clone)]
+struct ProcessOwner {
+    pid: String,
+    name: String,
+    executable: String,
+    cmdline: String,
+}
+
+impl ProcessOwner {
+    fn from_pid_path(pid: &str, pid_path: &Path) -> Self {
+        Self {
+            pid: pid.to_string(),
+            name: read_trimmed(pid_path.join("comm")),
+            executable: fs::read_link(pid_path.join("exe"))
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            cmdline: read_cmdline(pid_path.join("cmdline")),
+        }
+    }
+}
+
+fn read_trimmed(path: impl AsRef<Path>) -> String {
+    fs::read_to_string(path)
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default()
+}
+
+fn read_cmdline(path: impl AsRef<Path>) -> String {
+    fs::read(path)
+        .map(|bytes| {
+            bytes
+                .split(|byte| *byte == 0)
+                .filter(|part| !part.is_empty())
+                .map(|part| String::from_utf8_lossy(part).to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default()
 }
 
 fn parse_proc_address(hex: &str) -> String {
@@ -85,7 +206,7 @@ fn parse_proc_address(hex: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_proc_net;
+    use super::{parse_proc_net, parse_socket_inode};
 
     #[test]
     fn parses_listening_tcp_socket() {
@@ -94,5 +215,12 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].field("local_addr"), Some("0.0.0.0"));
         assert_eq!(events[0].field("local_port"), Some("22"));
+        assert_eq!(events[0].field("inode"), Some("1"));
+    }
+
+    #[test]
+    fn parses_socket_inode_symlink() {
+        assert_eq!(parse_socket_inode("socket:[12345]"), Some("12345"));
+        assert_eq!(parse_socket_inode("pipe:[12345]"), None);
     }
 }

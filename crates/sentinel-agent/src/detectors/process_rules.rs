@@ -153,13 +153,17 @@ fn process_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
 }
 
 fn process_from_suspicious_dir(path: &str, ctx: &DetectContext) -> bool {
-    ctx.config.process.suspicious_dirs.iter().any(|dir| {
+    path_in_suspicious_dirs(path, &ctx.config.process.suspicious_dirs)
+}
+
+pub(crate) fn path_in_suspicious_dirs(path: &str, dirs: &[std::path::PathBuf]) -> bool {
+    dirs.iter().any(|dir| {
         let prefix = dir.to_string_lossy().replace('\\', "/");
         path == prefix || path.starts_with(&format!("{prefix}/"))
     })
 }
 
-fn contains_reverse_shell_pattern(command: &str) -> bool {
+pub(crate) fn contains_reverse_shell_pattern(command: &str) -> bool {
     let lowered = command.to_ascii_lowercase();
     [
         "/dev/tcp/",
@@ -173,7 +177,7 @@ fn contains_reverse_shell_pattern(command: &str) -> bool {
     .any(|marker| lowered.contains(marker))
 }
 
-fn contains_miner_or_scanner(command: &str) -> bool {
+pub(crate) fn contains_miner_or_scanner(command: &str) -> bool {
     let lowered = command.to_ascii_lowercase();
     ["xmrig", "kinsing", "masscan", "zmap"]
         .iter()

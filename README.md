@@ -32,7 +32,7 @@ It is not:
 | File integrity | Watches configured critical paths and web roots; hashes bounded file content; detects modified files, executable scripts in web roots, and WebShell-style markers. |
 | Persistence checks | Monitors cron, systemd, shell profile, and preload-related locations for new or suspicious startup entries. |
 | Process checks | Reads procfs to flag temporary-path executables, deleted executables still running, reverse-shell fragments, miners, and scanner-like commands. |
-| Network checks | Reads listening sockets; flags high-risk public service ports immediately and reports ordinary new public listeners only when they appear relative to the stored baseline. Expected web/SSH ports such as 22, 80, and 443 are quiet by default. |
+| Network checks | Reads listening sockets and owning process details; flags high-risk public services, suspicious listener processes, baseline owner drift, and ordinary new public listeners. Expected web/SSH ports such as 22, 80, and 443 reduce noise but are not blindly trusted. |
 | Web log checks | Parses common access log lines and detects common automated probing paths. |
 | Rootkit signals | Collects lightweight local indicators for hidden process and suspicious procfs behavior. |
 | Docker context | Detects Docker availability and emits initial container-surface context; deeper inspection is planned for later releases. |
@@ -63,7 +63,11 @@ Notification text supports English and Simplified Chinese:
 [notifications]
 request_timeout_seconds = 15
 language = "en" # en or zh_cn
+time_zone = "local" # local or utc
+include_technical_fields = false
 ```
+
+The selected language controls field labels and built-in rule content such as alert titles, descriptions, impact, and recommendations. Timestamps are rendered consistently as `YYYY-MM-DD HH:MM:SS +08:00` for local time or `YYYY-MM-DD HH:MM:SS UTC` for UTC. Technical identifiers such as rule ID, event ID, and dedup key are hidden by default; set `include_technical_fields = true` when you need them for support or automation.
 
 Alert subjects include the configured VPS name so multi-server deployments are easy to scan:
 
@@ -344,8 +348,9 @@ public_listen_allowlist = [22, 80, 443]
 ```
 
 - `expected_public_ports` suppresses generic public-listener noise for normal exposed services such as SSH, HTTP, and HTTPS.
-- `high_risk_public_ports` is the configurable high-risk service list. These ports are reported from the current socket state unless explicitly allowlisted.
-- `public_listen_allowlist` and `[allowlist].listening_ports` suppress network findings for approved ports, including high-risk ports that are intentionally exposed.
+- Expected ports are not blindly trusted. vps-sentinel still checks the owning process, executable path, command line, and baseline owner drift, so a suspicious process behind 80/443 can still produce `NET-002` or `NET-003`.
+- `high_risk_public_ports` is the configurable high-risk service list. These ports are reported from the current socket state unless explicitly allowlisted in `[allowlist].listening_ports`.
+- `public_listen_allowlist` is treated as a legacy alias for expected public ports. Use `[allowlist].listening_ports` only when you intentionally want to suppress all network findings for a port.
 - `NET-001` is emitted only for ordinary public ports that are new relative to the stored baseline, not for every stable listening socket on every scan.
 
 Allowlist example:
@@ -361,20 +366,19 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 
 ## Alert Format
 
-Every alert includes:
+User-facing alerts include:
 
-- event ID;
 - VPS display name;
 - host ID;
-- timestamp;
+- normalized timestamp;
 - module/category;
-- rule ID;
 - severity;
 - subject;
 - evidence;
 - impact;
 - recommendations;
-- dedup key.
+
+When `notifications.include_technical_fields = true`, alerts also include rule ID, event ID, and dedup key.
 
 Example rules:
 
@@ -385,6 +389,8 @@ Example rules:
 - `PERSIST-002`: Suspicious startup command detected.
 - `PROC-003`: Reverse shell command pattern detected.
 - `NET-001`: New public listening port detected relative to baseline.
+- `NET-002`: Public listener process changed relative to baseline.
+- `NET-003`: Suspicious process behind a public listener.
 - `FILE-002`: WebShell-like file content detected.
 - `CONFIG-003`: High-risk public service port exposed.
 

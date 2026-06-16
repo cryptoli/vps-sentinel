@@ -13,7 +13,7 @@ Security monitoring should be useful without waking users for expected operation
 ## Mitigation
 
 - Add expected users, IPs, ports, file paths, or process paths to `[allowlist]`.
-- Put normal public service ports such as HTTP/HTTPS in `network.expected_public_ports`; use `allowlist.listening_ports` only when a port should suppress all network findings, including high-risk exposure findings.
+- Put normal public service ports such as HTTP/HTTPS in `network.expected_public_ports`; they still receive process-risk and baseline-owner checks. Use `allowlist.listening_ports` only when a port should suppress all network findings, including high-risk exposure findings.
 - Keep baselines fresh after planned maintenance.
 - Route noisy rules at `Low` or `Medium`.
 - Investigate correlations before taking destructive action.

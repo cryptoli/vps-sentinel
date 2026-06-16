@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub mod bark;
+mod content;
 pub mod email;
 pub mod gotify;
 mod i18n;

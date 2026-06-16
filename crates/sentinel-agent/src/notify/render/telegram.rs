@@ -1,10 +1,12 @@
 use super::escape::html_escape;
-use super::{alert_fields, alert_lists, AlertRenderOptions};
+use super::{alert_fields, alert_lists, technical_fields, AlertRenderOptions};
+use crate::notify::content::LocalizedFinding;
 use crate::notify::i18n::MessageCatalog;
 use sentinel_core::Finding;
 
 pub(super) fn render_telegram_html(
     finding: &Finding,
+    display: &LocalizedFinding,
     subject: &str,
     catalog: &MessageCatalog,
     options: &AlertRenderOptions,
@@ -16,15 +18,15 @@ pub(super) fn render_telegram_html(
     out.push_str("<b>");
     out.push_str(&html_escape(subject));
     out.push_str("</b>\n\n");
-    for field in alert_fields(finding, catalog, options) {
+    for field in alert_fields(finding, display, catalog, options) {
         write_field(&mut out, field.label, field.value.as_ref());
     }
-    for list in alert_lists(finding, catalog) {
+    for list in alert_lists(finding, display, catalog, options) {
         write_list(&mut out, list.title, list.items);
     }
-    out.push('\n');
-    write_field(&mut out, catalog.event_id, &finding.id);
-    write_field(&mut out, catalog.dedup_key, &finding.dedup_key);
+    for field in technical_fields(finding, catalog, options) {
+        write_field(&mut out, field.label, field.value.as_ref());
+    }
     out
 }
 

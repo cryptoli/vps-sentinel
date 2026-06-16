@@ -10,7 +10,8 @@ fn renders_standard_alert_body() {
     let body = render_finding(&finding, NotificationFormat::PlainText);
     assert!(body.contains("VPS Sentinel Alert"));
     assert!(body.contains("[High] Root login"));
-    assert!(body.contains("Rule: SSH-001"));
+    assert!(!body.contains("Rule: SSH-001"));
+    assert!(!body.contains("Dedup Key:"));
     assert!(body.contains("Evidence:"));
 }
 
@@ -23,8 +24,9 @@ fn renders_chinese_alert_body() {
         NotificationLanguage::ZhCn,
     );
     assert!(body.contains("VPS Sentinel 告警"));
-    assert!(body.contains("[高危] Root login"));
-    assert!(body.contains("规则: SSH-001"));
+    assert!(body.contains("[高危] 检测到 root SSH 登录"));
+    assert!(body.contains("root 账号刚刚通过 SSH 成功认证"));
+    assert!(!body.contains("规则: SSH-001"));
     assert!(body.contains("证据:"));
 }
 
@@ -43,6 +45,36 @@ fn renders_configured_vps_name_in_subject() {
     let alert = render_alert_for_config(&sample_finding(), &config);
     assert!(alert.subject.starts_with("[prod-web-1][High]"));
     assert!(alert.plain_text.contains("VPS: prod-web-1"));
+}
+
+#[test]
+fn renders_technical_fields_only_when_enabled() {
+    let mut config = SentinelConfig::default();
+    let hidden = render_alert_for_config(&sample_finding(), &config);
+    assert!(!hidden.plain_text.contains("Dedup Key:"));
+
+    config.notifications.include_technical_fields = true;
+    let visible = render_alert_for_config(&sample_finding(), &config);
+    assert!(visible.plain_text.contains("Rule: SSH-001"));
+    assert!(visible.plain_text.contains("Dedup Key:"));
+}
+
+#[test]
+fn renders_normalized_utc_time() {
+    let mut config = SentinelConfig::default();
+    config.notifications.time_zone = sentinel_core::NotificationTimeZone::Utc;
+    let alert = render_alert_for_config(&sample_finding(), &config);
+    let time_line = alert
+        .plain_text
+        .lines()
+        .find(|line| line.starts_with("Time: "));
+    assert!(matches!(
+        time_line,
+        Some(line) if line
+            .strip_prefix("Time: ")
+            .and_then(|value| value.strip_suffix(" UTC"))
+            .is_some_and(|value| !value.contains('T'))
+    ));
 }
 
 #[test]
