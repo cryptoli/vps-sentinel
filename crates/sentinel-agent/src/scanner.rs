@@ -6,7 +6,9 @@ use crate::notify::{NotificationManager, NotifyContext};
 use crate::storage::SqliteStore;
 use crate::utils::redact::{mask_command_args, mask_ip, mask_ips_in_text};
 use chrono::{Duration, Local, Timelike, Utc};
-use sentinel_core::{Evidence, Finding, MinuteWindow, RawEvent, SentinelConfig, SentinelResult};
+use sentinel_core::{
+    Category, Evidence, Finding, MinuteWindow, RawEvent, SentinelConfig, SentinelResult,
+};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -109,13 +111,9 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     suppressed_duplicate_count += suppression.1;
     if options.persist {
         if let Some(store) = &store {
-            let suppression = suppress_recent_duplicates(
-                store,
-                findings,
-                config.noise_control.dedup_window_seconds,
-            )?;
+            let suppression = suppress_recent_duplicates(store, findings, &config)?;
             findings = suppression.0;
-            suppressed_duplicate_count = suppression.1;
+            suppressed_duplicate_count += suppression.1;
             if suppressed_duplicate_count > 0 {
                 debug!(
                     suppressed_duplicates = suppressed_duplicate_count,
@@ -366,20 +364,17 @@ fn redact_text(value: &str, config: &SentinelConfig) -> String {
 fn suppress_recent_duplicates(
     store: &SqliteStore,
     findings: Vec<Finding>,
-    dedup_window_seconds: u64,
+    config: &SentinelConfig,
 ) -> SentinelResult<(Vec<Finding>, usize)> {
-    if dedup_window_seconds == 0 {
-        return Ok((findings, 0));
-    }
-    let seconds = if dedup_window_seconds > i64::MAX as u64 {
-        i64::MAX
-    } else {
-        dedup_window_seconds as i64
-    };
-    let since = Utc::now() - Duration::seconds(seconds);
     let mut retained = Vec::new();
     let mut suppressed = 0;
     for finding in findings {
+        let window_seconds = duplicate_suppression_window_seconds(&finding, config);
+        if window_seconds == 0 {
+            retained.push(finding);
+            continue;
+        }
+        let since = Utc::now() - Duration::seconds(duration_seconds(window_seconds));
         if !store.finding_seen_since(&finding.dedup_key, since)? {
             retained.push(finding);
         } else {
@@ -387,6 +382,39 @@ fn suppress_recent_duplicates(
         }
     }
     Ok((retained, suppressed))
+}
+
+fn duplicate_suppression_window_seconds(finding: &Finding, config: &SentinelConfig) -> u64 {
+    if is_state_finding(finding) {
+        return config
+            .noise_control
+            .dedup_window_seconds
+            .max(config.noise_control.state_reminder_interval_seconds);
+    }
+    config.noise_control.dedup_window_seconds
+}
+
+fn duration_seconds(seconds: u64) -> i64 {
+    if seconds > i64::MAX as u64 {
+        i64::MAX
+    } else {
+        seconds as i64
+    }
+}
+
+fn is_state_finding(finding: &Finding) -> bool {
+    matches!(
+        finding.category,
+        Category::ConfigRisk
+            | Category::Docker
+            | Category::FileIntegrity
+            | Category::Network
+            | Category::Persistence
+            | Category::Privilege
+            | Category::Process
+            | Category::Rootkit
+            | Category::User
+    ) || finding.rule_id == "SSH-005"
 }
 
 fn suppress_in_scan_duplicates(findings: Vec<Finding>) -> (Vec<Finding>, usize) {

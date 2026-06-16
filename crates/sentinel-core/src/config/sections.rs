@@ -272,6 +272,7 @@ impl Default for DockerConfig {
 #[serde(default)]
 pub struct NoiseControlConfig {
     pub dedup_window_seconds: u64,
+    pub state_reminder_interval_seconds: u64,
     pub max_alerts_per_hour: u32,
     pub rate_limit_bypass_min_severity: Severity,
     pub quiet_hours_bypass_min_severity: Severity,
@@ -282,6 +283,7 @@ impl Default for NoiseControlConfig {
     fn default() -> Self {
         Self {
             dedup_window_seconds: 3600,
+            state_reminder_interval_seconds: 86400,
             max_alerts_per_hour: 30,
             rate_limit_bypass_min_severity: Severity::High,
             quiet_hours_bypass_min_severity: Severity::High,

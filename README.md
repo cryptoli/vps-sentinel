@@ -415,12 +415,13 @@ Noise control:
 ```toml
 [noise_control]
 dedup_window_seconds = 3600
+state_reminder_interval_seconds = 86400
 max_alerts_per_hour = 30
 rate_limit_bypass_min_severity = "High"
 quiet_hours_bypass_min_severity = "High"
 ```
 
-`dedup_window_seconds` suppresses repeated findings with the same stable dedup key. The default one-hour window is intended to prevent persistent host-state risks from sending the same message every few minutes while still allowing new subjects, sources, or rules to notify. `max_alerts_per_hour` limits lower-severity notification volume; findings at or above `rate_limit_bypass_min_severity` bypass that hourly budget so high-value signals such as `SSH-005` are still delivered during noisy periods. When `quiet_hours` is active, findings below `quiet_hours_bypass_min_severity` are suppressed; the default keeps High and Critical alerts visible.
+`dedup_window_seconds` suppresses repeated event findings with the same stable dedup key. `state_reminder_interval_seconds` applies to durable state findings such as risky SSH configuration, Docker socket presence, baseline drift, persistent processes, and webshell-like files; the default 24-hour interval prevents unchanged host state from sending the same message after every restart or hourly scan. New subjects, sources, or rule evidence still create distinct findings. `max_alerts_per_hour` limits lower-severity notification volume; findings at or above `rate_limit_bypass_min_severity` bypass that hourly budget so high-value signals such as `SSH-005` are still delivered during noisy periods. When `quiet_hours` is active, findings below `quiet_hours_bypass_min_severity` are suppressed; the default keeps High and Critical alerts visible.
 
 Allowlist example:
 

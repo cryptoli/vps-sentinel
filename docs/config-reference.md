@@ -22,11 +22,11 @@ The default system configuration path is `/etc/vps-sentinel/config.toml`. A user
 - `[notifications.gotify]`: Gotify server, app token, and minimum severity.
 - `[notifications.bark]`: Bark server, device key, and minimum severity.
 - `[notifications.serverchan]`: ServerChan send key and minimum severity.
-- `[noise_control]`: dedup and alert volume controls. `rate_limit_bypass_min_severity` and `quiet_hours_bypass_min_severity` default to `High`, so high-value alerts bypass the hourly budget and quiet-hours suppression.
+- `[noise_control]`: dedup, durable-state reminder, and alert volume controls. `rate_limit_bypass_min_severity` and `quiet_hours_bypass_min_severity` default to `High`, so high-value alerts bypass the hourly budget and quiet-hours suppression.
 - `[allowlist]`: trusted users, IPs, paths, ports, and specific process command fragments. Use `process_command_contains` for known-good long-running commands whose full path is not stable enough for `process_paths`.
 
 `noise_control.quiet_hours` entries use local server time in `HH:MM-HH:MM` format. Time windows may wrap across midnight, for example `["22:00-07:00"]`. During quiet hours, findings below `noise_control.quiet_hours_bypass_min_severity` are suppressed while findings at or above that severity still notify.
 
-`noise_control.dedup_window_seconds` defaults to 3600 seconds and suppresses repeated findings with the same stable dedup key. `noise_control.max_alerts_per_hour` limits notification delivery attempts below `rate_limit_bypass_min_severity` across enabled channels. Attempts are counted from local SQLite notification logs.
+`noise_control.dedup_window_seconds` defaults to 3600 seconds and suppresses repeated event findings with the same stable dedup key. `noise_control.state_reminder_interval_seconds` defaults to 86400 seconds and applies to durable state findings such as risky SSH configuration, Docker socket presence, baseline drift, persistent processes, and webshell-like files. This prevents unchanged host state from sending the same notification after every restart or hourly scan while still allowing new subjects, sources, or evidence to notify. `noise_control.max_alerts_per_hour` limits notification delivery attempts below `rate_limit_bypass_min_severity` across enabled channels. Attempts are counted from local SQLite notification logs.
 
 See [config/config.example.toml](../config/config.example.toml) for a complete example.

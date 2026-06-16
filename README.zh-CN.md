@@ -413,12 +413,13 @@ suspicious_command_min_score = 70
 ```toml
 [noise_control]
 dedup_window_seconds = 3600
+state_reminder_interval_seconds = 86400
 max_alerts_per_hour = 30
 rate_limit_bypass_min_severity = "High"
 quiet_hours_bypass_min_severity = "High"
 ```
 
-`dedup_window_seconds` 会抑制相同稳定去重 Key 的重复 finding。默认 1 小时窗口用于避免持续存在的主机状态风险每几分钟重复发消息，同时仍允许新的目标、来源或规则正常通知。`max_alerts_per_hour` 只限制较低等级通知的发送量；达到或高于 `rate_limit_bypass_min_severity` 的 finding 会绕过小时预算，因此 `SSH-005` 这类高价值信号在噪声较多时仍会发送。启用 `quiet_hours` 后，低于 `quiet_hours_bypass_min_severity` 的 finding 会被安静时段抑制；默认仍保留 High 和 Critical 通知。
+`dedup_window_seconds` 会抑制相同稳定去重 Key 的重复事件型 finding。`state_reminder_interval_seconds` 用于持续存在的状态型 finding，例如高风险 SSH 配置、Docker socket 存在、基线漂移、长驻可疑进程和 WebShell 风格文件；默认 24 小时间隔可以避免不变的主机状态在每次重启或每小时扫描后重复发相同消息。新的目标、来源或规则证据仍会生成独立 finding。`max_alerts_per_hour` 只限制较低等级通知的发送量；达到或高于 `rate_limit_bypass_min_severity` 的 finding 会绕过小时预算，因此 `SSH-005` 这类高价值信号在噪声较多时仍会发送。启用 `quiet_hours` 后，低于 `quiet_hours_bypass_min_severity` 的 finding 会被安静时段抑制；默认仍保留 High 和 Critical 通知。
 
 白名单示例：
 

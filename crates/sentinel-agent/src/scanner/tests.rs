@@ -1,4 +1,9 @@
-use super::{quiet_hours_allowed_findings, redact_findings, suppress_in_scan_duplicates};
+use super::{
+    duplicate_suppression_window_seconds, quiet_hours_allowed_findings, redact_findings,
+    suppress_in_scan_duplicates, suppress_recent_duplicates,
+};
+use crate::storage::SqliteStore;
+use chrono::{Duration, Utc};
 use sentinel_core::{Category, Evidence, Finding, SentinelConfig, Severity};
 
 #[test]
@@ -55,6 +60,103 @@ fn suppresses_duplicate_findings_within_one_scan() {
 
     assert_eq!(retained.len(), 1);
     assert_eq!(suppressed, 1);
+}
+
+#[test]
+fn state_findings_use_longer_reminder_window() {
+    let mut config = SentinelConfig::default();
+    config.noise_control.dedup_window_seconds = 3600;
+    config.noise_control.state_reminder_interval_seconds = 86400;
+
+    let state_finding = Finding::new(
+        "host",
+        "SSH password authentication enabled",
+        "Password login is enabled.",
+        Severity::Medium,
+        Category::ConfigRisk,
+        "CONFIG-001",
+        "/etc/ssh/sshd_config",
+    );
+    let event_finding = Finding::new(
+        "host",
+        "Root SSH login detected",
+        "Root logged in through SSH.",
+        Severity::High,
+        Category::Ssh,
+        "SSH-001",
+        "root@203.0.113.10",
+    );
+    let ssh_key_drift = Finding::new(
+        "host",
+        "authorized_keys modified",
+        "authorized_keys changed.",
+        Severity::High,
+        Category::Ssh,
+        "SSH-005",
+        "/root/.ssh/authorized_keys",
+    );
+
+    assert_eq!(
+        duplicate_suppression_window_seconds(&state_finding, &config),
+        86400
+    );
+    assert_eq!(
+        duplicate_suppression_window_seconds(&ssh_key_drift, &config),
+        86400
+    );
+    assert_eq!(
+        duplicate_suppression_window_seconds(&event_finding, &config),
+        3600
+    );
+}
+
+#[test]
+fn state_duplicates_are_suppressed_after_event_window() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+    let mut config = SentinelConfig::default();
+    config.noise_control.dedup_window_seconds = 3600;
+    config.noise_control.state_reminder_interval_seconds = 86400;
+
+    let mut previous_state = Finding::new(
+        "host",
+        "SSH password authentication enabled",
+        "Password login is enabled.",
+        Severity::Medium,
+        Category::ConfigRisk,
+        "CONFIG-001",
+        "/etc/ssh/sshd_config",
+    );
+    previous_state.timestamp = Utc::now() - Duration::hours(2);
+    store.save_findings(std::slice::from_ref(&previous_state))?;
+
+    let mut next_state = previous_state.clone();
+    next_state.id = "next-state-finding".to_string();
+    next_state.timestamp = Utc::now();
+    let (retained, suppressed) = suppress_recent_duplicates(&store, vec![next_state], &config)?;
+    assert!(retained.is_empty());
+    assert_eq!(suppressed, 1);
+
+    let mut previous_event = Finding::new(
+        "host",
+        "Root SSH login detected",
+        "Root logged in through SSH.",
+        Severity::High,
+        Category::Ssh,
+        "SSH-001",
+        "root@203.0.113.10",
+    );
+    previous_event.timestamp = Utc::now() - Duration::hours(2);
+    store.save_findings(std::slice::from_ref(&previous_event))?;
+
+    let mut next_event = previous_event.clone();
+    next_event.id = "next-event-finding".to_string();
+    next_event.timestamp = Utc::now();
+    let (retained, suppressed) = suppress_recent_duplicates(&store, vec![next_event], &config)?;
+    assert_eq!(retained.len(), 1);
+    assert_eq!(suppressed, 0);
+
+    Ok(())
 }
 
 #[test]

@@ -26,7 +26,7 @@ Transport note: the matrix verifies every rule's rendered Telegram HTML payload 
 | Rule ID uniqueness and format | Passed |
 | Rust formatting | Passed |
 | Clippy with warnings denied | Passed |
-| Workspace tests | Passed: 97 tests |
+| Workspace tests | Passed: 99 tests |
 | Locked release build | Passed |
 | Installer/update/reload/stop script syntax | Passed |
 | Secret scan for provided Telegram credentials | Passed |
@@ -83,7 +83,9 @@ For every positive finding, the automated matrix verifies:
 
 No new detector false-positive or false-negative behavior was found by the matrix. The main gap was test coverage: previous tests covered many individual rule families, but not a single full-rule matrix with positive and negative cases for every built-in rule. That gap is now covered by `detectors::rule_matrix_tests::every_builtin_risk_rule_has_positive_and_negative_coverage`.
 
-The review did not identify a reason to change runtime detector logic in this round. Existing detector modules already separate collection, rule evaluation, risk scoring, finding coalescing, notification rendering, and delivery concerns. This change keeps runtime behavior unchanged and adds a regression guard around every built-in rule so later tuning is less likely to reintroduce noisy or missing detections.
+The VPS notification log review found a noise-control issue: durable state findings such as `CONFIG-001`, `CONFIG-004`, and `DOCKER-001` were correctly detected but could notify again after the one-hour event deduplication window elapsed. Runtime detection was correct, but the reminder policy was too noisy for unchanged host state. This round adds `noise_control.state_reminder_interval_seconds` with a default of 86400 seconds and applies it to durable state findings while leaving event findings, such as SSH logins, on the existing event deduplication window.
+
+The review did not identify a reason to change detector rule logic in this round. Existing detector modules already separate collection, rule evaluation, risk scoring, finding coalescing, notification rendering, and delivery concerns. The detector behavior is unchanged; the runtime noise-control policy now treats durable state findings differently from event findings.
 
 ## Commands
 
