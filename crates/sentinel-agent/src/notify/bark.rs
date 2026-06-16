@@ -1,4 +1,6 @@
-use crate::notify::{render_finding, NotificationFormat, Notifier, NotifyContext};
+use crate::notify::{
+    http_client, render_finding, transport_error, NotificationFormat, Notifier, NotifyContext,
+};
 use async_trait::async_trait;
 use sentinel_core::{BarkConfig, SentinelError, SentinelResult, Severity};
 use serde_json::json;
@@ -9,10 +11,10 @@ pub struct BarkNotifier {
 }
 
 impl BarkNotifier {
-    pub fn new(config: BarkConfig) -> Self {
+    pub fn new(config: BarkConfig, timeout_seconds: u64) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
+            client: http_client(timeout_seconds),
         }
     }
 }
@@ -48,7 +50,7 @@ impl Notifier for BarkNotifier {
             }))
             .send()
             .await
-            .map_err(|err| SentinelError::Notify(err.to_string()))?;
+            .map_err(|err| transport_error(self.name(), err))?;
         if !response.status().is_success() {
             return Err(SentinelError::Notify(format!(
                 "bark returned HTTP {}",

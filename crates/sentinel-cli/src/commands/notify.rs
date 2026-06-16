@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::Subcommand;
 use sentinel_agent::notify::{NotificationManager, NotifyContext};
 use sentinel_core::{Category, Evidence, Finding, SentinelConfig, Severity};
@@ -34,11 +34,18 @@ pub async fn run_notify(config: SentinelConfig, command: NotifyCommand) -> Resul
                 config: Arc::new(config),
             };
             let results = manager.notify_all(&[finding], &ctx).await;
-            for (channel, result) in results {
+            let mut failures = 0;
+            for (_finding_id, channel, result) in results {
                 match result {
                     Ok(()) => println!("{channel}: ok"),
-                    Err(err) => println!("{channel}: failed: {err}"),
+                    Err(err) => {
+                        failures += 1;
+                        println!("{channel}: failed: {err}");
+                    }
                 }
+            }
+            if failures > 0 {
+                bail!("{failures} notification channel(s) failed");
             }
         }
     }

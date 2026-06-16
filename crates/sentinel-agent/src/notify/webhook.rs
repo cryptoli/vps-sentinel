@@ -1,4 +1,4 @@
-use crate::notify::{Notifier, NotifyContext};
+use crate::notify::{http_client, transport_error, Notifier, NotifyContext};
 use async_trait::async_trait;
 use sentinel_core::{SentinelError, SentinelResult, Severity, WebhookConfig};
 
@@ -8,10 +8,10 @@ pub struct WebhookNotifier {
 }
 
 impl WebhookNotifier {
-    pub fn new(config: WebhookConfig) -> Self {
+    pub fn new(config: WebhookConfig, timeout_seconds: u64) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
+            client: http_client(timeout_seconds),
         }
     }
 }
@@ -43,7 +43,7 @@ impl Notifier for WebhookNotifier {
         let response = request
             .send()
             .await
-            .map_err(|err| SentinelError::Notify(err.to_string()))?;
+            .map_err(|err| transport_error(self.name(), err))?;
         if !response.status().is_success() {
             return Err(SentinelError::Notify(format!(
                 "webhook returned HTTP {}",

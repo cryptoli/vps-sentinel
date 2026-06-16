@@ -46,11 +46,11 @@ impl Notifier for EmailNotifier {
         }
         let message = builder
             .body(render_finding(finding, NotificationFormat::PlainText))
-            .map_err(|err| SentinelError::Notify(err.to_string()))?;
+            .map_err(|_| SentinelError::Notify("email message build failed".to_string()))?;
 
         let mut transport_builder =
             AsyncSmtpTransport::<Tokio1Executor>::relay(&self.config.smtp_host)
-                .map_err(|err| SentinelError::Notify(err.to_string()))?
+                .map_err(|_| SentinelError::Notify("email smtp relay is invalid".to_string()))?
                 .port(self.config.smtp_port);
         if !self.config.username.is_empty() {
             transport_builder = transport_builder.credentials(Credentials::new(
@@ -62,7 +62,7 @@ impl Notifier for EmailNotifier {
         transport
             .send(message)
             .await
-            .map_err(|err| SentinelError::Notify(err.to_string()))?;
+            .map_err(|_| SentinelError::Notify("email send failed".to_string()))?;
         Ok(())
     }
 }

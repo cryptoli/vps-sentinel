@@ -1,6 +1,9 @@
-use crate::notify::{render_finding, NotificationFormat, Notifier, NotifyContext};
+use crate::notify::{
+    http_client, render_finding, transport_error, NotificationFormat, Notifier, NotifyContext,
+};
 use async_trait::async_trait;
 use sentinel_core::{SentinelError, SentinelResult, Severity, TelegramConfig};
+use serde::Deserialize;
 use serde_json::json;
 
 pub struct TelegramNotifier {
@@ -8,11 +11,16 @@ pub struct TelegramNotifier {
     client: reqwest::Client,
 }
 
+#[derive(Debug, Deserialize)]
+struct TelegramErrorResponse {
+    description: Option<String>,
+}
+
 impl TelegramNotifier {
-    pub fn new(config: TelegramConfig) -> Self {
+    pub fn new(config: TelegramConfig, timeout_seconds: u64) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
+            client: http_client(timeout_seconds),
         }
     }
 }
@@ -52,11 +60,18 @@ impl Notifier for TelegramNotifier {
             .json(&body)
             .send()
             .await
-            .map_err(|err| SentinelError::Notify(err.to_string()))?;
-        if !response.status().is_success() {
+            .map_err(|err| transport_error(self.name(), err))?;
+        let status = response.status();
+        if !status.is_success() {
+            let description = response
+                .json::<TelegramErrorResponse>()
+                .await
+                .ok()
+                .and_then(|body| body.description)
+                .filter(|text| !text.trim().is_empty())
+                .unwrap_or_else(|| "no response description".to_string());
             return Err(SentinelError::Notify(format!(
-                "telegram returned HTTP {}",
-                response.status()
+                "telegram returned HTTP {status}: {description}"
             )));
         }
         Ok(())

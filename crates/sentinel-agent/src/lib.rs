@@ -7,7 +7,6 @@ pub mod detectors;
 pub mod notify;
 pub mod rules;
 pub mod scanner;
-pub mod scheduler;
 pub mod storage;
 pub mod utils;
 

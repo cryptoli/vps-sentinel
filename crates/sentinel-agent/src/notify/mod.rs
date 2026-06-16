@@ -1,6 +1,7 @@
 use async_trait::async_trait;
-use sentinel_core::{Finding, SentinelConfig, SentinelResult, Severity};
+use sentinel_core::{Finding, SentinelConfig, SentinelError, SentinelResult, Severity};
 use std::sync::Arc;
+use std::time::Duration;
 
 pub mod bark;
 pub mod email;
@@ -33,6 +34,33 @@ pub trait Notifier: Send + Sync {
     async fn notify(&self, finding: &Finding, ctx: &NotifyContext) -> SentinelResult<()>;
 }
 
+pub(crate) fn transport_error(channel: &str, err: reqwest::Error) -> SentinelError {
+    let reason = if err.is_timeout() {
+        "timeout"
+    } else if err.is_connect() {
+        "connection failed"
+    } else if err.is_redirect() {
+        "redirect error"
+    } else if err.is_builder() {
+        "invalid request"
+    } else if err.is_decode() {
+        "response decode error"
+    } else {
+        "request failed"
+    };
+    SentinelError::Notify(format!("{channel} request failed: {reason}"))
+}
+
+pub(crate) fn http_client(timeout_seconds: u64) -> reqwest::Client {
+    match reqwest::Client::builder()
+        .timeout(Duration::from_secs(timeout_seconds))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => reqwest::Client::new(),
+    }
+}
+
 /// Sends findings to all enabled channels that pass severity routing.
 pub struct NotificationManager {
     notifiers: Vec<Box<dyn Notifier>>,
@@ -41,9 +69,11 @@ pub struct NotificationManager {
 impl NotificationManager {
     pub fn from_config(config: &SentinelConfig) -> Self {
         let mut notifiers: Vec<Box<dyn Notifier>> = Vec::new();
+        let timeout_seconds = config.notifications.request_timeout_seconds;
         if config.notifications.telegram.enabled {
             notifiers.push(Box::new(telegram::TelegramNotifier::new(
                 config.notifications.telegram.clone(),
+                timeout_seconds,
             )));
         }
         if config.notifications.email.enabled {
@@ -54,26 +84,31 @@ impl NotificationManager {
         if config.notifications.webhook.enabled {
             notifiers.push(Box::new(webhook::WebhookNotifier::new(
                 config.notifications.webhook.clone(),
+                timeout_seconds,
             )));
         }
         if config.notifications.ntfy.enabled {
             notifiers.push(Box::new(ntfy::NtfyNotifier::new(
                 config.notifications.ntfy.clone(),
+                timeout_seconds,
             )));
         }
         if config.notifications.gotify.enabled {
             notifiers.push(Box::new(gotify::GotifyNotifier::new(
                 config.notifications.gotify.clone(),
+                timeout_seconds,
             )));
         }
         if config.notifications.bark.enabled {
             notifiers.push(Box::new(bark::BarkNotifier::new(
                 config.notifications.bark.clone(),
+                timeout_seconds,
             )));
         }
         if config.notifications.serverchan.enabled {
             notifiers.push(Box::new(serverchan::ServerChanNotifier::new(
                 config.notifications.serverchan.clone(),
+                timeout_seconds,
             )));
         }
         Self { notifiers }
@@ -87,12 +122,13 @@ impl NotificationManager {
         &self,
         findings: &[Finding],
         ctx: &NotifyContext,
-    ) -> Vec<(String, SentinelResult<()>)> {
+    ) -> Vec<(String, String, SentinelResult<()>)> {
         let mut results = Vec::new();
         for finding in findings {
             for notifier in &self.notifiers {
                 if finding.severity.meets(notifier.minimum_severity()) {
                     results.push((
+                        finding.id.clone(),
                         notifier.name().to_string(),
                         notifier.notify(finding, ctx).await,
                     ));

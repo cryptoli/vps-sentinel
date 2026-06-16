@@ -33,12 +33,18 @@ pub fn run_doctor(config: SentinelConfig) -> Result<()> {
 fn running_as_root() -> bool {
     #[cfg(unix)]
     {
-        std::process::Command::new("id")
-            .arg("-u")
-            .output()
+        fs::read_to_string("/proc/self/status")
             .ok()
-            .and_then(|output| String::from_utf8(output.stdout).ok())
-            .map(|uid| uid.trim() == "0")
+            .and_then(|status| {
+                status.lines().find_map(|line| {
+                    line.strip_prefix("Uid:").and_then(|value| {
+                        value
+                            .split_whitespace()
+                            .next()
+                            .map(|effective_uid| effective_uid == "0")
+                    })
+                })
+            })
             .unwrap_or(false)
     }
     #[cfg(not(unix))]

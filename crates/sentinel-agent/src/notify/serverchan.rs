@@ -1,4 +1,6 @@
-use crate::notify::{render_finding, NotificationFormat, Notifier, NotifyContext};
+use crate::notify::{
+    http_client, render_finding, transport_error, NotificationFormat, Notifier, NotifyContext,
+};
 use async_trait::async_trait;
 use sentinel_core::{SentinelError, SentinelResult, ServerChanConfig, Severity};
 
@@ -8,10 +10,10 @@ pub struct ServerChanNotifier {
 }
 
 impl ServerChanNotifier {
-    pub fn new(config: ServerChanConfig) -> Self {
+    pub fn new(config: ServerChanConfig, timeout_seconds: u64) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
+            client: http_client(timeout_seconds),
         }
     }
 }
@@ -49,7 +51,7 @@ impl Notifier for ServerChanNotifier {
             ])
             .send()
             .await
-            .map_err(|err| SentinelError::Notify(err.to_string()))?;
+            .map_err(|err| transport_error(self.name(), err))?;
         if !response.status().is_success() {
             return Err(SentinelError::Notify(format!(
                 "serverchan returned HTTP {}",

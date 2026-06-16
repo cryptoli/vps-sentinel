@@ -1,5 +1,5 @@
 use crate::baseline::BaselineSnapshot;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use sentinel_core::{Finding, RawEvent, SentinelError, SentinelResult};
 use std::fs;
@@ -125,6 +125,27 @@ impl SqliteStore {
         Ok(None)
     }
 
+    pub fn finding_seen_since(
+        &self,
+        dedup_key: &str,
+        since: DateTime<Utc>,
+    ) -> SentinelResult<bool> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT 1 FROM findings
+                 WHERE dedup_key = ?1 AND timestamp >= ?2
+                 LIMIT 1",
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        let mut rows = stmt
+            .query(params![dedup_key, since.to_rfc3339()])
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        rows.next()
+            .map(|row| row.is_some())
+            .map_err(|err| SentinelError::Storage(err.to_string()))
+    }
+
     pub fn save_baseline_snapshot(&self, snapshot: &BaselineSnapshot) -> SentinelResult<()> {
         let conn = self.connection()?;
         let payload = serde_json::to_string(snapshot)
@@ -183,6 +204,30 @@ impl SqliteStore {
                 raw_count as i64,
                 finding_count as i64,
                 status
+            ],
+        )
+        .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        Ok(())
+    }
+
+    pub fn record_notification_log(
+        &self,
+        finding_id: &str,
+        channel: &str,
+        status: &str,
+        error: &str,
+    ) -> SentinelResult<()> {
+        let conn = self.connection()?;
+        conn.execute(
+            "INSERT INTO notification_logs (id, finding_id, channel, status, attempted_at, error)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                finding_id,
+                channel,
+                status,
+                Utc::now().to_rfc3339(),
+                error
             ],
         )
         .map_err(|err| SentinelError::Storage(err.to_string()))?;

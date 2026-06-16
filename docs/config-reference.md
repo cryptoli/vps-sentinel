@@ -14,6 +14,7 @@ The default system configuration path is `/etc/vps-sentinel/config.toml`. A user
 - `[network]`: listening port policy.
 - `[persistence]`: cron, systemd, shell profile, and preload monitoring.
 - `[docker]`: Docker risk flags.
+- `[notifications]`: shared notification options such as HTTP request timeout.
 - `[notifications.*]`: channel-specific credentials and minimum severity.
 - `[noise_control]`: dedup and alert volume controls.
 - `[allowlist]`: trusted users, IPs, paths, and ports.

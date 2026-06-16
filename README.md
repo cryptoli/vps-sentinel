@@ -4,7 +4,7 @@ Lightweight Rust intrusion-signal monitoring for Linux VPS hosts.
 
 `vps-sentinel` helps VPS owners discover suspicious SSH logins, changed `authorized_keys`, unexpected users, privilege changes, startup persistence, suspicious processes, new public listening ports, WebShell-like files, web probing, and common risky configuration. It is local-first, transparent, and designed for small servers instead of heavyweight SIEM/EDR deployments.
 
-[中文说明](README.zh-CN.md)
+[????](README.zh-CN.md)
 
 ![CI](https://github.com/cryptoli/vps-sentinel/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
@@ -22,22 +22,60 @@ It is not:
 - a C2, backdoor, or stealth tool;
 - a guarantee that a host is clean.
 
-## Features
+## Supported Features
 
-- Single Rust CLI binary: `vps-sentinel`.
-- Local SQLite storage.
-- TOML configuration.
-- JSON structured logging.
-- Baseline create/show/diff/reset.
-- SSH auth log parsing for Debian/Ubuntu and RHEL-family logs.
-- `authorized_keys`, user, cron, systemd, shell profile, and file integrity drift detection.
-- Process anomaly checks for temporary-path executables, deleted executables, reverse-shell patterns, miners, and scanners.
-- Network listener checks for public ports and risky service ports.
-- Web access log checks for common vulnerability probes.
-- WebShell-like file marker detection with bounded content scanning.
-- Unified `Finding` model with severity, rule ID, evidence, impact, recommendations, and dedup key.
-- Pluggable notifier trait with Telegram, Email SMTP, Webhook, ntfy, Gotify, Bark, and ServerChan implementations.
-- systemd unit, one-command installer, and update script.
+| Area | What vps-sentinel supports |
+| --- | --- |
+| SSH monitoring | Parses Debian/Ubuntu and RHEL-family auth logs; detects root SSH login, password login, brute-force patterns, new login source IPs, and `authorized_keys` drift. |
+| Baseline drift | Creates local baselines for users, SSH keys, critical files, persistence entries, and listeners; compares future scans against the stored baseline. |
+| User and privilege checks | Detects new users, UID 0 users, and privilege-relevant user changes. |
+| File integrity | Watches configured critical paths and web roots; hashes bounded file content; detects modified files, executable scripts in web roots, and WebShell-style markers. |
+| Persistence checks | Monitors cron, systemd, shell profile, and preload-related locations for new or suspicious startup entries. |
+| Process checks | Reads procfs to flag temporary-path executables, deleted executables still running, reverse-shell fragments, miners, and scanner-like commands. |
+| Network checks | Reads listening sockets and owning processes; flags new public listeners, non-allowlisted ports, and high-risk public service ports. |
+| Web log checks | Parses common access log lines and detects common automated probing paths. |
+| Rootkit signals | Collects lightweight local indicators for hidden process and suspicious procfs behavior. |
+| Docker context | Detects Docker availability and emits initial container-surface context; deeper inspection is planned for later releases. |
+| Storage | Stores raw events, findings, baselines, and notification logs in local SQLite. |
+| Noise control | Uses allowlists, minimum severity, finding deduplication, and configurable retention windows. |
+| Notifications | Sends alerts through Telegram, Email SMTP, generic webhook, ntfy, Gotify, Bark, and ServerChan. |
+| Operations | Provides a single CLI binary, JSON logs, systemd unit, one-command installer, and update script. |
+
+## Notification Channels
+
+All notification channels are disabled by default. Enable only the channels you need in `config.toml`.
+
+| Channel | Config section | Required fields | Typical use |
+| --- | --- | --- | --- |
+| Telegram | `[notifications.telegram]` | `enabled`, `bot_token`, `chat_id` | Personal or team security alerts through a Telegram bot. |
+| Email SMTP | `[notifications.email]` | `enabled`, `smtp_host`, `smtp_port`, `username`, `password`, `from`, `to` | Traditional mailbox alerts for operations teams. |
+| Webhook | `[notifications.webhook]` | `enabled`, `url` | Custom HTTP receivers, automation platforms, or self-hosted alert routers. |
+| ntfy | `[notifications.ntfy]` | `enabled`, `server`, `topic` | Push notifications through ntfy.sh or self-hosted ntfy. |
+| Gotify | `[notifications.gotify]` | `enabled`, `server`, `token` | Self-hosted push notifications. |
+| Bark | `[notifications.bark]` | `enabled`, `server`, `device_key` | iOS push notifications through Bark. |
+| ServerChan | `[notifications.serverchan]` | `enabled`, `send_key` | WeChat-style notifications through ServerChan. |
+
+Each channel supports `min_severity`, so low-priority findings can be kept local while higher-risk findings are sent out. HTTP-based channels share `notifications.request_timeout_seconds`, which defaults to 15 seconds.
+
+Telegram example:
+
+```toml
+[notifications.telegram]
+enabled = true
+bot_token = "<telegram-bot-token>"
+chat_id = "<telegram-chat-id>"
+min_severity = "Medium"
+```
+
+Webhook example:
+
+```toml
+[notifications.webhook]
+enabled = true
+url = "https://example.com/security-webhook"
+secret = ""
+min_severity = "Medium"
+```
 
 ## Architecture
 
@@ -48,11 +86,11 @@ vps-sentinel/
     sentinel-agent/  # collectors, detectors, baseline, SQLite, notifiers, daemon
     sentinel-cli/    # vps-sentinel command line
   config/            # example configuration
-  packaging/         # systemd unit and package-time install helper
+  packaging/         # systemd unit template and package-time install helper
   docs/              # deployment, privacy, rule and notifier guides
 ```
 
-Collectors gather facts. Detectors convert facts into findings. Storage and notifications only consume the unified `Finding` model, so new rules and channels can be added without coupling modules together.
+Collectors gather facts. Detectors convert facts into findings. Storage and notifications consume the unified `Finding` model, so new rules and channels can be added without coupling modules together.
 
 ## Quick Install
 
@@ -84,6 +122,23 @@ sudo REPO_URL=https://github.com/cryptoli/vps-sentinel.git \
   sh install.sh
 ```
 
+Useful installer switches:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `REPO_URL` | `https://github.com/cryptoli/vps-sentinel.git` | Git repository to clone. |
+| `BRANCH` | `main` | Git branch to install. |
+| `WORK_DIR` | `/opt/vps-sentinel-src` | Source checkout directory. |
+| `PREFIX` | `/usr/local` | Binary installation prefix. |
+| `CONFIG_DIR` | `/etc/vps-sentinel` | Directory for `config.toml`. |
+| `DATA_DIR` | `/var/lib/vps-sentinel` | SQLite data directory. |
+| `LOG_DIR` | `/var/log/vps-sentinel` | Runtime log directory. |
+| `INSTALL_DEPS` | `yes` | Set to `no` to skip package manager dependency installation. |
+| `INSTALL_SYSTEMD` | `auto` | `auto`, `yes`, or `no` for systemd unit installation. |
+| `ENABLE_SERVICE` | `yes` | Set to `no` to install the unit without starting it. |
+| `SERVICE_NAME` | `vps-sentinel` | systemd service name. |
+| `SERVICE_PATH` | `/etc/systemd/system/<SERVICE_NAME>.service` | systemd unit path. |
+
 ## Update
 
 Review and run:
@@ -93,7 +148,21 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-The update script pulls the selected branch, rebuilds the binary, preserves the existing config, and restarts the service if it is enabled.
+The update script pulls the selected branch, rebuilds the binary, preserves the existing config, refreshes the systemd unit when available, and restarts the service if it is enabled.
+
+Useful update switches:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `REPO_URL` | `https://github.com/cryptoli/vps-sentinel.git` | Git repository to update from. |
+| `BRANCH` | `main` | Git branch to update. |
+| `WORK_DIR` | `/opt/vps-sentinel-src` | Existing or new source checkout directory. |
+| `PREFIX` | `/usr/local` | Binary installation prefix. |
+| `CONFIG_DIR` | `/etc/vps-sentinel` | Existing config directory. |
+| `DATA_DIR` | `/var/lib/vps-sentinel` | SQLite data directory for the generated unit. |
+| `LOG_DIR` | `/var/log/vps-sentinel` | Log directory for the generated unit. |
+| `INSTALL_SYSTEMD` | `auto` | Set to `no` to skip unit refresh. |
+| `RESTART_SERVICE` | `auto` | `auto`, `yes`, or `no` for restart behavior. |
 
 ## Manual Build
 
@@ -121,26 +190,38 @@ sudo systemctl enable --now vps-sentinel
 sudo journalctl -u vps-sentinel -f
 ```
 
-## CLI
+## CLI Commands
 
-```bash
-vps-sentinel --version
-vps-sentinel init
-vps-sentinel check
-vps-sentinel scan
-vps-sentinel daemon
-vps-sentinel baseline create
-vps-sentinel baseline show
-vps-sentinel baseline diff
-vps-sentinel baseline reset
-vps-sentinel events list
-vps-sentinel events show <event_id>
-vps-sentinel rules list
-vps-sentinel rules test <rule_id>
-vps-sentinel notify test
-vps-sentinel config validate
-vps-sentinel doctor
-```
+Global options:
+
+| Option | Meaning |
+| --- | --- |
+| `--config <path>` | Use a specific TOML config file. If omitted, vps-sentinel checks `config.toml`, `~/.config/vps-sentinel/config.toml`, then `/etc/vps-sentinel/config.toml`. |
+| `--log-level <level>` | Set log level when `RUST_LOG` is not set. Default: `info`. |
+| `--version` | Print the installed version. |
+| `--help` | Show command help. |
+
+Commands:
+
+| Command | Meaning |
+| --- | --- |
+| `vps-sentinel init --path <path>` | Write a default configuration file. Fails if the file exists unless `--force` is used. |
+| `vps-sentinel init --path <path> --force` | Rewrite the target config file with default content. Review before using on a tuned production config. |
+| `vps-sentinel config validate --config <path>` | Parse and validate configuration without running collectors. Use after editing `config.toml`. |
+| `vps-sentinel doctor --config <path>` | Check runtime readiness: root visibility, Unix target support, storage directory writability, and configured auth log visibility. |
+| `vps-sentinel check --config <path>` | Run collectors and detectors once without persisting results or sending notifications. Good for quick inspection and CI-style smoke tests. |
+| `vps-sentinel scan --config <path>` | Run one full scan, persist raw events/findings, update notification logs, apply deduplication, and send enabled notifications. |
+| `vps-sentinel scan --no-notify --config <path>` | Persist scan results but suppress notification delivery. Useful before enabling channels. |
+| `vps-sentinel daemon --config <path>` | Run continuous scans using `agent.scan_interval_seconds`; intended for systemd. |
+| `vps-sentinel baseline create --config <path>` | Capture the current known-good local state into SQLite. Run after installation and after approved system changes. |
+| `vps-sentinel baseline show --config <path>` | Print the stored baseline snapshot. |
+| `vps-sentinel baseline diff --config <path>` | Compare current local state against the stored baseline and print drift. |
+| `vps-sentinel baseline reset --config <path>` | Clear stored baselines. Run `baseline create` afterwards to capture a new trusted state. |
+| `vps-sentinel events list --config <path>` | List recent stored findings; use `--limit <n>` to control the count. |
+| `vps-sentinel events show <event_id> --config <path>` | Show one stored finding by ID as JSON. |
+| `vps-sentinel rules list` | List built-in detection rules, severity, and descriptions. |
+| `vps-sentinel rules test <rule_id>` | Verify that a built-in rule ID exists and can be loaded. |
+| `vps-sentinel notify test --config <path>` | Send a synthetic Info finding through enabled notification channels. Use this to verify credentials and routing. |
 
 ## Configuration
 
@@ -165,16 +246,6 @@ SQLite is used by default:
 type = "sqlite"
 path = "/var/lib/vps-sentinel/sentinel.db"
 retention_days = 30
-```
-
-Webhook notification example:
-
-```toml
-[notifications.webhook]
-enabled = true
-url = "https://example.com/security-webhook"
-secret = ""
-min_severity = "Medium"
 ```
 
 Allowlist example:
@@ -225,7 +296,7 @@ The systemd unit uses:
 - `NoNewPrivileges=true`
 - `ProtectSystem=full`
 - `ProtectHome=read-only`
-- explicit writable paths for `/var/lib/vps-sentinel` and `/var/log/vps-sentinel`
+- explicit writable paths for the configured data and log directories
 
 See [docs/deployment.md](docs/deployment.md).
 
@@ -239,6 +310,8 @@ Defaults:
 - notification channels disabled;
 - bounded file-content scanning;
 - no default destructive remediation.
+
+Secrets such as tokens, passwords, and webhook keys belong in local config files and should not be committed.
 
 See [docs/privacy.md](docs/privacy.md).
 

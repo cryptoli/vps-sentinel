@@ -81,6 +81,9 @@ alert_on_privileged_container = true
 alert_on_docker_socket_mount = true
 alert_on_host_network = true
 
+[notifications]
+request_timeout_seconds = 15
+
 [notifications.telegram]
 enabled = false
 bot_token = ""

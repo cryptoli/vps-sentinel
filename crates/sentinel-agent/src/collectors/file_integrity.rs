@@ -101,8 +101,12 @@ fn file_event(ctx: &CollectContext, path: &Path) -> Option<RawEvent> {
         .and_then(|value| value.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let markers = content_markers(path);
     let is_web_path = is_under_any(path, &ctx.config.web.web_roots, ctx);
+    let markers = if should_scan_content(&extension, is_web_path) {
+        content_markers(path)
+    } else {
+        Vec::new()
+    };
 
     let mut event = RawEvent::new("file_integrity", "file_snapshot")
         .with_field("path", path_text)
@@ -149,6 +153,14 @@ fn content_markers(path: &Path) -> Vec<&'static str> {
     markers
 }
 
+fn should_scan_content(extension: &str, is_web_path: bool) -> bool {
+    is_web_path
+        || matches!(
+            extension,
+            "php" | "phtml" | "jsp" | "asp" | "aspx" | "cgi" | "pl" | "py" | "sh"
+        )
+}
+
 fn marker_patterns() -> Vec<(&'static str, String)> {
     vec![
         ("eval_call", ["ev", "al("].concat()),
@@ -169,7 +181,7 @@ fn has_long_base64_like_token(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::content_markers;
+    use super::{content_markers, should_scan_content};
     use std::fs;
 
     #[test]
@@ -187,6 +199,16 @@ mod tests {
         let markers = content_markers(&path);
         assert!(markers.contains(&"eval_call"));
         assert!(markers.contains(&"base64_decode"));
+        Ok(())
+    }
+
+    #[test]
+    fn skips_non_web_ssh_key_like_content() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("authorized_keys");
+        fs::write(&path, format!("ssh-ed25519 {}", "A".repeat(140)))?;
+        assert!(!should_scan_content("", false));
+        assert!(content_markers(&path).contains(&"long_base64"));
         Ok(())
     }
 }

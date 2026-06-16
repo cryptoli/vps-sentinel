@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/vps-sentinel daemon --config /etc/vps-sentinel/config.toml
+ExecStart=@BIN_PATH@ daemon --config @CONFIG_PATH@
 Restart=always
 RestartSec=5
 User=root
@@ -14,7 +14,7 @@ NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=false
-ReadWritePaths=/var/lib/vps-sentinel /var/log/vps-sentinel
+ReadWritePaths=@DATA_DIR@ @LOG_DIR@
 Environment=RUST_LOG=info
 
 [Install]

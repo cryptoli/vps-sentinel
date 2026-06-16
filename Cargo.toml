@@ -10,8 +10,8 @@ resolver = "2"
 edition = "2021"
 rust-version = "1.76"
 license = "MIT"
-repository = "https://github.com/example/vps-sentinel"
-homepage = "https://github.com/example/vps-sentinel"
+repository = "https://github.com/cryptoli/vps-sentinel"
+homepage = "https://github.com/cryptoli/vps-sentinel"
 description = "A lightweight Rust intrusion-signal monitor for Linux VPS hosts."
 
 [workspace.dependencies]

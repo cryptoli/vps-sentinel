@@ -3,6 +3,7 @@ use crate::collectors::{default_collectors, CollectContext};
 use crate::detectors::{default_detectors, DetectContext};
 use crate::notify::{NotificationManager, NotifyContext};
 use crate::storage::SqliteStore;
+use chrono::{Duration, Utc};
 use sentinel_core::{Finding, RawEvent, SentinelConfig, SentinelResult};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,7 +40,11 @@ pub struct ScanReport {
 /// Run one complete scan: collect facts, diff baseline, detect findings, persist, and notify.
 pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelResult<ScanReport> {
     let config = Arc::new(config);
-    let store = SqliteStore::open(config.storage.path.clone())?;
+    let store = if options.persist {
+        Some(SqliteStore::open(config.storage.path.clone())?)
+    } else {
+        None
+    };
     let collect_context =
         CollectContext::new(Arc::clone(&config)).with_scan_root(options.scan_root);
     let mut raw_events = Vec::new();
@@ -64,8 +69,11 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     }
 
     let current_snapshot = BaselineSnapshot::from_events(&raw_events);
-    let diff_events = match store.latest_baseline_snapshot()? {
-        Some(previous) => diff_snapshots(&previous, &current_snapshot),
+    let diff_events = match &store {
+        Some(store) => match store.latest_baseline_snapshot()? {
+            Some(previous) => diff_snapshots(&previous, &current_snapshot),
+            None => Vec::new(),
+        },
         None => Vec::new(),
     };
     let diff_event_count = diff_events.len();
@@ -77,11 +85,22 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     for detector in default_detectors() {
         findings.extend(detector.detect(&detection_events, &detect_context));
     }
+    if options.persist {
+        if let Some(store) = &store {
+            findings = suppress_recent_duplicates(
+                store,
+                findings,
+                config.noise_control.dedup_window_seconds,
+            )?;
+        }
+    }
 
     if options.persist {
-        store.save_raw_events(&detection_events)?;
-        store.save_findings(&findings)?;
-        store.record_scan_run(detection_events.len(), findings.len(), "ok")?;
+        if let Some(store) = &store {
+            store.save_raw_events(&detection_events)?;
+            store.save_findings(&findings)?;
+            store.record_scan_run(detection_events.len(), findings.len(), "ok")?;
+        }
     }
 
     if options.notify {
@@ -89,7 +108,21 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         let notify_context = NotifyContext {
             config: Arc::clone(&config),
         };
-        for (channel, result) in manager.notify_all(&findings, &notify_context).await {
+        for (finding_id, channel, result) in manager.notify_all(&findings, &notify_context).await {
+            if options.persist {
+                let Some(store) = &store else {
+                    continue;
+                };
+                let (status, error) = match &result {
+                    Ok(()) => ("ok", String::new()),
+                    Err(err) => ("failed", err.to_string()),
+                };
+                if let Err(err) =
+                    store.record_notification_log(&finding_id, &channel, status, &error)
+                {
+                    warn!(channel = channel, error = %err, "failed to record notification log");
+                }
+            }
             if let Err(err) = result {
                 warn!(channel = channel, error = %err, "notification failed");
             }
@@ -103,6 +136,29 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         findings,
         collector_errors,
     })
+}
+
+fn suppress_recent_duplicates(
+    store: &SqliteStore,
+    findings: Vec<Finding>,
+    dedup_window_seconds: u64,
+) -> SentinelResult<Vec<Finding>> {
+    if dedup_window_seconds == 0 {
+        return Ok(findings);
+    }
+    let seconds = if dedup_window_seconds > i64::MAX as u64 {
+        i64::MAX
+    } else {
+        dedup_window_seconds as i64
+    };
+    let since = Utc::now() - Duration::seconds(seconds);
+    let mut retained = Vec::new();
+    for finding in findings {
+        if !store.finding_seen_since(&finding.dedup_key, since)? {
+            retained.push(finding);
+        }
+    }
+    Ok(retained)
 }
 
 /// Collect current host facts and turn them into a baseline snapshot.
