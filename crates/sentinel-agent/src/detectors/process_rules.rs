@@ -4,6 +4,7 @@ use crate::detectors::command_profile::{
 use crate::detectors::{evidence, path_is_allowlisted, string_field, DetectContext, Detector};
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
+use std::collections::BTreeSet;
 
 pub struct ProcessDetector;
 
@@ -26,7 +27,7 @@ impl Detector for ProcessDetector {
                 "Deleted executable still running",
                 Category::Process,
                 Severity::High,
-                "A process executable appears to be deleted while still running.",
+                "A deleted process executable has additional suspicious traits.",
             ),
             RuleMetadata::new(
                 "PROC-003",
@@ -61,8 +62,10 @@ impl Detector for ProcessDetector {
             {
                 continue;
             }
-            if exe_path.contains(" (deleted)") || exe_path.ends_with("deleted") {
-                findings.push(deleted_executable(event, ctx));
+            if let Some(assessment) = deleted_executable_assessment(event, ctx) {
+                if assessment.is_suspicious(ctx.config.process.deleted_executable_min_score) {
+                    findings.push(deleted_executable(event, ctx, assessment));
+                }
             }
             if process_from_suspicious_dir(&exe_path, ctx) {
                 findings.push(temp_process(event, ctx));
@@ -96,21 +99,122 @@ fn temp_process(event: &RawEvent, ctx: &DetectContext) -> Finding {
     ])
 }
 
-fn deleted_executable(event: &RawEvent, ctx: &DetectContext) -> Finding {
+fn deleted_executable(
+    event: &RawEvent,
+    ctx: &DetectContext,
+    assessment: DeletedExecutableAssessment,
+) -> Finding {
     Finding::new(
         &ctx.host_id,
         "Deleted executable still running",
-        "A process executable path indicates the backing file was deleted while the process remains active.",
+        "A deleted process executable is still running and has additional suspicious traits.",
         Severity::High,
         Category::Process,
         "PROC-002",
         string_field(event, "pid"),
     )
-    .with_evidence(process_evidence(event))
+    .with_evidence({
+        let mut items = process_evidence(event);
+        items.push(evidence("risk_score", assessment.score.to_string()));
+        items.push(evidence("risk_reasons", assessment.reason_text()));
+        items.push(evidence("risk_features", assessment.feature_names()));
+        items
+    })
     .with_recommendations(vec![
         "Capture process details and network connections before termination.".to_string(),
         "Review how the process was launched.".to_string(),
     ])
+}
+
+#[derive(Debug, Clone, Default)]
+struct DeletedExecutableAssessment {
+    score: u16,
+    reasons: BTreeSet<String>,
+    features: BTreeSet<&'static str>,
+}
+
+impl DeletedExecutableAssessment {
+    fn is_suspicious(&self, min_score: u16) -> bool {
+        self.score >= min_score
+    }
+
+    fn reason_text(&self) -> String {
+        self.reasons.iter().cloned().collect::<Vec<_>>().join("; ")
+    }
+
+    fn feature_names(&self) -> String {
+        self.features.iter().copied().collect::<Vec<_>>().join(", ")
+    }
+
+    fn add_signal(&mut self, score: u16, feature: &'static str, reason: impl Into<String>) {
+        self.score = self.score.max(score);
+        self.features.insert(feature);
+        self.reasons.insert(reason.into());
+    }
+}
+
+fn deleted_executable_assessment(
+    event: &RawEvent,
+    ctx: &DetectContext,
+) -> Option<DeletedExecutableAssessment> {
+    let exe_path = string_field(event, "exe_path");
+    if !is_deleted_executable_path(&exe_path) {
+        return None;
+    }
+
+    let normalized_path = normalize_deleted_executable_path(&exe_path);
+    let mut assessment = DeletedExecutableAssessment::default();
+
+    if is_memfd_or_anonymous_path(&normalized_path) {
+        assessment.add_signal(
+            90,
+            "anonymous_deleted_executable",
+            "deleted executable is backed by memfd or an anonymous file",
+        );
+    }
+
+    if path_in_suspicious_dirs(&normalized_path, &ctx.config.process.suspicious_dirs) {
+        assessment.add_signal(
+            80,
+            "temporary_deleted_executable",
+            "deleted executable is running from a suspicious temporary directory",
+        );
+    }
+
+    if hidden_basename(&normalized_path) && !is_standard_runtime_path(&normalized_path) {
+        assessment.add_signal(
+            70,
+            "hidden_nonstandard_executable",
+            "deleted executable has a hidden basename outside standard runtime paths",
+        );
+    }
+
+    let command_assessment = network_execution_assessment_from_event(event);
+    if command_assessment.is_suspicious() {
+        assessment.add_signal(
+            85,
+            "network_execution_bridge",
+            command_assessment.reason_text(),
+        );
+    }
+
+    if event_contains_miner_or_scanner(event, &ctx.config.process.known_bad_tool_names) {
+        assessment.add_signal(
+            85,
+            "known_bad_tool",
+            "process identity matches a configured miner or scanner tool name",
+        );
+    }
+
+    if is_shell_process_name(&string_field(event, "name")) {
+        assessment.add_signal(
+            45,
+            "shell_process",
+            "deleted executable process name is a shell",
+        );
+    }
+
+    Some(assessment)
 }
 
 fn network_execution_bridge(event: &RawEvent, ctx: &DetectContext) -> Finding {
@@ -265,13 +369,63 @@ fn matches_known_tool_name(name: &str, known_tool_names: &[String]) -> bool {
     })
 }
 
+fn is_deleted_executable_path(path: &str) -> bool {
+    path.contains(" (deleted)") || path.ends_with("deleted")
+}
+
+fn normalize_deleted_executable_path(path: &str) -> String {
+    path.trim()
+        .strip_suffix(" (deleted)")
+        .unwrap_or_else(|| path.trim())
+        .to_string()
+}
+
+fn is_memfd_or_anonymous_path(path: &str) -> bool {
+    let lowered = path.to_ascii_lowercase();
+    lowered.contains("memfd:") || lowered.contains("/deleted") || lowered == "deleted"
+}
+
+fn hidden_basename(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .map(|name| name.starts_with('.') && name.len() > 1)
+        .unwrap_or(false)
+}
+
+fn is_standard_runtime_path(path: &str) -> bool {
+    [
+        "/bin/",
+        "/sbin/",
+        "/lib/",
+        "/lib64/",
+        "/usr/bin/",
+        "/usr/sbin/",
+        "/usr/lib/",
+        "/usr/lib64/",
+        "/usr/libexec/",
+        "/usr/local/bin/",
+        "/usr/local/sbin/",
+    ]
+    .iter()
+    .any(|prefix| path.starts_with(prefix))
+}
+
+fn is_shell_process_name(name: &str) -> bool {
+    matches!(
+        name,
+        "sh" | "bash" | "dash" | "zsh" | "fish" | "ksh" | "busybox"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        command_matches_allowlist, contains_miner_or_scanner, event_contains_miner_or_scanner,
+        command_matches_allowlist, contains_miner_or_scanner, deleted_executable_assessment,
+        event_contains_miner_or_scanner,
     };
-    use crate::detectors::command_profile::assess_network_execution_command;
-    use sentinel_core::RawEvent;
+    use crate::detectors::{command_profile::assess_network_execution_command, DetectContext};
+    use sentinel_core::{RawEvent, SentinelConfig};
+    use std::sync::Arc;
 
     fn known_tools() -> Vec<String> {
         ["xmrig", "kinsing", "masscan", "zmap"]
@@ -363,5 +517,48 @@ mod tests {
             &allowlist
         ));
         assert!(!command_matches_allowlist("/usr/bin/sshd", &allowlist));
+    }
+
+    #[test]
+    fn deleted_executable_model_ignores_package_upgrade_residue() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event(
+            "/usr/lib/systemd/systemd (deleted)",
+            "systemd",
+            "/lib/systemd/systemd --user",
+        );
+        let assessment = deleted_executable_assessment(&event, &ctx);
+        assert!(assessment.is_some_and(|assessment| !assessment.is_suspicious(70)));
+    }
+
+    #[test]
+    fn deleted_executable_model_detects_temp_deleted_payload() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event("/dev/shm/.x (deleted)", ".x", "/dev/shm/.x");
+        let assessment = deleted_executable_assessment(&event, &ctx);
+        assert!(assessment.is_some_and(|assessment| {
+            assessment.is_suspicious(70)
+                && assessment.features.contains("temporary_deleted_executable")
+        }));
+    }
+
+    #[test]
+    fn deleted_executable_model_detects_memfd_payload() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event("memfd:kworker (deleted)", "kworker", "kworker");
+        let assessment = deleted_executable_assessment(&event, &ctx);
+        assert!(assessment.is_some_and(|assessment| {
+            assessment.is_suspicious(70)
+                && assessment.features.contains("anonymous_deleted_executable")
+        }));
+    }
+
+    fn process_event(exe_path: &str, name: &str, cmdline: &str) -> RawEvent {
+        RawEvent::new("process", "process_snapshot")
+            .with_field("pid", "42")
+            .with_field("ppid", "1")
+            .with_field("name", name)
+            .with_field("exe_path", exe_path)
+            .with_field("cmdline", cmdline)
     }
 }

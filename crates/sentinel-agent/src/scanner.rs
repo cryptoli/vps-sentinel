@@ -9,6 +9,7 @@ use chrono::{Duration, Local, Timelike, Utc};
 use sentinel_core::{
     Evidence, Finding, MinuteWindow, RawEvent, SentinelConfig, SentinelResult, Severity,
 };
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -105,6 +106,9 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     findings = coalesce_related_findings(findings);
     let detected_finding_count = findings.len();
     let mut suppressed_duplicate_count = 0;
+    let suppression = suppress_in_scan_duplicates(findings);
+    findings = suppression.0;
+    suppressed_duplicate_count += suppression.1;
     if options.persist {
         if let Some(store) = &store {
             let suppression = suppress_recent_duplicates(
@@ -372,6 +376,20 @@ fn suppress_recent_duplicates(
         }
     }
     Ok((retained, suppressed))
+}
+
+fn suppress_in_scan_duplicates(findings: Vec<Finding>) -> (Vec<Finding>, usize) {
+    let mut seen = BTreeSet::new();
+    let mut retained = Vec::new();
+    let mut suppressed = 0;
+    for finding in findings {
+        if seen.insert(finding.dedup_key.clone()) {
+            retained.push(finding);
+        } else {
+            suppressed += 1;
+        }
+    }
+    (retained, suppressed)
 }
 
 /// Collect current host facts and turn them into a baseline snapshot.

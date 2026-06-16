@@ -150,6 +150,7 @@ pub struct ProcessConfig {
     pub scan_interval_seconds: u64,
     pub high_cpu_threshold_percent: f32,
     pub high_cpu_duration_seconds: u64,
+    pub deleted_executable_min_score: u16,
     pub suspicious_dirs: Vec<PathBuf>,
     #[serde(default = "default_known_bad_tool_names")]
     pub known_bad_tool_names: Vec<String>,
@@ -162,6 +163,7 @@ impl Default for ProcessConfig {
             scan_interval_seconds: 30,
             high_cpu_threshold_percent: 80.0,
             high_cpu_duration_seconds: 120,
+            deleted_executable_min_score: 70,
             suspicious_dirs: ["/tmp", "/var/tmp", "/dev/shm", "/run"]
                 .into_iter()
                 .map(PathBuf::from)
@@ -228,6 +230,7 @@ pub struct PersistenceConfig {
     pub monitor_systemd: bool,
     pub monitor_shell_profile: bool,
     pub monitor_ld_preload: bool,
+    pub suspicious_command_min_score: u16,
 }
 
 impl Default for PersistenceConfig {
@@ -238,6 +241,7 @@ impl Default for PersistenceConfig {
             monitor_systemd: true,
             monitor_shell_profile: true,
             monitor_ld_preload: true,
+            suspicious_command_min_score: 70,
         }
     }
 }
@@ -273,7 +277,7 @@ pub struct NoiseControlConfig {
 impl Default for NoiseControlConfig {
     fn default() -> Self {
         Self {
-            dedup_window_seconds: 600,
+            dedup_window_seconds: 3600,
             max_alerts_per_hour: 30,
             quiet_hours: Vec::new(),
         }

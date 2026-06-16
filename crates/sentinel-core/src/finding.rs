@@ -118,6 +118,23 @@ impl Finding {
         self
     }
 
+    /// Attach full evidence while deriving the deduplication key from stable evidence fields only.
+    pub fn with_evidence_deduped_by(
+        mut self,
+        evidence: Vec<Evidence>,
+        dedup_evidence_keys: &[&str],
+    ) -> Self {
+        let dedup_evidence = evidence
+            .iter()
+            .filter(|item| dedup_evidence_keys.contains(&item.key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.dedup_key =
+            stable_dedup_key(&self.host_id, &self.rule_id, &self.subject, &dedup_evidence);
+        self.evidence = evidence;
+        self
+    }
+
     /// Attach likely impact statements.
     pub fn with_impact(mut self, impact: Vec<String>) -> Self {
         self.impact = impact;
@@ -206,5 +223,44 @@ mod tests {
         assert!(!finding.id.is_empty());
         assert!(!finding.dedup_key.is_empty());
         assert_eq!(finding.evidence.len(), 1);
+    }
+
+    #[test]
+    fn finding_can_dedup_by_stable_evidence_subset() {
+        let left = Finding::new(
+            "host",
+            "SSH brute force pattern detected",
+            "A source generated many failures.",
+            Severity::High,
+            Category::Ssh,
+            "SSH-003",
+            "203.0.113.10",
+        )
+        .with_evidence_deduped_by(
+            vec![
+                Evidence::new("source_ip", "203.0.113.10"),
+                Evidence::new("failure_count", "10"),
+            ],
+            &["source_ip"],
+        );
+        let right = Finding::new(
+            "host",
+            "SSH brute force pattern detected",
+            "A source generated many failures.",
+            Severity::High,
+            Category::Ssh,
+            "SSH-003",
+            "203.0.113.10",
+        )
+        .with_evidence_deduped_by(
+            vec![
+                Evidence::new("source_ip", "203.0.113.10"),
+                Evidence::new("failure_count", "65"),
+            ],
+            &["source_ip"],
+        );
+
+        assert_eq!(left.dedup_key, right.dedup_key);
+        assert_ne!(left.evidence, right.evidence);
     }
 }

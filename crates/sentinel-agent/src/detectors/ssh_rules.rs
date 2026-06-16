@@ -37,7 +37,7 @@ impl Detector for SshDetector {
                 "SSH-004",
                 "SSH login detected",
                 Category::Ssh,
-                Severity::Medium,
+                Severity::Info,
                 "A user successfully authenticated through SSH.",
             ),
         ]
@@ -99,18 +99,21 @@ fn successful_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
         &ctx.host_id,
         "SSH login detected",
         "A user successfully authenticated through SSH.",
-        Severity::Medium,
+        Severity::Info,
         Category::Ssh,
         "SSH-004",
         login_subject(&user, &ip, event),
     )
-    .with_evidence(vec![
-        evidence("user", user),
-        evidence("source_ip", ip),
-        evidence("port", string_field(event, "port")),
-        evidence("method", string_field(event, "method")),
-        evidence("log_source", string_field(event, "log_source")),
-    ])
+    .with_evidence_deduped_by(
+        vec![
+            evidence("user", user),
+            evidence("source_ip", ip),
+            evidence("port", string_field(event, "port")),
+            evidence("method", string_field(event, "method")),
+            evidence("log_source", string_field(event, "log_source")),
+        ],
+        &["user", "source_ip", "method"],
+    )
     .with_recommendations(vec![
         "Confirm the login source, account, and time are expected.".to_string(),
         "Review recent commands and SSH key ownership if the login is unexpected.".to_string(),
@@ -128,13 +131,16 @@ fn root_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
         "SSH-001",
         login_subject("root", &ip, event),
     )
-    .with_evidence(vec![
-        evidence("user", "root"),
-        evidence("source_ip", ip),
-        evidence("port", string_field(event, "port")),
-        evidence("method", string_field(event, "method")),
-        evidence("log_source", string_field(event, "log_source")),
-    ])
+    .with_evidence_deduped_by(
+        vec![
+            evidence("user", "root"),
+            evidence("source_ip", ip),
+            evidence("port", string_field(event, "port")),
+            evidence("method", string_field(event, "method")),
+            evidence("log_source", string_field(event, "log_source")),
+        ],
+        &["user", "source_ip", "method"],
+    )
     .with_impact(vec![
         "Root SSH access bypasses per-user accountability and increases blast radius.".to_string(),
     ])
@@ -157,13 +163,16 @@ fn password_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
         "SSH-002",
         login_subject(&user, &ip, event),
     )
-    .with_evidence(vec![
-        evidence("user", user),
-        evidence("source_ip", ip),
-        evidence("port", string_field(event, "port")),
-        evidence("method", "password"),
-        evidence("log_source", string_field(event, "log_source")),
-    ])
+    .with_evidence_deduped_by(
+        vec![
+            evidence("user", user),
+            evidence("source_ip", ip),
+            evidence("port", string_field(event, "port")),
+            evidence("method", "password"),
+            evidence("log_source", string_field(event, "log_source")),
+        ],
+        &["user", "source_ip", "method"],
+    )
     .with_impact(vec![
         "Password SSH login is more exposed to credential stuffing and brute force.".to_string(),
     ])
@@ -174,11 +183,8 @@ fn password_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
     ])
 }
 
-fn login_subject(user: &str, ip: &str, event: &RawEvent) -> String {
-    match event.field("port").filter(|port| !port.trim().is_empty()) {
-        Some(port) => format!("{user}@{ip}:{port}"),
-        None => format!("{user}@{ip}"),
-    }
+fn login_subject(user: &str, ip: &str, _event: &RawEvent) -> String {
+    format!("{user}@{ip}")
 }
 
 fn bruteforce_finding(
@@ -196,11 +202,14 @@ fn bruteforce_finding(
         "SSH-003",
         ip,
     )
-    .with_evidence(vec![
-        evidence("source_ip", ip),
-        evidence("failure_count", count.to_string()),
-        evidence("users", users.into_iter().collect::<Vec<_>>().join(",")),
-    ])
+    .with_evidence_deduped_by(
+        vec![
+            evidence("source_ip", ip),
+            evidence("failure_count", count.to_string()),
+            evidence("users", users.into_iter().collect::<Vec<_>>().join(",")),
+        ],
+        &["source_ip"],
+    )
     .with_impact(vec![
         "Repeated failures may indicate active SSH password guessing.".to_string(),
     ])
@@ -224,7 +233,7 @@ mod tests {
         let findings = detector.detect(&[success_event("deploy", "publickey")], &ctx);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, "SSH-004");
-        assert_eq!(findings[0].subject, "deploy@203.0.113.10:54122");
+        assert_eq!(findings[0].subject, "deploy@203.0.113.10");
     }
 
     #[test]
@@ -240,6 +249,28 @@ mod tests {
         assert_eq!(password_findings[0].rule_id, "SSH-002");
     }
 
+    #[test]
+    fn brute_force_dedup_ignores_volatile_failure_count() {
+        let detector = SshDetector;
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let first = detector.detect(
+            &(0..10)
+                .map(|index| failure_event("203.0.113.20", &format!("user{index}")))
+                .collect::<Vec<_>>(),
+            &ctx,
+        );
+        let second = detector.detect(
+            &(0..20)
+                .map(|index| failure_event("203.0.113.20", &format!("user{index}")))
+                .collect::<Vec<_>>(),
+            &ctx,
+        );
+
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        assert_eq!(first[0].dedup_key, second[0].dedup_key);
+    }
+
     fn success_event(user: &str, method: &str) -> RawEvent {
         RawEvent::new("ssh", "ssh_auth")
             .with_field("outcome", "success")
@@ -247,6 +278,15 @@ mod tests {
             .with_field("user", user)
             .with_field("source_ip", "203.0.113.10")
             .with_field("port", "54122")
+            .with_field("log_source", "/var/log/auth.log")
+    }
+
+    fn failure_event(ip: &str, user: &str) -> RawEvent {
+        RawEvent::new("ssh", "ssh_auth")
+            .with_field("outcome", "failure")
+            .with_field("method", "password")
+            .with_field("user", user)
+            .with_field("source_ip", ip)
             .with_field("log_source", "/var/log/auth.log")
     }
 }

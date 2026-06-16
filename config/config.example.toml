@@ -63,6 +63,7 @@ enabled = true
 scan_interval_seconds = 30
 high_cpu_threshold_percent = 80.0
 high_cpu_duration_seconds = 120
+deleted_executable_min_score = 70
 suspicious_dirs = ["/tmp", "/var/tmp", "/dev/shm", "/run"]
 known_bad_tool_names = ["xmrig", "kinsing", "masscan", "zmap"]
 
@@ -80,6 +81,7 @@ monitor_cron = true
 monitor_systemd = true
 monitor_shell_profile = true
 monitor_ld_preload = true
+suspicious_command_min_score = 70
 
 [docker]
 enabled = true
@@ -142,7 +144,7 @@ send_key = ""
 min_severity = "Medium"
 
 [noise_control]
-dedup_window_seconds = 600
+dedup_window_seconds = 3600
 max_alerts_per_hour = 30
 quiet_hours = [] # Example: ["22:00-07:00"]
 

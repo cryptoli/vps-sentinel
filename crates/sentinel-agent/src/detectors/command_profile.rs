@@ -98,7 +98,6 @@ pub(crate) fn network_execution_assessment_from_event(event: &RawEvent) -> Comma
     assess_network_execution(&profile)
 }
 
-#[cfg(test)]
 pub(crate) fn assess_network_execution_command(command: &str) -> CommandAssessment {
     let profile = CommandProfile::from_command(command);
     assess_network_execution(&profile)
@@ -120,7 +119,6 @@ impl CommandProfile {
         Self::from_args_or_command(args, command)
     }
 
-    #[cfg(test)]
     fn from_command(command: &str) -> Self {
         Self::from_args_or_command(split_shell_like(command), command)
     }

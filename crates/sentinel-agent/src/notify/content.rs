@@ -111,8 +111,8 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
             ],
         },
         "PROC-002" => RuleMessage {
-            title: "已删除的可执行文件仍在运行",
-            description: "进程的可执行文件看起来已被删除，但进程仍在运行。",
+            title: "检测到高风险 deleted executable 进程",
+            description: "进程的可执行文件已被删除，并且同时具备临时路径、匿名内存文件、网络执行桥或已知恶意工具等风险特征。",
             impact: &[],
             recommendations: &[
                 "终止前先采集进程详情和网络连接。",
@@ -231,7 +231,7 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
         },
         "PERSIST-002" => RuleMessage {
             title: "检测到可疑启动命令",
-            description: "启动相关文件包含常见持久化命令片段。",
+            description: "启动相关文件中存在达到可疑风险评分阈值的命令。",
             impact: &["主机可能在重启或登录后自动运行攻击者控制的代码。"],
             recommendations: &["检查命令目标和网络目的地。", "移除未知启动项前先保留文件。"],
         },

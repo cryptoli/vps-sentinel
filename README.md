@@ -30,8 +30,8 @@ It is not:
 | Baseline drift | Creates local baselines for users, SSH keys, critical files, persistence entries, and listeners; compares future scans against the stored baseline. |
 | User and privilege checks | Detects new users, UID 0 users, and privilege-relevant user changes. |
 | File integrity | Watches configured critical paths and web roots; hashes bounded file content; detects modified files, executable scripts in web roots, and WebShell-style markers. |
-| Persistence checks | Monitors cron, systemd, shell profile, and preload-related locations for new or suspicious startup entries. |
-| Process checks | Reads procfs argv and executable metadata to flag temporary-path executables, deleted executables still running, network command-execution bridges, and known miner/scanner tool names matched against process identity fields. |
+| Persistence checks | Monitors cron, systemd, shell profile, and preload-related locations for new or risk-scored suspicious startup entries. |
+| Process checks | Reads procfs argv and executable metadata to flag temporary-path executables, risk-scored deleted executables, network command-execution bridges, and known miner/scanner tool names matched against process identity fields. |
 | Network checks | Reads listening sockets and owning process details; flags high-risk public services, suspicious listener processes, baseline owner drift, and ordinary new public listeners. Expected web/SSH ports such as 22, 80, and 443 reduce noise but are not blindly trusted. |
 | Web log checks | Parses common access log lines and detects common automated probing paths. |
 | Rootkit signals | Collects lightweight local indicators for hidden process and suspicious procfs behavior. |
@@ -46,6 +46,8 @@ It is not:
 The command-execution rules are behavior-profile rules, not simple tool-name or port-name rules. vps-sentinel keeps argv as structured data from `/proc/<pid>/cmdline`, builds a small command profile, and only raises `PROC-003`/`NET-003` when high-risk features combine, such as network channels bridged into shell targets, `SYSTEM:` command runners, fd duplication, inline socket code, or TTY allocation.
 
 Known miner/scanner detection is intentionally narrower: `PROC-004` matches known tool names such as `xmrig`, `masscan`, and `zmap` against process identity fields such as executable path, process name, and structured `argv[0]`, including `.exe` suffixes. It does not treat arbitrary substrings or ordinary command arguments as a hit when structured process identity is available.
+
+Deleted-executable and persistence-startup alerts are also scored. `PROC-002` requires additional suspicious traits such as a temporary executable path, memfd or anonymous backing, a hidden non-standard executable, a network execution bridge, or a known miner/scanner identity. A package-upgrade residue such as `systemd`, `dockerd`, or `python3` running from a deleted standard system path is treated as maintenance context unless other risk traits are present. `PERSIST-002` scores startup lines for combinations such as download-to-shell, temporary-path autostart payloads, base64 decode-to-shell, and network-to-shell execution bridges; a plain `bash -c` service wrapper is not enough by itself.
 
 ## Notification Channels
 
@@ -362,7 +364,7 @@ alert_on_successful_login = true
 auth_log_lookback_seconds = 300
 ```
 
-`alert_on_successful_login` covers ordinary successful SSH logins that are not already reported by the root-login or password-login rules. It is not limited to unfamiliar IP addresses. `auth_log_lookback_seconds` limits how far back auth logs are considered on each scan so old login lines do not keep generating notifications. When configured auth log files such as `/var/log/auth.log` and `/var/log/secure` are absent, vps-sentinel falls back to `journalctl` for `ssh.service` and `sshd.service`.
+`alert_on_successful_login` covers ordinary successful SSH logins that are not already reported by the root-login or password-login rules. It is not limited to unfamiliar IP addresses. Ordinary successful-login findings are `Info`; root login remains `High`, and password login remains `Medium`. SSH login deduplication uses user plus source IP, while the session port is kept as evidence only. SSH brute-force deduplication uses the source IP, so a rising failure count does not create a new notification key every scan. `auth_log_lookback_seconds` limits how far back auth logs are considered on each scan so old login lines do not keep generating notifications. When configured auth log files such as `/var/log/auth.log` and `/var/log/secure` are absent, vps-sentinel falls back to `journalctl` for `ssh.service` and `sshd.service`.
 
 VPS identity in alerts:
 
@@ -393,10 +395,30 @@ Process indicator policy:
 
 ```toml
 [process]
+deleted_executable_min_score = 70
 known_bad_tool_names = ["xmrig", "kinsing", "masscan", "zmap"]
 ```
 
-`known_bad_tool_names` controls the `PROC-004` known miner/scanner indicator list. Values are matched against process identity fields such as `exe_path`, `executable`, process name, and structured `argv[0]`, with `.exe` suffixes accepted. Legacy events without structured identity fall back to command token basename matching.
+`deleted_executable_min_score` controls when `PROC-002` is emitted. Deleted executable state is scored with path, process identity, and command-behavior traits; a standard system binary left running after a package upgrade is not enough by itself. `known_bad_tool_names` controls the `PROC-004` known miner/scanner indicator list. Values are matched against process identity fields such as `exe_path`, `executable`, process name, and structured `argv[0]`, with `.exe` suffixes accepted. Legacy events without structured identity fall back to command token basename matching.
+
+Persistence indicator policy:
+
+```toml
+[persistence]
+suspicious_command_min_score = 70
+```
+
+`suspicious_command_min_score` controls when `PERSIST-002` is emitted. Startup commands are scored by combined traits such as download-to-shell, temporary-path autostart payloads, encoded shell payloads, and network execution bridges. Plain shell wrappers used by legitimate systemd units do not cross the default threshold on their own.
+
+Noise control:
+
+```toml
+[noise_control]
+dedup_window_seconds = 3600
+max_alerts_per_hour = 30
+```
+
+`dedup_window_seconds` suppresses repeated findings with the same stable dedup key. The default one-hour window is intended to prevent persistent host-state risks from sending the same message every few minutes while still allowing new subjects, sources, or rules to notify.
 
 Allowlist example:
 
@@ -447,6 +469,7 @@ Example rules:
 - `SSH-005`: `authorized_keys` changed relative to baseline.
 - `USER-002`: UID 0 user added or changed.
 - `PERSIST-002`: Suspicious startup command detected.
+- `PROC-002`: Risk-scored deleted executable still running.
 - `PROC-003`: Network command execution bridge detected.
 - `NET-001`: New public listening port detected relative to baseline.
 - `NET-002`: Public listener process changed relative to baseline.
