@@ -33,9 +33,20 @@ pub async fn run_check(config: SentinelConfig) -> Result<()> {
 
 fn print_report(report: &sentinel_agent::ScanReport) {
     println!(
-        "scan completed: raw_events={}, diff_events={}, findings={}",
-        report.raw_event_count, report.diff_event_count, report.finding_count
+        "scan completed: raw_events={}, diff_events={}, findings={}, suppressed_duplicates={}, notifications={}/{} ok",
+        report.raw_event_count,
+        report.diff_event_count,
+        report.finding_count,
+        report.suppressed_duplicate_count,
+        report.notification_success_count,
+        report.notification_attempt_count
     );
+    if report.notification_failure_count > 0 {
+        println!(
+            "notification failures: {}",
+            report.notification_failure_count
+        );
+    }
     if !report.collector_errors.is_empty() {
         println!("collector warnings:");
         for error in &report.collector_errors {

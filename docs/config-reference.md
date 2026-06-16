@@ -14,8 +14,14 @@ The default system configuration path is `/etc/vps-sentinel/config.toml`. A user
 - `[network]`: listening port policy.
 - `[persistence]`: cron, systemd, shell profile, and preload monitoring.
 - `[docker]`: Docker risk flags.
-- `[notifications]`: shared notification options such as HTTP request timeout.
-- `[notifications.*]`: channel-specific credentials and minimum severity.
+- `[notifications]`: shared notification options such as request timeout.
+- `[notifications.telegram]`: Telegram bot token, chat ID, and minimum severity.
+- `[notifications.email]`: SMTP host, port, TLS mode, optional credentials, sender, recipients, subject prefix, and minimum severity. `tls_mode` accepts `start_tls`, `tls`, or `none`; plaintext mode is only valid without SMTP credentials.
+- `[notifications.webhook]`: generic HTTP webhook URL, optional shared secret header, and minimum severity.
+- `[notifications.ntfy]`: ntfy server, topic, optional bearer token, and minimum severity.
+- `[notifications.gotify]`: Gotify server, app token, and minimum severity.
+- `[notifications.bark]`: Bark server, device key, and minimum severity.
+- `[notifications.serverchan]`: ServerChan send key and minimum severity.
 - `[noise_control]`: dedup and alert volume controls.
 - `[allowlist]`: trusted users, IPs, paths, and ports.
 

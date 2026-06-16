@@ -55,10 +55,12 @@ pub struct EmailConfig {
     pub enabled: bool,
     pub smtp_host: String,
     pub smtp_port: u16,
+    pub tls_mode: EmailTlsMode,
     pub username: String,
     pub password: String,
     pub from: String,
     pub to: Vec<String>,
+    pub subject_prefix: String,
     pub min_severity: Severity,
 }
 
@@ -68,13 +70,24 @@ impl Default for EmailConfig {
             enabled: false,
             smtp_host: String::new(),
             smtp_port: 587,
+            tls_mode: EmailTlsMode::StartTls,
             username: String::new(),
             password: String::new(),
             from: String::new(),
             to: Vec::new(),
+            subject_prefix: "[vps-sentinel]".to_string(),
             min_severity: Severity::High,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EmailTlsMode {
+    #[default]
+    StartTls,
+    Tls,
+    None,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

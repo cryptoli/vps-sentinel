@@ -13,6 +13,7 @@ use commands::{
     scan::{run_check, run_scan_command},
 };
 use sentinel_core::SentinelConfig;
+use std::io;
 use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
@@ -101,6 +102,7 @@ fn init_logging(log_level: &str) -> Result<()> {
     let filter = EnvFilter::try_from_default_env().or_else(|_| EnvFilter::try_new(log_level))?;
     tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_writer(io::stderr)
         .json()
         .try_init()
         .map_err(|err| anyhow::anyhow!("failed to initialize logging: {err}"))?;

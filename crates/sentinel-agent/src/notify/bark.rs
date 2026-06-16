@@ -1,6 +1,4 @@
-use crate::notify::{
-    http_client, render_finding, transport_error, NotificationFormat, Notifier, NotifyContext,
-};
+use crate::notify::{http_client, render_alert, transport_error, Notifier, NotifyContext};
 use async_trait::async_trait;
 use sentinel_core::{BarkConfig, SentinelError, SentinelResult, Severity};
 use serde_json::json;
@@ -39,14 +37,15 @@ impl Notifier for BarkNotifier {
                 "bark device_key is required when bark is enabled".to_string(),
             ));
         }
+        let alert = render_alert(finding);
         let url = format!("{}/push", self.config.server.trim_end_matches('/'));
         let response = self
             .client
             .post(url)
             .json(&json!({
                 "device_key": self.config.device_key,
-                "title": finding.title,
-                "body": render_finding(finding, NotificationFormat::PlainText),
+                "title": alert.subject,
+                "body": alert.plain_text,
             }))
             .send()
             .await

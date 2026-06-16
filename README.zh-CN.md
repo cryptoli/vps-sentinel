@@ -1,8 +1,8 @@
 # vps-sentinel
 
-面向 Linux VPS 的轻量级 Rust 入侵迹象监控工具。
+面向 Linux VPS 的轻量级 Rust 入侵信号监控工具。
 
-`vps-sentinel` 用于发现异常 SSH 登录、`authorized_keys` 变化、异常用户和提权、持久化启动项、可疑进程、新增公网监听端口、WebShell 风格文件、Web 扫描请求和常见危险配置。它优先本地运行、本地存储，适合个人 VPS、独立站长和小型服务维护者。
+`vps-sentinel` 用于发现可疑 SSH 登录、`authorized_keys` 变化、异常用户与提权、持久化启动项、可疑进程、新增公网监听端口、WebShell 风格文件、Web 探测请求和常见高风险配置。它优先本地运行、本地存储，适合个人 VPS、独立站长和小型服务维护者。
 
 主 README 使用英文：[README.md](README.md)
 
@@ -11,7 +11,7 @@
 
 ## 项目定位
 
-这是防御型监控工具，目标是“早发现、给证据、给建议”。
+这是防御型监控工具，目标是尽早发现异常、给出证据、给出处理建议。
 
 它不是：
 
@@ -19,7 +19,7 @@
 - 漏洞利用框架；
 - 密码爆破工具；
 - 第三方主机扫描器；
-- C2、后门或隐藏工具；
+- C2、后门或隐蔽工具；
 - 主机绝对安全保证。
 
 ## 支持功能
@@ -28,16 +28,16 @@
 | --- | --- |
 | SSH 监控 | 解析 Debian/Ubuntu 与 RHEL 系认证日志；检测 root 登录、密码登录、爆破模式、新登录来源 IP、`authorized_keys` 基线漂移。 |
 | 基线漂移 | 为用户、SSH key、关键文件、持久化项和监听端口创建本地基线，并在后续扫描中对比变化。 |
-| 用户与权限 | 检测新增用户、UID 0 用户、与权限相关的用户变化。 |
-| 文件完整性 | 监控关键路径和 Web 根目录；进行有大小限制的哈希与内容扫描；检测关键文件变化、Web 目录可执行脚本、WebShell 风格特征。 |
+| 用户与权限 | 检测新增用户、UID 0 用户、权限相关用户变化。 |
+| 文件完整性 | 监控关键路径和 Web 根目录；对限定大小内文件做哈希和内容扫描；检测关键文件变化、Web 目录可执行脚本、WebShell 风格特征。 |
 | 持久化检查 | 监控 cron、systemd、shell profile、`ld.so.preload` 等启动相关位置。 |
-| 进程检查 | 读取 procfs，识别临时目录执行、已删除可执行文件仍运行、反弹 shell 片段、挖矿和扫描器命令。 |
-| 网络检查 | 读取监听 socket 与所属进程；检测新增公网监听、非白名单端口和高危服务端口暴露。 |
+| 进程检查 | 读取 procfs，识别临时目录执行、已删除可执行文件仍在运行、反向 shell 片段、挖矿和扫描器命令。 |
+| 网络检查 | 读取监听 socket 与所属进程；检测新增公网监听、非白名单端口和高风险服务端口暴露。 |
 | Web 日志 | 解析常见 access log 行，检测自动化漏洞探测路径。 |
-| Rootkit 信号 | 采集轻量级本地信号，用于发现隐藏进程和可疑 procfs 行为。 |
-| Docker 上下文 | 检测 Docker 是否存在并给出初始容器攻击面提示；深度容器检查计划在后续版本增强。 |
-| 本地存储 | 使用 SQLite 存储 raw events、findings、baseline 和通知记录。 |
-| 噪声控制 | 支持白名单、最低等级、finding 去重和保留周期。 |
+| Rootkit 信号 | 采集轻量级本地指标，用于发现隐藏进程和可疑 procfs 行为。 |
+| Docker 上下文 | 检测 Docker 可用性并给出初始容器攻击面提示；深度容器检查计划在后续版本增强。 |
+| 本地存储 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和通知日志。 |
+| 噪声控制 | 支持白名单、最低告警级别、finding 去重和保留周期。 |
 | 通知告警 | 支持 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan。 |
 | 运维部署 | 单 CLI 二进制、JSON 日志、systemd unit、一键安装脚本、更新脚本。 |
 
@@ -47,15 +47,15 @@
 
 | 渠道 | 配置段 | 必填字段 | 常见用途 |
 | --- | --- | --- | --- |
-| Telegram | `[notifications.telegram]` | `enabled`, `bot_token`, `chat_id` | 通过 Telegram bot 给个人或团队发告警。 |
-| Email SMTP | `[notifications.email]` | `enabled`, `smtp_host`, `smtp_port`, `username`, `password`, `from`, `to` | 传统邮件告警。 |
+| Telegram | `[notifications.telegram]` | `enabled`, `bot_token`, `chat_id` | 通过 Telegram bot 给个人或团队发送告警。 |
+| Email SMTP | `[notifications.email]` | `enabled`, `smtp_host`, `smtp_port`, `from`, `to` | 邮件告警，支持 STARTTLS、隐式 TLS 和无认证本地 SMTP 中继。 |
 | Webhook | `[notifications.webhook]` | `enabled`, `url` | 自定义 HTTP 接收端、自动化平台、自建告警路由。 |
 | ntfy | `[notifications.ntfy]` | `enabled`, `server`, `topic` | ntfy.sh 或自建 ntfy 推送。 |
 | Gotify | `[notifications.gotify]` | `enabled`, `server`, `token` | 自建 Gotify 推送。 |
 | Bark | `[notifications.bark]` | `enabled`, `server`, `device_key` | Bark iOS 推送。 |
 | ServerChan | `[notifications.serverchan]` | `enabled`, `send_key` | ServerChan 通知。 |
 
-每个渠道都支持 `min_severity`，可以让低风险 finding 只保存在本地，高风险 finding 才发送出去。HTTP 类型通知渠道统一使用 `notifications.request_timeout_seconds` 控制请求超时，默认 15 秒。
+每个渠道都支持 `min_severity`，可以让低风险 finding 只保存在本地，高风险 finding 才发送出去。HTTP 类通知渠道统一使用 `notifications.request_timeout_seconds` 控制请求超时，默认 15 秒。邮件通知会同时发送纯文本和 HTML 正文，其他面向人的渠道复用统一标题与正文渲染器。
 
 Telegram 示例：
 
@@ -66,6 +66,24 @@ bot_token = "<telegram-bot-token>"
 chat_id = "<telegram-chat-id>"
 min_severity = "Medium"
 ```
+
+邮件示例：
+
+```toml
+[notifications.email]
+enabled = true
+smtp_host = "smtp.example.com"
+smtp_port = 587
+tls_mode = "start_tls" # start_tls、tls 或 none
+username = "smtp-user"
+password = "smtp-password"
+from = "vps-sentinel@example.com"
+to = ["ops@example.com"]
+subject_prefix = "[vps-sentinel]"
+min_severity = "High"
+```
+
+如果使用无认证的本地 SMTP 中继，可以设置 `tls_mode = "none"`，并保持 `username`、`password` 为空。程序会拒绝在明文 SMTP 下使用账号密码。
 
 Webhook 示例：
 
@@ -86,7 +104,7 @@ vps-sentinel/
     sentinel-agent/  # collectors, detectors, baseline, SQLite, notifiers, daemon
     sentinel-cli/    # vps-sentinel command line
   config/            # 示例配置
-  packaging/         # systemd 模板和打包安装辅助脚本
+  packaging/         # systemd 模板和安装辅助脚本
   docs/              # 部署、隐私、规则和通知扩展文档
 ```
 
@@ -101,13 +119,13 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/install.
 sudo sh install.sh
 ```
 
-脚本会：
+安装脚本会：
 
 - 自动识别 apt、dnf、yum、apk、pacman；
 - 安装构建依赖；
 - 缺少 `cargo` 时通过 rustup 安装 Rust；
-- 默认克隆到 `/opt/vps-sentinel-src`；
-- release 构建；
+- 默认克隆源码到 `/opt/vps-sentinel-src`；
+- 执行 release 构建；
 - 安装二进制到 `/usr/local/bin/vps-sentinel`；
 - 仅在配置不存在时创建 `/etc/vps-sentinel/config.toml`；
 - systemd 可用时安装并启用服务。
@@ -133,9 +151,9 @@ sudo REPO_URL=https://github.com/cryptoli/vps-sentinel.git \
 | `CONFIG_DIR` | `/etc/vps-sentinel` | `config.toml` 所在目录。 |
 | `DATA_DIR` | `/var/lib/vps-sentinel` | SQLite 数据目录。 |
 | `LOG_DIR` | `/var/log/vps-sentinel` | 运行日志目录。 |
-| `INSTALL_DEPS` | `yes` | 设置为 `no` 可跳过包管理器依赖安装。 |
+| `INSTALL_DEPS` | `yes` | 设为 `no` 可跳过系统依赖安装。 |
 | `INSTALL_SYSTEMD` | `auto` | `auto`、`yes` 或 `no`，控制是否安装 systemd unit。 |
-| `ENABLE_SERVICE` | `yes` | 设置为 `no` 时只安装 unit，不启动服务。 |
+| `ENABLE_SERVICE` | `yes` | 设为 `no` 时只安装 unit，不启动服务。 |
 | `SERVICE_NAME` | `vps-sentinel` | systemd 服务名。 |
 | `SERVICE_PATH` | `/etc/systemd/system/<SERVICE_NAME>.service` | systemd unit 路径。 |
 
@@ -159,7 +177,7 @@ sudo sh update.sh
 | `CONFIG_DIR` | `/etc/vps-sentinel` | 已有配置目录。 |
 | `DATA_DIR` | `/var/lib/vps-sentinel` | 生成 systemd unit 时使用的数据目录。 |
 | `LOG_DIR` | `/var/log/vps-sentinel` | 生成 systemd unit 时使用的日志目录。 |
-| `INSTALL_SYSTEMD` | `auto` | 设置为 `no` 可跳过 unit 刷新。 |
+| `INSTALL_SYSTEMD` | `auto` | 设为 `no` 可跳过 unit 刷新。 |
 | `RESTART_SERVICE` | `auto` | `auto`、`yes` 或 `no`，控制是否重启服务。 |
 
 ## 手动构建
@@ -195,7 +213,7 @@ sudo journalctl -u vps-sentinel -f
 | 选项 | 含义 |
 | --- | --- |
 | `--config <path>` | 指定 TOML 配置文件。未指定时依次查找 `config.toml`、`~/.config/vps-sentinel/config.toml`、`/etc/vps-sentinel/config.toml`。 |
-| `--log-level <level>` | 当未设置 `RUST_LOG` 时使用的日志等级，默认 `info`。 |
+| `--log-level <level>` | 未设置 `RUST_LOG` 时使用的日志级别，默认 `info`。 |
 | `--version` | 输出版本号。 |
 | `--help` | 查看命令帮助。 |
 
@@ -275,12 +293,12 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 
 常见规则：
 
-- `SSH-001`：root SSH 登录。
+- `SSH-001`：Root SSH 登录。
 - `SSH-003`：SSH 爆破模式。
-- `SSH-005`：`authorized_keys` 相对基线变化。
-- `USER-002`：UID 0 用户新增或变化。
+- `SSH-005`：`authorized_keys` 相对基线发生变化。
+- `USER-002`：UID 0 用户新增或变更。
 - `PERSIST-002`：可疑启动命令。
-- `PROC-003`：反弹 shell 命令模式。
+- `PROC-003`：反向 shell 命令模式。
 - `NET-001`：公网监听端口。
 - `FILE-002`：WebShell 风格文件内容。
 - `CONFIG-003`：高危服务端口公网暴露。
@@ -300,11 +318,11 @@ systemd unit 使用：
 
 ## 隐私与安全边界
 
-- 默认不上传日志。
-- 默认不启用通知渠道。
-- 默认不杀进程、不封 IP、不删除文件。
-- SQLite 本地存储。
-- 文件内容扫描有大小限制，只提取特征。
+- 默认不上报日志；
+- 默认不启用通知渠道；
+- 默认不杀进程、不封 IP、不删除文件；
+- SQLite 本地存储；
+- 文件内容扫描有大小限制，只提取特征；
 - token、密码、密钥应只放在本地配置文件中，不应提交到仓库。
 
 详情见 [docs/privacy.md](docs/privacy.md) 和 [docs/threat-model.md](docs/threat-model.md)。

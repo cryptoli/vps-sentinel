@@ -17,6 +17,11 @@ pub async fn run_daemon(config: SentinelConfig) -> SentinelResult<()> {
                         raw_events = report.raw_event_count,
                         diff_events = report.diff_event_count,
                         findings = report.finding_count,
+                        suppressed_duplicates = report.suppressed_duplicate_count,
+                        notification_attempts = report.notification_attempt_count,
+                        notification_successes = report.notification_success_count,
+                        notification_failures = report.notification_failure_count,
+                        collector_errors = report.collector_errors.len(),
                         "scan completed"
                     ),
                     Err(err) => error!(error = %err, "scan failed"),

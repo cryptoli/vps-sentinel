@@ -7,8 +7,8 @@ use std::fs;
 use std::path::Path;
 
 pub use notifications::{
-    BarkConfig, EmailConfig, GotifyConfig, NotificationsConfig, NtfyConfig, ServerChanConfig,
-    TelegramConfig, WebhookConfig,
+    BarkConfig, EmailConfig, EmailTlsMode, GotifyConfig, NotificationsConfig, NtfyConfig,
+    ServerChanConfig, TelegramConfig, WebhookConfig,
 };
 pub use sections::{
     AgentConfig, AllowlistConfig, DockerConfig, FileIntegrityConfig, NetworkConfig,
@@ -79,6 +79,7 @@ impl SentinelConfig {
                 "notifications.request_timeout_seconds must be greater than 0".to_string(),
             ));
         }
+        validate_notifications(&self.notifications)?;
         Ok(())
     }
 
@@ -94,9 +95,47 @@ impl SentinelConfig {
     }
 }
 
+fn validate_notifications(config: &NotificationsConfig) -> SentinelResult<()> {
+    if config.email.enabled {
+        if config.email.smtp_host.trim().is_empty() {
+            return Err(SentinelError::Config(
+                "notifications.email.smtp_host is required when email is enabled".to_string(),
+            ));
+        }
+        if config.email.smtp_port == 0 {
+            return Err(SentinelError::Config(
+                "notifications.email.smtp_port must be greater than 0".to_string(),
+            ));
+        }
+        if config.email.from.trim().is_empty() {
+            return Err(SentinelError::Config(
+                "notifications.email.from is required when email is enabled".to_string(),
+            ));
+        }
+        if config.email.to.is_empty() {
+            return Err(SentinelError::Config(
+                "notifications.email.to must contain at least one recipient when email is enabled"
+                    .to_string(),
+            ));
+        }
+        if config.email.username.trim().is_empty() != config.email.password.trim().is_empty() {
+            return Err(SentinelError::Config(
+                "notifications.email.username and password must be configured together".to_string(),
+            ));
+        }
+        if config.email.tls_mode == EmailTlsMode::None && !config.email.username.trim().is_empty() {
+            return Err(SentinelError::Config(
+                "notifications.email.tls_mode = 'none' cannot be used with SMTP credentials"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use super::SentinelConfig;
+    use super::{EmailTlsMode, SentinelConfig};
 
     #[test]
     fn default_config_round_trips_as_toml() -> Result<(), Box<dyn std::error::Error>> {
@@ -119,6 +158,31 @@ mod tests {
     fn invalid_notification_timeout_is_rejected() {
         let mut config = SentinelConfig::default();
         config.notifications.request_timeout_seconds = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn enabled_email_requires_delivery_settings() {
+        let mut config = SentinelConfig::default();
+        config.notifications.email.enabled = true;
+        assert!(config.validate().is_err());
+
+        config.notifications.email.smtp_host = "smtp.example.com".to_string();
+        config.notifications.email.from = "sentinel@example.com".to_string();
+        config.notifications.email.to = vec!["ops@example.com".to_string()];
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn plaintext_email_rejects_credentials() {
+        let mut config = SentinelConfig::default();
+        config.notifications.email.enabled = true;
+        config.notifications.email.smtp_host = "localhost".to_string();
+        config.notifications.email.from = "sentinel@example.com".to_string();
+        config.notifications.email.to = vec!["ops@example.com".to_string()];
+        config.notifications.email.tls_mode = EmailTlsMode::None;
+        config.notifications.email.username = "user".to_string();
+        config.notifications.email.password = "secret".to_string();
         assert!(config.validate().is_err());
     }
 }

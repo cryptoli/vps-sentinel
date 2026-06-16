@@ -7,8 +7,8 @@ pub mod finding;
 pub mod severity;
 
 pub use config::{
-    BarkConfig, EmailConfig, GotifyConfig, NtfyConfig, SentinelConfig, ServerChanConfig,
-    TelegramConfig, WebhookConfig,
+    BarkConfig, EmailConfig, EmailTlsMode, GotifyConfig, NtfyConfig, SentinelConfig,
+    ServerChanConfig, TelegramConfig, WebhookConfig,
 };
 pub use error::{SentinelError, SentinelResult};
 pub use event::RawEvent;

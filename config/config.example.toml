@@ -94,10 +94,12 @@ min_severity = "Medium"
 enabled = false
 smtp_host = ""
 smtp_port = 587
+tls_mode = "start_tls"
 username = ""
 password = ""
 from = ""
 to = []
+subject_prefix = "[vps-sentinel]"
 min_severity = "High"
 
 [notifications.webhook]

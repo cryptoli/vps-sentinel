@@ -4,7 +4,7 @@ Lightweight Rust intrusion-signal monitoring for Linux VPS hosts.
 
 `vps-sentinel` helps VPS owners discover suspicious SSH logins, changed `authorized_keys`, unexpected users, privilege changes, startup persistence, suspicious processes, new public listening ports, WebShell-like files, web probing, and common risky configuration. It is local-first, transparent, and designed for small servers instead of heavyweight SIEM/EDR deployments.
 
-[????](README.zh-CN.md)
+[Chinese README](README.zh-CN.md)
 
 ![CI](https://github.com/cryptoli/vps-sentinel/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
@@ -48,14 +48,14 @@ All notification channels are disabled by default. Enable only the channels you 
 | Channel | Config section | Required fields | Typical use |
 | --- | --- | --- | --- |
 | Telegram | `[notifications.telegram]` | `enabled`, `bot_token`, `chat_id` | Personal or team security alerts through a Telegram bot. |
-| Email SMTP | `[notifications.email]` | `enabled`, `smtp_host`, `smtp_port`, `username`, `password`, `from`, `to` | Traditional mailbox alerts for operations teams. |
+| Email SMTP | `[notifications.email]` | `enabled`, `smtp_host`, `smtp_port`, `from`, `to` | Traditional mailbox alerts for operations teams. Supports STARTTLS, implicit TLS, and local plaintext relays. |
 | Webhook | `[notifications.webhook]` | `enabled`, `url` | Custom HTTP receivers, automation platforms, or self-hosted alert routers. |
 | ntfy | `[notifications.ntfy]` | `enabled`, `server`, `topic` | Push notifications through ntfy.sh or self-hosted ntfy. |
 | Gotify | `[notifications.gotify]` | `enabled`, `server`, `token` | Self-hosted push notifications. |
 | Bark | `[notifications.bark]` | `enabled`, `server`, `device_key` | iOS push notifications through Bark. |
 | ServerChan | `[notifications.serverchan]` | `enabled`, `send_key` | WeChat-style notifications through ServerChan. |
 
-Each channel supports `min_severity`, so low-priority findings can be kept local while higher-risk findings are sent out. HTTP-based channels share `notifications.request_timeout_seconds`, which defaults to 15 seconds.
+Each channel supports `min_severity`, so low-priority findings can be kept local while higher-risk findings are sent out. HTTP-based channels share `notifications.request_timeout_seconds`, which defaults to 15 seconds. Email alerts are sent as multipart messages with plain-text and HTML bodies; other human-facing channels use the same normalized alert title and body renderer.
 
 Telegram example:
 
@@ -66,6 +66,24 @@ bot_token = "<telegram-bot-token>"
 chat_id = "<telegram-chat-id>"
 min_severity = "Medium"
 ```
+
+Email example:
+
+```toml
+[notifications.email]
+enabled = true
+smtp_host = "smtp.example.com"
+smtp_port = 587
+tls_mode = "start_tls" # start_tls, tls, or none
+username = "smtp-user"
+password = "smtp-password"
+from = "vps-sentinel@example.com"
+to = ["ops@example.com"]
+subject_prefix = "[vps-sentinel]"
+min_severity = "High"
+```
+
+For unauthenticated local SMTP relays, use `tls_mode = "none"` and leave `username` and `password` empty. Credentials are intentionally rejected with plaintext SMTP.
 
 Webhook example:
 

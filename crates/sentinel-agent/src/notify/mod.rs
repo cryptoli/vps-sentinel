@@ -7,16 +7,12 @@ pub mod bark;
 pub mod email;
 pub mod gotify;
 pub mod ntfy;
+mod render;
 pub mod serverchan;
 pub mod telegram;
 pub mod webhook;
 
-/// Output format for rendered notification bodies.
-#[derive(Debug, Clone, Copy)]
-pub enum NotificationFormat {
-    Markdown,
-    PlainText,
-}
+pub use render::{render_alert, render_finding, NotificationFormat, RenderedAlert};
 
 /// Context shared by notifier implementations.
 #[derive(Clone)]
@@ -136,61 +132,5 @@ impl NotificationManager {
             }
         }
         results
-    }
-}
-
-/// Render a finding in the standard alert shape.
-pub fn render_finding(finding: &Finding, format: NotificationFormat) -> String {
-    let bullet = match format {
-        NotificationFormat::Markdown => "-",
-        NotificationFormat::PlainText => "-",
-    };
-    let mut out = String::new();
-    out.push_str(&format!("[{}] {}\n\n", finding.severity, finding.title));
-    out.push_str(&format!("Host: {}\n", finding.host_id));
-    out.push_str(&format!("Time: {}\n", finding.timestamp.to_rfc3339()));
-    out.push_str(&format!("Module: {}\n", finding.category));
-    out.push_str(&format!("Rule: {}\n", finding.rule_id));
-    out.push_str(&format!("Subject: {}\n", finding.subject));
-    out.push_str("Evidence:\n");
-    for item in &finding.evidence {
-        out.push_str(&format!("{bullet} {}: {}\n", item.key, item.value));
-    }
-    if !finding.impact.is_empty() {
-        out.push_str("Impact:\n");
-        for item in &finding.impact {
-            out.push_str(&format!("{bullet} {item}\n"));
-        }
-    }
-    out.push_str("Recommendations:\n");
-    for (index, item) in finding.recommendations.iter().enumerate() {
-        out.push_str(&format!("{}. {}\n", index + 1, item));
-    }
-    out.push_str(&format!("\nEvent ID: {}\n", finding.id));
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{render_finding, NotificationFormat};
-    use sentinel_core::{Category, Evidence, Finding, Severity};
-
-    #[test]
-    fn renders_standard_alert_body() {
-        let finding = Finding::new(
-            "host",
-            "Root login",
-            "desc",
-            Severity::High,
-            Category::Ssh,
-            "SSH-001",
-            "root",
-        )
-        .with_evidence(vec![Evidence::new("user", "root")])
-        .with_recommendations(vec!["Review login.".to_string()]);
-        let body = render_finding(&finding, NotificationFormat::PlainText);
-        assert!(body.contains("[High] Root login"));
-        assert!(body.contains("Rule: SSH-001"));
-        assert!(body.contains("Evidence:"));
     }
 }

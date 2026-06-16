@@ -33,12 +33,22 @@ pub struct ScanReport {
     pub raw_event_count: usize,
     pub diff_event_count: usize,
     pub finding_count: usize,
+    pub suppressed_duplicate_count: usize,
+    pub notification_attempt_count: usize,
+    pub notification_success_count: usize,
+    pub notification_failure_count: usize,
     pub findings: Vec<Finding>,
     pub collector_errors: Vec<String>,
 }
 
 /// Run one complete scan: collect facts, diff baseline, detect findings, persist, and notify.
 pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelResult<ScanReport> {
+    debug!(
+        persist = options.persist,
+        notify = options.notify,
+        scan_root = %options.scan_root.display(),
+        "scan started"
+    );
     let config = Arc::new(config);
     let store = if options.persist {
         Some(SqliteStore::open(config.storage.path.clone())?)
@@ -85,13 +95,23 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     for detector in default_detectors() {
         findings.extend(detector.detect(&detection_events, &detect_context));
     }
+    let detected_finding_count = findings.len();
+    let mut suppressed_duplicate_count = 0;
     if options.persist {
         if let Some(store) = &store {
-            findings = suppress_recent_duplicates(
+            let suppression = suppress_recent_duplicates(
                 store,
                 findings,
                 config.noise_control.dedup_window_seconds,
             )?;
+            findings = suppression.0;
+            suppressed_duplicate_count = suppression.1;
+            if suppressed_duplicate_count > 0 {
+                debug!(
+                    suppressed_duplicates = suppressed_duplicate_count,
+                    "duplicate findings suppressed"
+                );
+            }
         }
     }
 
@@ -103,12 +123,31 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         }
     }
 
+    let mut notification_attempt_count = 0;
+    let mut notification_success_count = 0;
+    let mut notification_failure_count = 0;
     if options.notify {
         let manager = NotificationManager::from_config(&config);
         let notify_context = NotifyContext {
             config: Arc::clone(&config),
         };
-        for (finding_id, channel, result) in manager.notify_all(&findings, &notify_context).await {
+        let notification_results = manager.notify_all(&findings, &notify_context).await;
+        notification_attempt_count = notification_results.len();
+        for (finding_id, channel, result) in notification_results {
+            match &result {
+                Ok(()) => {
+                    notification_success_count += 1;
+                    debug!(
+                        finding_id = finding_id,
+                        channel = channel,
+                        "notification sent"
+                    );
+                }
+                Err(err) => {
+                    notification_failure_count += 1;
+                    warn!(finding_id = finding_id, channel = channel, error = %err, "notification failed");
+                }
+            }
             if options.persist {
                 let Some(store) = &store else {
                     continue;
@@ -123,16 +162,29 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
                     warn!(channel = channel, error = %err, "failed to record notification log");
                 }
             }
-            if let Err(err) = result {
-                warn!(channel = channel, error = %err, "notification failed");
-            }
         }
     }
 
+    debug!(
+        raw_events = raw_events.len(),
+        diff_events = diff_event_count,
+        detected_findings = detected_finding_count,
+        findings = findings.len(),
+        suppressed_duplicates = suppressed_duplicate_count,
+        notification_attempts = notification_attempt_count,
+        notification_successes = notification_success_count,
+        notification_failures = notification_failure_count,
+        collector_errors = collector_errors.len(),
+        "scan completed"
+    );
     Ok(ScanReport {
         raw_event_count: raw_events.len(),
         diff_event_count,
         finding_count: findings.len(),
+        suppressed_duplicate_count,
+        notification_attempt_count,
+        notification_success_count,
+        notification_failure_count,
         findings,
         collector_errors,
     })
@@ -142,9 +194,9 @@ fn suppress_recent_duplicates(
     store: &SqliteStore,
     findings: Vec<Finding>,
     dedup_window_seconds: u64,
-) -> SentinelResult<Vec<Finding>> {
+) -> SentinelResult<(Vec<Finding>, usize)> {
     if dedup_window_seconds == 0 {
-        return Ok(findings);
+        return Ok((findings, 0));
     }
     let seconds = if dedup_window_seconds > i64::MAX as u64 {
         i64::MAX
@@ -153,12 +205,15 @@ fn suppress_recent_duplicates(
     };
     let since = Utc::now() - Duration::seconds(seconds);
     let mut retained = Vec::new();
+    let mut suppressed = 0;
     for finding in findings {
         if !store.finding_seen_since(&finding.dedup_key, since)? {
             retained.push(finding);
+        } else {
+            suppressed += 1;
         }
     }
-    Ok(retained)
+    Ok((retained, suppressed))
 }
 
 /// Collect current host facts and turn them into a baseline snapshot.
