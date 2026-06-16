@@ -165,6 +165,9 @@ install -m 0755 target/release/vps-sentinel "$PREFIX/bin/vps-sentinel"
 if [ -f reload.sh ]; then
   install -m 0755 reload.sh "$PREFIX/bin/vps-sentinel-reload"
 fi
+if [ -f stop.sh ]; then
+  install -m 0755 stop.sh "$PREFIX/bin/vps-sentinel-stop"
+fi
 
 if [ ! -f "$CONFIG_DIR/config.toml" ]; then
   install -m 0600 config/config.example.toml "$CONFIG_DIR/config.toml"

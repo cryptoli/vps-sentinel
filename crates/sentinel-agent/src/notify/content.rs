@@ -59,6 +59,15 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
                 "确认同一来源是否随后出现成功登录。",
             ],
         },
+        "SSH-004" => RuleMessage {
+            title: "检测到 SSH 登录",
+            description: "一个用户刚刚通过 SSH 成功认证。",
+            impact: &[],
+            recommendations: &[
+                "确认登录账号、来源和时间是否符合预期。",
+                "如果该登录不符合预期，请检查近期命令和 SSH 密钥归属。",
+            ],
+        },
         "SSH-005" => RuleMessage {
             title: "SSH authorized_keys 发生变化",
             description: "authorized_keys 文件相对基线发生创建、修改或删除。",

@@ -26,7 +26,7 @@
 
 | 模块 | 支持能力 |
 | --- | --- |
-| SSH 监控 | 解析 Debian/Ubuntu 与 RHEL 系认证日志；检测 root 登录、密码登录、爆破模式、新登录来源 IP、`authorized_keys` 基线漂移。 |
+| SSH 监控 | 解析 Debian/Ubuntu 与 RHEL 系认证日志；检测 root 登录、密码登录、普通成功登录、爆破模式和 `authorized_keys` 基线漂移。 |
 | 基线漂移 | 为用户、SSH key、关键文件、持久化项和监听端口创建本地基线，并在后续扫描中对比变化。 |
 | 用户与权限 | 检测新增用户、UID 0 用户、权限相关用户变化。 |
 | 文件完整性 | 监控关键路径和 Web 根目录；对限定大小内文件做哈希和内容扫描；检测关键文件变化、Web 目录可执行脚本、WebShell 风格特征。 |
@@ -39,7 +39,7 @@
 | 本地存储 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和通知日志。 |
 | 噪声控制 | 支持白名单、最低告警级别、finding 去重和保留周期。 |
 | 通知告警 | 支持 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan。 |
-| 运维部署 | 单 CLI 二进制、JSON 日志、systemd unit、一键安装脚本、更新脚本。 |
+| 运维部署 | 单 CLI 二进制、JSON 日志、systemd unit、一键安装脚本、更新脚本、重载脚本和停止脚本。 |
 
 ## 检测模型
 
@@ -157,6 +157,7 @@ sudo sh install.sh
 - 执行 release 构建；
 - 安装二进制到 `/usr/local/bin/vps-sentinel`；
 - 安装 `vps-sentinel-reload`，用于安全重载配置；
+- 安装 `vps-sentinel-stop`，用于停止服务且不删除配置或数据；
 - 仅在配置不存在时创建 `/etc/vps-sentinel/config.toml`；
 - 可通过环境变量直接写入 Telegram 配置；
 - systemd 可用时先写入 unit，使初始基线包含本程序自己的服务文件；
@@ -249,6 +250,20 @@ sudo systemctl reload vps-sentinel
 
 重载前会先校验 TOML。校验失败时，daemon 会继续使用旧的内存配置。
 
+## 停止服务
+
+停止 daemon，但不删除配置、基线、日志或二进制文件：
+
+```bash
+sudo vps-sentinel-stop
+```
+
+等价的 systemd 命令：
+
+```bash
+sudo systemctl stop vps-sentinel
+```
+
 ## 手动构建
 
 ```bash
@@ -308,6 +323,7 @@ sudo journalctl -u vps-sentinel -f
 | `vps-sentinel rules test <rule_id>` | 检查指定内置规则 ID 是否存在并可加载。 |
 | `vps-sentinel notify test --config <path>` | 构造一条 Info 级别测试 finding 并发送到已启用通知渠道，用于验证凭据和路由。 |
 | `vps-sentinel-reload` | 校验 `/etc/vps-sentinel/config.toml` 并重载运行中的 systemd 服务。 |
+| `vps-sentinel-stop` | 停止运行中的 systemd 服务，但保留配置、数据、日志和二进制文件。 |
 
 ## 配置
 
@@ -333,6 +349,18 @@ type = "sqlite"
 path = "/var/lib/vps-sentinel/sentinel.db"
 retention_days = 30
 ```
+
+SSH 告警策略：
+
+```toml
+[ssh]
+alert_on_root_login = true
+alert_on_password_login = true
+alert_on_successful_login = true
+auth_log_lookback_seconds = 300
+```
+
+`alert_on_successful_login` 覆盖未被 root 登录或密码登录规则覆盖的普通成功 SSH 登录，并不只针对陌生 IP。`auth_log_lookback_seconds` 限制每次扫描读取认证日志时向前回看的时间窗口，避免旧登录日志反复产生通知。
 
 告警中的 VPS 身份：
 
@@ -411,7 +439,9 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 常见规则：
 
 - `SSH-001`：Root SSH 登录。
+- `SSH-002`：SSH 密码登录。
 - `SSH-003`：SSH 爆破模式。
+- `SSH-004`：SSH 成功登录。
 - `SSH-005`：`authorized_keys` 相对基线发生变化。
 - `USER-002`：UID 0 用户新增或变更。
 - `PERSIST-002`：可疑启动命令。

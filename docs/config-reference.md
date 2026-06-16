@@ -7,7 +7,7 @@ The default system configuration path is `/etc/vps-sentinel/config.toml`. A user
 - `[agent]`: host ID, hostname, human-readable `display_name`, scan intervals, data directory, log level. Notification subjects use `display_name`, then `hostname`, then `host_id`, then `local-host`.
 - `[privacy]`: upload and masking controls. Upload is disabled by default.
 - `[storage]`: SQLite path and retention.
-- `[ssh]`: auth log paths and SSH login thresholds.
+- `[ssh]`: auth log paths and SSH login thresholds. `alert_on_root_login`, `alert_on_password_login`, and `alert_on_successful_login` control which successful logins become findings; ordinary successful-login alerts are not limited to unfamiliar IP addresses. `auth_log_lookback_seconds` limits how far back the auth log tail is considered on each scan.
 - `[file_integrity]`: monitored paths, scan depth, and max file size.
 - `[web]`: web roots and access log paths.
 - `[process]`: process scan thresholds and suspicious directories. `PROC-003` profiles `/proc/<pid>/cmdline` argv and requires high-confidence network command-execution bridge behavior, not traffic-forwarding tool names alone. `PROC-004` is a known-tool indicator rule that matches miner/scanner names against process identity fields such as executable path, process name, and structured `argv[0]`; legacy events without structured identity fall back to command token basename matching.

@@ -14,7 +14,7 @@ sudo systemctl enable --now vps-sentinel
 ```
 
 The package-time installer copies the binary, creates data/log/config directories, installs the systemd unit when available, and keeps an existing config file untouched.
-It writes the systemd unit before baseline bootstrap, validates the config, creates the first baseline when missing, runs a no-notify warm-up scan, and installs `vps-sentinel-reload` when `reload.sh` is present.
+It writes the systemd unit before baseline bootstrap, validates the config, creates the first baseline when missing, runs a no-notify warm-up scan, and installs `vps-sentinel-reload` plus `vps-sentinel-stop` when their helper scripts are present.
 
 Useful variables:
 
@@ -48,6 +48,20 @@ sudo systemctl reload vps-sentinel
 
 Both paths validate the config before sending SIGHUP to the daemon.
 
+## Stop Service
+
+```bash
+sudo vps-sentinel-stop
+```
+
+or:
+
+```bash
+sudo systemctl stop vps-sentinel
+```
+
+Stopping the service does not remove `/etc/vps-sentinel`, `/var/lib/vps-sentinel`, logs, or binaries.
+
 ## First Run
 
 ```bash
@@ -64,5 +78,5 @@ Release artifacts should include:
 - `config/config.example.toml`.
 - `packaging/systemd/vps-sentinel.service`.
 - `packaging/install.sh`.
-- `install.sh` and `update.sh`.
+- `install.sh`, `update.sh`, `reload.sh`, and `stop.sh`.
 - README and docs.

@@ -1,6 +1,7 @@
 use crate::collectors::{CollectContext, Collector};
 use crate::utils::fs::{path_string, read_tail};
 use async_trait::async_trait;
+use chrono::{DateTime, Datelike, Duration, Local, TimeZone};
 use sentinel_core::{RawEvent, SentinelResult};
 
 const MAX_AUTH_LOG_BYTES: u64 = 1024 * 1024;
@@ -19,6 +20,8 @@ impl Collector for SshLogCollector {
         }
 
         let mut events = Vec::new();
+        let now = Local::now();
+        let lookback = Duration::seconds(ctx.config.ssh.auth_log_lookback_seconds as i64);
         for configured_path in &ctx.config.ssh.auth_log_paths {
             let path = ctx.resolve(configured_path);
             if !path.exists() {
@@ -29,10 +32,57 @@ impl Collector for SshLogCollector {
             events.extend(
                 content
                     .lines()
+                    .filter(|line| auth_line_is_recent(line, now, lookback))
                     .filter_map(|line| parse_ssh_line(line, &source)),
             );
         }
         Ok(events)
+    }
+}
+
+fn auth_line_is_recent(line: &str, now: DateTime<Local>, lookback: Duration) -> bool {
+    parse_syslog_timestamp(line, now)
+        .map(|timestamp| timestamp >= now - lookback)
+        .unwrap_or(true)
+}
+
+fn parse_syslog_timestamp(line: &str, now: DateTime<Local>) -> Option<DateTime<Local>> {
+    if line.len() < 15 {
+        return None;
+    }
+    let stamp = &line[..15];
+    let month = month_number(stamp.get(0..3)?)?;
+    let day = stamp.get(4..6)?.trim().parse::<u32>().ok()?;
+    let hour = stamp.get(7..9)?.parse::<u32>().ok()?;
+    let minute = stamp.get(10..12)?.parse::<u32>().ok()?;
+    let second = stamp.get(13..15)?.parse::<u32>().ok()?;
+    let candidate = Local
+        .with_ymd_and_hms(now.year(), month, day, hour, minute, second)
+        .single()?;
+    if candidate > now + Duration::days(1) {
+        Local
+            .with_ymd_and_hms(now.year() - 1, month, day, hour, minute, second)
+            .single()
+    } else {
+        Some(candidate)
+    }
+}
+
+fn month_number(name: &str) -> Option<u32> {
+    match name {
+        "Jan" => Some(1),
+        "Feb" => Some(2),
+        "Mar" => Some(3),
+        "Apr" => Some(4),
+        "May" => Some(5),
+        "Jun" => Some(6),
+        "Jul" => Some(7),
+        "Aug" => Some(8),
+        "Sep" => Some(9),
+        "Oct" => Some(10),
+        "Nov" => Some(11),
+        "Dec" => Some(12),
+        _ => None,
     }
 }
 
@@ -86,7 +136,8 @@ fn parse_failed(rest: &str, raw: &str, source: &str) -> Option<RawEvent> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_ssh_line;
+    use super::{auth_line_is_recent, parse_ssh_line};
+    use chrono::{Duration, Local, TimeZone};
 
     #[test]
     fn parses_successful_password_login() -> Result<(), Box<dyn std::error::Error>> {
@@ -106,6 +157,30 @@ mod tests {
         assert_eq!(event.field("outcome"), Some("failure"));
         assert_eq!(event.field("user"), Some("admin"));
         assert_eq!(event.field("source_ip"), Some("198.51.100.8"));
+        Ok(())
+    }
+
+    #[test]
+    fn filters_auth_lines_by_recent_syslog_timestamp() -> Result<(), Box<dyn std::error::Error>> {
+        let now = Local
+            .with_ymd_and_hms(2026, 6, 16, 10, 5, 0)
+            .single()
+            .ok_or("valid local time")?;
+        assert!(auth_line_is_recent(
+            "Jun 16 10:04:30 host sshd[123]: Accepted publickey for deploy from 203.0.113.10 port 54122 ssh2",
+            now,
+            Duration::seconds(300),
+        ));
+        assert!(!auth_line_is_recent(
+            "Jun 16 09:30:00 host sshd[123]: Accepted publickey for deploy from 203.0.113.10 port 54122 ssh2",
+            now,
+            Duration::seconds(300),
+        ));
+        assert!(auth_line_is_recent(
+            "unrecognized timestamp Accepted publickey for deploy from 203.0.113.10 port 54122 ssh2",
+            now,
+            Duration::seconds(300),
+        ));
         Ok(())
     }
 }

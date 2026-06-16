@@ -26,7 +26,7 @@ It is not:
 
 | Area | What vps-sentinel supports |
 | --- | --- |
-| SSH monitoring | Parses Debian/Ubuntu and RHEL-family auth logs; detects root SSH login, password login, brute-force patterns, new login source IPs, and `authorized_keys` drift. |
+| SSH monitoring | Parses Debian/Ubuntu and RHEL-family auth logs; detects root SSH login, password login, ordinary successful login, brute-force patterns, and `authorized_keys` drift. |
 | Baseline drift | Creates local baselines for users, SSH keys, critical files, persistence entries, and listeners; compares future scans against the stored baseline. |
 | User and privilege checks | Detects new users, UID 0 users, and privilege-relevant user changes. |
 | File integrity | Watches configured critical paths and web roots; hashes bounded file content; detects modified files, executable scripts in web roots, and WebShell-style markers. |
@@ -39,7 +39,7 @@ It is not:
 | Storage | Stores raw events, findings, baselines, and notification logs in local SQLite. |
 | Noise control | Uses allowlists, minimum severity, finding deduplication, and configurable retention windows. |
 | Notifications | Sends alerts through Telegram, Email SMTP, generic webhook, ntfy, Gotify, Bark, and ServerChan. |
-| Operations | Provides a single CLI binary, JSON logs, systemd unit, one-command installer, and update script. |
+| Operations | Provides a single CLI binary, JSON logs, systemd unit, one-command installer, update script, reload helper, and stop helper. |
 
 ## Detection Model
 
@@ -157,6 +157,7 @@ The installer:
 - builds `vps-sentinel` in release mode;
 - installs the binary to `/usr/local/bin/vps-sentinel`;
 - installs `vps-sentinel-reload` for safe config reloads;
+- installs `vps-sentinel-stop` for stopping the service without deleting config or data;
 - creates `/etc/vps-sentinel/config.toml` only if it does not already exist;
 - optionally writes Telegram settings from environment variables;
 - installs the systemd unit before baseline bootstrap when systemd is available;
@@ -251,6 +252,20 @@ sudo systemctl reload vps-sentinel
 
 The reload path validates the TOML first. If validation fails, the daemon keeps the previous in-memory configuration.
 
+## Stop Service
+
+Stop the daemon without deleting configuration, baselines, logs, or the binary:
+
+```bash
+sudo vps-sentinel-stop
+```
+
+Equivalent systemd command:
+
+```bash
+sudo systemctl stop vps-sentinel
+```
+
 ## Manual Build
 
 ```bash
@@ -310,6 +325,7 @@ Commands:
 | `vps-sentinel rules test <rule_id>` | Verify that a built-in rule ID exists and can be loaded. |
 | `vps-sentinel notify test --config <path>` | Send a synthetic Info finding through enabled notification channels. Use this to verify credentials and routing. |
 | `vps-sentinel-reload` | Validate `/etc/vps-sentinel/config.toml` and reload the running systemd service. |
+| `vps-sentinel-stop` | Stop the running systemd service while keeping config, data, logs, and binaries in place. |
 
 ## Configuration
 
@@ -335,6 +351,18 @@ type = "sqlite"
 path = "/var/lib/vps-sentinel/sentinel.db"
 retention_days = 30
 ```
+
+SSH alert policy:
+
+```toml
+[ssh]
+alert_on_root_login = true
+alert_on_password_login = true
+alert_on_successful_login = true
+auth_log_lookback_seconds = 300
+```
+
+`alert_on_successful_login` covers ordinary successful SSH logins that are not already reported by the root-login or password-login rules. It is not limited to unfamiliar IP addresses. `auth_log_lookback_seconds` limits how far back the auth-log tail is considered on each scan so old login lines do not keep generating notifications.
 
 VPS identity in alerts:
 
@@ -413,7 +441,9 @@ When `notifications.include_technical_fields = true`, alerts also include rule I
 Example rules:
 
 - `SSH-001`: Root SSH login detected.
+- `SSH-002`: Password-based SSH login detected.
 - `SSH-003`: SSH brute-force pattern detected.
+- `SSH-004`: SSH login detected.
 - `SSH-005`: `authorized_keys` changed relative to baseline.
 - `USER-002`: UID 0 user added or changed.
 - `PERSIST-002`: Suspicious startup command detected.

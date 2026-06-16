@@ -71,6 +71,8 @@ pub struct SshConfig {
     pub monitor_authorized_keys: bool,
     pub alert_on_root_login: bool,
     pub alert_on_password_login: bool,
+    pub alert_on_successful_login: bool,
+    pub auth_log_lookback_seconds: u64,
     pub failed_login_threshold: usize,
     pub failed_login_window_seconds: u64,
 }
@@ -86,6 +88,8 @@ impl Default for SshConfig {
             monitor_authorized_keys: true,
             alert_on_root_login: true,
             alert_on_password_login: true,
+            alert_on_successful_login: true,
+            auth_log_lookback_seconds: 300,
             failed_login_threshold: 10,
             failed_login_window_seconds: 300,
         }

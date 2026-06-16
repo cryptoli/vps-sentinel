@@ -33,6 +33,13 @@ impl Detector for SshDetector {
                 Severity::High,
                 "Many failed SSH logins were observed from one source IP.",
             ),
+            RuleMetadata::new(
+                "SSH-004",
+                "SSH login detected",
+                Category::Ssh,
+                Severity::Medium,
+                "A user successfully authenticated through SSH.",
+            ),
         ]
     }
 
@@ -51,13 +58,20 @@ impl Detector for SshDetector {
 
             match event.field("outcome") {
                 Some("success") => {
-                    if ctx.config.ssh.alert_on_root_login && user == "root" {
+                    let root_alerted = ctx.config.ssh.alert_on_root_login && user == "root";
+                    let password_alerted = ctx.config.ssh.alert_on_password_login
+                        && event.field("method") == Some("password");
+                    if root_alerted {
                         findings.push(root_login_finding(event, ctx));
                     }
-                    if ctx.config.ssh.alert_on_password_login
-                        && event.field("method") == Some("password")
-                    {
+                    if password_alerted {
                         findings.push(password_login_finding(event, ctx));
+                    }
+                    if ctx.config.ssh.alert_on_successful_login
+                        && !root_alerted
+                        && !password_alerted
+                    {
+                        findings.push(successful_login_finding(event, ctx));
                     }
                 }
                 Some("failure") => {
@@ -76,6 +90,30 @@ impl Detector for SshDetector {
         }
         findings
     }
+}
+
+fn successful_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
+    let user = string_field(event, "user");
+    let ip = string_field(event, "source_ip");
+    Finding::new(
+        &ctx.host_id,
+        "SSH login detected",
+        "A user successfully authenticated through SSH.",
+        Severity::Medium,
+        Category::Ssh,
+        "SSH-004",
+        format!("{user}@{ip}"),
+    )
+    .with_evidence(vec![
+        evidence("user", user),
+        evidence("source_ip", ip),
+        evidence("method", string_field(event, "method")),
+        evidence("log_source", string_field(event, "log_source")),
+    ])
+    .with_recommendations(vec![
+        "Confirm the login source, account, and time are expected.".to_string(),
+        "Review recent commands and SSH key ownership if the login is unexpected.".to_string(),
+    ])
 }
 
 fn root_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
@@ -160,4 +198,43 @@ fn bruteforce_finding(
         "Review SSH exposure, fail2ban or firewall rules, and account lockout policy.".to_string(),
         "Check for any successful login from the same source.".to_string(),
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SshDetector;
+    use crate::detectors::{DetectContext, Detector};
+    use sentinel_core::{RawEvent, SentinelConfig};
+    use std::sync::Arc;
+
+    #[test]
+    fn reports_non_root_key_successful_login() {
+        let detector = SshDetector;
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let findings = detector.detect(&[success_event("deploy", "publickey")], &ctx);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "SSH-004");
+    }
+
+    #[test]
+    fn does_not_duplicate_root_or_password_login() {
+        let detector = SshDetector;
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let root_findings = detector.detect(&[success_event("root", "publickey")], &ctx);
+        assert_eq!(root_findings.len(), 1);
+        assert_eq!(root_findings[0].rule_id, "SSH-001");
+
+        let password_findings = detector.detect(&[success_event("deploy", "password")], &ctx);
+        assert_eq!(password_findings.len(), 1);
+        assert_eq!(password_findings[0].rule_id, "SSH-002");
+    }
+
+    fn success_event(user: &str, method: &str) -> RawEvent {
+        RawEvent::new("ssh", "ssh_auth")
+            .with_field("outcome", "success")
+            .with_field("method", method)
+            .with_field("user", user)
+            .with_field("source_ip", "203.0.113.10")
+            .with_field("log_source", "/var/log/auth.log")
+    }
 }

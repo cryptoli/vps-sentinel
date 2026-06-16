@@ -23,6 +23,8 @@ auth_log_paths = ["/var/log/auth.log", "/var/log/secure"]
 monitor_authorized_keys = true
 alert_on_root_login = true
 alert_on_password_login = true
+alert_on_successful_login = true
+auth_log_lookback_seconds = 300
 failed_login_threshold = 10
 failed_login_window_seconds = 300
 

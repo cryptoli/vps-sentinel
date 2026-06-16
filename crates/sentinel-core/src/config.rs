@@ -76,6 +76,16 @@ impl SentinelConfig {
                 "ssh.failed_login_threshold must be greater than 0".to_string(),
             ));
         }
+        if self.ssh.auth_log_lookback_seconds == 0 {
+            return Err(SentinelError::Config(
+                "ssh.auth_log_lookback_seconds must be greater than 0".to_string(),
+            ));
+        }
+        if self.ssh.failed_login_window_seconds == 0 {
+            return Err(SentinelError::Config(
+                "ssh.failed_login_window_seconds must be greater than 0".to_string(),
+            ));
+        }
         if self.file_integrity.max_file_size_mb == 0 {
             return Err(SentinelError::Config(
                 "file_integrity.max_file_size_mb must be greater than 0".to_string(),
@@ -222,6 +232,17 @@ mod tests {
     fn invalid_quiet_hour_window_is_rejected() {
         let mut config = SentinelConfig::default();
         config.noise_control.quiet_hours = vec!["25:00-26:00".to_string()];
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_ssh_time_windows_are_rejected() {
+        let mut config = SentinelConfig::default();
+        config.ssh.auth_log_lookback_seconds = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.ssh.failed_login_window_seconds = 0;
         assert!(config.validate().is_err());
     }
 
