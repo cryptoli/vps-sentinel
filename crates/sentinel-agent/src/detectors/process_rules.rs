@@ -1,10 +1,10 @@
 use crate::detectors::command_profile::{
     network_execution_assessment_from_event, CommandAssessment,
 };
+use crate::detectors::risk::RiskAssessment;
 use crate::detectors::{evidence, path_is_allowlisted, string_field, DetectContext, Detector};
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
-use std::collections::BTreeSet;
 
 pub struct ProcessDetector;
 
@@ -102,7 +102,7 @@ fn temp_process(event: &RawEvent, ctx: &DetectContext) -> Finding {
 fn deleted_executable(
     event: &RawEvent,
     ctx: &DetectContext,
-    assessment: DeletedExecutableAssessment,
+    assessment: RiskAssessment,
 ) -> Finding {
     Finding::new(
         &ctx.host_id,
@@ -126,44 +126,14 @@ fn deleted_executable(
     ])
 }
 
-#[derive(Debug, Clone, Default)]
-struct DeletedExecutableAssessment {
-    score: u16,
-    reasons: BTreeSet<String>,
-    features: BTreeSet<&'static str>,
-}
-
-impl DeletedExecutableAssessment {
-    fn is_suspicious(&self, min_score: u16) -> bool {
-        self.score >= min_score
-    }
-
-    fn reason_text(&self) -> String {
-        self.reasons.iter().cloned().collect::<Vec<_>>().join("; ")
-    }
-
-    fn feature_names(&self) -> String {
-        self.features.iter().copied().collect::<Vec<_>>().join(", ")
-    }
-
-    fn add_signal(&mut self, score: u16, feature: &'static str, reason: impl Into<String>) {
-        self.score = self.score.max(score);
-        self.features.insert(feature);
-        self.reasons.insert(reason.into());
-    }
-}
-
-fn deleted_executable_assessment(
-    event: &RawEvent,
-    ctx: &DetectContext,
-) -> Option<DeletedExecutableAssessment> {
+fn deleted_executable_assessment(event: &RawEvent, ctx: &DetectContext) -> Option<RiskAssessment> {
     let exe_path = string_field(event, "exe_path");
     if !is_deleted_executable_path(&exe_path) {
         return None;
     }
 
     let normalized_path = normalize_deleted_executable_path(&exe_path);
-    let mut assessment = DeletedExecutableAssessment::default();
+    let mut assessment = RiskAssessment::default();
 
     if is_memfd_or_anonymous_path(&normalized_path) {
         assessment.add_signal(
@@ -570,8 +540,7 @@ mod tests {
         let event = process_event("/dev/shm/.x (deleted)", ".x", "/dev/shm/.x");
         let assessment = deleted_executable_assessment(&event, &ctx);
         assert!(assessment.is_some_and(|assessment| {
-            assessment.is_suspicious(70)
-                && assessment.features.contains("temporary_deleted_executable")
+            assessment.is_suspicious(70) && assessment.has_feature("temporary_deleted_executable")
         }));
     }
 
@@ -581,8 +550,7 @@ mod tests {
         let event = process_event("memfd:kworker (deleted)", "kworker", "kworker");
         let assessment = deleted_executable_assessment(&event, &ctx);
         assert!(assessment.is_some_and(|assessment| {
-            assessment.is_suspicious(70)
-                && assessment.features.contains("anonymous_deleted_executable")
+            assessment.is_suspicious(70) && assessment.has_feature("anonymous_deleted_executable")
         }));
     }
 
