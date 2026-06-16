@@ -1,4 +1,5 @@
-use sentinel_core::{Finding, Severity};
+use super::i18n::{catalog, severity_label, MessageCatalog};
+use sentinel_core::{Finding, NotificationLanguage, Severity};
 use std::borrow::Cow;
 
 /// Output format for rendered notification bodies.
@@ -19,7 +20,15 @@ pub struct RenderedAlert {
 
 /// Render a finding in the standard alert shape.
 pub fn render_finding(finding: &Finding, format: NotificationFormat) -> String {
-    let alert = render_alert(finding);
+    render_finding_with_language(finding, format, NotificationLanguage::En)
+}
+
+pub fn render_finding_with_language(
+    finding: &Finding,
+    format: NotificationFormat,
+    language: NotificationLanguage,
+) -> String {
+    let alert = render_alert_with_language(finding, language);
     match format {
         NotificationFormat::Markdown => alert.markdown,
         NotificationFormat::Html => alert.html,
@@ -28,12 +37,24 @@ pub fn render_finding(finding: &Finding, format: NotificationFormat) -> String {
 }
 
 pub fn render_alert(finding: &Finding) -> RenderedAlert {
-    let subject = format!("[{}] {}", finding.severity, finding.title);
+    render_alert_with_language(finding, NotificationLanguage::En)
+}
+
+pub fn render_alert_with_language(
+    finding: &Finding,
+    language: NotificationLanguage,
+) -> RenderedAlert {
+    let catalog = catalog(language);
+    let subject = format!(
+        "[{}] {}",
+        severity_label(finding.severity, language),
+        finding.title
+    );
     RenderedAlert {
         subject: subject.clone(),
-        plain_text: render_plain_text(finding, &subject),
-        markdown: render_markdown(finding, &subject),
-        html: render_html(finding, &subject),
+        plain_text: render_plain_text(finding, &subject, &catalog, language),
+        markdown: render_markdown(finding, &subject, &catalog, language),
+        html: render_html(finding, &subject, &catalog, language),
     }
 }
 
@@ -54,24 +75,28 @@ enum ListStyle {
     Numbered,
 }
 
-fn alert_fields(finding: &Finding) -> Vec<AlertField<'_>> {
+fn alert_fields<'a>(
+    finding: &'a Finding,
+    catalog: &MessageCatalog,
+    language: NotificationLanguage,
+) -> Vec<AlertField<'a>> {
     let mut fields = vec![
-        owned_field("Severity", finding.severity.to_string()),
-        borrowed_field("Host", &finding.host_id),
-        owned_field("Time", finding.timestamp.to_rfc3339()),
-        owned_field("Category", finding.category.to_string()),
-        borrowed_field("Rule", &finding.rule_id),
-        borrowed_field("Subject", &finding.subject),
-        borrowed_field("Description", &finding.description),
+        borrowed_value_field(catalog.severity, severity_label(finding.severity, language)),
+        borrowed_field(catalog.host, &finding.host_id),
+        owned_field(catalog.time, finding.timestamp.to_rfc3339()),
+        owned_field(catalog.category, finding.category.to_string()),
+        borrowed_field(catalog.rule, &finding.rule_id),
+        borrowed_field(catalog.subject, &finding.subject),
+        borrowed_field(catalog.description, &finding.description),
     ];
     fields.retain(|field| !field.value.trim().is_empty());
     fields
 }
 
-fn alert_lists(finding: &Finding) -> Vec<AlertList> {
+fn alert_lists(finding: &Finding, catalog: &MessageCatalog) -> Vec<AlertList> {
     let mut lists = vec![
         AlertList {
-            title: "Evidence",
+            title: catalog.evidence,
             style: ListStyle::Bulleted,
             items: finding
                 .evidence
@@ -80,12 +105,12 @@ fn alert_lists(finding: &Finding) -> Vec<AlertList> {
                 .collect(),
         },
         AlertList {
-            title: "Impact",
+            title: catalog.impact,
             style: ListStyle::Bulleted,
             items: finding.impact.clone(),
         },
         AlertList {
-            title: "Recommendations",
+            title: catalog.recommendations,
             style: ListStyle::Numbered,
             items: finding.recommendations.clone(),
         },
@@ -104,6 +129,13 @@ fn borrowed_field<'a>(label: &'static str, value: &'a str) -> AlertField<'a> {
     }
 }
 
+fn borrowed_value_field(label: &'static str, value: &'static str) -> AlertField<'static> {
+    AlertField {
+        label,
+        value: Cow::Borrowed(value),
+    }
+}
+
 fn owned_field(label: &'static str, value: String) -> AlertField<'static> {
     AlertField {
         label,
@@ -111,49 +143,67 @@ fn owned_field(label: &'static str, value: String) -> AlertField<'static> {
     }
 }
 
-fn render_plain_text(finding: &Finding, subject: &str) -> String {
+fn render_plain_text(
+    finding: &Finding,
+    subject: &str,
+    catalog: &MessageCatalog,
+    language: NotificationLanguage,
+) -> String {
     let mut out = String::new();
-    out.push_str("VPS Sentinel Alert\n");
+    out.push_str(catalog.heading);
+    out.push('\n');
     out.push_str("==================\n\n");
     out.push_str(subject);
     out.push_str("\n\n");
-    for field in alert_fields(finding) {
+    for field in alert_fields(finding, catalog, language) {
         write_plain_field(&mut out, field.label, field.value.as_ref());
     }
-    for list in alert_lists(finding) {
+    for list in alert_lists(finding, catalog) {
         match list.style {
             ListStyle::Bulleted => write_plain_list(&mut out, list.title, list.items),
             ListStyle::Numbered => write_plain_numbered_list(&mut out, list.title, list.items),
         }
     }
     out.push('\n');
-    write_plain_field(&mut out, "Event ID", &finding.id);
-    write_plain_field(&mut out, "Dedup Key", &finding.dedup_key);
+    write_plain_field(&mut out, catalog.event_id, &finding.id);
+    write_plain_field(&mut out, catalog.dedup_key, &finding.dedup_key);
     out
 }
 
-fn render_markdown(finding: &Finding, subject: &str) -> String {
+fn render_markdown(
+    finding: &Finding,
+    subject: &str,
+    catalog: &MessageCatalog,
+    language: NotificationLanguage,
+) -> String {
     let mut out = String::new();
-    out.push_str("## VPS Sentinel Alert\n\n");
+    out.push_str("## ");
+    out.push_str(catalog.heading);
+    out.push_str("\n\n");
     out.push_str("**");
     out.push_str(&markdown_escape(subject));
     out.push_str("**\n\n");
-    for field in alert_fields(finding) {
+    for field in alert_fields(finding, catalog, language) {
         write_markdown_field(&mut out, field.label, field.value.as_ref());
     }
-    for list in alert_lists(finding) {
+    for list in alert_lists(finding, catalog) {
         match list.style {
             ListStyle::Bulleted => write_markdown_list(&mut out, list.title, list.items),
             ListStyle::Numbered => write_markdown_numbered_list(&mut out, list.title, list.items),
         }
     }
     out.push('\n');
-    write_markdown_field(&mut out, "Event ID", &finding.id);
-    write_markdown_field(&mut out, "Dedup Key", &finding.dedup_key);
+    write_markdown_field(&mut out, catalog.event_id, &finding.id);
+    write_markdown_field(&mut out, catalog.dedup_key, &finding.dedup_key);
     out
 }
 
-fn render_html(finding: &Finding, subject: &str) -> String {
+fn render_html(
+    finding: &Finding,
+    subject: &str,
+    catalog: &MessageCatalog,
+    language: NotificationLanguage,
+) -> String {
     let accent = severity_color(&finding.severity);
     let mut out = String::new();
     out.push_str("<!doctype html><html><body style=\"margin:0;background:#f6f8fb;font-family:Arial,Helvetica,sans-serif;color:#17202a;\">");
@@ -161,26 +211,35 @@ fn render_html(finding: &Finding, subject: &str) -> String {
     out.push_str(&format!(
         "<div style=\"border:1px solid #dde3ea;border-radius:8px;background:#ffffff;overflow:hidden;\">\
          <div style=\"padding:18px 22px;background:{accent};color:#ffffff;\">\
-         <div style=\"font-size:13px;letter-spacing:.04em;text-transform:uppercase;opacity:.9;\">VPS Sentinel Alert</div>\
+         <div style=\"font-size:13px;letter-spacing:.04em;text-transform:uppercase;opacity:.9;\">{}</div>\
          <h1 style=\"margin:6px 0 0;font-size:22px;line-height:1.25;\">{}</h1>\
          </div>",
+        html_escape(catalog.heading),
         html_escape(subject)
     ));
     out.push_str("<div style=\"padding:20px 22px;\">");
     out.push_str("<table style=\"width:100%;border-collapse:collapse;font-size:14px;\">");
-    for field in alert_fields(finding) {
+    for field in alert_fields(finding, catalog, language) {
         write_html_field(&mut out, field.label, field.value.as_ref());
     }
     out.push_str("</table>");
-    for list in alert_lists(finding) {
+    for list in alert_lists(finding, catalog) {
         match list.style {
             ListStyle::Bulleted => write_html_list(&mut out, list.title, list.items),
             ListStyle::Numbered => write_html_numbered_list(&mut out, list.title, list.items),
         }
     }
     out.push_str("<div style=\"margin-top:18px;padding-top:14px;border-top:1px solid #edf0f4;color:#596675;font-size:12px;\">");
-    out.push_str(&format!("Event ID: {}<br>", html_escape(&finding.id)));
-    out.push_str(&format!("Dedup Key: {}", html_escape(&finding.dedup_key)));
+    out.push_str(&format!(
+        "{}: {}<br>",
+        html_escape(catalog.event_id),
+        html_escape(&finding.id)
+    ));
+    out.push_str(&format!(
+        "{}: {}",
+        html_escape(catalog.dedup_key),
+        html_escape(&finding.dedup_key)
+    ));
     out.push_str("</div></div></div></div></body></html>");
     out
 }
@@ -343,39 +402,4 @@ fn html_escape(value: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{render_alert, render_finding, NotificationFormat};
-    use sentinel_core::{Category, Evidence, Finding, Severity};
-
-    #[test]
-    fn renders_standard_alert_body() {
-        let finding = sample_finding();
-        let body = render_finding(&finding, NotificationFormat::PlainText);
-        assert!(body.contains("VPS Sentinel Alert"));
-        assert!(body.contains("[High] Root login"));
-        assert!(body.contains("Rule: SSH-001"));
-        assert!(body.contains("Evidence:"));
-    }
-
-    #[test]
-    fn renders_html_without_raw_markup_in_values() {
-        let finding = sample_finding().with_evidence(vec![Evidence::new("path", "<script>")]);
-        let alert = render_alert(&finding);
-        assert!(alert.html.contains("&lt;script&gt;"));
-        assert!(!alert.html.contains("<script>"));
-    }
-
-    fn sample_finding() -> Finding {
-        Finding::new(
-            "host",
-            "Root login",
-            "Root logged in through SSH.",
-            Severity::High,
-            Category::Ssh,
-            "SSH-001",
-            "root",
-        )
-        .with_evidence(vec![Evidence::new("user", "root")])
-        .with_recommendations(vec!["Review login.".to_string()])
-    }
-}
+mod tests;

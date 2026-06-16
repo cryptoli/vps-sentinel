@@ -57,6 +57,14 @@ All notification channels are disabled by default. Enable only the channels you 
 
 Each channel supports `min_severity`, so low-priority findings can be kept local while higher-risk findings are sent out. HTTP-based channels share `notifications.request_timeout_seconds`, which defaults to 15 seconds. Email alerts are sent as multipart messages with plain-text and HTML bodies; other human-facing channels use the same normalized alert title and body renderer.
 
+Notification text supports English and Simplified Chinese:
+
+```toml
+[notifications]
+request_timeout_seconds = 15
+language = "en" # en or zh_cn
+```
+
 Telegram example:
 
 ```toml
@@ -345,6 +353,8 @@ Example rules:
 ## Deployment Notes
 
 Some collectors need root-level visibility. If the agent runs without root permissions, `doctor` reports reduced visibility and affected modules degrade instead of crashing.
+
+Runtime footprint is intentionally small. On the reference VPS used for validation, the running systemd service used about 2.7-3.3 MiB `MemoryCurrent` during the normal 60-second scan loop. Actual memory can rise with larger log tails, broader file-integrity paths, and enabled notification channels.
 
 The systemd unit uses:
 

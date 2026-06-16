@@ -57,6 +57,14 @@
 
 每个渠道都支持 `min_severity`，可以让低风险 finding 只保存在本地，高风险 finding 才发送出去。HTTP 类通知渠道统一使用 `notifications.request_timeout_seconds` 控制请求超时，默认 15 秒。邮件通知会同时发送纯文本和 HTML 正文，其他面向人的渠道复用统一标题与正文渲染器。
 
+通知文本支持英文和简体中文：
+
+```toml
+[notifications]
+request_timeout_seconds = 15
+language = "zh_cn" # en 或 zh_cn
+```
+
 Telegram 示例：
 
 ```toml
@@ -343,6 +351,8 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 ## 部署说明
 
 部分采集器需要 root 级别可见性。如果不是 root 运行，`doctor` 会报告可见性降低，相关模块会降级而不是崩溃。
+
+运行时资源占用较小。在本项目验证使用的参考 VPS 上，systemd 服务在默认 60 秒扫描循环下的 `MemoryCurrent` 约为 2.7-3.3 MiB。实际内存会受日志尾部大小、文件完整性路径范围和已启用通知渠道影响。
 
 systemd unit 使用：
 

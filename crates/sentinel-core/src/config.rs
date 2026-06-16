@@ -8,8 +8,8 @@ use std::fs;
 use std::path::Path;
 
 pub use notifications::{
-    BarkConfig, EmailConfig, EmailTlsMode, GotifyConfig, NotificationsConfig, NtfyConfig,
-    ServerChanConfig, TelegramConfig, WebhookConfig,
+    BarkConfig, EmailConfig, EmailTlsMode, GotifyConfig, NotificationLanguage, NotificationsConfig,
+    NtfyConfig, ServerChanConfig, TelegramConfig, WebhookConfig,
 };
 pub use sections::{
     AgentConfig, AllowlistConfig, DockerConfig, FileIntegrityConfig, NetworkConfig,

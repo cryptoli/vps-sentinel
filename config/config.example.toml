@@ -83,6 +83,7 @@ alert_on_host_network = true
 
 [notifications]
 request_timeout_seconds = 15
+language = "en" # en or zh_cn
 
 [notifications.telegram]
 enabled = false

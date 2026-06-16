@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[serde(default)]
 pub struct NotificationsConfig {
     pub request_timeout_seconds: u64,
+    pub language: NotificationLanguage,
     pub telegram: TelegramConfig,
     pub email: EmailConfig,
     pub webhook: WebhookConfig,
@@ -18,6 +19,7 @@ impl Default for NotificationsConfig {
     fn default() -> Self {
         Self {
             request_timeout_seconds: 15,
+            language: NotificationLanguage::En,
             telegram: TelegramConfig::default(),
             email: EmailConfig::default(),
             webhook: WebhookConfig::default(),
@@ -27,6 +29,14 @@ impl Default for NotificationsConfig {
             serverchan: ServerChanConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationLanguage {
+    #[default]
+    En,
+    ZhCn,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
