@@ -124,7 +124,12 @@ if should_install_systemd; then
   systemctl daemon-reload
   case "$ENABLE_SERVICE" in
     yes|true|1)
-      systemctl enable --now "$SERVICE_NAME"
+      systemctl enable "$SERVICE_NAME"
+      if systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
+        systemctl reload-or-restart "$SERVICE_NAME"
+      else
+        systemctl start "$SERVICE_NAME"
+      fi
       ;;
     no|false|0)
       echo "installed systemd unit; enable with: systemctl enable --now $SERVICE_NAME"
