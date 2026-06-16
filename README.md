@@ -26,7 +26,7 @@ It is not:
 
 | Area | What vps-sentinel supports |
 | --- | --- |
-| SSH monitoring | Parses Debian/Ubuntu and RHEL-family auth logs; detects root SSH login, password login, ordinary successful login, brute-force patterns, and `authorized_keys` drift. |
+| SSH monitoring | Parses Debian/Ubuntu and RHEL-family auth logs; detects root SSH login, password login, ordinary successful login, brute-force patterns, and `authorized_keys`/`authorized_keys2` drift. |
 | Baseline drift | Creates local baselines for users, SSH keys, critical files, persistence entries, and listeners; compares future scans against the stored baseline. |
 | User and privilege checks | Detects new users, UID 0 users, and privilege-relevant user changes. |
 | File integrity | Watches configured critical paths and web roots; hashes bounded file content; detects modified files, executable scripts in web roots, and WebShell-style markers. |
@@ -417,9 +417,10 @@ Noise control:
 dedup_window_seconds = 3600
 max_alerts_per_hour = 30
 rate_limit_bypass_min_severity = "High"
+quiet_hours_bypass_min_severity = "High"
 ```
 
-`dedup_window_seconds` suppresses repeated findings with the same stable dedup key. The default one-hour window is intended to prevent persistent host-state risks from sending the same message every few minutes while still allowing new subjects, sources, or rules to notify. `max_alerts_per_hour` limits lower-severity notification volume; findings at or above `rate_limit_bypass_min_severity` bypass that hourly budget so high-value signals such as `SSH-005` are still delivered during noisy periods.
+`dedup_window_seconds` suppresses repeated findings with the same stable dedup key. The default one-hour window is intended to prevent persistent host-state risks from sending the same message every few minutes while still allowing new subjects, sources, or rules to notify. `max_alerts_per_hour` limits lower-severity notification volume; findings at or above `rate_limit_bypass_min_severity` bypass that hourly budget so high-value signals such as `SSH-005` are still delivered during noisy periods. When `quiet_hours` is active, findings below `quiet_hours_bypass_min_severity` are suppressed; the default keeps High and Critical alerts visible.
 
 Allowlist example:
 
@@ -467,7 +468,7 @@ Example rules:
 - `SSH-002`: Password-based SSH login detected.
 - `SSH-003`: SSH brute-force pattern detected.
 - `SSH-004`: SSH login detected.
-- `SSH-005`: `authorized_keys` changed relative to baseline.
+- `SSH-005`: `authorized_keys` or `authorized_keys2` changed relative to baseline.
 - `USER-002`: UID 0 user added or changed.
 - `PERSIST-002`: Suspicious startup command detected.
 - `PROC-002`: Risk-scored deleted executable still running.

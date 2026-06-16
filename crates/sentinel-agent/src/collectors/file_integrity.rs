@@ -3,12 +3,19 @@ use crate::utils::fs::{hash_file_limited, is_executable, is_hidden, path_string,
 use async_trait::async_trait;
 use glob::glob;
 use sentinel_core::{RawEvent, SentinelResult};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::{DirEntry, WalkDir};
 
 const SKIPPED_DIRS: &[&str] = &["node_modules", "vendor", ".git", "cache", ".cache"];
 const MAX_CONTENT_SCAN_BYTES: u64 = 256 * 1024;
+const SSH_AUTHORIZED_KEY_PATHS: &[&str] = &[
+    "/root/.ssh/authorized_keys",
+    "/root/.ssh/authorized_keys2",
+    "/home/*/.ssh/authorized_keys",
+    "/home/*/.ssh/authorized_keys2",
+];
 
 pub struct FileIntegrityCollector;
 
@@ -19,18 +26,35 @@ impl Collector for FileIntegrityCollector {
     }
 
     async fn collect(&self, ctx: &CollectContext) -> SentinelResult<Vec<RawEvent>> {
-        if !ctx.config.file_integrity.enabled {
-            return Ok(Vec::new());
-        }
-
-        let mut events = Vec::new();
-        for configured_path in &ctx.config.file_integrity.paths {
-            let resolved = ctx.resolve(configured_path);
-            for path in expand_path(&resolved) {
-                collect_path(ctx, &path, &mut events);
+        let mut events = BTreeMap::new();
+        if ctx.config.file_integrity.enabled {
+            for configured_path in &ctx.config.file_integrity.paths {
+                collect_configured_path(ctx, configured_path, &mut events);
             }
         }
-        Ok(events)
+
+        if ctx.config.ssh.enabled && ctx.config.ssh.monitor_authorized_keys {
+            for configured_path in ssh_authorized_key_paths() {
+                collect_configured_path(ctx, &configured_path, &mut events);
+            }
+        }
+
+        Ok(events.into_values().collect())
+    }
+}
+
+fn ssh_authorized_key_paths() -> impl Iterator<Item = PathBuf> {
+    SSH_AUTHORIZED_KEY_PATHS.iter().map(PathBuf::from)
+}
+
+fn collect_configured_path(
+    ctx: &CollectContext,
+    configured_path: &Path,
+    events: &mut BTreeMap<String, RawEvent>,
+) {
+    let resolved = ctx.resolve(configured_path);
+    for path in expand_path(&resolved) {
+        collect_path(ctx, &path, events);
     }
 }
 
@@ -44,13 +68,13 @@ fn expand_path(path: &Path) -> Vec<PathBuf> {
     vec![path.to_path_buf()]
 }
 
-fn collect_path(ctx: &CollectContext, path: &Path, events: &mut Vec<RawEvent>) {
+fn collect_path(ctx: &CollectContext, path: &Path, events: &mut BTreeMap<String, RawEvent>) {
     if !path.exists() {
         return;
     }
     if path.is_file() {
         if let Some(event) = file_event(ctx, path) {
-            events.push(event);
+            insert_file_event(events, event);
         }
         return;
     }
@@ -71,10 +95,17 @@ fn collect_path(ctx: &CollectContext, path: &Path, events: &mut Vec<RawEvent>) {
         };
         if entry.file_type().is_file() {
             if let Some(event) = file_event(ctx, entry.path()) {
-                events.push(event);
+                insert_file_event(events, event);
             }
         }
     }
+}
+
+fn insert_file_event(events: &mut BTreeMap<String, RawEvent>, event: RawEvent) {
+    let Some(path) = event.field("path") else {
+        return;
+    };
+    events.entry(path.to_string()).or_insert(event);
 }
 
 fn should_skip_dir(entry: &DirEntry) -> bool {
@@ -181,8 +212,11 @@ fn has_long_base64_like_token(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{content_markers, should_scan_content};
+    use super::{content_markers, should_scan_content, FileIntegrityCollector};
+    use crate::collectors::{CollectContext, Collector};
+    use sentinel_core::SentinelConfig;
     use std::fs;
+    use std::sync::Arc;
 
     #[test]
     fn detects_webshell_content_markers() -> Result<(), Box<dyn std::error::Error>> {
@@ -209,6 +243,56 @@ mod tests {
         fs::write(&path, format!("ssh-ed25519 {}", "A".repeat(140)))?;
         assert!(!should_scan_content("", false));
         assert!(content_markers(&path).contains(&"long_base64"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn collects_ssh_authorized_keys_when_file_integrity_is_disabled(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let key_path = temp.path().join("root/.ssh/authorized_keys");
+        let parent = key_path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("test key path has no parent"))?;
+        fs::create_dir_all(parent)?;
+        fs::write(&key_path, "ssh-ed25519 AAAATEST\n")?;
+
+        let mut config = SentinelConfig::default();
+        config.file_integrity.enabled = false;
+        config.ssh.enabled = true;
+        config.ssh.monitor_authorized_keys = true;
+        let ctx = CollectContext::new(Arc::new(config)).with_scan_root(temp.path().to_path_buf());
+
+        let events = FileIntegrityCollector.collect(&ctx).await?;
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "file_snapshot");
+        assert!(events[0]
+            .field("path")
+            .is_some_and(|path| path.ends_with("/root/.ssh/authorized_keys")));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn skips_ssh_authorized_keys_when_ssh_monitoring_is_disabled(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let key_path = temp.path().join("root/.ssh/authorized_keys");
+        let parent = key_path
+            .parent()
+            .ok_or_else(|| std::io::Error::other("test key path has no parent"))?;
+        fs::create_dir_all(parent)?;
+        fs::write(&key_path, "ssh-ed25519 AAAATEST\n")?;
+
+        let mut config = SentinelConfig::default();
+        config.file_integrity.enabled = false;
+        config.ssh.enabled = true;
+        config.ssh.monitor_authorized_keys = false;
+        let ctx = CollectContext::new(Arc::new(config)).with_scan_root(temp.path().to_path_buf());
+
+        let events = FileIntegrityCollector.collect(&ctx).await?;
+
+        assert!(events.is_empty());
         Ok(())
     }
 }

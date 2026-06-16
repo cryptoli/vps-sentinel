@@ -51,7 +51,7 @@ impl Detector for FileDetector {
             }
             match event.kind.as_str() {
                 "file_created" | "file_modified" | "file_deleted" => {
-                    if path.ends_with("/authorized_keys") {
+                    if is_authorized_keys_path(&path) {
                         findings.push(authorized_keys_changed(event, ctx));
                     } else if is_critical_path(&path) {
                         findings.push(critical_file_changed(event, ctx));
@@ -214,8 +214,42 @@ fn is_critical_path(path: &str) -> bool {
     .any(|prefix| path == *prefix || path.starts_with(prefix))
 }
 
+fn is_authorized_keys_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.ends_with("/.ssh/authorized_keys") || normalized.ends_with("/.ssh/authorized_keys2")
+}
+
 fn is_web_script_path(path: &str) -> bool {
     [".php", ".phtml", ".jsp", ".asp", ".aspx"]
         .iter()
         .any(|extension| path.to_ascii_lowercase().ends_with(extension))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_authorized_keys_path, FileDetector};
+    use crate::detectors::{DetectContext, Detector};
+    use sentinel_core::{RawEvent, SentinelConfig};
+    use std::sync::Arc;
+
+    #[test]
+    fn recognizes_authorized_keys_and_legacy_authorized_keys2() {
+        assert!(is_authorized_keys_path("/root/.ssh/authorized_keys"));
+        assert!(is_authorized_keys_path("/home/app/.ssh/authorized_keys2"));
+        assert!(!is_authorized_keys_path("/tmp/authorized_keys"));
+    }
+
+    #[test]
+    fn detects_authorized_keys2_baseline_drift_as_ssh_finding() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = RawEvent::new("baseline", "file_modified")
+            .with_field("path", "/home/app/.ssh/authorized_keys2")
+            .with_field("previous_hash", "old")
+            .with_field("current_hash", "new");
+
+        let findings = FileDetector.detect(&[event], &ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "SSH-005");
+    }
 }

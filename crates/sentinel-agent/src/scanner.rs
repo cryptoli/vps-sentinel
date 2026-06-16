@@ -6,9 +6,7 @@ use crate::notify::{NotificationManager, NotifyContext};
 use crate::storage::SqliteStore;
 use crate::utils::redact::{mask_command_args, mask_ip, mask_ips_in_text};
 use chrono::{Duration, Local, Timelike, Utc};
-use sentinel_core::{
-    Evidence, Finding, MinuteWindow, RawEvent, SentinelConfig, SentinelResult, Severity,
-};
+use sentinel_core::{Evidence, Finding, MinuteWindow, RawEvent, SentinelConfig, SentinelResult};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -155,12 +153,13 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             config: Arc::clone(&config),
         };
         let notification_findings = if quiet_hours_active(&config) {
-            let filtered = critical_findings(&findings);
+            let filtered = quiet_hours_allowed_findings(&findings, &config);
             quiet_suppressed_count = findings.len().saturating_sub(filtered.len());
             if quiet_suppressed_count > 0 {
                 warn!(
                     suppressed_findings = quiet_suppressed_count,
-                    "quiet hours active; non-critical notifications suppressed"
+                    bypass_min_severity = %config.noise_control.quiet_hours_bypass_min_severity,
+                    "quiet hours active; lower-severity notifications suppressed"
                 );
             }
             filtered
@@ -290,10 +289,14 @@ fn quiet_hours_active(config: &SentinelConfig) -> bool {
         .any(|window| window.contains(minute))
 }
 
-fn critical_findings(findings: &[Finding]) -> Vec<Finding> {
+fn quiet_hours_allowed_findings(findings: &[Finding], config: &SentinelConfig) -> Vec<Finding> {
     findings
         .iter()
-        .filter(|finding| finding.severity == Severity::Critical)
+        .filter(|finding| {
+            finding
+                .severity
+                .meets(config.noise_control.quiet_hours_bypass_min_severity)
+        })
         .cloned()
         .collect()
 }

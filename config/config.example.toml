@@ -147,6 +147,7 @@ min_severity = "Medium"
 dedup_window_seconds = 3600
 max_alerts_per_hour = 30
 rate_limit_bypass_min_severity = "High"
+quiet_hours_bypass_min_severity = "High"
 quiet_hours = [] # Example: ["22:00-07:00"]
 
 [allowlist]

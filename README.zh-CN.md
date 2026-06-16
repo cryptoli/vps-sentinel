@@ -26,7 +26,7 @@
 
 | 模块 | 支持能力 |
 | --- | --- |
-| SSH 监控 | 解析 Debian/Ubuntu 与 RHEL 系认证日志；检测 root 登录、密码登录、普通成功登录、爆破模式和 `authorized_keys` 基线漂移。 |
+| SSH 监控 | 解析 Debian/Ubuntu 与 RHEL 系认证日志；检测 root 登录、密码登录、普通成功登录、爆破模式和 `authorized_keys`/`authorized_keys2` 基线漂移。 |
 | 基线漂移 | 为用户、SSH key、关键文件、持久化项和监听端口创建本地基线，并在后续扫描中对比变化。 |
 | 用户与权限 | 检测新增用户、UID 0 用户、权限相关用户变化。 |
 | 文件完整性 | 监控关键路径和 Web 根目录；对限定大小内文件做哈希和内容扫描；检测关键文件变化、Web 目录可执行脚本、WebShell 风格特征。 |
@@ -415,9 +415,10 @@ suspicious_command_min_score = 70
 dedup_window_seconds = 3600
 max_alerts_per_hour = 30
 rate_limit_bypass_min_severity = "High"
+quiet_hours_bypass_min_severity = "High"
 ```
 
-`dedup_window_seconds` 会抑制相同稳定去重 Key 的重复 finding。默认 1 小时窗口用于避免持续存在的主机状态风险每几分钟重复发消息，同时仍允许新的目标、来源或规则正常通知。`max_alerts_per_hour` 只限制较低等级通知的发送量；达到或高于 `rate_limit_bypass_min_severity` 的 finding 会绕过小时预算，因此 `SSH-005` 这类高价值信号在噪声较多时仍会发送。
+`dedup_window_seconds` 会抑制相同稳定去重 Key 的重复 finding。默认 1 小时窗口用于避免持续存在的主机状态风险每几分钟重复发消息，同时仍允许新的目标、来源或规则正常通知。`max_alerts_per_hour` 只限制较低等级通知的发送量；达到或高于 `rate_limit_bypass_min_severity` 的 finding 会绕过小时预算，因此 `SSH-005` 这类高价值信号在噪声较多时仍会发送。启用 `quiet_hours` 后，低于 `quiet_hours_bypass_min_severity` 的 finding 会被安静时段抑制；默认仍保留 High 和 Critical 通知。
 
 白名单示例：
 
@@ -465,7 +466,7 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 - `SSH-002`：SSH 密码登录。
 - `SSH-003`：SSH 爆破模式。
 - `SSH-004`：SSH 成功登录。
-- `SSH-005`：`authorized_keys` 相对基线发生变化。
+- `SSH-005`：`authorized_keys` 或 `authorized_keys2` 相对基线发生变化。
 - `USER-002`：UID 0 用户新增或变更。
 - `PERSIST-002`：可疑启动命令。
 - `PROC-002`：达到风险评分阈值的 deleted executable 进程。

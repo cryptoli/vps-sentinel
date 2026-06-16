@@ -1,4 +1,4 @@
-use super::{redact_findings, suppress_in_scan_duplicates};
+use super::{quiet_hours_allowed_findings, redact_findings, suppress_in_scan_duplicates};
 use sentinel_core::{Category, Evidence, Finding, SentinelConfig, Severity};
 
 #[test]
@@ -55,4 +55,34 @@ fn suppresses_duplicate_findings_within_one_scan() {
 
     assert_eq!(retained.len(), 1);
     assert_eq!(suppressed, 1);
+}
+
+#[test]
+fn quiet_hours_keep_high_value_findings_by_default() {
+    let config = SentinelConfig::default();
+    let findings = vec![
+        Finding::new(
+            "host",
+            "SSH authorized_keys changed",
+            "authorized_keys changed.",
+            Severity::High,
+            Category::Ssh,
+            "SSH-005",
+            "/root/.ssh/authorized_keys",
+        ),
+        Finding::new(
+            "host",
+            "Docker socket present",
+            "Docker context.",
+            Severity::Info,
+            Category::Docker,
+            "DOCKER-001",
+            "/var/run/docker.sock",
+        ),
+    ];
+
+    let filtered = quiet_hours_allowed_findings(&findings, &config);
+
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].rule_id, "SSH-005");
 }
