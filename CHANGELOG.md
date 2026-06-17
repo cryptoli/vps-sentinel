@@ -6,6 +6,7 @@
 - Added active-response IP block listing, cleanup, single unblock, and unblock-all commands.
 - Added active-response outcome evidence to alerts, so Telegram, Email, webhook, and other channels show whether a block was applied, already existed, failed, or was skipped.
 - Added SQLite storage stats, manual prune, manual clear, and vacuum commands.
+- Added durable finding deduplication state so storage size cleanup cannot make old repeated findings look new and trigger notification bursts.
 - Added active-response firewall state reconciliation to remove stale local block records after firewall reloads or manual rule changes.
 - Added database size limiting and retention cleanup to reduce disk-full risk on small VPS hosts.
 - Improved web alert aggregation, stricter active-response block thresholds, and safer process/network risk scoring context.

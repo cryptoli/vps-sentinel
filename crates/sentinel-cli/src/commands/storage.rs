@@ -39,6 +39,7 @@ pub fn run_storage(config: SentinelConfig, command: StorageCommand) -> Result<()
             println!("raw_events={}", stats.raw_events);
             println!("findings={}", stats.findings);
             println!("notification_logs={}", stats.notification_logs);
+            println!("finding_dedup_states={}", stats.finding_dedup_states);
             println!("scan_runs={}", stats.scan_runs);
             println!("baseline_snapshots={}", stats.baseline_snapshots);
             println!("rule_states={}", stats.rule_states);

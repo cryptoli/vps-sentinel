@@ -11,6 +11,9 @@ use std::path::{Path, PathBuf};
 const SIZE_LIMIT_TARGET_PERCENT: u64 = 80;
 const SIZE_LIMIT_MAX_PASSES: usize = 6;
 const MIN_SIZE_PRUNE_BATCH: usize = 1_000;
+const KEEP_LATEST_FINDINGS: usize = 5_000;
+const KEEP_LATEST_NOTIFICATION_LOGS: usize = 5_000;
+const KEEP_LATEST_SCAN_RUNS: usize = 1_000;
 
 #[derive(Debug, Clone, Copy)]
 struct SizePrunePolicy {
@@ -34,21 +37,21 @@ const SIZE_PRUNE_POLICIES: &[SizePrunePolicy] = &[
         order_column: "attempted_at",
         divisor: 3,
         min_pass: 0,
-        keep_latest: 0,
+        keep_latest: KEEP_LATEST_NOTIFICATION_LOGS,
     },
     SizePrunePolicy {
         table: "scan_runs",
         order_column: "finished_at",
         divisor: 3,
         min_pass: 0,
-        keep_latest: 0,
+        keep_latest: KEEP_LATEST_SCAN_RUNS,
     },
     SizePrunePolicy {
         table: "findings",
         order_column: "timestamp",
         divisor: 5,
         min_pass: 1,
-        keep_latest: 0,
+        keep_latest: KEEP_LATEST_FINDINGS,
     },
     SizePrunePolicy {
         table: "baseline_snapshots",
@@ -78,6 +81,7 @@ pub struct StorageStats {
     pub raw_events: usize,
     pub findings: usize,
     pub notification_logs: usize,
+    pub finding_dedup_states: usize,
     pub scan_runs: usize,
     pub baseline_snapshots: usize,
     pub rule_states: usize,
@@ -116,6 +120,7 @@ impl SqliteStore {
             raw_events: table_row_count(&conn, "raw_events")?,
             findings: table_row_count(&conn, "findings")?,
             notification_logs: table_row_count(&conn, "notification_logs")?,
+            finding_dedup_states: table_row_count(&conn, "finding_dedup_state")?,
             scan_runs: table_row_count(&conn, "scan_runs")?,
             baseline_snapshots: table_row_count(&conn, "baseline_snapshots")?,
             rule_states: table_row_count(&conn, "rule_states")?,
@@ -176,6 +181,18 @@ impl SqliteStore {
                 ],
             )
             .map_err(|err| SentinelError::Storage(err.to_string()))?;
+            tx.execute(
+                "INSERT INTO finding_dedup_state (dedup_key, last_seen_at)
+                 VALUES (?1, ?2)
+                 ON CONFLICT(dedup_key) DO UPDATE SET
+                   last_seen_at = CASE
+                     WHEN excluded.last_seen_at > finding_dedup_state.last_seen_at
+                     THEN excluded.last_seen_at
+                     ELSE finding_dedup_state.last_seen_at
+                   END",
+                params![finding.dedup_key, finding.timestamp.to_rfc3339()],
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
         }
         tx.commit()
             .map_err(|err| SentinelError::Storage(err.to_string()))?;
@@ -231,8 +248,8 @@ impl SqliteStore {
         let conn = self.connection()?;
         let mut stmt = conn
             .prepare(
-                "SELECT 1 FROM findings
-                 WHERE dedup_key = ?1 AND timestamp >= ?2
+                "SELECT 1 FROM finding_dedup_state
+                 WHERE dedup_key = ?1 AND last_seen_at >= ?2
                  LIMIT 1",
             )
             .map_err(|err| SentinelError::Storage(err.to_string()))?;
@@ -390,6 +407,7 @@ impl SqliteStore {
         for (table, column) in [
             ("raw_events", "timestamp"),
             ("findings", "timestamp"),
+            ("finding_dedup_state", "last_seen_at"),
             ("notification_logs", "attempted_at"),
             ("scan_runs", "finished_at"),
         ] {
@@ -493,6 +511,12 @@ impl SqliteStore {
             );
             CREATE INDEX IF NOT EXISTS idx_findings_timestamp ON findings(timestamp);
             CREATE INDEX IF NOT EXISTS idx_findings_dedup ON findings(dedup_key);
+            CREATE TABLE IF NOT EXISTS finding_dedup_state (
+                dedup_key TEXT PRIMARY KEY,
+                last_seen_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_finding_dedup_state_seen
+              ON finding_dedup_state(last_seen_at);
             CREATE TABLE IF NOT EXISTS raw_events (
                 id TEXT PRIMARY KEY,
                 source TEXT NOT NULL,
@@ -531,6 +555,14 @@ impl SqliteStore {
             "#,
         )
         .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO finding_dedup_state (dedup_key, last_seen_at)
+             SELECT dedup_key, MAX(timestamp)
+             FROM findings
+             GROUP BY dedup_key",
+            [],
+        )
+        .map_err(|err| SentinelError::Storage(err.to_string()))?;
         Ok(())
     }
 }
@@ -539,11 +571,17 @@ impl StorageClearTarget {
     fn tables(self) -> &'static [&'static str] {
         match self {
             Self::RawEvents => &["raw_events"],
-            Self::Findings => &["findings"],
+            Self::Findings => &["findings", "finding_dedup_state"],
             Self::NotificationLogs => &["notification_logs"],
             Self::ScanRuns => &["scan_runs"],
             Self::BaselineSnapshots => &["baseline_snapshots"],
-            Self::AllHistory => &["raw_events", "findings", "notification_logs", "scan_runs"],
+            Self::AllHistory => &[
+                "raw_events",
+                "findings",
+                "finding_dedup_state",
+                "notification_logs",
+                "scan_runs",
+            ],
         }
     }
 }
@@ -759,7 +797,7 @@ fn is_volatile_raw_event_field(key: &str) -> bool {
 mod tests {
     use super::{SqliteStore, StorageClearTarget};
     use crate::baseline::{snapshot::FileBaseline, BaselineSnapshot};
-    use chrono::Utc;
+    use chrono::{Duration, Utc};
     use sentinel_core::{Category, Finding, RawEvent, Severity};
     use serde::{Deserialize, Serialize};
 
@@ -783,6 +821,28 @@ mod tests {
             store.get_finding(&finding.id)?.map(|item| item.id),
             Some(finding.id)
         );
+        assert!(store.finding_seen_since(&finding.dedup_key, Utc::now() - Duration::minutes(1))?);
+        Ok(())
+    }
+
+    #[test]
+    fn finding_dedup_state_survives_finding_row_cleanup() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let finding = Finding::new(
+            "host",
+            "SSH password authentication enabled",
+            "Password login is enabled.",
+            Severity::Medium,
+            Category::ConfigRisk,
+            "CONFIG-001",
+            "/etc/ssh/sshd_config",
+        );
+        store.save_findings(std::slice::from_ref(&finding))?;
+        store.connection()?.execute("DELETE FROM findings", [])?;
+
+        assert!(store.finding_seen_since(&finding.dedup_key, Utc::now() - Duration::minutes(1))?);
         Ok(())
     }
 
@@ -934,9 +994,10 @@ mod tests {
         let deleted = store.clear_storage(StorageClearTarget::AllHistory)?;
         let stats = store.stats()?;
 
-        assert_eq!(deleted, 4);
+        assert_eq!(deleted, 5);
         assert_eq!(stats.raw_events, 0);
         assert_eq!(stats.findings, 0);
+        assert_eq!(stats.finding_dedup_states, 0);
         assert_eq!(stats.notification_logs, 0);
         assert_eq!(stats.scan_runs, 0);
         assert_eq!(stats.baseline_snapshots, 1);
