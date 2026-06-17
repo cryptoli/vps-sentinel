@@ -3,7 +3,6 @@ host_id = ""
 hostname = ""
 display_name = ""
 scan_interval_seconds = 60
-full_scan_interval_seconds = 3600
 data_dir = "/var/lib/vps-sentinel"
 log_level = "info"
 
@@ -62,7 +61,6 @@ log_paths = [
 
 [process]
 enabled = true
-scan_interval_seconds = 30
 high_cpu_threshold_percent = 80.0
 high_cpu_duration_seconds = 120
 deleted_executable_min_score = 70
@@ -86,7 +84,6 @@ max_log_tail_bytes = 8192
 
 [network]
 enabled = true
-scan_interval_seconds = 30
 alert_on_new_listening_port = true
 expected_public_ports = [22, 80, 443]
 high_risk_public_ports = [11211, 2375, 2376, 2379, 2380, 3000, 3306, 3389, 5432, 5601, 5672, 5900, 5901, 5984, 5985, 5986, 6379, 6443, 9090, 9200, 9300, 10250, 10255, 15672, 27017, 27018, 27019]

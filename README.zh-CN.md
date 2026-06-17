@@ -449,6 +449,7 @@ public_listen_allowlist = [22, 80, 443]
 - `expected_public_ports` 用于压制 SSH、HTTP、HTTPS 等正常公网服务的通用监听噪音。
 - 预期端口不会被无脑信任。程序仍会检查持有端口的进程、可执行文件路径、命令行和基线 owner 漂移，因此伪装在 80/443 后面的可疑进程仍会触发 `NET-002` 或 `NET-003`。
 - `high_risk_public_ports` 是可配置的高风险服务端口列表；除非显式加入 `[allowlist].listening_ports`，否则会从当前 socket 状态直接告警。如果端口 owner 同时具备可疑进程特征，`NET-003` 会优先发送并附带服务画像，而不是再额外发送一条普通 `CONFIG-003` 告警。
+- 公网暴露判断会识别监听地址：`0.0.0.0`、`::` 和明确的公网可路由地址会按公网处理；loopback、RFC1918 IPv4、IPv6 ULA 和 link-local 地址不会按公网监听规则处理。
 - `public_listen_allowlist` 作为旧配置兼容项处理，语义等同预期公网端口。只有 `[allowlist].listening_ports` 表示你明确希望压制该端口的所有网络告警。
 - `NET-001` 只会在普通 TCP/TCP6 公网端口相对已保存基线新增时触发，不会对每次扫描都存在的稳定监听端口重复告警。普通 UDP 高端口默认视为动态流量，除非命中高风险服务端口或可疑监听进程规则。
 

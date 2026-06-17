@@ -92,6 +92,11 @@ impl SentinelConfig {
                 "file_integrity.max_file_size_mb must be greater than 0".to_string(),
             ));
         }
+        if self.file_integrity.max_depth == 0 {
+            return Err(SentinelError::Config(
+                "file_integrity.max_depth must be greater than 0".to_string(),
+            ));
+        }
         if self.file_integrity.webshell_min_score == 0 {
             return Err(SentinelError::Config(
                 "file_integrity.webshell_min_score must be greater than 0".to_string(),
@@ -179,6 +184,18 @@ impl SentinelConfig {
 }
 
 fn validate_notifications(config: &NotificationsConfig) -> SentinelResult<()> {
+    if config.telegram.enabled {
+        if config.telegram.bot_token.trim().is_empty() {
+            return Err(SentinelError::Config(
+                "notifications.telegram.bot_token is required when telegram is enabled".to_string(),
+            ));
+        }
+        if config.telegram.chat_id.trim().is_empty() {
+            return Err(SentinelError::Config(
+                "notifications.telegram.chat_id is required when telegram is enabled".to_string(),
+            ));
+        }
+    }
     if config.email.enabled {
         if config.email.smtp_host.trim().is_empty() {
             return Err(SentinelError::Config(
@@ -212,6 +229,50 @@ fn validate_notifications(config: &NotificationsConfig) -> SentinelResult<()> {
                     .to_string(),
             ));
         }
+    }
+    if config.webhook.enabled && config.webhook.url.trim().is_empty() {
+        return Err(SentinelError::Config(
+            "notifications.webhook.url is required when webhook is enabled".to_string(),
+        ));
+    }
+    if config.ntfy.enabled && config.ntfy.topic.trim().is_empty() {
+        return Err(SentinelError::Config(
+            "notifications.ntfy.topic is required when ntfy is enabled".to_string(),
+        ));
+    }
+    if config.ntfy.enabled && config.ntfy.server.trim().is_empty() {
+        return Err(SentinelError::Config(
+            "notifications.ntfy.server is required when ntfy is enabled".to_string(),
+        ));
+    }
+    if config.gotify.enabled {
+        if config.gotify.server.trim().is_empty() {
+            return Err(SentinelError::Config(
+                "notifications.gotify.server is required when gotify is enabled".to_string(),
+            ));
+        }
+        if config.gotify.token.trim().is_empty() {
+            return Err(SentinelError::Config(
+                "notifications.gotify.token is required when gotify is enabled".to_string(),
+            ));
+        }
+    }
+    if config.bark.enabled {
+        if config.bark.server.trim().is_empty() {
+            return Err(SentinelError::Config(
+                "notifications.bark.server is required when bark is enabled".to_string(),
+            ));
+        }
+        if config.bark.device_key.trim().is_empty() {
+            return Err(SentinelError::Config(
+                "notifications.bark.device_key is required when bark is enabled".to_string(),
+            ));
+        }
+    }
+    if config.serverchan.enabled && config.serverchan.send_key.trim().is_empty() {
+        return Err(SentinelError::Config(
+            "notifications.serverchan.send_key is required when serverchan is enabled".to_string(),
+        ));
     }
     Ok(())
 }
@@ -299,6 +360,10 @@ mod tests {
     #[test]
     fn invalid_risk_thresholds_are_rejected() {
         let mut config = SentinelConfig::default();
+        config.file_integrity.max_depth = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
         config.file_integrity.webshell_min_score = 0;
         assert!(config.validate().is_err());
 
@@ -343,6 +408,47 @@ mod tests {
         config.notifications.email.smtp_host = "smtp.example.com".to_string();
         config.notifications.email.from = "sentinel@example.com".to_string();
         config.notifications.email.to = vec!["ops@example.com".to_string()];
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn enabled_notification_channels_require_delivery_settings() {
+        let mut config = SentinelConfig::default();
+        config.notifications.telegram.enabled = true;
+        assert!(config.validate().is_err());
+        config.notifications.telegram.bot_token = "token".to_string();
+        config.notifications.telegram.chat_id = "chat".to_string();
+        assert!(config.validate().is_ok());
+
+        let mut config = SentinelConfig::default();
+        config.notifications.webhook.enabled = true;
+        assert!(config.validate().is_err());
+        config.notifications.webhook.url = "https://example.com/hook".to_string();
+        assert!(config.validate().is_ok());
+
+        let mut config = SentinelConfig::default();
+        config.notifications.ntfy.enabled = true;
+        assert!(config.validate().is_err());
+        config.notifications.ntfy.topic = "topic".to_string();
+        assert!(config.validate().is_ok());
+
+        let mut config = SentinelConfig::default();
+        config.notifications.gotify.enabled = true;
+        assert!(config.validate().is_err());
+        config.notifications.gotify.server = "https://gotify.example.com".to_string();
+        config.notifications.gotify.token = "token".to_string();
+        assert!(config.validate().is_ok());
+
+        let mut config = SentinelConfig::default();
+        config.notifications.bark.enabled = true;
+        assert!(config.validate().is_err());
+        config.notifications.bark.device_key = "device".to_string();
+        assert!(config.validate().is_ok());
+
+        let mut config = SentinelConfig::default();
+        config.notifications.serverchan.enabled = true;
+        assert!(config.validate().is_err());
+        config.notifications.serverchan.send_key = "key".to_string();
         assert!(config.validate().is_ok());
     }
 

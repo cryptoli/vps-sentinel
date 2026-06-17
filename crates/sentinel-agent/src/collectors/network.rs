@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use sentinel_core::{RawEvent, SentinelResult};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::net::Ipv6Addr;
 use std::path::Path;
 
 pub struct NetworkCollector;
@@ -203,15 +204,32 @@ fn parse_proc_address(hex: &str) -> String {
             return format!("{}.{}.{}.{}", bytes[3], bytes[2], bytes[1], bytes[0]);
         }
     }
-    if hex.chars().all(|ch| ch == '0') {
-        return "::".to_string();
+    if hex.len() == 32 {
+        if let Some(addr) = parse_proc_ipv6_address(hex) {
+            return addr.to_string();
+        }
     }
-    "ipv6".to_string()
+    hex.to_string()
+}
+
+fn parse_proc_ipv6_address(hex: &str) -> Option<Ipv6Addr> {
+    if hex.len() != 32 {
+        return None;
+    }
+    let mut bytes = [0u8; 16];
+    for chunk in 0..4 {
+        for byte_index in 0..4 {
+            let source_offset = chunk * 8 + byte_index * 2;
+            let byte = u8::from_str_radix(&hex[source_offset..source_offset + 2], 16).ok()?;
+            bytes[chunk * 4 + (3 - byte_index)] = byte;
+        }
+    }
+    Some(Ipv6Addr::from(bytes))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_proc_net, parse_socket_inode};
+    use super::{parse_proc_ipv6_address, parse_proc_net, parse_socket_inode};
 
     #[test]
     fn parses_listening_tcp_socket() {
@@ -227,5 +245,14 @@ mod tests {
     fn parses_socket_inode_symlink() {
         assert_eq!(parse_socket_inode("socket:[12345]"), Some("12345"));
         assert_eq!(parse_socket_inode("pipe:[12345]"), None);
+    }
+
+    #[test]
+    fn parses_proc_tcp6_loopback_address() {
+        let address = parse_proc_ipv6_address("00000000000000000000000001000000");
+        assert_eq!(
+            address.map(|value| value.to_string()),
+            Some("::1".to_string())
+        );
     }
 }

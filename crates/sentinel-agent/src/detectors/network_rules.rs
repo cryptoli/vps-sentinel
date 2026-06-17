@@ -6,6 +6,7 @@ use crate::detectors::{evidence, path_is_allowlisted, string_field, DetectContex
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
 use std::collections::BTreeSet;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 pub struct NetworkDetector;
 
@@ -220,7 +221,67 @@ fn push_evidence_if_present(items: &mut Vec<sentinel_core::Evidence>, event: &Ra
 }
 
 fn is_public_addr(addr: &str) -> bool {
-    matches!(addr, "0.0.0.0" | "::" | "ipv6")
+    match addr.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => is_public_ipv4_listener(ip),
+        Ok(IpAddr::V6(ip)) => is_public_ipv6_listener(ip),
+        Err(_) => addr == "ipv6",
+    }
+}
+
+fn is_public_ipv4_listener(ip: Ipv4Addr) -> bool {
+    if ip.is_unspecified() {
+        return true;
+    }
+    !(ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_multicast()
+        || is_shared_ipv4(ip)
+        || is_documentation_ipv4(ip)
+        || is_benchmarking_ipv4(ip))
+}
+
+fn is_public_ipv6_listener(ip: Ipv6Addr) -> bool {
+    if ip.is_unspecified() {
+        return true;
+    }
+    !(ip.is_loopback()
+        || ip.is_multicast()
+        || is_unique_local_ipv6(ip)
+        || is_unicast_link_local_ipv6(ip)
+        || is_documentation_ipv6(ip))
+}
+
+fn is_shared_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 100 && (64..=127).contains(&octets[1])
+}
+
+fn is_documentation_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    matches!(
+        (octets[0], octets[1], octets[2]),
+        (192, 0, 2) | (198, 51, 100) | (203, 0, 113)
+    )
+}
+
+fn is_benchmarking_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 198 && (18..=19).contains(&octets[1])
+}
+
+fn is_unique_local_ipv6(ip: Ipv6Addr) -> bool {
+    ip.segments()[0] & 0xfe00 == 0xfc00
+}
+
+fn is_unicast_link_local_ipv6(ip: Ipv6Addr) -> bool {
+    ip.segments()[0] & 0xffc0 == 0xfe80
+}
+
+fn is_documentation_ipv6(ip: Ipv6Addr) -> bool {
+    let segments = ip.segments();
+    segments[0] == 0x2001 && segments[1] == 0x0db8
 }
 
 fn is_tcp_protocol(event: &RawEvent) -> bool {

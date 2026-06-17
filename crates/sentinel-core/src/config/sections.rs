@@ -20,7 +20,6 @@ pub struct AgentConfig {
     pub hostname: String,
     pub display_name: String,
     pub scan_interval_seconds: u64,
-    pub full_scan_interval_seconds: u64,
     pub data_dir: PathBuf,
     pub log_level: String,
 }
@@ -32,7 +31,6 @@ impl Default for AgentConfig {
             hostname: String::new(),
             display_name: String::new(),
             scan_interval_seconds: 60,
-            full_scan_interval_seconds: 3600,
             data_dir: PathBuf::from(SentinelPaths::DATA_DIR),
             log_level: "info".to_string(),
         }
@@ -153,7 +151,6 @@ impl Default for WebConfig {
 #[serde(default)]
 pub struct ProcessConfig {
     pub enabled: bool,
-    pub scan_interval_seconds: u64,
     pub high_cpu_threshold_percent: f32,
     pub high_cpu_duration_seconds: u64,
     pub deleted_executable_min_score: u16,
@@ -168,7 +165,6 @@ impl Default for ProcessConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            scan_interval_seconds: 30,
             high_cpu_threshold_percent: 80.0,
             high_cpu_duration_seconds: 120,
             deleted_executable_min_score: 70,
@@ -221,7 +217,6 @@ impl Default for PackageManagerConfig {
 #[serde(default)]
 pub struct NetworkConfig {
     pub enabled: bool,
-    pub scan_interval_seconds: u64,
     pub alert_on_new_listening_port: bool,
     #[serde(default = "default_expected_public_ports")]
     pub expected_public_ports: Vec<u16>,
@@ -235,7 +230,6 @@ impl Default for NetworkConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            scan_interval_seconds: 30,
             alert_on_new_listening_port: true,
             expected_public_ports: default_expected_public_ports(),
             high_risk_public_ports: default_high_risk_public_ports(),
