@@ -122,6 +122,34 @@ impl Default for FileIntegrityConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct LogIntegrityConfig {
+    pub enabled: bool,
+    pub paths: Vec<PathBuf>,
+    pub truncate_drop_percent: u8,
+    pub truncate_min_drop_bytes: u64,
+    pub rotation_grace_seconds: u64,
+}
+
+impl Default for LogIntegrityConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            paths: vec![
+                PathBuf::from("/var/log/auth.log"),
+                PathBuf::from("/var/log/secure"),
+                PathBuf::from("/var/log/wtmp"),
+                PathBuf::from("/var/log/btmp"),
+                PathBuf::from("/var/log/lastlog"),
+            ],
+            truncate_drop_percent: 90,
+            truncate_min_drop_bytes: 262_144,
+            rotation_grace_seconds: 900,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct WebConfig {
     pub enabled: bool,
     pub web_roots: Vec<PathBuf>,

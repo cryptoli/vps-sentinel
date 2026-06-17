@@ -1,7 +1,8 @@
 use super::{
-    annotate_active_response, duplicate_suppression_window_seconds, enrich_process_start_drift,
-    quiet_hours_allowed_findings, redact_findings, save_process_start_state,
-    suppress_in_scan_duplicates, suppress_recent_duplicates,
+    annotate_active_response, duplicate_suppression_window_seconds, enrich_log_integrity_state,
+    enrich_process_start_drift, quiet_hours_allowed_findings, redact_findings,
+    save_log_integrity_state, save_process_start_state, suppress_in_scan_duplicates,
+    suppress_recent_duplicates,
 };
 use crate::active_response::{ActiveResponseReport, BlockAction, BlockActionStatus};
 use crate::storage::SqliteStore;
@@ -143,6 +144,33 @@ fn state_findings_use_longer_reminder_window() {
         "SSH-005",
         "/root/.ssh/authorized_keys",
     );
+    let ssh_key_state = Finding::new(
+        "host",
+        "authorized_keys unsafe state",
+        "authorized_keys unsafe state.",
+        Severity::High,
+        Category::Ssh,
+        "SSH-006",
+        "/root/.ssh/authorized_keys",
+    );
+    let tamper_state = Finding::new(
+        "host",
+        "Sensitive log was abruptly truncated",
+        "log truncation",
+        Severity::High,
+        Category::System,
+        "TAMPER-002",
+        "/var/log/auth.log",
+    );
+    let tamper_missing_state = Finding::new(
+        "host",
+        "Sensitive log disappeared",
+        "log missing",
+        Severity::High,
+        Category::System,
+        "TAMPER-003",
+        "/var/log/auth.log",
+    );
 
     assert_eq!(
         duplicate_suppression_window_seconds(&state_finding, &config),
@@ -150,6 +178,18 @@ fn state_findings_use_longer_reminder_window() {
     );
     assert_eq!(
         duplicate_suppression_window_seconds(&ssh_key_drift, &config),
+        86400
+    );
+    assert_eq!(
+        duplicate_suppression_window_seconds(&ssh_key_state, &config),
+        86400
+    );
+    assert_eq!(
+        duplicate_suppression_window_seconds(&tamper_state, &config),
+        86400
+    );
+    assert_eq!(
+        duplicate_suppression_window_seconds(&tamper_missing_state, &config),
         86400
     );
     assert_eq!(
@@ -321,11 +361,74 @@ fn process_start_state_ignores_missing_or_changed_identity(
     Ok(())
 }
 
+#[test]
+fn log_integrity_state_marks_abrupt_truncation() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+    let config = SentinelConfig::default();
+    let first = log_event("/var/log/auth.log", 1_048_576);
+
+    save_log_integrity_state(std::slice::from_ref(&first), &store)?;
+
+    let mut second = vec![log_event("/var/log/auth.log", 512)];
+    enrich_log_integrity_state(&mut second, &store, &config)?;
+
+    assert_eq!(second[0].field("log_size_drop"), Some("true"));
+    assert_eq!(second[0].field("previous_size"), Some("1048576"));
+    assert_eq!(second[0].field("current_size"), Some("512"));
+    assert_eq!(second[0].field("drop_percent"), Some("99"));
+    Ok(())
+}
+
+#[test]
+fn log_integrity_state_ignores_recent_rotation_context() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+    let config = SentinelConfig::default();
+    let first = log_event("/var/log/auth.log", 1_048_576);
+
+    save_log_integrity_state(std::slice::from_ref(&first), &store)?;
+
+    let mut second =
+        vec![log_event("/var/log/auth.log", 0).with_field("recent_rotated_sibling", "true")];
+    enrich_log_integrity_state(&mut second, &store, &config)?;
+
+    assert_eq!(second[0].field("log_size_drop"), None);
+    Ok(())
+}
+
+#[test]
+fn log_integrity_state_marks_previously_seen_log_missing() -> Result<(), Box<dyn std::error::Error>>
+{
+    let temp = tempfile::tempdir()?;
+    let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+    let config = SentinelConfig::default();
+    let first = log_event("/var/log/auth.log", 4096);
+
+    save_log_integrity_state(std::slice::from_ref(&first), &store)?;
+
+    let mut second = Vec::new();
+    enrich_log_integrity_state(&mut second, &store, &config)?;
+
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].field("log_file_missing"), Some("true"));
+    assert_eq!(second[0].field("path"), Some("/var/log/auth.log"));
+    assert_eq!(second[0].field("previous_size"), Some("4096"));
+    Ok(())
+}
+
 fn process_event(exe_path: &str, name: &str, start_ticks: &str) -> RawEvent {
     RawEvent::new("process", "process_snapshot")
         .with_field("exe_path", exe_path)
         .with_field("name", name)
         .with_field("process_start_ticks", start_ticks)
+}
+
+fn log_event(path: &str, size: u64) -> RawEvent {
+    RawEvent::new("log_integrity", "log_file_snapshot")
+        .with_field("path", path)
+        .with_field("file_type", "file")
+        .with_field("size", size.to_string())
 }
 
 fn evidence_value<'a>(finding: &'a Finding, key: &str) -> Option<&'a str> {

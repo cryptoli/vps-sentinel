@@ -26,10 +26,11 @@ It is not:
 
 | Area | What vps-sentinel supports |
 | --- | --- |
-| SSH monitoring | Parses Debian/Ubuntu and RHEL-family auth logs; detects root SSH login, password login, ordinary successful login, brute-force patterns, and `authorized_keys`/`authorized_keys2` drift. |
+| SSH monitoring | Parses Debian/Ubuntu and RHEL-family auth logs; detects root SSH login, password login, ordinary successful login, brute-force patterns, `authorized_keys`/`authorized_keys2` drift, unsafe key-file permissions, and risky key-file symlinks. |
 | Baseline drift | Creates local baselines for users, SSH keys, critical files, persistence entries, and listeners; compares future scans against the stored baseline and adds package-manager context when recent software updates may explain drift. |
 | User and privilege checks | Detects new users, UID 0 users, and privilege-relevant user changes. |
 | File integrity | Watches configured critical paths and web roots; hashes bounded file content; detects modified files, executable scripts in web roots, and risk-scored WebShell-style marker combinations. |
+| Log integrity | Watches sensitive authentication/login log files for risky symlinks and abrupt size drops that are not explained by recent rotation context. |
 | Persistence checks | Monitors cron, systemd, shell profile, and preload-related locations for new or risk-scored suspicious startup entries. |
 | Process and GPU checks | Reads procfs argv, parent process, executable path, cwd, UID context, socket-FD count, CPU lifetime metrics, procfs start-time drift, cgroup/container hints, systemd unit/ExecStart, executable owner/size/hash, package ownership, outbound connection profile, and NVIDIA GPU compute-process facts when `nvidia-smi` is available. It flags temporary-path executables, risk-scored deleted executables, network command-execution bridges, suspicious behavior clusters, known miner/scanner identities, and suspicious GPU compute workloads. |
 | Network checks | Reads listening sockets and owning process details; attaches process context and firewall state; flags high-risk public services, suspicious listener processes, baseline owner drift, and ordinary new public listeners. Expected web/SSH ports such as 22, 80, and 443 reduce noise but are not blindly trusted. |
@@ -51,6 +52,10 @@ Known miner/scanner detection is intentionally narrower: `PROC-004` matches know
 Deleted-executable and persistence-startup alerts are also scored. `PROC-002` requires additional suspicious traits such as a temporary executable path, memfd or anonymous backing, a hidden non-standard executable, a network execution bridge, or a known miner/scanner identity. A package-upgrade residue such as `systemd`, `dockerd`, or `python3` running from a deleted standard system path is treated as maintenance context unless other risk traits are present. `PERSIST-002` scores startup lines for combinations such as download-to-shell, temporary-path autostart payloads, base64 decode-to-shell, and network-to-shell execution bridges; a plain `bash -c` service wrapper is not enough by itself.
 
 File and persistence baseline drift is not suppressed just because package-manager activity exists. Instead, the agent collects recent apt/dpkg/yum/dnf/pacman/apk log activity and attaches that context to `FILE-001`, `PERSIST-001`, and `PERSIST-003` recommendations. This keeps real drift visible while making legitimate package updates easier to confirm before refreshing the baseline.
+
+SSH key-file state is checked independently from baseline drift. A changed `authorized_keys` still reports as persistence drift, while unsafe current state reports separately only when there is concrete filesystem evidence such as group/other-writable permissions or a symlink to a null device, temporary directory, shared memory, or runtime path. This catches a common local-persistence weakness without treating every symlink as malicious.
+
+Sensitive auth/login log integrity is stateful. vps-sentinel records the previous file type and size, reports risky symlinks such as `/var/log/auth.log -> /dev/null`, reports abrupt truncation only when the drop is large enough and there is no recently modified rotated sibling such as `auth.log.1`, and reports a configured sensitive log that existed in previous scans but disappears later. Normal log rotation therefore stays quiet, while log clearing or removal after a compromise becomes visible.
 
 WebShell content detection is risk-scored instead of marker-only. A single marker such as `eval` in a legitimate admin script is below the default threshold. Combinations such as command execution in a script-like web path, dynamic execution plus encoded payload markers, command execution plus encoding, or large encoded payloads in script-like web paths raise `FILE-002`.
 
@@ -181,8 +186,9 @@ The Docker containers used in CI are build and compatibility test environments o
 | Feature | Implementation | Practical effect |
 | --- | --- | --- |
 | SSH login monitoring | Reads configured auth logs and falls back to `journalctl` for `ssh.service`/`sshd.service` when files are absent. | Detects root logins, password logins, ordinary successful logins, and brute-force clusters by source IP. |
-| SSH key integrity | Hashes `authorized_keys` and `authorized_keys2` independently of the broader file-integrity switch. | Detects SSH persistence changes even when general file integrity is disabled. |
+| SSH key integrity | Hashes `authorized_keys` and `authorized_keys2` independently of the broader file-integrity switch; records file type, Unix mode when available, and symlink target. | Detects SSH persistence changes even when general file integrity is disabled, and reports unsafe writable or risky symlink states without relying on baseline history. |
 | File and persistence drift | Builds a local SQLite baseline, diffs later snapshots, coalesces related file/persistence findings for the same path, and attaches package-manager context. | Finds real drift while reducing confusion during legitimate package updates; baseline is refreshed only by explicit command. |
+| Log tamper signals | Collects sensitive log file snapshots and compares them with stored rule state; risky symlink targets are immediate findings, truncation requires a large configured size drop and no recent rotation sibling, and previously seen configured logs that disappear are reported. | Detects anti-forensics such as redirecting auth logs to `/dev/null`, clearing log files, or removing auth logs, while avoiding normal logrotate noise. |
 | WebShell content | Scans bounded file content for risk markers and scores marker combinations plus web-path context. | Avoids alerting on one weak marker, while catching classic web command execution and encoded payload patterns. |
 | Web probing | Groups `WEB-001` by source IP, probe family, and response profile. Missing/rejected probes such as 404 PHPUnit directory sweeps are Low context; successful sensitive-file responses or protected exploit paths are raised. | A scanner hitting many path variants creates one readable finding instead of dozens of Telegram messages. |
 | Process and GPU risk | Reads procfs argv, parent, executable, cwd, UID/EUID, deleted state, socket-FD count, lifetime CPU metrics, start-time drift, cgroup/container hints, systemd unit/ExecStart, executable metadata/hash, package owner, outbound connection profile, and NVIDIA compute-process state; uses rule-specific scoring, allowlists, rule-state storage, and same-PID signal coalescing. `PROC-005` requires a primary evasion/location signal before socket, outbound, restart, or root-context signals can alert. `PROC-006` requires GPU compute activity plus mining or high-risk runtime evidence. | Detects temp-path executables, suspicious deleted executables, network shell bridges, known miner/scanner identities, renamed behavior clusters, and suspicious GPU mining workloads while avoiding duplicate messages caused by volatile PID/CPU/GPU/connection counters or normal high-connection services. |
@@ -470,6 +476,19 @@ webshell_min_score = 70
 
 `webshell_min_score` controls when `FILE-002` is emitted. The detector scores marker combinations and web-script context instead of alerting on one isolated marker, which reduces false positives in legitimate admin scripts while still catching classic web command execution and encoded command-execution patterns.
 
+Sensitive log integrity:
+
+```toml
+[log_integrity]
+enabled = true
+paths = ["/var/log/auth.log", "/var/log/secure", "/var/log/wtmp", "/var/log/btmp", "/var/log/lastlog"]
+truncate_drop_percent = 90
+truncate_min_drop_bytes = 262144
+rotation_grace_seconds = 900
+```
+
+`TAMPER-001` detects sensitive log paths redirected to risky targets such as `/dev/null`, `/tmp`, `/var/tmp`, `/dev/shm`, or `/run`. `TAMPER-002` compares the current size with stored rule state and requires both `truncate_drop_percent` and `truncate_min_drop_bytes` to be exceeded. If a recently modified rotated sibling exists within `rotation_grace_seconds`, truncation is treated as normal rotation context and no alert is raised. `TAMPER-003` reports a configured sensitive log only after it has been seen in previous scans and then disappears, so a distribution that never had `/var/log/auth.log` does not alert just because that path is absent.
+
 Package-manager context:
 
 ```toml
@@ -644,7 +663,11 @@ Example rules:
 - `SSH-003`: SSH brute-force pattern detected.
 - `SSH-004`: SSH login detected.
 - `SSH-005`: `authorized_keys` or `authorized_keys2` changed relative to baseline.
+- `SSH-006`: `authorized_keys` or `authorized_keys2` has unsafe permissions or a risky symlink target.
 - `USER-002`: UID 0 user added or changed.
+- `TAMPER-001`: Sensitive auth/login log path is redirected to a risky target.
+- `TAMPER-002`: Sensitive auth/login log file was abruptly truncated without rotation context.
+- `TAMPER-003`: Previously seen sensitive auth/login log file disappeared.
 - `PERSIST-002`: Suspicious startup command detected.
 - `PROC-002`: Risk-scored deleted executable still running.
 - `PROC-003`: Network command execution bridge detected.

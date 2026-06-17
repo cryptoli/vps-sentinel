@@ -5,6 +5,7 @@ use crate::detectors::{default_detectors, DetectContext};
 use crate::findings::coalesce_related_findings;
 use crate::notify::{NotificationManager, NotifyContext};
 use crate::storage::SqliteStore;
+use crate::utils::fs::path_string;
 use crate::utils::redact::{mask_command_args, mask_ip, mask_ips_in_text};
 use chrono::{Duration, Local, Timelike, Utc};
 use sentinel_core::{
@@ -18,6 +19,7 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 
 const PROCESS_START_STATE_RULE_ID: &str = "process_start_times";
+const LOG_INTEGRITY_STATE_RULE_ID: &str = "log_integrity_state";
 
 /// Controls side effects performed by one scan.
 #[derive(Debug, Clone)]
@@ -109,6 +111,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     if options.persist {
         if let Some(store) = &store {
             enrich_process_start_drift(&mut detection_events, store)?;
+            enrich_log_integrity_state(&mut detection_events, store, config.as_ref())?;
         }
     }
 
@@ -187,6 +190,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
                 store.save_raw_events(&detection_events)?;
             }
             save_process_start_state(&detection_events, store)?;
+            save_log_integrity_state(&detection_events, store)?;
             store.save_findings(&findings)?;
             store.record_scan_run(detection_events.len(), findings.len(), "ok")?;
         }
@@ -570,7 +574,10 @@ fn is_state_finding(finding: &Finding) -> bool {
             | Category::Process
             | Category::Rootkit
             | Category::User
-    ) || finding.rule_id == "SSH-005"
+    ) || matches!(
+        finding.rule_id.as_str(),
+        "SSH-005" | "SSH-006" | "TAMPER-001" | "TAMPER-002" | "TAMPER-003"
+    )
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -688,6 +695,155 @@ fn normalized_process_path(path: &str) -> String {
         .strip_suffix(" (deleted)")
         .unwrap_or_else(|| path.trim())
         .to_string()
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct LogIntegrityState {
+    files: BTreeMap<String, LogFileRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LogFileRecord {
+    size: u64,
+    file_type: String,
+    symlink_target: String,
+    modified_unix: String,
+}
+
+fn enrich_log_integrity_state(
+    events: &mut Vec<RawEvent>,
+    store: &SqliteStore,
+    config: &SentinelConfig,
+) -> SentinelResult<()> {
+    if !config.log_integrity.enabled {
+        return Ok(());
+    }
+    let Some(previous) = store.load_rule_state::<LogIntegrityState>(LOG_INTEGRITY_STATE_RULE_ID)?
+    else {
+        return Ok(());
+    };
+
+    let configured_paths = config
+        .log_integrity
+        .paths
+        .iter()
+        .map(|path| path_string(path))
+        .collect::<BTreeSet<_>>();
+    let current_paths = events
+        .iter()
+        .filter(|event| event.kind == "log_file_snapshot")
+        .filter_map(|event| event.field("path"))
+        .map(str::to_string)
+        .collect::<BTreeSet<_>>();
+
+    for event in events
+        .iter_mut()
+        .filter(|event| event.kind == "log_file_snapshot")
+    {
+        let Some(path) = event.field("path").filter(|path| !path.trim().is_empty()) else {
+            continue;
+        };
+        let Some(old) = previous.files.get(path) else {
+            continue;
+        };
+        let current = log_file_record(event);
+        if significant_log_size_drop(old, &current, config)
+            && event.field("recent_rotated_sibling") != Some("true")
+        {
+            let dropped = old.size.saturating_sub(current.size);
+            let drop_percent = dropped
+                .saturating_mul(100)
+                .checked_div(old.size)
+                .unwrap_or(0);
+            event
+                .fields
+                .insert("log_size_drop".to_string(), "true".to_string());
+            event
+                .fields
+                .insert("previous_size".to_string(), old.size.to_string());
+            event
+                .fields
+                .insert("current_size".to_string(), current.size.to_string());
+            event
+                .fields
+                .insert("dropped_bytes".to_string(), dropped.to_string());
+            event
+                .fields
+                .insert("drop_percent".to_string(), drop_percent.to_string());
+        }
+    }
+
+    for (path, old) in &previous.files {
+        if !configured_paths.contains(path) || current_paths.contains(path) {
+            continue;
+        }
+        events.push(
+            RawEvent::new("log_integrity", "log_file_snapshot")
+                .with_field("path", path.as_str())
+                .with_field("file_type", "missing")
+                .with_field("size", "0")
+                .with_field("log_file_missing", "true")
+                .with_field("previous_size", old.size.to_string())
+                .with_field("previous_file_type", old.file_type.clone())
+                .with_field("previous_symlink_target", old.symlink_target.clone())
+                .with_field("previous_modified_unix", old.modified_unix.clone()),
+        );
+    }
+    Ok(())
+}
+
+fn save_log_integrity_state(events: &[RawEvent], store: &SqliteStore) -> SentinelResult<()> {
+    let files = events
+        .iter()
+        .filter(|event| event.kind == "log_file_snapshot")
+        .filter_map(|event| {
+            let path = event.field("path")?.trim();
+            (!path.is_empty()).then(|| (path.to_string(), log_file_record(event)))
+        })
+        .collect::<BTreeMap<_, _>>();
+    if files.is_empty() {
+        return Ok(());
+    }
+    store.save_rule_state(LOG_INTEGRITY_STATE_RULE_ID, &LogIntegrityState { files })
+}
+
+fn log_file_record(event: &RawEvent) -> LogFileRecord {
+    LogFileRecord {
+        size: event
+            .field("size")
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(0),
+        file_type: event.field("file_type").unwrap_or("").trim().to_string(),
+        symlink_target: event
+            .field("symlink_target")
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        modified_unix: event
+            .field("modified_unix")
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+    }
+}
+
+fn significant_log_size_drop(
+    old: &LogFileRecord,
+    current: &LogFileRecord,
+    config: &SentinelConfig,
+) -> bool {
+    if old.file_type != "file" || current.file_type != "file" || current.size >= old.size {
+        return false;
+    }
+    let dropped = old.size.saturating_sub(current.size);
+    if dropped < config.log_integrity.truncate_min_drop_bytes {
+        return false;
+    }
+    if old.size == 0 {
+        return false;
+    }
+    let drop_percent = dropped.saturating_mul(100) / old.size;
+    drop_percent >= config.log_integrity.truncate_drop_percent as u64
 }
 
 fn suppress_in_scan_duplicates(findings: Vec<Finding>) -> (Vec<Finding>, usize) {

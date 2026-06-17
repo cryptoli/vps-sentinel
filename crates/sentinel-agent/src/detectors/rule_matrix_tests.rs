@@ -21,7 +21,7 @@ fn every_builtin_risk_rule_has_positive_and_negative_coverage() {
     let positives = positive_cases();
     let negatives = negative_cases();
 
-    assert_eq!(positives.len(), 30);
+    assert_eq!(positives.len(), 34);
     assert_eq!(negatives.len(), positives.len());
 
     for case in positives {
@@ -169,6 +169,14 @@ fn positive_cases() -> Vec<PositiveCase> {
                 "old",
                 "new",
             )],
+        ),
+        positive(
+            "SSH-006",
+            "authorized keys unsafe permissions",
+            vec![RawEvent::new("file_integrity", "file_snapshot")
+                .with_field("path", "/root/.ssh/authorized_keys")
+                .with_field("file_type", "file")
+                .with_field("mode_octal", "0666")],
         ),
         positive(
             "FILE-001",
@@ -374,6 +382,30 @@ fn positive_cases() -> Vec<PositiveCase> {
                 .with_field("path", "/etc/ld.so.preload")
                 .with_field("entries", "/tmp/libhide.so")],
         ),
+        positive(
+            "TAMPER-001",
+            "auth log redirected to null",
+            vec![log_event("/var/log/auth.log", "symlink", "0")
+                .with_field("symlink_target", "/dev/null")],
+        ),
+        positive(
+            "TAMPER-002",
+            "auth log abruptly truncated",
+            vec![log_event("/var/log/auth.log", "file", "512")
+                .with_field("log_size_drop", "true")
+                .with_field("previous_size", "1048576")
+                .with_field("current_size", "512")
+                .with_field("dropped_bytes", "1048064")
+                .with_field("drop_percent", "99")],
+        ),
+        positive(
+            "TAMPER-003",
+            "auth log disappeared",
+            vec![log_event("/var/log/auth.log", "missing", "0")
+                .with_field("log_file_missing", "true")
+                .with_field("previous_file_type", "file")
+                .with_field("previous_size", "4096")],
+        ),
     ]
 }
 
@@ -410,6 +442,14 @@ fn negative_cases() -> Vec<NegativeCase> {
                 "old",
                 "new",
             )],
+        ),
+        negative(
+            "SSH-006",
+            "strict authorized keys file",
+            vec![RawEvent::new("file_integrity", "file_snapshot")
+                .with_field("path", "/root/.ssh/authorized_keys")
+                .with_field("file_type", "file")
+                .with_field("mode_octal", "0600")],
         ),
         negative(
             "FILE-001",
@@ -624,6 +664,24 @@ fn negative_cases() -> Vec<NegativeCase> {
                 .with_field("path", "/etc/ld.so.preload")
                 .with_field("entries", "")],
         ),
+        negative(
+            "TAMPER-001",
+            "ordinary auth log file",
+            vec![log_event("/var/log/auth.log", "file", "8192")],
+        ),
+        negative(
+            "TAMPER-002",
+            "auth log truncation with recent rotation",
+            vec![log_event("/var/log/auth.log", "file", "0")
+                .with_field("log_size_drop", "true")
+                .with_field("recent_rotated_sibling", "true")
+                .with_field("rotated_sibling", "/var/log/auth.log.1")],
+        ),
+        negative(
+            "TAMPER-003",
+            "new host without previous log state",
+            vec![log_event("/var/log/auth.log", "missing", "0")],
+        ),
     ]
 }
 
@@ -734,4 +792,11 @@ fn ssh_config(key: &str, value: &str) -> RawEvent {
         .with_field("path", "/etc/ssh/sshd_config")
         .with_field("key", key)
         .with_field("value", value)
+}
+
+fn log_event(path: &str, file_type: &str, size: &str) -> RawEvent {
+    RawEvent::new("log_integrity", "log_file_snapshot")
+        .with_field("path", path)
+        .with_field("file_type", file_type)
+        .with_field("size", size)
 }

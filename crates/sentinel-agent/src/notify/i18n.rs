@@ -80,6 +80,9 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
     if let Some(label) = gpu_evidence_label(key, language) {
         return label.to_string();
     }
+    if let Some(label) = intrusion_evidence_label(key, language) {
+        return label.to_string();
+    }
     let text = match language {
         NotificationLanguage::En => match key {
             "argv_json" => "argv JSON",
@@ -300,6 +303,49 @@ fn gpu_evidence_label(key: &str, language: NotificationLanguage) -> Option<&'sta
     }
 }
 
+fn intrusion_evidence_label(key: &str, language: NotificationLanguage) -> Option<&'static str> {
+    match language {
+        NotificationLanguage::En => match key {
+            "current_size" => Some("current size bytes"),
+            "drop_percent" => Some("drop percent"),
+            "dropped_bytes" => Some("dropped bytes"),
+            "file_type" => Some("file type"),
+            "log_file_missing" => Some("log file missing"),
+            "log_size_drop" => Some("log size dropped"),
+            "mode_octal" => Some("mode"),
+            "modified_time_utc" => Some("modified time"),
+            "previous_file_type" => Some("previous file type"),
+            "previous_modified_unix" => Some("previous modified time"),
+            "previous_modified_time_utc" => Some("previous modified time"),
+            "previous_size" => Some("previous size bytes"),
+            "previous_symlink_target" => Some("previous symlink target"),
+            "recent_rotated_sibling" => Some("recent rotated sibling"),
+            "rotated_sibling" => Some("rotated sibling"),
+            "symlink_target" => Some("symlink target"),
+            _ => None,
+        },
+        NotificationLanguage::ZhCn => match key {
+            "current_size" => Some("当前字节数"),
+            "drop_percent" => Some("下降比例"),
+            "dropped_bytes" => Some("减少字节数"),
+            "file_type" => Some("文件类型"),
+            "log_file_missing" => Some("日志文件缺失"),
+            "log_size_drop" => Some("日志大小下降"),
+            "mode_octal" => Some("权限模式"),
+            "modified_time_utc" => Some("修改时间"),
+            "previous_file_type" => Some("原文件类型"),
+            "previous_modified_unix" => Some("原修改时间"),
+            "previous_modified_time_utc" => Some("原修改时间"),
+            "previous_size" => Some("原字节数"),
+            "previous_symlink_target" => Some("原软链目标"),
+            "recent_rotated_sibling" => Some("近期轮转文件"),
+            "rotated_sibling" => Some("轮转文件"),
+            "symlink_target" => Some("软链目标"),
+            _ => None,
+        },
+    }
+}
+
 pub fn evidence_value_label(key: &str, value: &str, language: NotificationLanguage) -> String {
     let value = value.trim();
     if value.is_empty() {
@@ -500,6 +546,9 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
     if let Some(label) = gpu_technical_token_label(value, language) {
         return Some(label);
     }
+    if let Some(label) = intrusion_technical_token_label(value, language) {
+        return Some(label);
+    }
     match language {
         NotificationLanguage::En => match value {
             "dev_tcp" => Some("/dev/tcp"),
@@ -633,6 +682,36 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
                 Some("/dev/tcp 与交互式 Shell 和文件描述符重定向组合")
             }
             _ => content_marker_label(value),
+        },
+    }
+}
+
+fn intrusion_technical_token_label(
+    value: &str,
+    language: NotificationLanguage,
+) -> Option<&'static str> {
+    match language {
+        NotificationLanguage::En => match value {
+            "authorized_keys is writable by group or other users" => {
+                Some("authorized_keys is writable by group or other users")
+            }
+            "authorized_keys symlink points to a risky target" => {
+                Some("authorized_keys symlink points to a risky target")
+            }
+            "risky_authorized_keys_symlink" => Some("risky authorized_keys symlink"),
+            "unsafe_authorized_keys_permissions" => Some("unsafe authorized_keys permissions"),
+            _ => None,
+        },
+        NotificationLanguage::ZhCn => match value {
+            "authorized_keys is writable by group or other users" => {
+                Some("authorized_keys 可被同组或其他用户写入")
+            }
+            "authorized_keys symlink points to a risky target" => {
+                Some("authorized_keys 软链指向高风险目标")
+            }
+            "risky_authorized_keys_symlink" => Some("高风险 authorized_keys 软链"),
+            "unsafe_authorized_keys_permissions" => Some("authorized_keys 权限过宽"),
+            _ => None,
         },
     }
 }

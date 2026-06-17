@@ -14,8 +14,9 @@ pub use notifications::{
 };
 pub use sections::{
     ActiveResponseConfig, AgentConfig, AllowlistConfig, DockerConfig, FileIntegrityConfig,
-    GpuConfig, NetworkConfig, NoiseControlConfig, PackageManagerConfig, PersistenceConfig,
-    PrivacyConfig, ProcessConfig, SentinelPaths, SshConfig, StorageConfig, WebConfig,
+    GpuConfig, LogIntegrityConfig, NetworkConfig, NoiseControlConfig, PackageManagerConfig,
+    PersistenceConfig, PrivacyConfig, ProcessConfig, SentinelPaths, SshConfig, StorageConfig,
+    WebConfig,
 };
 
 /// Top-level TOML configuration for the agent and CLI.
@@ -27,6 +28,7 @@ pub struct SentinelConfig {
     pub storage: StorageConfig,
     pub ssh: SshConfig,
     pub file_integrity: FileIntegrityConfig,
+    pub log_integrity: LogIntegrityConfig,
     pub web: WebConfig,
     pub process: ProcessConfig,
     pub gpu: GpuConfig,
@@ -107,6 +109,23 @@ impl SentinelConfig {
         if self.file_integrity.webshell_min_score == 0 {
             return Err(SentinelError::Config(
                 "file_integrity.webshell_min_score must be greater than 0".to_string(),
+            ));
+        }
+        if self.log_integrity.truncate_drop_percent == 0
+            || self.log_integrity.truncate_drop_percent > 100
+        {
+            return Err(SentinelError::Config(
+                "log_integrity.truncate_drop_percent must be between 1 and 100".to_string(),
+            ));
+        }
+        if self.log_integrity.truncate_min_drop_bytes == 0 {
+            return Err(SentinelError::Config(
+                "log_integrity.truncate_min_drop_bytes must be greater than 0".to_string(),
+            ));
+        }
+        if self.log_integrity.rotation_grace_seconds == 0 {
+            return Err(SentinelError::Config(
+                "log_integrity.rotation_grace_seconds must be greater than 0".to_string(),
             ));
         }
         if self.web.error_burst_threshold == 0 {

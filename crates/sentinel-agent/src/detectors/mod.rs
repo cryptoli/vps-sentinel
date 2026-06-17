@@ -14,6 +14,7 @@ pub mod process_rules;
 pub mod risk;
 pub mod rootkit_rules;
 pub mod ssh_rules;
+pub mod tamper_rules;
 pub mod user_rules;
 pub mod web_rules;
 
@@ -55,6 +56,7 @@ pub fn default_detectors() -> Vec<Box<dyn Detector>> {
         Box::new(config_rules::ConfigRiskDetector),
         Box::new(docker_rules::DockerDetector),
         Box::new(rootkit_rules::RootkitDetector),
+        Box::new(tamper_rules::TamperDetector),
     ]
 }
 

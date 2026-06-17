@@ -23,6 +23,13 @@ impl Detector for FileDetector {
                 "An SSH authorized_keys file changed relative to the baseline.",
             ),
             RuleMetadata::new(
+                "SSH-006",
+                "authorized_keys unsafe file state",
+                Category::Ssh,
+                Severity::High,
+                "An SSH authorized_keys file has unsafe permissions or points to a risky target.",
+            ),
+            RuleMetadata::new(
                 "FILE-001",
                 "Critical file modified",
                 Category::FileIntegrity,
@@ -65,7 +72,11 @@ impl Detector for FileDetector {
                     }
                 }
                 "file_snapshot" => {
-                    if event.field("content_markers").is_some() {
+                    if is_authorized_keys_path(&path) {
+                        if let Some(finding) = authorized_keys_unsafe_state(event, ctx) {
+                            findings.push(finding);
+                        }
+                    } else if event.field("content_markers").is_some() {
                         let assessment = webshell_content_assessment(event);
                         if assessment.is_suspicious(ctx.config.file_integrity.webshell_min_score) {
                             findings.push(webshell_content(event, ctx, assessment));
@@ -103,6 +114,58 @@ fn authorized_keys_changed(event: &RawEvent, ctx: &DetectContext) -> Finding {
         "Remove unknown keys and rotate credentials if unauthorized access is suspected."
             .to_string(),
     ])
+}
+
+fn authorized_keys_unsafe_state(event: &RawEvent, ctx: &DetectContext) -> Option<Finding> {
+    let mode = string_field(event, "mode_octal");
+    let symlink_target = string_field(event, "symlink_target");
+    let mut reasons = Vec::new();
+    let mut features = Vec::new();
+
+    if authorized_keys_mode_is_writable_by_group_or_other(&mode) {
+        reasons.push("authorized_keys is writable by group or other users".to_string());
+        features.push("unsafe_authorized_keys_permissions".to_string());
+    }
+    if authorized_keys_symlink_target_is_risky(&symlink_target) {
+        reasons.push("authorized_keys symlink points to a risky target".to_string());
+        features.push("risky_authorized_keys_symlink".to_string());
+    }
+    if reasons.is_empty() {
+        return None;
+    }
+
+    let path = string_field(event, "path");
+    Some(
+        Finding::new(
+            &ctx.host_id,
+            "SSH authorized_keys unsafe file state",
+            "An SSH authorized_keys file has unsafe permissions or points to a risky target.",
+            Severity::High,
+            Category::Ssh,
+            "SSH-006",
+            &path,
+        )
+        .with_evidence(vec![
+            evidence("path", path),
+            evidence("file_type", string_field(event, "file_type")),
+            evidence("mode_octal", mode),
+            evidence("symlink_target", symlink_target),
+            evidence("risk_reasons", reasons.join("; ")),
+            evidence("risk_features", features.join(", ")),
+        ])
+        .with_impact(vec![
+            "Unsafe SSH key file state can let another local user plant or replace SSH keys."
+                .to_string(),
+        ])
+        .with_recommendations(vec![
+            "Set authorized_keys ownership and permissions back to a strict state such as 0600."
+                .to_string(),
+            "Avoid authorized_keys symlinks to temporary, world-writable, or null-device paths."
+                .to_string(),
+            "Audit recent SSH logins and remove unknown keys if the state was not intentional."
+                .to_string(),
+        ]),
+    )
 }
 
 fn critical_file_changed(
@@ -356,6 +419,30 @@ fn is_authorized_keys_path(path: &str) -> bool {
     normalized.ends_with("/.ssh/authorized_keys") || normalized.ends_with("/.ssh/authorized_keys2")
 }
 
+fn authorized_keys_mode_is_writable_by_group_or_other(mode: &str) -> bool {
+    let Some(mode) = parse_octal_mode(mode) else {
+        return false;
+    };
+    mode & 0o022 != 0
+}
+
+fn parse_octal_mode(mode: &str) -> Option<u32> {
+    let normalized = mode.trim().trim_start_matches("0o");
+    u32::from_str_radix(normalized, 8).ok()
+}
+
+fn authorized_keys_symlink_target_is_risky(target: &str) -> bool {
+    let normalized = target.trim().replace('\\', "/");
+    if normalized.is_empty() {
+        return false;
+    }
+    normalized == "/dev/null"
+        || normalized.starts_with("/tmp/")
+        || normalized.starts_with("/var/tmp/")
+        || normalized.starts_with("/dev/shm/")
+        || normalized.starts_with("/run/")
+}
+
 fn is_web_script_path(path: &str) -> bool {
     [".php", ".phtml", ".jsp", ".asp", ".aspx"]
         .iter()
@@ -364,7 +451,10 @@ fn is_web_script_path(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_authorized_keys_path, webshell_content_assessment, FileDetector};
+    use super::{
+        authorized_keys_unsafe_state, is_authorized_keys_path, webshell_content_assessment,
+        FileDetector,
+    };
     use crate::detectors::{DetectContext, Detector};
     use sentinel_core::{RawEvent, SentinelConfig};
     use std::sync::Arc;
@@ -388,6 +478,49 @@ mod tests {
 
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, "SSH-005");
+    }
+
+    #[test]
+    fn detects_unsafe_authorized_keys_permissions() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = RawEvent::new("file_integrity", "file_snapshot")
+            .with_field("path", "/root/.ssh/authorized_keys")
+            .with_field("file_type", "file")
+            .with_field("mode_octal", "0666");
+
+        let finding = authorized_keys_unsafe_state(&event, &ctx).expect("unsafe key finding");
+
+        assert_eq!(finding.rule_id, "SSH-006");
+        assert!(finding.evidence.iter().any(|item| {
+            item.key == "risk_features" && item.value.contains("unsafe_authorized_keys_permissions")
+        }));
+    }
+
+    #[test]
+    fn ignores_strict_authorized_keys_permissions() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = RawEvent::new("file_integrity", "file_snapshot")
+            .with_field("path", "/root/.ssh/authorized_keys")
+            .with_field("file_type", "file")
+            .with_field("mode_octal", "0600");
+
+        assert!(authorized_keys_unsafe_state(&event, &ctx).is_none());
+    }
+
+    #[test]
+    fn detects_authorized_keys_symlink_to_temp_target() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = RawEvent::new("file_integrity", "file_snapshot")
+            .with_field("path", "/home/app/.ssh/authorized_keys")
+            .with_field("file_type", "symlink")
+            .with_field("mode_octal", "0600")
+            .with_field("symlink_target", "/dev/shm/.keys");
+
+        let finding = authorized_keys_unsafe_state(&event, &ctx).expect("unsafe key finding");
+
+        assert!(finding.evidence.iter().any(|item| {
+            item.key == "risk_features" && item.value.contains("risky_authorized_keys_symlink")
+        }));
     }
 
     #[test]

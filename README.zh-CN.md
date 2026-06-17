@@ -26,10 +26,11 @@
 
 | 模块 | 支持能力 |
 | --- | --- |
-| SSH 监控 | 解析 Debian/Ubuntu 与 RHEL 系认证日志；检测 root 登录、密码登录、普通成功登录、爆破模式和 `authorized_keys`/`authorized_keys2` 基线漂移。 |
+| SSH 监控 | 解析 Debian/Ubuntu 与 RHEL 系认证日志；检测 root 登录、密码登录、普通成功登录、爆破模式、`authorized_keys`/`authorized_keys2` 基线漂移、SSH key 文件权限异常和高风险软链。 |
 | 基线漂移 | 为用户、SSH key、关键文件、持久化项和监听端口创建本地基线，并在后续扫描中对比变化；近期软件包活动会作为上下文附加到漂移告警中。 |
 | 用户与权限 | 检测新增用户、UID 0 用户、权限相关用户变化。 |
 | 文件完整性 | 监控关键路径和 Web 根目录；对限定大小内文件做哈希和内容扫描；检测关键文件变化、Web 目录可执行脚本、达到风险评分阈值的 WebShell 风格特征组合。 |
+| 日志完整性 | 监控敏感认证/登录日志文件，识别高风险软链和没有近期轮转上下文的大幅截断。 |
 | 持久化检查 | 监控 cron、systemd、shell profile、`ld.so.preload` 等启动相关位置，并对可疑启动命令进行风险评分。 |
 | 进程和 GPU 检查 | 读取 procfs argv、父进程、可执行路径、工作目录、UID 上下文、socket FD 数、CPU 生命周期指标、procfs 启动时间漂移、cgroup/container 上下文、systemd unit/ExecStart、可执行文件 owner/size/hash、软件包归属、出站连接画像，并在 `nvidia-smi` 可用时读取 NVIDIA GPU 计算进程事实，识别临时目录执行、达到风险评分阈值的 deleted executable、网络命令执行桥接、可疑行为聚类、已知挖矿/扫描器身份和可疑 GPU 计算负载。 |
 | 网络检查 | 读取监听 socket 与所属进程；附加进程上下文和防火墙状态；检测高风险公网服务、可疑监听进程、监听 owner 基线漂移和新增公网监听。22/80/443 等预期端口会降低噪音，但不会被无脑信任。 |
@@ -51,6 +52,10 @@
 deleted executable 和启动项告警也采用评分模型。`PROC-002` 需要同时具备临时目录执行、memfd 或匿名文件、隐藏的非标准可执行文件、网络执行桥、已知挖矿/扫描器身份等风险特征；系统升级后遗留的 `systemd`、`dockerd`、`python3` 等标准路径 deleted 进程，如果没有其它风险特征，会被视为维护上下文。`PERSIST-002` 会对启动命令中的下载后管道执行、临时路径自启动、base64 解码后 shell 执行、网络到 shell 执行桥等组合进行评分；单独的 `bash -c` 服务包装不会触发默认阈值。
 
 文件和持久化基线漂移不会因为存在软件包活动就被自动压制。agent 会采集近期 apt/dpkg/yum/dnf/pacman/apk 日志活动，并把该上下文附加到 `FILE-001`、`PERSIST-001` 和 `PERSIST-003` 的证据与建议中。这样既不会隐藏真实漂移，也方便先对照软件包日志确认，再决定是否刷新基线。
+
+SSH key 文件状态检测独立于基线漂移。`authorized_keys` 内容变化仍按持久化漂移告警；当前状态只有在存在明确文件系统证据时才单独告警，例如 group/other 可写权限，或软链指向 `/dev/null`、临时目录、共享内存目录、运行时目录等高风险位置。这能识别常见本地持久化弱点，同时不会把所有软链都当成恶意。
+
+敏感认证/登录日志完整性是有状态检测。vps-sentinel 会记录上一次扫描时的文件类型和大小；如果发现 `/var/log/auth.log -> /dev/null` 这类高风险重定向会立即告警；如果日志文件大幅变小，只有同时超过配置的大小和比例阈值，并且没有 `auth.log.1` 这类近期轮转文件时才告警；如果某个配置中的敏感日志上一轮存在、这一轮消失，也会告警。因此正常 logrotate 不会刷屏，而入侵后的清理或删除日志行为可以被看到。
 
 WebShell 内容检测也采用评分模型，不再因为单个 marker 直接告警。合法管理脚本中单独出现 `eval` 默认达不到阈值；Web 脚本中的命令执行、动态执行叠加编码 payload、命令执行叠加编码、Web 脚本中出现大块编码内容等组合才会触发 `FILE-002`。
 
@@ -181,8 +186,9 @@ CI 中使用的 Docker 容器只用于构建和兼容性测试，不代表推荐
 | 功能 | 实现方式 | 实际效果 |
 | --- | --- | --- |
 | SSH 登录监控 | 读取配置的 auth log；日志文件不存在时回退读取 `ssh.service`/`sshd.service` 的 `journalctl`。 | 识别 root 登录、密码登录、普通成功登录，以及按来源 IP 聚合的爆破行为。 |
-| SSH key 完整性 | 独立哈希监控 `authorized_keys` 和 `authorized_keys2`，不依赖总的文件完整性开关。 | 即使关闭通用文件完整性，也能发现 SSH 持久化 key 变化。 |
+| SSH key 完整性 | 独立哈希监控 `authorized_keys` 和 `authorized_keys2`，不依赖总的文件完整性开关；同时记录文件类型、可用时的 Unix 权限和软链目标。 | 即使关闭通用文件完整性，也能发现 SSH 持久化 key 变化；无需历史基线也能识别可写权限或高风险软链状态。 |
 | 文件和持久化漂移 | 使用 SQLite 保存本地基线，后续扫描做快照 diff；同一路径的文件/持久化 finding 会合并，并附带软件包活动上下文。 | 能发现真实漂移，同时减少合法软件更新时的判断成本；基线只会在用户明确执行命令时刷新。 |
+| 日志篡改信号 | 采集敏感日志文件快照并与本地规则状态对比；高风险软链立即告警，日志截断需要满足配置的比例和字节阈值且没有近期轮转文件；曾经出现过的配置日志消失也会报告。 | 识别把认证日志重定向到 `/dev/null`、清空日志或删除日志等反取证行为，同时避免正常 logrotate 误报。 |
 | WebShell 内容 | 对限定大小内的文件内容提取风险 marker，并结合 Web 路径、脚本类型和 marker 组合评分。 | 单个弱 marker 默认不告警，但能识别经典 Web 命令执行和编码 payload 组合。 |
 | Web 探测 | `WEB-001` 按来源 IP、探测家族和响应画像聚合。404 PHPUnit 目录爆破等未命中探测默认为 Low；敏感路径成功响应或受保护的 exploit 路径会提升等级。 | 扫描器命中大量路径变体时只生成一条可读 finding，而不是几十条 Telegram 消息。 |
 | 进程和 GPU 风险 | 读取 procfs argv、父进程、可执行路径、cwd、UID/EUID、deleted 状态、socket FD 数、生命周期 CPU 指标、启动时间漂移、cgroup/container 上下文、systemd unit/ExecStart、可执行文件元数据/hash、软件包归属、出站连接画像和 NVIDIA GPU 计算进程状态，并按规则评分、白名单、规则状态和同 PID 信号聚合处理。`PROC-005` 必须先出现伪装、隐藏、可疑目录或 Web 路径等主风险信号，socket、出站连接、重启漂移和 root 上下文只能辅助加权；`PROC-006` 需要 GPU 计算活动叠加挖矿或高风险运行证据。 | 识别临时路径执行、可疑 deleted executable、网络 shell 桥接、已知挖矿/扫描器身份、改名行为聚类和可疑 GPU 挖矿负载，同时避免 PID、CPU、GPU、连接计数等波动字段或正常高连接业务服务导致重复/误报消息。 |
@@ -467,6 +473,19 @@ webshell_min_score = 70
 
 `webshell_min_score` 控制何时产生 `FILE-002`。检测器会对 marker 组合和 Web 脚本上下文评分，而不是单独命中一个 marker 就告警，从而减少合法管理脚本误报，同时保留对经典 Web 命令执行和编码命令执行组合的识别能力。
 
+敏感日志完整性：
+
+```toml
+[log_integrity]
+enabled = true
+paths = ["/var/log/auth.log", "/var/log/secure", "/var/log/wtmp", "/var/log/btmp", "/var/log/lastlog"]
+truncate_drop_percent = 90
+truncate_min_drop_bytes = 262144
+rotation_grace_seconds = 900
+```
+
+`TAMPER-001` 检测敏感日志路径是否被软链到 `/dev/null`、`/tmp`、`/var/tmp`、`/dev/shm`、`/run` 等高风险目标。`TAMPER-002` 会把当前大小与本地规则状态中的上一次大小对比，并要求同时超过 `truncate_drop_percent` 和 `truncate_min_drop_bytes`。如果 `rotation_grace_seconds` 时间窗口内存在近期更新的轮转文件，会视为正常轮转上下文，不产生告警。`TAMPER-003` 只会在配置中的敏感日志曾经被扫描到、随后消失时报告，因此某个发行版原本就没有 `/var/log/auth.log` 不会仅因路径不存在而误报。
+
 软件包活动上下文：
 
 ```toml
@@ -641,7 +660,11 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 - `SSH-003`：SSH 爆破模式。
 - `SSH-004`：SSH 成功登录。
 - `SSH-005`：`authorized_keys` 或 `authorized_keys2` 相对基线发生变化。
+- `SSH-006`：`authorized_keys` 或 `authorized_keys2` 权限不安全，或软链指向高风险目标。
 - `USER-002`：UID 0 用户新增或变更。
+- `TAMPER-001`：敏感认证/登录日志路径被重定向到高风险目标。
+- `TAMPER-002`：敏感认证/登录日志在没有轮转上下文的情况下被大幅截断。
+- `TAMPER-003`：曾经出现过的敏感认证/登录日志文件消失。
 - `PERSIST-002`：可疑启动命令。
 - `PROC-002`：达到风险评分阈值的 deleted executable 进程。
 - `PROC-003`：网络命令执行桥接。

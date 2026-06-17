@@ -8,6 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::{DirEntry, WalkDir};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 const SKIPPED_DIRS: &[&str] = &["node_modules", "vendor", ".git", "cache", ".cache"];
 const MAX_CONTENT_SCAN_BYTES: u64 = 256 * 1024;
 const SSH_AUTHORIZED_KEY_PATHS: &[&str] = &[
@@ -69,16 +72,16 @@ fn expand_path(path: &Path) -> Vec<PathBuf> {
 }
 
 fn collect_path(ctx: &CollectContext, path: &Path, events: &mut BTreeMap<String, RawEvent>) {
-    if !path.exists() {
+    let Some(metadata) = fs::symlink_metadata(path).ok() else {
         return;
-    }
-    if path.is_file() {
+    };
+    if metadata.file_type().is_symlink() || metadata.is_file() {
         if let Some(event) = file_event(ctx, path) {
             insert_file_event(events, event);
         }
         return;
     }
-    if !path.is_dir() {
+    if !metadata.is_dir() {
         return;
     }
 
@@ -120,7 +123,8 @@ fn should_skip_dir(entry: &DirEntry) -> bool {
 }
 
 fn file_event(ctx: &CollectContext, path: &Path) -> Option<RawEvent> {
-    let metadata = fs::metadata(path).ok()?;
+    let symlink_metadata = fs::symlink_metadata(path).ok()?;
+    let metadata = fs::metadata(path).unwrap_or_else(|_| symlink_metadata.clone());
     let max_hash_bytes = ctx.config.file_integrity.max_file_size_mb * 1024 * 1024;
     let hash = hash_file_limited(path, max_hash_bytes)
         .ok()
@@ -146,17 +150,48 @@ fn file_event(ctx: &CollectContext, path: &Path) -> Option<RawEvent> {
         .with_field("extension", extension)
         .with_field("executable", is_executable(&metadata).to_string())
         .with_field("hidden", is_hidden(path).to_string())
-        .with_field("is_web_path", is_web_path.to_string());
+        .with_field("is_web_path", is_web_path.to_string())
+        .with_field("file_type", file_type_label(&symlink_metadata, &metadata));
 
     if let Ok(modified) = metadata.modified() {
         if let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH) {
             event = event.with_field("modified_unix", duration.as_secs().to_string());
         }
     }
+    if let Some(mode) = unix_mode_octal(&metadata) {
+        event = event.with_field("mode_octal", mode);
+    }
+    if symlink_metadata.file_type().is_symlink() {
+        if let Ok(target) = fs::read_link(path) {
+            event = event.with_field("symlink_target", path_string(&target));
+        }
+    }
     if !markers.is_empty() {
         event = event.with_field("content_markers", markers.join(","));
     }
     Some(event)
+}
+
+fn file_type_label(symlink_metadata: &fs::Metadata, metadata: &fs::Metadata) -> &'static str {
+    if symlink_metadata.file_type().is_symlink() {
+        "symlink"
+    } else if metadata.is_file() {
+        "file"
+    } else if metadata.is_dir() {
+        "directory"
+    } else {
+        "other"
+    }
+}
+
+#[cfg(unix)]
+fn unix_mode_octal(metadata: &fs::Metadata) -> Option<String> {
+    Some(format!("{:04o}", metadata.permissions().mode() & 0o7777))
+}
+
+#[cfg(not(unix))]
+fn unix_mode_octal(_metadata: &fs::Metadata) -> Option<String> {
+    None
 }
 
 fn is_under_any(path: &Path, roots: &[PathBuf], ctx: &CollectContext) -> bool {

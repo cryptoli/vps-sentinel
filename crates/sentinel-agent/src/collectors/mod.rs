@@ -8,6 +8,7 @@ pub mod docker;
 pub mod file_integrity;
 pub mod firewall;
 pub mod gpu;
+pub mod log_integrity;
 pub mod network;
 pub mod package_manager;
 pub mod persistence;
@@ -56,6 +57,7 @@ pub fn default_collectors() -> Vec<Box<dyn Collector>> {
         Box::new(file_integrity::FileIntegrityCollector),
         Box::new(users::UserCollector),
         Box::new(package_manager::PackageManagerCollector),
+        Box::new(log_integrity::LogIntegrityCollector),
         Box::new(persistence::PersistenceCollector),
         Box::new(process::ProcessCollector),
         Box::new(gpu::GpuCollector),

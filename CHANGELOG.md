@@ -10,6 +10,8 @@
 - Added active-response firewall state reconciliation to remove stale local block records after firewall reloads or manual rule changes.
 - Added database size limiting and retention cleanup to reduce disk-full risk on small VPS hosts.
 - Added NVIDIA GPU compute-process collection and `PROC-006` risk scoring for suspicious GPU mining workloads when `nvidia-smi` is visible.
+- Added SSH key-file unsafe state detection for group/other-writable `authorized_keys` and risky key-file symlinks.
+- Added sensitive auth/login log tamper detection for risky log symlinks, abrupt truncation without recent rotation context, and previously seen logs that disappear.
 - Reduced process false positives for standard container/runtime services by downgrading `/run` working-directory context and treating broad `/opt` web-root matches more conservatively.
 - Improved web alert aggregation, stricter active-response block thresholds, and safer process/network risk scoring context.
 - Switched notification language default to Simplified Chinese and completed Chinese/English rendering for built-in rules and evidence fields.

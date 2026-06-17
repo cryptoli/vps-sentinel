@@ -124,6 +124,16 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
                 "发现未知密钥时先保留证据，再移除并轮换凭据。",
             ],
         },
+        "SSH-006" => RuleMessage {
+            title: "SSH authorized_keys 状态不安全",
+            description: "authorized_keys 文件权限过宽，或被软链到临时目录、空设备等高风险目标。",
+            impact: &["本地其他用户或入侵者可能写入、替换或隐藏 SSH 公钥，从而获得持久远程访问能力。"],
+            recommendations: &[
+                "将 authorized_keys 权限恢复为严格状态，例如 0600，并确认属主正确。",
+                "避免 authorized_keys 指向临时目录、可写目录或 /dev/null。",
+                "核对最近 SSH 登录、sudo 操作和未知公钥指纹。",
+            ],
+        },
         "USER-001" => RuleMessage {
             title: "检测到新增本地用户",
             description: "本地用户账号相对基线新增。",
@@ -331,6 +341,33 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
             description: "发现 Docker socket；当前版本将其作为攻击面上下文提示。",
             impact: &[],
             recommendations: &["检查容器是否使用 privileged、host network 或挂载 docker.sock。"],
+        },
+        "TAMPER-001" => RuleMessage {
+            title: "敏感日志被重定向到高风险目标",
+            description: "认证或登录相关日志文件被软链到 /dev/null、临时目录或运行时目录。",
+            impact: &["攻击者可能正在隐藏登录、爆破或提权证据，普通日志查看命令可能看不到真实记录。"],
+            recommendations: &[
+                "将日志路径恢复为常规文件，并确认属主与权限符合系统默认策略。",
+                "从可信会话检查近期 SSH 登录、sudo、持久化项和异常进程。",
+            ],
+        },
+        "TAMPER-002" => RuleMessage {
+            title: "敏感日志出现异常截断",
+            description: "敏感日志文件相比上一轮扫描突然大幅变小，且未观察到近期正常轮转上下文。",
+            impact: &["异常截断可能表示入侵后的清痕或反取证行为。"],
+            recommendations: &[
+                "检查同一时间窗口的 rotated logs、journal、SSH 登录和 shell 历史。",
+                "如果怀疑入侵，优先保留磁盘和日志目录证据，再进行清理。",
+            ],
+        },
+        "TAMPER-003" => RuleMessage {
+            title: "敏感日志文件消失",
+            description: "上一轮扫描仍存在的敏感认证或登录日志文件，现在已经缺失。",
+            impact: &["缺失的认证日志可能隐藏登录、爆破或提权证据。"],
+            recommendations: &[
+                "先确认 logrotate 或日志配置是否有意移动了该文件。",
+                "如果没有维护行为可以解释，请检查 journal、轮转日志、SSH 会话和持久化位置。",
+            ],
         },
         "ROOTKIT-003" => RuleMessage {
             title: "Rootkit 信号：ld.so.preload 存在活动条目",
