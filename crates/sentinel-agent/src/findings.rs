@@ -20,7 +20,7 @@ pub(crate) fn coalesce_related_findings(findings: Vec<Finding>) -> Vec<Finding> 
                 .push(finding);
         } else if is_process_signal(&finding) {
             process_groups
-                .entry(resource_group_key(&finding))
+                .entry(process_group_key(&finding))
                 .or_default()
                 .push(finding);
         } else {
@@ -42,6 +42,16 @@ fn is_file_persistence_drift(finding: &Finding) -> bool {
 
 fn resource_group_key(finding: &Finding) -> String {
     format!("{}\n{}", finding.host_id, finding.subject)
+}
+
+fn process_group_key(finding: &Finding) -> String {
+    let pid = finding
+        .evidence
+        .iter()
+        .find(|item| item.key == "pid" && !item.value.trim().is_empty())
+        .map(|item| item.value.as_str())
+        .unwrap_or(&finding.subject);
+    format!("{}\n{}", finding.host_id, pid)
 }
 
 fn is_process_signal(finding: &Finding) -> bool {
@@ -306,8 +316,8 @@ mod tests {
     #[test]
     fn coalesces_process_findings_for_same_pid() {
         let findings = coalesce_related_findings(vec![
-            process_finding("PROC-001", Severity::High),
-            process_finding("PROC-003", Severity::Critical).with_evidence(vec![
+            process_finding("PROC-001", Severity::High, "/tmp/.x/sh"),
+            process_finding("PROC-003", Severity::Critical, "42").with_evidence(vec![
                 Evidence::new("pid", "42"),
                 Evidence::new("ppid", "1"),
                 Evidence::new("name", "sh"),
@@ -328,6 +338,19 @@ mod tests {
             .evidence
             .iter()
             .any(|item| item.key == "risk_score" && item.value == "120"));
+    }
+
+    #[test]
+    fn coalesces_process_findings_by_pid_evidence_when_subjects_differ() {
+        let findings = coalesce_related_findings(vec![
+            process_finding("PROC-001", Severity::High, "/tmp/.x/sh"),
+            process_finding("PROC-005", Severity::High, "42"),
+        ]);
+
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].evidence.iter().any(|item| item.key == "signals"
+            && item.value.contains("temporary path")
+            && item.value.contains("behavior cluster")));
     }
 
     #[test]
@@ -357,7 +380,7 @@ mod tests {
         ])
     }
 
-    fn process_finding(rule_id: &str, severity: Severity) -> Finding {
+    fn process_finding(rule_id: &str, severity: Severity, subject: &str) -> Finding {
         Finding::new(
             "host",
             "process",
@@ -365,7 +388,7 @@ mod tests {
             severity,
             Category::Process,
             rule_id,
-            "42",
+            subject,
         )
         .with_evidence(vec![
             Evidence::new("pid", "42"),

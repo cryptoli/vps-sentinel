@@ -99,7 +99,7 @@ impl Detector for ProcessDetector {
 }
 
 fn temp_process(event: &RawEvent, ctx: &DetectContext) -> Finding {
-    let subject = string_field(event, "pid");
+    let subject = string_field(event, "exe_path");
     Finding::new(
         &ctx.host_id,
         "Process executable in temporary path",
@@ -109,7 +109,7 @@ fn temp_process(event: &RawEvent, ctx: &DetectContext) -> Finding {
         "PROC-001",
         subject,
     )
-    .with_evidence(process_evidence(event))
+    .with_evidence_deduped_by(process_evidence(event), &["exe_path"])
     .with_recommendations(vec![
         "Inspect the executable hash, parent process, and file owner.".to_string(),
         "Preserve evidence before stopping or removing the process.".to_string(),
@@ -931,6 +931,21 @@ mod tests {
                 && assessment.has_feature("kernel_thread_masquerade")
                 && assessment.has_feature("web_path_executable")
         }));
+    }
+
+    #[test]
+    fn temporary_process_dedup_uses_executable_path_not_pid() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let first = process_event("/tmp/.x", ".x", "/tmp/.x");
+        let second = process_event("/tmp/.x", ".x", "/tmp/.x").with_field("pid", "43");
+
+        let left = ProcessDetector.detect(&[first], &ctx);
+        let right = ProcessDetector.detect(&[second], &ctx);
+
+        assert_eq!(left.len(), 1);
+        assert_eq!(right.len(), 1);
+        assert_eq!(left[0].subject, "/tmp/.x");
+        assert_eq!(left[0].dedup_key, right[0].dedup_key);
     }
 
     #[test]
