@@ -80,6 +80,12 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
     let text = match language {
         NotificationLanguage::En => match key {
             "argv_json" => "argv JSON",
+            "active_response_backend" => "active response backend",
+            "active_response_detail" => "active response detail",
+            "active_response_expires_at" => "active response expires at",
+            "active_response_ip" => "active response IP",
+            "active_response_reason" => "active response reason",
+            "active_response_status" => "active response status",
             "change" => "change",
             "cmdline" => "command line",
             "command" => "command",
@@ -172,6 +178,12 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
         },
         NotificationLanguage::ZhCn => match key {
             "argv_json" => "参数 JSON",
+            "active_response_backend" => "主动响应后端",
+            "active_response_detail" => "主动响应详情",
+            "active_response_expires_at" => "封禁到期时间",
+            "active_response_ip" => "封禁 IP",
+            "active_response_reason" => "封禁原因",
+            "active_response_status" => "主动响应状态",
             "change" => "变化类型",
             "cmdline" => "命令行",
             "command" => "命令",
@@ -289,6 +301,24 @@ fn direct_value_label(
     language: NotificationLanguage,
 ) -> Option<&'static str> {
     match (key, value, language) {
+        ("active_response_status", "already_blocked", NotificationLanguage::En) => {
+            Some("already blocked")
+        }
+        ("active_response_status", "already_blocked", NotificationLanguage::ZhCn) => {
+            Some("此前已封禁")
+        }
+        ("active_response_status", "blocked", NotificationLanguage::En) => {
+            Some("temporary block applied")
+        }
+        ("active_response_status", "blocked", NotificationLanguage::ZhCn) => Some("已临时封禁"),
+        ("active_response_status", "failed", NotificationLanguage::En) => Some("block failed"),
+        ("active_response_status", "failed", NotificationLanguage::ZhCn) => Some("封禁失败"),
+        ("active_response_status", "skipped_limit", NotificationLanguage::En) => {
+            Some("skipped because block limit was reached")
+        }
+        ("active_response_status", "skipped_limit", NotificationLanguage::ZhCn) => {
+            Some("达到单轮封禁上限，已跳过")
+        }
         ("probe_family", value, language) => probe_family_value_label(value, language),
         ("process_start_drift", "changed", NotificationLanguage::En) => {
             Some("changed since previous scan")

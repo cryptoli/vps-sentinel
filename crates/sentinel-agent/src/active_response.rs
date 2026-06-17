@@ -21,6 +21,37 @@ pub struct ActiveResponseReport {
     pub expired_blocks: usize,
     pub failed_expirations: usize,
     pub failed_state_checks: usize,
+    pub block_actions: Vec<BlockAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockAction {
+    pub finding_id: String,
+    pub ip: IpAddr,
+    pub status: BlockActionStatus,
+    pub reason: String,
+    pub backend: Option<String>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockActionStatus {
+    Blocked,
+    AlreadyBlocked,
+    Failed,
+    SkippedLimit,
+}
+
+impl BlockActionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Blocked => "blocked",
+            Self::AlreadyBlocked => "already_blocked",
+            Self::Failed => "failed",
+            Self::SkippedLimit => "skipped_limit",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,8 +123,22 @@ pub fn apply_active_response(
         return Ok(ActiveResponseReport::default());
     }
     let Some(blocker) = SystemIpBlocker::from_config(config) else {
+        let candidates = block_candidates(findings, config);
+        let failed_blocks = candidates.len();
         return Ok(ActiveResponseReport {
-            failed_blocks: block_candidates(findings, config).len(),
+            failed_blocks,
+            block_actions: candidates
+                .into_iter()
+                .map(|candidate| BlockAction {
+                    finding_id: candidate.finding_id,
+                    ip: candidate.ip,
+                    status: BlockActionStatus::Failed,
+                    reason: candidate.reason,
+                    backend: None,
+                    expires_at: None,
+                    detail: Some("firewall backend unavailable".to_string()),
+                })
+                .collect(),
             ..ActiveResponseReport::default()
         });
     };
@@ -125,17 +170,44 @@ fn apply_with_blocker(
     report.planned_blocks = candidates.len();
     let mut attempted_new_blocks = 0usize;
     for candidate in candidates {
-        if state.blocks.contains_key(&candidate.ip.to_string()) {
+        if let Some(existing) = state.blocks.get(&candidate.ip.to_string()) {
             report.skipped_existing_blocks += 1;
+            report.block_actions.push(BlockAction {
+                finding_id: candidate.finding_id,
+                ip: candidate.ip,
+                status: BlockActionStatus::AlreadyBlocked,
+                reason: candidate.reason,
+                backend: Some(existing.backend.clone()),
+                expires_at: Some(existing.expires_at),
+                detail: None,
+            });
             continue;
         }
         if attempted_new_blocks >= config.active_response.max_blocks_per_scan {
-            break;
+            report.block_actions.push(BlockAction {
+                finding_id: candidate.finding_id,
+                ip: candidate.ip,
+                status: BlockActionStatus::SkippedLimit,
+                reason: candidate.reason,
+                backend: None,
+                expires_at: None,
+                detail: Some("max blocks per scan reached".to_string()),
+            });
+            continue;
         }
         attempted_new_blocks += 1;
         match blocker.block_ip(candidate.ip, ttl) {
             Ok(()) => {
                 report.applied_blocks += 1;
+                report.block_actions.push(BlockAction {
+                    finding_id: candidate.finding_id.clone(),
+                    ip: candidate.ip,
+                    status: BlockActionStatus::Blocked,
+                    reason: candidate.reason.clone(),
+                    backend: Some(blocker.backend_name().to_string()),
+                    expires_at: Some(expires_at),
+                    detail: None,
+                });
                 state.blocks.insert(
                     candidate.ip.to_string(),
                     BlockRecord {
@@ -152,6 +224,15 @@ fn apply_with_blocker(
             Err(err) => {
                 report.failed_blocks += 1;
                 warn!(ip = %candidate.ip, error = %err, "active response block failed");
+                report.block_actions.push(BlockAction {
+                    finding_id: candidate.finding_id,
+                    ip: candidate.ip,
+                    status: BlockActionStatus::Failed,
+                    reason: candidate.reason,
+                    backend: Some(blocker.backend_name().to_string()),
+                    expires_at: None,
+                    detail: Some(err.to_string()),
+                });
             }
         }
     }
@@ -906,8 +987,8 @@ fn duration_seconds(seconds: u64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        block_candidates, is_public_remote_ip, list_active_blocks, BlockRecord, BlockState,
-        STATE_RULE_ID,
+        apply_with_blocker, block_candidates, is_public_remote_ip, list_active_blocks,
+        BlockActionStatus, BlockRecord, BlockState, IpBlocker, SentinelResult, STATE_RULE_ID,
     };
     use crate::storage::SqliteStore;
     use chrono::{Duration as ChronoDuration, Utc};
@@ -951,6 +1032,28 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].ip.to_string(), "1.1.1.1");
+    }
+
+    #[test]
+    fn block_report_tracks_per_finding_actions() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.ssh_failed_login_block_threshold = 15;
+        let mut finding = ssh_finding("8.8.8.8", 16);
+        finding.id = "finding-1".to_string();
+        let blocker = MemoryBlocker;
+
+        let report = apply_with_blocker(&[finding], &config, &store, &blocker)?;
+
+        assert_eq!(report.applied_blocks, 1);
+        assert_eq!(report.block_actions.len(), 1);
+        assert_eq!(report.block_actions[0].finding_id, "finding-1");
+        assert_eq!(report.block_actions[0].status, BlockActionStatus::Blocked);
+        assert_eq!(report.block_actions[0].backend.as_deref(), Some("memory"));
+        assert_eq!(report.block_actions[0].ip.to_string(), "8.8.8.8");
+        Ok(())
     }
 
     #[test]
@@ -1050,5 +1153,26 @@ mod tests {
             Evidence::new("source_ip", ip),
             Evidence::new("failure_count", failure_count.to_string()),
         ])
+    }
+
+    #[derive(Default)]
+    struct MemoryBlocker;
+
+    impl IpBlocker for MemoryBlocker {
+        fn backend_name(&self) -> &'static str {
+            "memory"
+        }
+
+        fn block_ip(&self, _ip: std::net::IpAddr, _ttl: std::time::Duration) -> SentinelResult<()> {
+            Ok(())
+        }
+
+        fn unblock_ip(&self, _ip: std::net::IpAddr) -> SentinelResult<bool> {
+            Ok(true)
+        }
+
+        fn is_blocked(&self, _ip: std::net::IpAddr) -> SentinelResult<bool> {
+            Ok(true)
+        }
     }
 }

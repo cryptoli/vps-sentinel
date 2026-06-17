@@ -194,6 +194,38 @@ fn localizes_common_evidence_keys_and_values() {
 }
 
 #[test]
+fn renders_active_response_status_in_chinese_alert() {
+    let finding = Finding::new(
+        "host",
+        "SSH brute force pattern detected",
+        "bruteforce",
+        Severity::High,
+        Category::Ssh,
+        "SSH-003",
+        "47.242.23.111",
+    )
+    .with_evidence(vec![
+        Evidence::new("source_ip", "47.242.23.111"),
+        Evidence::new("failure_count", "16"),
+        Evidence::new("active_response_status", "blocked"),
+        Evidence::new("active_response_ip", "47.242.23.111"),
+        Evidence::new("active_response_backend", "iptables"),
+        Evidence::new("active_response_expires_at", "2026-06-18 02:53:00 +08:00"),
+    ]);
+
+    let body = render_finding_with_language(
+        &finding,
+        NotificationFormat::PlainText,
+        NotificationLanguage::ZhCn,
+    );
+
+    assert!(body.contains("主动响应状态: 已临时封禁"));
+    assert!(body.contains("封禁 IP: 47.242.23.111"));
+    assert!(body.contains("主动响应后端: iptables"));
+    assert!(body.contains("封禁到期时间: 2026-06-18 02:53:00 +08:00"));
+}
+
+#[test]
 fn renders_configured_vps_name_in_subject() {
     let mut config = SentinelConfig::default();
     config.agent.display_name = "prod-web-1".to_string();

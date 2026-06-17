@@ -8,7 +8,8 @@ use crate::storage::SqliteStore;
 use crate::utils::redact::{mask_command_args, mask_ip, mask_ips_in_text};
 use chrono::{Duration, Local, Timelike, Utc};
 use sentinel_core::{
-    Category, Evidence, Finding, MinuteWindow, RawEvent, SentinelConfig, SentinelResult,
+    Category, Evidence, Finding, MinuteWindow, NotificationTimeZone, RawEvent, SentinelConfig,
+    SentinelResult,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -147,6 +148,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
                             "active response completed"
                         );
                     }
+                    annotate_active_response(&mut findings, &report, config.as_ref());
                     active_response_report = report;
                 }
                 Err(err) => {
@@ -342,6 +344,66 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     })
 }
 
+fn annotate_active_response(
+    findings: &mut [Finding],
+    report: &ActiveResponseReport,
+    config: &SentinelConfig,
+) {
+    if report.block_actions.is_empty() {
+        return;
+    }
+
+    let mut actions_by_finding = BTreeMap::new();
+    for action in &report.block_actions {
+        actions_by_finding.insert(action.finding_id.as_str(), action);
+    }
+
+    for finding in findings {
+        let Some(action) = actions_by_finding.get(finding.id.as_str()) else {
+            continue;
+        };
+        finding.evidence.push(Evidence::new(
+            "active_response_status",
+            action.status.as_str(),
+        ));
+        finding
+            .evidence
+            .push(Evidence::new("active_response_ip", action.ip.to_string()));
+        finding
+            .evidence
+            .push(Evidence::new("active_response_reason", &action.reason));
+        if let Some(backend) = &action.backend {
+            finding
+                .evidence
+                .push(Evidence::new("active_response_backend", backend));
+        }
+        if let Some(expires_at) = action.expires_at {
+            finding.evidence.push(Evidence::new(
+                "active_response_expires_at",
+                format_active_response_timestamp(expires_at, config.notifications.time_zone),
+            ));
+        }
+        if let Some(detail) = &action.detail {
+            finding
+                .evidence
+                .push(Evidence::new("active_response_detail", detail));
+        }
+    }
+}
+
+fn format_active_response_timestamp(
+    timestamp: chrono::DateTime<Utc>,
+    time_zone: NotificationTimeZone,
+) -> String {
+    match time_zone {
+        NotificationTimeZone::Local => timestamp
+            .with_timezone(&Local)
+            .format("%Y-%m-%d %H:%M:%S %:z")
+            .to_string(),
+        NotificationTimeZone::Utc => timestamp.format("%Y-%m-%d %H:%M:%S UTC").to_string(),
+    }
+}
+
 fn notification_delivery_limit(
     store: &Option<SqliteStore>,
     config: &SentinelConfig,
@@ -457,6 +519,10 @@ fn suppress_recent_duplicates(
             retained.push(finding);
             continue;
         }
+        if has_new_active_response_block(&finding) {
+            retained.push(finding);
+            continue;
+        }
         let since = Utc::now() - Duration::seconds(duration_seconds(window_seconds));
         if !store.finding_seen_since(&finding.dedup_key, since)? {
             retained.push(finding);
@@ -465,6 +531,13 @@ fn suppress_recent_duplicates(
         }
     }
     Ok((retained, suppressed))
+}
+
+fn has_new_active_response_block(finding: &Finding) -> bool {
+    finding
+        .evidence
+        .iter()
+        .any(|item| item.key == "active_response_status" && item.value == "blocked")
 }
 
 fn duplicate_suppression_window_seconds(finding: &Finding, config: &SentinelConfig) -> u64 {
