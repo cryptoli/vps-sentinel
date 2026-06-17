@@ -18,6 +18,7 @@ sentinel-agent = { path = "../sentinel-agent" }
 sentinel-core = { path = "../sentinel-core" }
 serde_json.workspace = true
 tokio.workspace = true
+toml.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]

@@ -20,3 +20,25 @@ jobs:
         run: cargo test --workspace
       - name: Release build
         run: cargo build --release
+
+  linux-compat:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: debian-bookworm
+            image: rust:1-bookworm
+            setup: apt-get update && apt-get install -y --no-install-recommends pkg-config ca-certificates
+          - name: alpine-musl
+            image: rust:1-alpine
+            setup: apk add --no-cache build-base pkgconfig ca-certificates
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test on ${{ matrix.name }}
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/work" \
+            -w /work \
+            "${{ matrix.image }}" \
+            sh -lc "${{ matrix.setup }} && cargo test --workspace --locked"

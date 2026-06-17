@@ -5,7 +5,7 @@ use crate::detectors::process_rules::{
 use crate::detectors::{evidence, path_is_allowlisted, string_field, DetectContext, Detector};
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 pub struct NetworkDetector;
@@ -51,6 +51,8 @@ impl Detector for NetworkDetector {
     fn detect(&self, events: &[RawEvent], ctx: &DetectContext) -> Vec<Finding> {
         let mut findings = Vec::new();
         let policy = PortPolicy::from_context(ctx);
+        let firewall = firewall_context(events);
+        let process_context = process_context_by_pid(events);
         for event in events.iter().filter(|event| {
             matches!(
                 event.kind.as_str(),
@@ -69,27 +71,51 @@ impl Detector for NetworkDetector {
             if policy.is_allowlisted(port) {
                 continue;
             }
+            let owner_context = event.field("pid").and_then(|pid| process_context.get(pid));
             let high_risk_service = policy.high_risk_service_name(port);
-            if let Some(profile) = ListenerRiskProfile::from_event(event, ctx) {
-                findings.push(suspicious_listener(event, ctx, profile, high_risk_service));
+            if let Some(profile) = ListenerRiskProfile::from_event(event, ctx, owner_context) {
+                findings.push(suspicious_listener(
+                    event,
+                    ctx,
+                    profile,
+                    high_risk_service,
+                    firewall.as_ref(),
+                    owner_context,
+                ));
             } else if let Some(service_name) = high_risk_service {
-                findings.push(risky_port(event, ctx, service_name));
+                findings.push(risky_port(
+                    event,
+                    ctx,
+                    service_name,
+                    firewall.as_ref(),
+                    owner_context,
+                ));
             } else if event.kind == "listening_socket_owner_changed" {
-                findings.push(listener_owner_changed(event, ctx));
+                findings.push(listener_owner_changed(
+                    event,
+                    ctx,
+                    firewall.as_ref(),
+                    owner_context,
+                ));
             } else if policy.is_expected_public(port) {
                 continue;
             } else if event.source == "baseline"
                 && ctx.config.network.alert_on_new_listening_port
                 && is_tcp_protocol(event)
             {
-                findings.push(public_listen(event, ctx));
+                findings.push(public_listen(event, ctx, firewall.as_ref(), owner_context));
             }
         }
         findings
     }
 }
 
-fn public_listen(event: &RawEvent, ctx: &DetectContext) -> Finding {
+fn public_listen(
+    event: &RawEvent,
+    ctx: &DetectContext,
+    firewall: Option<&FirewallContext>,
+    process: Option<&ProcessContext>,
+) -> Finding {
     Finding::new(
         &ctx.host_id,
         "New public listening port detected",
@@ -103,7 +129,7 @@ fn public_listen(event: &RawEvent, ctx: &DetectContext) -> Finding {
             string_field(event, "local_port")
         ),
     )
-    .with_evidence(socket_evidence(event))
+    .with_evidence(socket_evidence_with_context(event, firewall, process))
     .with_recommendations(vec![
         "Confirm the service is intended to be internet-facing.".to_string(),
         "Refresh the baseline after approved service changes.".to_string(),
@@ -111,7 +137,12 @@ fn public_listen(event: &RawEvent, ctx: &DetectContext) -> Finding {
     ])
 }
 
-fn listener_owner_changed(event: &RawEvent, ctx: &DetectContext) -> Finding {
+fn listener_owner_changed(
+    event: &RawEvent,
+    ctx: &DetectContext,
+    firewall: Option<&FirewallContext>,
+    process: Option<&ProcessContext>,
+) -> Finding {
     Finding::new(
         &ctx.host_id,
         "Public listener process changed",
@@ -125,7 +156,7 @@ fn listener_owner_changed(event: &RawEvent, ctx: &DetectContext) -> Finding {
             string_field(event, "local_port")
         ),
     )
-    .with_evidence(socket_evidence(event))
+    .with_evidence(socket_evidence_with_context(event, firewall, process))
     .with_recommendations(vec![
         "Confirm the service replacement was planned.".to_string(),
         "Review the current executable path and service unit.".to_string(),
@@ -138,6 +169,8 @@ fn suspicious_listener(
     ctx: &DetectContext,
     profile: ListenerRiskProfile,
     high_risk_service: Option<&'static str>,
+    firewall: Option<&FirewallContext>,
+    process: Option<&ProcessContext>,
 ) -> Finding {
     Finding::new(
         &ctx.host_id,
@@ -153,7 +186,7 @@ fn suspicious_listener(
         ),
     )
     .with_evidence({
-        let mut items = socket_evidence(event);
+        let mut items = socket_evidence_with_context(event, firewall, process);
         items.push(evidence("risk_score", profile.score.to_string()));
         items.push(evidence("risk_reasons", profile.reasons.join("; ")));
         if !profile.features.is_empty() {
@@ -174,7 +207,13 @@ fn suspicious_listener(
     ])
 }
 
-fn risky_port(event: &RawEvent, ctx: &DetectContext, service_name: &'static str) -> Finding {
+fn risky_port(
+    event: &RawEvent,
+    ctx: &DetectContext,
+    service_name: &'static str,
+    firewall: Option<&FirewallContext>,
+    process: Option<&ProcessContext>,
+) -> Finding {
     Finding::new(
         &ctx.host_id,
         "High-risk public service port exposed",
@@ -185,7 +224,7 @@ fn risky_port(event: &RawEvent, ctx: &DetectContext, service_name: &'static str)
         format!("{}:{}", string_field(event, "local_addr"), string_field(event, "local_port")),
     )
     .with_evidence({
-        let mut items = socket_evidence(event);
+        let mut items = socket_evidence_with_context(event, firewall, process);
         items.push(evidence("service_profile", service_name));
         items
     })
@@ -211,6 +250,108 @@ fn socket_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
     push_evidence_if_present(&mut items, event, "previous_process_name");
     push_evidence_if_present(&mut items, event, "previous_executable");
     items
+}
+
+fn socket_evidence_with_context(
+    event: &RawEvent,
+    firewall: Option<&FirewallContext>,
+    process: Option<&ProcessContext>,
+) -> Vec<sentinel_core::Evidence> {
+    let mut items = socket_evidence(event);
+    if let Some(firewall) = firewall {
+        items.push(evidence("firewall_status", firewall.status.clone()));
+        if !firewall.sources.is_empty() {
+            items.push(evidence("firewall_sources", firewall.sources.join(", ")));
+        }
+    }
+    if let Some(process) = process {
+        for key in [
+            "parent_name",
+            "systemd_unit",
+            "systemd_execstart",
+            "container_context",
+            "exe_uid",
+            "exe_gid",
+            "exe_size",
+            "exe_hash_blake3",
+        ] {
+            push_context_evidence(&mut items, process, key);
+        }
+    }
+    items
+}
+
+#[derive(Debug, Clone)]
+struct FirewallContext {
+    status: String,
+    sources: Vec<String>,
+}
+
+fn firewall_context(events: &[RawEvent]) -> Option<FirewallContext> {
+    let event = events.iter().find(|event| event.kind == "firewall_state")?;
+    Some(FirewallContext {
+        status: string_field(event, "status"),
+        sources: string_field(event, "sources")
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .collect(),
+    })
+}
+
+#[derive(Debug, Clone, Default)]
+struct ProcessContext {
+    fields: BTreeMap<String, String>,
+}
+
+impl ProcessContext {
+    fn field(&self, key: &str) -> &str {
+        self.fields.get(key).map(String::as_str).unwrap_or("")
+    }
+}
+
+fn process_context_by_pid(events: &[RawEvent]) -> BTreeMap<String, ProcessContext> {
+    let mut contexts = BTreeMap::new();
+    for event in events
+        .iter()
+        .filter(|event| event.kind == "process_snapshot")
+    {
+        let Some(pid) = event.field("pid").filter(|pid| !pid.trim().is_empty()) else {
+            continue;
+        };
+        let fields = [
+            "parent_name",
+            "systemd_unit",
+            "systemd_execstart",
+            "container_context",
+            "exe_uid",
+            "exe_gid",
+            "exe_size",
+            "exe_hash_blake3",
+        ]
+        .into_iter()
+        .filter_map(|key| {
+            event
+                .field(key)
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| (key.to_string(), value.to_string()))
+        })
+        .collect();
+        contexts.insert(pid.to_string(), ProcessContext { fields });
+    }
+    contexts
+}
+
+fn push_context_evidence(
+    items: &mut Vec<sentinel_core::Evidence>,
+    context: &ProcessContext,
+    key: &str,
+) {
+    let value = context.field(key);
+    if !value.trim().is_empty() {
+        items.push(evidence(key, value));
+    }
 }
 
 fn push_evidence_if_present(items: &mut Vec<sentinel_core::Evidence>, event: &RawEvent, key: &str) {
@@ -376,7 +517,11 @@ struct ListenerRiskProfile {
 }
 
 impl ListenerRiskProfile {
-    fn from_event(event: &RawEvent, ctx: &DetectContext) -> Option<Self> {
+    fn from_event(
+        event: &RawEvent,
+        ctx: &DetectContext,
+        process: Option<&ProcessContext>,
+    ) -> Option<Self> {
         let executable = string_field(event, "executable");
         let cmdline = string_field(event, "cmdline");
         let process_name = string_field(event, "process_name");
@@ -412,6 +557,17 @@ impl ListenerRiskProfile {
             score += 35;
             reasons.push("listener process name is an interactive shell".to_string());
         }
+        if process.is_some_and(|process| {
+            let execstart = process.field("systemd_execstart");
+            !execstart.trim().is_empty()
+                && !execstart_matches_process(execstart, &executable, &process_name)
+        }) {
+            score += 30;
+            reasons.push(
+                "systemd ExecStart does not appear to match the listener executable".to_string(),
+            );
+            features.push("systemd_execstart_mismatch".to_string());
+        }
         if event.kind == "listening_socket_owner_changed" && score > 0 {
             score += 20;
             reasons.push("listener owner changed from baseline".to_string());
@@ -427,6 +583,33 @@ impl ListenerRiskProfile {
             None
         }
     }
+}
+
+fn execstart_matches_process(execstart: &str, executable: &str, process_name: &str) -> bool {
+    if executable.trim().is_empty() && process_name.trim().is_empty() {
+        return true;
+    }
+    let executable = executable.trim();
+    if !executable.is_empty() && execstart.contains(executable) {
+        return true;
+    }
+    let executable_name = executable_basename(executable);
+    execstart.split_whitespace().any(|token| {
+        let token = token.trim_matches(|ch: char| {
+            ch.is_ascii_whitespace()
+                || matches!(
+                    ch,
+                    '"' | '\'' | '`' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}'
+                )
+        });
+        let token_name = executable_basename(token);
+        (!executable_name.is_empty() && token_name == executable_name)
+            || (!process_name.trim().is_empty() && token_name == process_name)
+    })
+}
+
+fn executable_basename(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
 fn is_shell_process_name(name: &str) -> bool {

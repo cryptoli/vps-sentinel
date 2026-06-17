@@ -1,7 +1,9 @@
-use crate::utils::fs::path_string;
+use crate::utils::fs::{hash_file_limited, path_string, resolve_under_root};
 use sentinel_core::{RawEvent, SentinelResult};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+const EXE_HASH_LIMIT_BYTES: u64 = 25 * 1024 * 1024;
 
 /// Root used for procfs reads. Tests can point this at a fixture tree.
 #[derive(Debug, Clone)]
@@ -50,6 +52,10 @@ pub fn collect_processes(root: &ProcfsRoot) -> SentinelResult<Vec<RawEvent>> {
             None => continue,
         };
         let process_dir = entry.path();
+        let status = match fs::read_to_string(process_dir.join("status")) {
+            Ok(status) if !status.trim().is_empty() => status,
+            _ => continue,
+        };
         let argv = read_argv(&process_dir);
         let cmdline = argv.join(" ");
         let argv_json = serde_json::to_string(&argv).unwrap_or_else(|_| "[]".to_string());
@@ -60,11 +66,18 @@ pub fn collect_processes(root: &ProcfsRoot) -> SentinelResult<Vec<RawEvent>> {
             .map(|path| path_string(&path))
             .unwrap_or_default();
         let socket_fd_count = socket_fd_count(&process_dir);
-        let status = fs::read_to_string(process_dir.join("status")).unwrap_or_default();
         let ppid = parse_status_value(&status, "PPid").unwrap_or_default();
         let name = parse_status_value(&status, "Name").unwrap_or_default();
         let uid = parse_status_first_value(&status, "Uid").unwrap_or_default();
         let euid = parse_status_indexed_value(&status, "Uid", 1).unwrap_or_default();
+        let parent_name = read_trimmed(root.path().join(&ppid).join("comm"));
+        let cgroup = fs::read_to_string(process_dir.join("cgroup")).unwrap_or_default();
+        let container_context = container_context_from_cgroup(&cgroup);
+        let systemd_unit = systemd_unit_from_cgroup(&cgroup).unwrap_or_default();
+        let systemd_execstart = systemd_execstart_for_unit(root.path(), &systemd_unit)
+            .unwrap_or_default()
+            .join(" | ");
+        let exe_metadata = executable_metadata(root.path(), &exe_path);
         let cpu = fs::read_to_string(process_dir.join("stat"))
             .ok()
             .and_then(|stat| parse_process_cpu(&stat, uptime_seconds, clock_ticks));
@@ -73,6 +86,7 @@ pub fn collect_processes(root: &ProcfsRoot) -> SentinelResult<Vec<RawEvent>> {
             .with_field("pid", pid.to_string())
             .with_field("ppid", ppid)
             .with_field("name", name)
+            .with_field("parent_name", parent_name)
             .with_field("uid", uid)
             .with_field("euid", euid)
             .with_field("cmdline", cmdline)
@@ -80,6 +94,24 @@ pub fn collect_processes(root: &ProcfsRoot) -> SentinelResult<Vec<RawEvent>> {
             .with_field("exe_path", exe_path)
             .with_field("cwd", cwd)
             .with_field("socket_fd_count", socket_fd_count.to_string());
+        if !container_context.is_empty() {
+            event = event.with_field("container_context", container_context);
+        }
+        if !systemd_unit.is_empty() {
+            event = event.with_field("systemd_unit", systemd_unit);
+        }
+        if !systemd_execstart.is_empty() {
+            event = event.with_field("systemd_execstart", systemd_execstart);
+        }
+        if let Some(metadata) = exe_metadata {
+            event = event
+                .with_field("exe_uid", metadata.uid)
+                .with_field("exe_gid", metadata.gid)
+                .with_field("exe_size", metadata.size);
+            if let Some(hash) = metadata.hash {
+                event = event.with_field("exe_hash_blake3", hash);
+            }
+        }
         if let Some(cpu) = cpu {
             event = event
                 .with_field("cpu_percent", format!("{:.1}", cpu.percent))
@@ -89,6 +121,12 @@ pub fn collect_processes(root: &ProcfsRoot) -> SentinelResult<Vec<RawEvent>> {
         events.push(event);
     }
     Ok(events)
+}
+
+fn read_trimmed(path: impl AsRef<Path>) -> String {
+    fs::read_to_string(path)
+        .map(|value| value.trim().to_string())
+        .unwrap_or_default()
 }
 
 fn read_argv(process_dir: &Path) -> Vec<String> {
@@ -102,6 +140,138 @@ fn read_argv(process_dir: &Path) -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
+}
+
+#[derive(Debug, Clone)]
+struct ExeMetadata {
+    uid: String,
+    gid: String,
+    size: String,
+    hash: Option<String>,
+}
+
+fn executable_metadata(proc_root: &Path, exe_path: &str) -> Option<ExeMetadata> {
+    let normalized = exe_path
+        .trim()
+        .strip_suffix(" (deleted)")
+        .unwrap_or_else(|| exe_path.trim());
+    if normalized.is_empty()
+        || normalized.starts_with("memfd:")
+        || normalized.starts_with("anon_inode:")
+    {
+        return None;
+    }
+    let scan_root = scan_root_for_proc_root(proc_root);
+    let path = resolve_under_root(&scan_root, Path::new(normalized));
+    let metadata = fs::metadata(&path).ok()?;
+    Some(ExeMetadata {
+        uid: metadata_uid(&metadata),
+        gid: metadata_gid(&metadata),
+        size: metadata.len().to_string(),
+        hash: hash_file_limited(&path, EXE_HASH_LIMIT_BYTES)
+            .ok()
+            .flatten(),
+    })
+}
+
+fn scan_root_for_proc_root(proc_root: &Path) -> PathBuf {
+    if proc_root == Path::new("/proc") {
+        return PathBuf::from("/");
+    }
+    if proc_root.file_name().and_then(|name| name.to_str()) == Some("proc") {
+        return proc_root
+            .parent()
+            .unwrap_or_else(|| Path::new("/"))
+            .to_path_buf();
+    }
+    PathBuf::from("/")
+}
+
+fn metadata_uid(metadata: &fs::Metadata) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        metadata.uid().to_string()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        String::new()
+    }
+}
+
+fn metadata_gid(metadata: &fs::Metadata) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        metadata.gid().to_string()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        String::new()
+    }
+}
+
+fn container_context_from_cgroup(cgroup: &str) -> String {
+    let lowered = cgroup.to_ascii_lowercase();
+    if lowered.contains("kubepods") {
+        return "kubernetes".to_string();
+    }
+    if lowered.contains("docker") {
+        return "docker".to_string();
+    }
+    if lowered.contains("containerd") {
+        return "containerd".to_string();
+    }
+    if lowered.contains("lxc") {
+        return "lxc".to_string();
+    }
+    String::new()
+}
+
+fn systemd_unit_from_cgroup(cgroup: &str) -> Option<String> {
+    cgroup
+        .lines()
+        .flat_map(|line| line.split('/'))
+        .find(|part| part.ends_with(".service") && !part.trim().is_empty())
+        .map(str::to_string)
+}
+
+fn systemd_execstart_for_unit(proc_root: &Path, unit: &str) -> Option<Vec<String>> {
+    if unit.trim().is_empty() {
+        return None;
+    }
+    let scan_root = scan_root_for_proc_root(proc_root);
+    for candidate in [
+        "/etc/systemd/system",
+        "/run/systemd/system",
+        "/lib/systemd/system",
+        "/usr/lib/systemd/system",
+    ] {
+        let path = resolve_under_root(&scan_root, Path::new(candidate)).join(unit);
+        let Ok(text) = fs::read_to_string(path) else {
+            continue;
+        };
+        let execstart = text
+            .lines()
+            .filter_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.starts_with('#') {
+                    return None;
+                }
+                trimmed
+                    .strip_prefix("ExecStart=")
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        if !execstart.is_empty() {
+            return Some(execstart);
+        }
+    }
+    None
 }
 
 fn parse_status_value(status: &str, key: &str) -> Option<String> {
@@ -201,29 +371,44 @@ mod tests {
     fn collect_processes_extracts_linux_status_and_argv_fields(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
-        let pid_dir = temp.path().join("1234");
+        let proc_dir = temp.path().join("proc");
+        let pid_dir = proc_dir.join("1234");
         fs::create_dir_all(&pid_dir)?;
         fs::write(
             pid_dir.join("status"),
             "Name:\tkworker\nPPid:\t1\nUid:\t0\t0\t0\t0\n",
         )?;
+        let parent_dir = proc_dir.join("1");
+        fs::create_dir_all(&parent_dir)?;
+        fs::write(parent_dir.join("comm"), "systemd\n")?;
         fs::write(
             pid_dir.join("cmdline"),
             b"/usr/local/bin/kworker\0--daemon\0",
         )?;
-        fs::write(temp.path().join("uptime"), "1000.00 900.00\n")?;
+        fs::write(pid_dir.join("cgroup"), "0::/system.slice/test.service\n")?;
+        let unit_dir = temp.path().join("etc/systemd/system");
+        fs::create_dir_all(&unit_dir)?;
+        fs::write(
+            unit_dir.join("test.service"),
+            "[Service]\nExecStart=/usr/local/bin/kworker --daemon\n",
+        )?;
+        let exe_path = temp.path().join("usr/local/bin/kworker");
+        fs::create_dir_all(exe_path.parent().unwrap())?;
+        fs::write(&exe_path, "binary")?;
+        fs::write(proc_dir.join("uptime"), "1000.00 900.00\n")?;
         fs::write(
             pid_dir.join("stat"),
             "1234 (kworker) S 1 0 0 0 0 0 0 0 0 0 200 100 0 0 20 0 1 0 500 0",
         )?;
 
-        let events = collect_processes(&ProcfsRoot::new(temp.path().to_path_buf()))?;
+        let events = collect_processes(&ProcfsRoot::new(proc_dir))?;
 
         assert_eq!(events.len(), 1);
         let event = &events[0];
         assert_eq!(event.field("pid"), Some("1234"));
         assert_eq!(event.field("name"), Some("kworker"));
         assert_eq!(event.field("ppid"), Some("1"));
+        assert_eq!(event.field("parent_name"), Some("systemd"));
         assert_eq!(event.field("uid"), Some("0"));
         assert_eq!(event.field("euid"), Some("0"));
         assert_eq!(
@@ -231,6 +416,11 @@ mod tests {
             Some("/usr/local/bin/kworker --daemon")
         );
         assert_eq!(event.field("socket_fd_count"), Some("0"));
+        assert_eq!(event.field("systemd_unit"), Some("test.service"));
+        assert_eq!(
+            event.field("systemd_execstart"),
+            Some("/usr/local/bin/kworker --daemon")
+        );
         assert!(event.field("cpu_percent").is_some());
         assert!(event.field("cpu_total_seconds").is_some());
         assert!(event.field("process_age_seconds").is_some());

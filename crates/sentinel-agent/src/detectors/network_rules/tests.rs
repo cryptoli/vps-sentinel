@@ -149,6 +149,36 @@ fn reports_non_suspicious_owner_change_on_expected_web_port() {
 }
 
 #[test]
+fn owner_change_with_systemd_execstart_mismatch_is_suspicious_listener() {
+    let socket = RawEvent::new("baseline", "listening_socket_owner_changed")
+        .with_field("protocol", "tcp")
+        .with_field("local_addr", "0.0.0.0")
+        .with_field("local_port", "443")
+        .with_field("pid", "42")
+        .with_field("process_name", "kworker")
+        .with_field("executable", "/tmp/.x/kworker")
+        .with_field("previous_process_name", "nginx")
+        .with_field("previous_executable", "/usr/sbin/nginx");
+    let process = RawEvent::new("process", "process_snapshot")
+        .with_field("pid", "42")
+        .with_field("systemd_unit", "nginx.service")
+        .with_field("systemd_execstart", "/usr/sbin/nginx -g 'daemon off;'")
+        .with_field("exe_hash_blake3", "abc123");
+
+    let findings = detect_with_default_config(vec![socket, process]);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-003");
+    assert!(findings[0]
+        .evidence
+        .iter()
+        .any(|item| item.key == "systemd_unit" && item.value == "nginx.service"));
+    assert!(findings[0].evidence.iter().any(|item| {
+        item.key == "risk_features" && item.value.contains("systemd_execstart_mismatch")
+    }));
+}
+
+#[test]
 fn reports_high_risk_public_port_from_current_state() {
     let findings = detect_with_default_config(vec![socket_event("network", 6379)]);
     assert_eq!(findings.len(), 1);
@@ -157,6 +187,22 @@ fn reports_high_risk_public_port_from_current_state() {
         .evidence
         .iter()
         .any(|item| item.key == "service_profile" && item.value == "Redis"));
+}
+
+#[test]
+fn high_risk_public_port_includes_firewall_context_when_available() {
+    let findings = detect_with_default_config(vec![
+        socket_event("network", 6379),
+        RawEvent::new("firewall", "firewall_state")
+            .with_field("status", "active")
+            .with_field("sources", "nftables, iptables"),
+    ]);
+
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0]
+        .evidence
+        .iter()
+        .any(|item| item.key == "firewall_status" && item.value == "active"));
 }
 
 #[test]

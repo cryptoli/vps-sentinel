@@ -1,0 +1,152 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked
+
+  tarballs:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cross
+        run: cargo install cross --locked
+      - name: Build ${{ matrix.target }}
+        run: cross build --release --locked --target ${{ matrix.target }}
+      - name: Package tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          package_dir="dist/package-${target}"
+          mkdir -p "${package_dir}/packaging/systemd"
+          cp "target/${target}/release/vps-sentinel" "${package_dir}/vps-sentinel"
+          cp config/config.example.toml "${package_dir}/config.example.toml"
+          cp install.sh update.sh reload.sh stop.sh "${package_dir}/"
+          cp README.md README.zh-CN.md LICENSE CHANGELOG.md SECURITY.md "${package_dir}/"
+          cp packaging/systemd/vps-sentinel.service "${package_dir}/packaging/systemd/"
+          chmod 0755 "${package_dir}/vps-sentinel" "${package_dir}"/*.sh
+          tar -czf "dist/vps-sentinel-${target}.tar.gz" -C "${package_dir}" .
+          sha256sum "dist/vps-sentinel-${target}.tar.gz" > "dist/vps-sentinel-${target}.tar.gz.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vps-sentinel-${{ matrix.target }}
+          path: |
+            dist/vps-sentinel-${{ matrix.target }}.tar.gz
+            dist/vps-sentinel-${{ matrix.target }}.tar.gz.sha256
+
+  linux-packages:
+    needs: tarballs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: vps-sentinel-x86_64-unknown-linux-gnu
+          path: dist
+      - name: Install fpm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ruby ruby-dev build-essential rpm
+          sudo gem install --no-document fpm
+      - name: Build deb and rpm packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [ -z "${version}" ] || [ "${version}" = "${GITHUB_REF_NAME}" ]; then
+            version="0.1.0-dev"
+          fi
+          root="dist/pkgroot"
+          work="dist/package-root"
+          rm -rf "${root}" "${work}"
+          mkdir -p "${work}" "${root}/usr/local/bin" "${root}/etc/vps-sentinel" "${root}/usr/lib/systemd/system"
+          tar -xzf dist/vps-sentinel-x86_64-unknown-linux-gnu.tar.gz -C "${work}"
+          install -m 0755 "${work}/vps-sentinel" "${root}/usr/local/bin/vps-sentinel"
+          install -m 0755 "${work}/reload.sh" "${root}/usr/local/bin/vps-sentinel-reload"
+          install -m 0755 "${work}/stop.sh" "${root}/usr/local/bin/vps-sentinel-stop"
+          install -m 0755 "${work}/update.sh" "${root}/usr/local/bin/vps-sentinel-update"
+          install -m 0644 "${work}/config.example.toml" "${root}/etc/vps-sentinel/config.toml"
+          sed \
+            -e "s|@BIN_PATH@|/usr/local/bin/vps-sentinel|g" \
+            -e "s|@CONFIG_PATH@|/etc/vps-sentinel/config.toml|g" \
+            -e "s|@DATA_DIR@|/var/lib/vps-sentinel|g" \
+            -e "s|@LOG_DIR@|/var/log/vps-sentinel|g" \
+            "${work}/packaging/systemd/vps-sentinel.service" > "${root}/usr/lib/systemd/system/vps-sentinel.service"
+          fpm -s dir -t deb -n vps-sentinel -v "${version}" \
+            --architecture amd64 \
+            --license MIT \
+            --description "Lightweight Linux VPS intrusion-signal monitor" \
+            --url "https://github.com/cryptoli/vps-sentinel" \
+            --maintainer "cryptoli" \
+            --config-files /etc/vps-sentinel/config.toml \
+            -C "${root}" \
+            -p "dist/vps-sentinel_${version}_amd64.deb" .
+          fpm -s dir -t rpm -n vps-sentinel -v "${version}" \
+            --architecture x86_64 \
+            --license MIT \
+            --description "Lightweight Linux VPS intrusion-signal monitor" \
+            --url "https://github.com/cryptoli/vps-sentinel" \
+            --maintainer "cryptoli" \
+            --config-files /etc/vps-sentinel/config.toml \
+            -C "${root}" \
+            -p "dist/vps-sentinel-${version}-1.x86_64.rpm" .
+          sha256sum dist/vps-sentinel_*_amd64.deb dist/vps-sentinel-*-1.x86_64.rpm > dist/vps-sentinel-linux-packages.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vps-sentinel-linux-packages
+          path: |
+            dist/*.deb
+            dist/*.rpm
+            dist/vps-sentinel-linux-packages.sha256
+
+  publish:
+    needs:
+      - tarballs
+      - linux-packages
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/*.deb
+            dist/*.rpm

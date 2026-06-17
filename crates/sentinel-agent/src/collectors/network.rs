@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use sentinel_core::{RawEvent, SentinelResult};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::net::IpAddr;
 use std::net::Ipv6Addr;
 use std::path::Path;
 
@@ -39,7 +40,7 @@ impl Collector for NetworkCollector {
     }
 }
 
-/// Parse `/proc/net/tcp*` or `/proc/net/udp*` lines into listening socket facts.
+/// Parse `/proc/net/tcp*` or `/proc/net/udp*` lines into socket facts.
 pub fn parse_proc_net(text: &str, protocol: &str) -> Vec<RawEvent> {
     text.lines()
         .skip(1)
@@ -54,19 +55,57 @@ fn parse_proc_net_line(line: &str, protocol: &str) -> Option<RawEvent> {
     }
     let state = parts[3];
     let is_listening = state == "0A" || (protocol.starts_with("udp") && state == "07");
-    if !is_listening {
-        return None;
-    }
     let (addr_hex, port_hex) = parts[1].split_once(':')?;
+    let (remote_addr_hex, remote_port_hex) = parts[2].split_once(':')?;
     let local_addr = parse_proc_address(addr_hex);
     let local_port = u16::from_str_radix(port_hex, 16).ok()?;
-    Some(
-        RawEvent::new("network", "listening_socket")
-            .with_field("protocol", protocol)
-            .with_field("local_addr", local_addr)
-            .with_field("local_port", local_port.to_string())
-            .with_field("inode", parts[9]),
-    )
+    if is_listening {
+        return Some(
+            RawEvent::new("network", "listening_socket")
+                .with_field("protocol", protocol)
+                .with_field("local_addr", local_addr)
+                .with_field("local_port", local_port.to_string())
+                .with_field("inode", parts[9]),
+        );
+    }
+    if protocol.starts_with("tcp") && state == "01" {
+        let remote_addr = parse_proc_address(remote_addr_hex);
+        let remote_port = u16::from_str_radix(remote_port_hex, 16).ok()?;
+        return Some(
+            RawEvent::new("network", "outbound_connection")
+                .with_field("protocol", protocol)
+                .with_field("local_addr", local_addr)
+                .with_field("local_port", local_port.to_string())
+                .with_field("remote_addr", remote_addr.clone())
+                .with_field("remote_port", remote_port.to_string())
+                .with_field(
+                    "remote_public",
+                    is_public_remote_addr(&remote_addr).to_string(),
+                )
+                .with_field("inode", parts[9]),
+        );
+    }
+    None
+}
+
+fn is_public_remote_addr(addr: &str) -> bool {
+    match addr.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => {
+            !(ip.is_loopback()
+                || ip.is_private()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_multicast())
+        }
+        Ok(IpAddr::V6(ip)) => {
+            let first = ip.segments()[0];
+            !(ip.is_loopback()
+                || ip.is_multicast()
+                || first & 0xfe00 == 0xfc00
+                || first & 0xffc0 == 0xfe80)
+        }
+        Err(_) => false,
+    }
 }
 
 fn enrich_socket_owners(events: &mut [RawEvent], scan_root: &Path) {
@@ -245,6 +284,17 @@ mod tests {
     fn parses_socket_inode_symlink() {
         assert_eq!(parse_socket_inode("socket:[12345]"), Some("12345"));
         assert_eq!(parse_socket_inode("pipe:[12345]"), None);
+    }
+
+    #[test]
+    fn parses_established_tcp_connection() {
+        let text = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: 0100007F:9C40 08080808:01BB 01 00000000:00000000 00:00000000 00000000 0 0 99";
+        let events = parse_proc_net(text, "tcp");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "outbound_connection");
+        assert_eq!(events[0].field("remote_addr"), Some("8.8.8.8"));
+        assert_eq!(events[0].field("remote_port"), Some("443"));
+        assert_eq!(events[0].field("remote_public"), Some("true"));
     }
 
     #[test]

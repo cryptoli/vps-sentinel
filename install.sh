@@ -12,6 +12,9 @@ SERVICE_NAME="${SERVICE_NAME:-vps-sentinel}"
 SERVICE_PATH="${SERVICE_PATH:-/etc/systemd/system/${SERVICE_NAME}.service}"
 SYSTEMD_TEMPLATE="${SYSTEMD_TEMPLATE:-packaging/systemd/vps-sentinel.service}"
 INSTALL_DEPS="${INSTALL_DEPS:-yes}"
+INSTALL_METHOD="${INSTALL_METHOD:-auto}"
+RELEASE_VERSION="${RELEASE_VERSION:-latest}"
+TARGET_TRIPLE="${TARGET_TRIPLE:-}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-auto}"
 ENABLE_SERVICE="${ENABLE_SERVICE:-yes}"
 RUN_DOCTOR="${RUN_DOCTOR:-yes}"
@@ -182,6 +185,36 @@ ensure_rust() {
   export PATH="$HOME/.cargo/bin:$PATH"
 }
 
+detect_target_triple() {
+  if [ -n "$TARGET_TRIPLE" ]; then
+    printf '%s\n' "$TARGET_TRIPLE"
+    return
+  fi
+  arch="$(uname -m)"
+  libc="gnu"
+  if ldd --version 2>&1 | grep -qi musl; then
+    libc="musl"
+  fi
+  case "$arch" in
+    x86_64|amd64) printf 'x86_64-unknown-linux-%s\n' "$libc" ;;
+    aarch64|arm64) printf 'aarch64-unknown-linux-%s\n' "$libc" ;;
+    *)
+      echo "unsupported release artifact architecture: $arch" >&2
+      return 1
+      ;;
+  esac
+}
+
+release_url() {
+  triple="$(detect_target_triple)"
+  artifact="vps-sentinel-${triple}.tar.gz"
+  if [ "$RELEASE_VERSION" = "latest" ]; then
+    printf '%s/releases/latest/download/%s\n' "${REPO_URL%.git}" "$artifact"
+  else
+    printf '%s/releases/download/%s/%s\n' "${REPO_URL%.git}" "$RELEASE_VERSION" "$artifact"
+  fi
+}
+
 checkout_or_update() {
   if [ -d "$WORK_DIR/.git" ]; then
     git -C "$WORK_DIR" fetch origin "$BRANCH"
@@ -191,6 +224,41 @@ checkout_or_update() {
     install -d "$(dirname "$WORK_DIR")"
     git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$WORK_DIR"
   fi
+}
+
+install_from_release() {
+  url="$(release_url)" || return 1
+  tmp_dir="$(mktemp -d)"
+  archive="$tmp_dir/vps-sentinel.tar.gz"
+  echo "downloading release artifact: $url"
+  if ! curl -fsSL "$url" -o "$archive"; then
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+  tar -xzf "$archive" -C "$tmp_dir"
+  install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+  install -m 0755 "$tmp_dir/vps-sentinel" "$PREFIX/bin/vps-sentinel"
+  for script in reload stop update install; do
+    if [ -f "$tmp_dir/${script}.sh" ]; then
+      install -m 0755 "$tmp_dir/${script}.sh" "$PREFIX/bin/vps-sentinel-${script}"
+    fi
+  done
+  if [ ! -f "$CONFIG_DIR/config.toml" ]; then
+    install -m 0600 "$tmp_dir/config.example.toml" "$CONFIG_DIR/config.toml"
+    CONFIG_CREATED=1
+    echo "created $CONFIG_DIR/config.toml"
+  else
+    echo "kept existing $CONFIG_DIR/config.toml"
+  fi
+  if [ -f "$tmp_dir/packaging/systemd/vps-sentinel.service" ]; then
+    SYSTEMD_TEMPLATE="$tmp_dir/packaging/systemd/vps-sentinel.service"
+  fi
+  configure_agent_identity
+  configure_telegram
+  install_systemd_unit_file
+  post_install_setup
+  activate_systemd_service
+  rm -rf "$tmp_dir"
 }
 
 build_and_install() {
@@ -331,9 +399,31 @@ activate_systemd_service() {
 }
 
 install_deps
-ensure_rust
-checkout_or_update
-build_and_install
+case "$INSTALL_METHOD" in
+  release)
+    install_from_release || {
+      echo "release installation failed" >&2
+      exit 1
+    }
+    ;;
+  auto)
+    if ! install_from_release; then
+      echo "release artifact unavailable; falling back to source build"
+      ensure_rust
+      checkout_or_update
+      build_and_install
+    fi
+    ;;
+  source)
+    ensure_rust
+    checkout_or_update
+    build_and_install
+    ;;
+  *)
+    echo "invalid INSTALL_METHOD value: $INSTALL_METHOD" >&2
+    exit 1
+    ;;
+esac
 
 echo "vps-sentinel installed"
 echo "config: $CONFIG_DIR/config.toml"

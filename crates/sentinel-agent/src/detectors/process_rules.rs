@@ -2,12 +2,16 @@ use crate::detectors::command_profile::{
     network_execution_assessment_from_event, CommandAssessment,
 };
 use crate::detectors::risk::RiskAssessment;
-use crate::detectors::{evidence, path_is_allowlisted, string_field, DetectContext, Detector};
+use crate::detectors::{
+    evidence, package_activity_context, path_is_allowlisted, string_field, DetectContext, Detector,
+};
 use crate::rules::model::RuleMetadata;
+use crate::utils::package::package_owner_for_path;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 const ROOT_UID: &str = "0";
+const PROCESS_STABLE_DEDUP_KEYS: &[&str] = &["exe_path", "cmdline", "name"];
 
 pub struct ProcessDetector;
 
@@ -58,10 +62,25 @@ impl Detector for ProcessDetector {
 
     fn detect(&self, events: &[RawEvent], ctx: &DetectContext) -> Vec<Finding> {
         let mut findings = Vec::new();
+        let outbound_by_pid = outbound_context_by_pid(events);
+        let package_activity = package_activity_context(events);
         for event in events
             .iter()
             .filter(|event| event.kind == "process_snapshot")
         {
+            let mut enriched = event.clone();
+            if let Some(pid) = event.field("pid") {
+                if let Some(outbound) = outbound_by_pid.get(pid) {
+                    enriched = enriched
+                        .with_field("outbound_connection_count", outbound.total.to_string())
+                        .with_field("public_outbound_count", outbound.public.to_string())
+                        .with_field("outbound_remote_ports", outbound.remote_ports.join(", "));
+                }
+            }
+            if package_activity.is_active() {
+                enriched = enriched.with_field("package_activity_recent", "true");
+            }
+            let event = &enriched;
             let exe_path = string_field(event, "exe_path");
             let cmdline = string_field(event, "cmdline");
             if path_is_allowlisted(&exe_path, &ctx.config.allowlist.process_paths)
@@ -128,15 +147,18 @@ fn deleted_executable(
         Severity::High,
         Category::Process,
         "PROC-002",
-        string_field(event, "pid"),
+        process_subject(event),
     )
-    .with_evidence({
-        let mut items = process_evidence(event);
-        items.push(evidence("risk_score", assessment.score.to_string()));
-        items.push(evidence("risk_reasons", assessment.reason_text()));
-        items.push(evidence("risk_features", assessment.feature_names()));
-        items
-    })
+    .with_evidence_deduped_by(
+        {
+            let mut items = process_evidence(event);
+            items.push(evidence("risk_score", assessment.score.to_string()));
+            items.push(evidence("risk_reasons", assessment.reason_text()));
+            items.push(evidence("risk_features", assessment.feature_names()));
+            items
+        },
+        PROCESS_STABLE_DEDUP_KEYS,
+    )
     .with_recommendations(vec![
         "Capture process details and network connections before termination.".to_string(),
         "Review how the process was launched.".to_string(),
@@ -219,9 +241,12 @@ fn network_execution_bridge(event: &RawEvent, ctx: &DetectContext) -> Finding {
         Severity::Critical,
         Category::Process,
         "PROC-003",
-        string_field(event, "pid"),
+        process_subject(event),
     )
-    .with_evidence(process_evidence_with_assessment(event, &assessment))
+    .with_evidence_deduped_by(
+        process_evidence_with_assessment(event, &assessment),
+        PROCESS_STABLE_DEDUP_KEYS,
+    )
     .with_impact(vec![
         "This may indicate active remote command execution when the process is not expected."
             .to_string(),
@@ -249,30 +274,33 @@ fn miner_or_scanner(event: &RawEvent, ctx: &DetectContext, tool_match: KnownTool
         Severity::Critical,
         Category::Process,
         "PROC-004",
-        string_field(event, "pid"),
+        process_subject(event),
     )
-    .with_evidence({
-        let mut items = process_evidence(event);
-        items.push(evidence("matched_tool", tool_match.tool));
-        items.push(evidence("match_source", tool_match.source));
-        items.push(evidence("matched_value", tool_match.value));
-        if let Some(cpu) = high_cpu {
-            items.push(evidence("risk_score", "90"));
-            items.push(evidence("risk_reasons", cpu.reason()));
-            items.push(evidence(
-                "risk_features",
-                "known_bad_tool, sustained_high_cpu",
-            ));
-        } else {
-            items.push(evidence("risk_score", "70"));
-            items.push(evidence(
-                "risk_reasons",
-                "configured miner/scanner identity matched",
-            ));
-            items.push(evidence("risk_features", "known_bad_tool"));
-        }
-        items
-    })
+    .with_evidence_deduped_by(
+        {
+            let mut items = process_evidence(event);
+            items.push(evidence("matched_tool", tool_match.tool));
+            items.push(evidence("match_source", tool_match.source));
+            items.push(evidence("matched_value", tool_match.value));
+            if let Some(cpu) = high_cpu {
+                items.push(evidence("risk_score", "90"));
+                items.push(evidence("risk_reasons", cpu.reason()));
+                items.push(evidence(
+                    "risk_features",
+                    "known_bad_tool, sustained_high_cpu",
+                ));
+            } else {
+                items.push(evidence("risk_score", "70"));
+                items.push(evidence(
+                    "risk_reasons",
+                    "configured miner/scanner identity matched",
+                ));
+                items.push(evidence("risk_features", "known_bad_tool"));
+            }
+            items
+        },
+        PROCESS_STABLE_DEDUP_KEYS,
+    )
     .with_impact(vec![
         "Unexpected miner or scanner processes can indicate resource abuse, reconnaissance, or post-compromise tooling.".to_string(),
     ])
@@ -295,21 +323,24 @@ fn process_behavior_cluster(
         Severity::High,
         Category::Process,
         "PROC-005",
-        string_field(event, "pid"),
+        process_subject(event),
     )
-    .with_evidence({
-        let mut items = process_evidence(event);
-        items.push(evidence("cwd", string_field(event, "cwd")));
-        items.push(evidence("euid", string_field(event, "euid")));
-        items.push(evidence(
-            "socket_fd_count",
-            string_field(event, "socket_fd_count"),
-        ));
-        items.push(evidence("risk_score", assessment.score.to_string()));
-        items.push(evidence("risk_reasons", assessment.reason_text()));
-        items.push(evidence("risk_features", assessment.feature_names()));
-        items
-    })
+    .with_evidence_deduped_by(
+        {
+            let mut items = process_evidence(event);
+            items.push(evidence("cwd", string_field(event, "cwd")));
+            items.push(evidence("euid", string_field(event, "euid")));
+            items.push(evidence(
+                "socket_fd_count",
+                string_field(event, "socket_fd_count"),
+            ));
+            items.push(evidence("risk_score", assessment.score.to_string()));
+            items.push(evidence("risk_reasons", assessment.reason_text()));
+            items.push(evidence("risk_features", assessment.feature_names()));
+            items
+        },
+        PROCESS_STABLE_DEDUP_KEYS,
+    )
     .with_impact(vec![
         "Renamed or lightly disguised malware may avoid simple command-line signatures."
             .to_string(),
@@ -329,10 +360,38 @@ fn process_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
         evidence("exe_path", string_field(event, "exe_path")),
         evidence("cmdline", string_field(event, "cmdline")),
     ];
+    push_evidence_if_present(&mut items, event, "parent_name");
+    push_evidence_if_present(&mut items, event, "systemd_unit");
+    push_evidence_if_present(&mut items, event, "systemd_execstart");
+    push_evidence_if_present(&mut items, event, "container_context");
+    push_evidence_if_present(&mut items, event, "exe_uid");
+    push_evidence_if_present(&mut items, event, "exe_gid");
+    push_evidence_if_present(&mut items, event, "exe_size");
+    push_evidence_if_present(&mut items, event, "exe_hash_blake3");
     push_evidence_if_present(&mut items, event, "cpu_percent");
     push_evidence_if_present(&mut items, event, "cpu_total_seconds");
     push_evidence_if_present(&mut items, event, "process_age_seconds");
+    push_evidence_if_present(&mut items, event, "outbound_connection_count");
+    push_evidence_if_present(&mut items, event, "public_outbound_count");
+    push_evidence_if_present(&mut items, event, "outbound_remote_ports");
+    push_evidence_if_present(&mut items, event, "package_activity_recent");
+    push_package_owner_if_available(&mut items, event);
     items
+}
+
+fn process_subject(event: &RawEvent) -> String {
+    for key in ["exe_path", "cmdline", "name", "pid"] {
+        let value = string_field(event, key);
+        let value = value
+            .trim()
+            .strip_suffix(" (deleted)")
+            .unwrap_or_else(|| value.trim())
+            .to_string();
+        if !value.is_empty() {
+            return value;
+        }
+    }
+    "unknown-process".to_string()
 }
 
 #[derive(Debug, Clone, Default)]
@@ -378,6 +437,9 @@ fn behavior_cluster_assessment(
     let cwd = string_field(event, "cwd");
     let euid = string_field(event, "euid");
     let socket_fd_count = string_field(event, "socket_fd_count")
+        .parse::<usize>()
+        .unwrap_or(0);
+    let public_outbound_count = string_field(event, "public_outbound_count")
         .parse::<usize>()
         .unwrap_or(0);
 
@@ -428,6 +490,20 @@ fn behavior_cluster_assessment(
     }
     if let Some(cpu) = high_cpu_signal(event, ctx) {
         assessment.add_signal(25, "sustained_high_cpu", cpu.reason());
+    }
+    if public_outbound_count > 0 {
+        assessment.add_signal(
+            20,
+            "public_outbound_connections",
+            "process has established outbound connections to public addresses",
+        );
+    }
+    if !string_field(event, "container_context").is_empty() && assessment.score >= 40 {
+        assessment.add_signal(
+            10,
+            "container_context",
+            "process is running inside a container or container-managed cgroup",
+        );
     }
     if euid == ROOT_UID && assessment.score >= 55 {
         assessment.add_signal(
@@ -629,10 +705,50 @@ fn high_cpu_signal(event: &RawEvent, ctx: &DetectContext) -> Option<HighCpuSigna
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct OutboundContext {
+    total: usize,
+    public: usize,
+    remote_ports: Vec<String>,
+}
+
+fn outbound_context_by_pid(events: &[RawEvent]) -> BTreeMap<String, OutboundContext> {
+    let mut by_pid = BTreeMap::<String, OutboundContext>::new();
+    for event in events
+        .iter()
+        .filter(|event| event.kind == "outbound_connection")
+    {
+        let Some(pid) = event.field("pid").filter(|pid| !pid.trim().is_empty()) else {
+            continue;
+        };
+        let context = by_pid.entry(pid.to_string()).or_default();
+        context.total += 1;
+        if event.field("remote_public") == Some("true") {
+            context.public += 1;
+        }
+        if let Some(port) = event
+            .field("remote_port")
+            .filter(|port| !port.trim().is_empty())
+        {
+            context.remote_ports.push(port.to_string());
+            context.remote_ports.sort();
+            context.remote_ports.dedup();
+        }
+    }
+    by_pid
+}
+
 fn push_evidence_if_present(items: &mut Vec<sentinel_core::Evidence>, event: &RawEvent, key: &str) {
     let value = string_field(event, key);
     if !value.trim().is_empty() {
         items.push(evidence(key, value));
+    }
+}
+
+fn push_package_owner_if_available(items: &mut Vec<sentinel_core::Evidence>, event: &RawEvent) {
+    let path = string_field(event, "exe_path");
+    if let Some(owner) = package_owner_for_path(&path) {
+        items.push(evidence("package_owner", owner));
     }
 }
 
@@ -934,6 +1050,34 @@ mod tests {
     }
 
     #[test]
+    fn behavior_cluster_uses_public_outbound_context_for_renamed_process() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let process = process_event("/usr/local/bin/.sysd", ".sysd", ".sysd --worker")
+            .with_field("cwd", "/")
+            .with_field("euid", "0")
+            .with_field("socket_fd_count", "1");
+        let outbound = RawEvent::new("network", "outbound_connection")
+            .with_field("pid", "42")
+            .with_field("remote_addr", "8.8.8.8")
+            .with_field("remote_port", "443")
+            .with_field("remote_public", "true");
+
+        let findings = ProcessDetector.detect(&[process, outbound], &ctx);
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.rule_id == "PROC-005")
+            .expect("renamed process behavior cluster finding");
+        assert!(finding.evidence.iter().any(|item| {
+            item.key == "risk_features" && item.value.contains("public_outbound_connections")
+        }));
+        assert!(finding
+            .evidence
+            .iter()
+            .any(|item| item.key == "outbound_remote_ports" && item.value == "443"));
+    }
+
+    #[test]
     fn temporary_process_dedup_uses_executable_path_not_pid() {
         let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
         let first = process_event("/tmp/.x", ".x", "/tmp/.x");
@@ -946,6 +1090,41 @@ mod tests {
         assert_eq!(right.len(), 1);
         assert_eq!(left[0].subject, "/tmp/.x");
         assert_eq!(left[0].dedup_key, right[0].dedup_key);
+    }
+
+    #[test]
+    fn process_dedup_ignores_volatile_runtime_metrics() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let first = process_event("/usr/local/bin/.sysd", ".sysd", ".sysd --worker")
+            .with_field("pid", "42")
+            .with_field("cwd", "/")
+            .with_field("euid", "0")
+            .with_field("socket_fd_count", "1")
+            .with_field("cpu_percent", "81.0")
+            .with_field("process_age_seconds", "130.0")
+            .with_field("public_outbound_count", "1");
+        let second = process_event("/usr/local/bin/.sysd", ".sysd", ".sysd --worker")
+            .with_field("pid", "84")
+            .with_field("cwd", "/")
+            .with_field("euid", "0")
+            .with_field("socket_fd_count", "1")
+            .with_field("cpu_percent", "97.0")
+            .with_field("process_age_seconds", "3600.0")
+            .with_field("public_outbound_count", "3");
+
+        let left = ProcessDetector.detect(&[first], &ctx);
+        let right = ProcessDetector.detect(&[second], &ctx);
+
+        let left = left
+            .iter()
+            .find(|finding| finding.rule_id == "PROC-005")
+            .expect("left behavior finding");
+        let right = right
+            .iter()
+            .find(|finding| finding.rule_id == "PROC-005")
+            .expect("right behavior finding");
+        assert_eq!(left.subject, "/usr/local/bin/.sysd");
+        assert_eq!(left.dedup_key, right.dedup_key);
     }
 
     #[test]
