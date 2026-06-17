@@ -26,7 +26,7 @@ Transport note: the matrix verifies every rule's rendered Telegram HTML payload 
 | Rule ID uniqueness and format | Passed |
 | Rust formatting | Passed |
 | Clippy with warnings denied | Passed |
-| Workspace tests | Passed: 99 tests |
+| Workspace tests | Passed: 102 tests |
 | Locked release build | Passed |
 | Installer/update/reload/stop script syntax | Passed |
 | Secret scan for provided Telegram credentials | Passed |
@@ -85,7 +85,9 @@ No new detector false-positive or false-negative behavior was found by the matri
 
 The VPS notification log review found a noise-control issue: durable state findings such as `CONFIG-001`, `CONFIG-004`, and `DOCKER-001` were correctly detected but could notify again after the one-hour event deduplication window elapsed. Runtime detection was correct, but the reminder policy was too noisy for unchanged host state. This round adds `noise_control.state_reminder_interval_seconds` with a default of 86400 seconds and applies it to durable state findings while leaving event findings, such as SSH logins, on the existing event deduplication window.
 
-The review did not identify a reason to change detector rule logic in this round. Existing detector modules already separate collection, rule evaluation, risk scoring, finding coalescing, notification rendering, and delivery concerns. The detector behavior is unchanged; the runtime noise-control policy now treats durable state findings differently from event findings.
+The latest-notification review also found two noisy `NET-001` alerts caused by v2ray UDP6 high ports. Generic UDP high ports can represent dynamic VPN, proxy, or QUIC-style traffic rather than stable public services. `NET-001` now applies only to ordinary TCP/TCP6 baseline drift. UDP coverage is retained for high-risk public service ports and suspicious listener processes through `CONFIG-003` and `NET-003`.
+
+Existing detector modules already separate collection, rule evaluation, risk scoring, finding coalescing, notification rendering, and delivery concerns. The runtime noise-control policy now treats durable state findings differently from event findings, and the network detector now distinguishes ordinary TCP service exposure from generic UDP high-port dynamic traffic.
 
 ## Commands
 

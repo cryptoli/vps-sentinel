@@ -389,7 +389,7 @@ public_listen_allowlist = [22, 80, 443]
 - Expected ports are not blindly trusted. vps-sentinel still checks the owning process, executable path, command line, and baseline owner drift, so a suspicious process behind 80/443 can still produce `NET-002` or `NET-003`.
 - `high_risk_public_ports` is the configurable high-risk service list. These ports are reported from the current socket state unless explicitly allowlisted in `[allowlist].listening_ports`.
 - `public_listen_allowlist` is treated as a legacy alias for expected public ports. Use `[allowlist].listening_ports` only when you intentionally want to suppress all network findings for a port.
-- `NET-001` is emitted only for ordinary public ports that are new relative to the stored baseline, not for every stable listening socket on every scan.
+- `NET-001` is emitted only for ordinary TCP/TCP6 public ports that are new relative to the stored baseline, not for every stable listening socket on every scan. Generic UDP high ports are treated as dynamic traffic unless they match a high-risk service port or a suspicious listener process.
 
 Process indicator policy:
 

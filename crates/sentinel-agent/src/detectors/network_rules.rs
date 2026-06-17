@@ -76,7 +76,10 @@ impl Detector for NetworkDetector {
                 findings.push(listener_owner_changed(event, ctx));
             } else if policy.is_expected_public(port) {
                 continue;
-            } else if event.source == "baseline" && ctx.config.network.alert_on_new_listening_port {
+            } else if event.source == "baseline"
+                && ctx.config.network.alert_on_new_listening_port
+                && is_tcp_protocol(event)
+            {
                 findings.push(public_listen(event, ctx));
             }
         }
@@ -213,6 +216,12 @@ fn push_evidence_if_present(items: &mut Vec<sentinel_core::Evidence>, event: &Ra
 
 fn is_public_addr(addr: &str) -> bool {
     matches!(addr, "0.0.0.0" | "::" | "ipv6")
+}
+
+fn is_tcp_protocol(event: &RawEvent) -> bool {
+    event
+        .field("protocol")
+        .is_some_and(|protocol| protocol.starts_with("tcp"))
 }
 
 struct PortPolicy {
