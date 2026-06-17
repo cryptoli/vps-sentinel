@@ -1,11 +1,5 @@
 # Changelog
 
-## 0.1.2
-
-- Fixed `vps-sentinel-update` to prefer release artifacts and fall back to source builds only when the artifact is unavailable or incompatible.
-- Hardened install and update Rust toolchain checks so a rustup proxy without a default toolchain is repaired instead of failing at `cargo build`.
-- Documented update-time release artifact options and clarified that existing local configuration, including notification credentials, is preserved.
-
 ## 0.1.1
 
 - Added `vs` as a short command alias and moved reload into the CLI command surface.
@@ -15,7 +9,10 @@
 - Added database size limiting and retention cleanup to reduce disk-full risk on small VPS hosts.
 - Improved web alert aggregation, stricter active-response block thresholds, and safer process/network risk scoring context.
 - Switched notification language default to Simplified Chinese and completed Chinese/English rendering for built-in rules and evidence fields.
-- Updated installer behavior, Linux compatibility notes, operational documentation, and release packaging contents.
+- Fixed `vps-sentinel-update` to prefer release artifacts and fall back to source builds only when the artifact is unavailable or incompatible.
+- Hardened install and update Rust toolchain checks so a rustup proxy without a default toolchain is repaired instead of failing at `cargo build`.
+- Adjusted the default SSH active-response block threshold to 15 failed logins, while keeping active response disabled unless explicitly enabled.
+- Updated installer behavior, Linux compatibility notes, operational documentation, release notes, and release packaging contents.
 
 ## 0.1.0
 

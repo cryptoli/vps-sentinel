@@ -921,9 +921,9 @@ mod tests {
     fn ssh_bruteforce_blocks_only_at_block_threshold() {
         let mut config = SentinelConfig::default();
         config.active_response.enabled = true;
-        config.active_response.ssh_failed_login_block_threshold = 20;
-        let below = ssh_finding("8.8.8.8", 19);
-        let above = ssh_finding("1.1.1.1", 20);
+        config.active_response.ssh_failed_login_block_threshold = 15;
+        let below = ssh_finding("8.8.8.8", 14);
+        let above = ssh_finding("1.1.1.1", 15);
 
         let candidates = block_candidates(&[below, above], &config);
 

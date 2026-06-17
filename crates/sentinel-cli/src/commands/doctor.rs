@@ -32,6 +32,21 @@ pub fn run_doctor(config: SentinelConfig) -> Result<()> {
         "active_response_enabled: {}",
         config.active_response.enabled
     );
+    println!(
+        "active_response_ssh_enabled: {}",
+        config.active_response.ssh_enabled
+    );
+    println!(
+        "ssh_failed_login_alert_threshold: {}",
+        config.ssh.failed_login_threshold
+    );
+    println!(
+        "ssh_failed_login_block_threshold: {}",
+        config.active_response.ssh_failed_login_block_threshold
+    );
+    if !config.active_response.enabled {
+        println!("warning: active response is disabled; findings will not write firewall blocks");
+    }
     if config.active_response.enabled {
         println!("nftables_available: {}", command_available("nft"));
         println!("iptables_available: {}", command_available("iptables"));

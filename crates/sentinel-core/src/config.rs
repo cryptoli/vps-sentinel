@@ -155,7 +155,7 @@ impl SentinelConfig {
                 "noise_control.max_alerts_per_hour must be greater than 0".to_string(),
             ));
         }
-        validate_active_response(&self.active_response)?;
+        validate_active_response(&self.active_response, &self.ssh)?;
         for quiet_hour in &self.noise_control.quiet_hours {
             quiet_hour.parse::<MinuteWindow>().map_err(|err| {
                 SentinelError::Config(format!(
@@ -190,7 +190,7 @@ impl SentinelConfig {
     }
 }
 
-fn validate_active_response(config: &ActiveResponseConfig) -> SentinelResult<()> {
+fn validate_active_response(config: &ActiveResponseConfig, ssh: &SshConfig) -> SentinelResult<()> {
     match config.firewall_backend.as_str() {
         "auto" | "nftables" | "iptables" => {}
         other => {
@@ -228,6 +228,12 @@ fn validate_active_response(config: &ActiveResponseConfig) -> SentinelResult<()>
         return Err(SentinelError::Config(
             "active_response.ssh_failed_login_block_threshold must be greater than 0".to_string(),
         ));
+    }
+    if config.ssh_enabled && config.ssh_failed_login_block_threshold < ssh.failed_login_threshold {
+        return Err(SentinelError::Config(format!(
+            "active_response.ssh_failed_login_block_threshold must be greater than or equal to ssh.failed_login_threshold ({})",
+            ssh.failed_login_threshold
+        )));
     }
     Ok(())
 }
@@ -470,6 +476,11 @@ mod tests {
 
         let mut config = SentinelConfig::default();
         config.active_response.ssh_failed_login_block_threshold = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.active_response.ssh_failed_login_block_threshold =
+            config.ssh.failed_login_threshold - 1;
         assert!(config.validate().is_err());
     }
 

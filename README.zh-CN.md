@@ -552,10 +552,10 @@ block_ttl_seconds = 3600
 max_blocks_per_scan = 20
 web_probe_block_threshold = 25
 web_exploit_block_threshold = 5
-ssh_failed_login_block_threshold = 20
+ssh_failed_login_block_threshold = 15
 ```
 
-主动响应默认关闭，因为它会修改本机防火墙策略。启用后，扫描器会在扫描内合并/去重之后、跨扫描通知去重之前执行封禁，因此同一来源计数升高时，即使重复通知会被压制，也仍能触发封禁。安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。封禁是临时的：nftables 使用 set timeout，程序也会把封禁状态写入 SQLite，后续扫描会清理过期记录。只有公网可路由来源 IP 才会被考虑，`[allowlist].ips` 始终优先。
+主动响应默认关闭，因为它会修改本机防火墙策略；需要设置 `active_response.enabled = true`，或安装时传入 `ACTIVE_RESPONSE_ENABLED=yes`，才会写入防火墙。启用后，扫描器会在扫描内合并/去重之后、跨扫描通知去重之前执行封禁，因此同一来源计数升高时，即使重复通知会被压制，也仍能触发封禁。SSH 封禁需要先形成 `SSH-003` finding，默认扫描窗口内 15 次失败触发封禁，而 SSH 告警阈值默认是 10。安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。封禁是临时的：nftables 使用 set timeout，程序也会把封禁状态写入 SQLite，后续扫描会清理过期记录。只有公网可路由来源 IP 才会被考虑，`[allowlist].ips` 始终优先。
 
 每次扫描都会先把主动响应状态和真实防火墙规则同步，再判断某个来源是否已经封禁。如果规则已过期、被 firewalld/ufw reload 清掉，或者被人工修改，程序会移除失效状态；如果该来源仍然满足高置信封禁条件，后续可以再次封禁。iptables 后端在插入前会用 `-C` 检查规则是否已存在，避免重复 DROP 规则；手动解除封禁会删除重复匹配规则。日常运维可以使用 `vs blocks list`、`vs blocks cleanup`、`vs blocks unblock <ip>` 和 `vs blocks unblock-all --yes`。
 
