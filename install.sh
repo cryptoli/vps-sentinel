@@ -265,6 +265,17 @@ checkout_or_update() {
   fi
 }
 
+install_binary_aliases() {
+  ln -sf vps-sentinel "$PREFIX/bin/vs"
+  rm -f "$PREFIX/bin/vps-sentinel-reload"
+}
+
+release_binary_works() {
+  binary="$1"
+  [ -x "$binary" ] || chmod 0755 "$binary" 2>/dev/null || return 1
+  "$binary" --version >/dev/null 2>&1
+}
+
 install_from_release() {
   url="$(release_url)" || return 1
   tmp_dir="$(mktemp -d)"
@@ -275,9 +286,15 @@ install_from_release() {
     return 1
   fi
   tar -xzf "$archive" -C "$tmp_dir"
+  if ! release_binary_works "$tmp_dir/vps-sentinel"; then
+    echo "release artifact binary cannot execute on this host; falling back to source build"
+    rm -rf "$tmp_dir"
+    return 1
+  fi
   install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
   install -m 0755 "$tmp_dir/vps-sentinel" "$PREFIX/bin/vps-sentinel"
-  for script in reload stop update install; do
+  install_binary_aliases
+  for script in stop update install; do
     if [ -f "$tmp_dir/${script}.sh" ]; then
       install -m 0755 "$tmp_dir/${script}.sh" "$PREFIX/bin/vps-sentinel-${script}"
     fi
@@ -305,7 +322,8 @@ build_and_install() {
   cargo build --release --locked
   install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
   install -m 0755 target/release/vps-sentinel "$PREFIX/bin/vps-sentinel"
-  for script in reload stop update install; do
+  install_binary_aliases
+  for script in stop update install; do
     if [ -f "${script}.sh" ]; then
       install -m 0755 "${script}.sh" "$PREFIX/bin/vps-sentinel-${script}"
     fi
@@ -447,10 +465,13 @@ activate_systemd_service() {
 case "$INSTALL_METHOD" in
   release)
     install_deps release
-    install_from_release || {
-      echo "release installation failed" >&2
-      exit 1
-    }
+    if ! install_from_release; then
+      echo "release installation failed; falling back to source build"
+      install_deps source
+      ensure_rust
+      checkout_or_update
+      build_and_install
+    fi
     ;;
   auto)
     install_deps release

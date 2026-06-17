@@ -24,7 +24,6 @@ jobs:
         run: |
           bash -n install.sh
           bash -n update.sh
-          bash -n reload.sh
           bash -n stop.sh
           bash -n tests/install_script_smoke.sh
       - name: Installer smoke test
@@ -47,7 +46,6 @@ jobs:
       - name: Test on ${{ matrix.name }}
         run: |
           docker run --rm \
-            -v "${{ github.workspace }}:/work" \
-            -w /work \
+            -v "${{ github.workspace }}:/src:ro" \
             "${{ matrix.image }}" \
-            sh -lc "${{ matrix.setup }} && cargo test --workspace --locked"
+            sh -lc "set -eu; ${{ matrix.setup }}; mkdir -p /work; cp -a /src/. /work/; cd /work; cargo test --workspace --locked"

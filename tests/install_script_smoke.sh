@@ -29,7 +29,6 @@ cp "${binary_path}" "${package_dir}/vps-sentinel"
 cp "${repo_root}/config/config.example.toml" "${package_dir}/config.example.toml"
 cp "${repo_root}/install.sh" \
   "${repo_root}/update.sh" \
-  "${repo_root}/reload.sh" \
   "${repo_root}/stop.sh" \
   "${package_dir}/"
 cp "${repo_root}/packaging/systemd/vps-sentinel.service" \
@@ -57,10 +56,11 @@ install_root="${tmp_dir}/install-root"
   sh "${repo_root}/install.sh"
 
 "${as_root[@]}" test -x "${install_root}/usr/local/bin/vps-sentinel"
+"${as_root[@]}" test -x "${install_root}/usr/local/bin/vs"
 "${as_root[@]}" test -x "${install_root}/usr/local/bin/vps-sentinel-update"
-"${as_root[@]}" test -x "${install_root}/usr/local/bin/vps-sentinel-reload"
 "${as_root[@]}" test -x "${install_root}/usr/local/bin/vps-sentinel-stop"
 "${as_root[@]}" test -f "${install_root}/etc/vps-sentinel/config.toml"
+"${as_root[@]}" "${install_root}/usr/local/bin/vs" --version
 "${as_root[@]}" "${install_root}/usr/local/bin/vps-sentinel" \
   --config "${install_root}/etc/vps-sentinel/config.toml" \
   config validate

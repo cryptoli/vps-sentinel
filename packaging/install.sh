@@ -23,11 +23,16 @@ fi
 
 install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
 install -m 0755 "$BIN_PATH" "$PREFIX/bin/vps-sentinel"
-if [ -f reload.sh ]; then
-  install -m 0755 reload.sh "$PREFIX/bin/vps-sentinel-reload"
-fi
+ln -sf vps-sentinel "$PREFIX/bin/vs"
+rm -f "$PREFIX/bin/vps-sentinel-reload"
 if [ -f stop.sh ]; then
   install -m 0755 stop.sh "$PREFIX/bin/vps-sentinel-stop"
+fi
+if [ -f update.sh ]; then
+  install -m 0755 update.sh "$PREFIX/bin/vps-sentinel-update"
+fi
+if [ -f install.sh ]; then
+  install -m 0755 install.sh "$PREFIX/bin/vps-sentinel-install"
 fi
 
 if [ ! -f "$CONFIG_DIR/config.toml" ]; then

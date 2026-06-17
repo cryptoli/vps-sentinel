@@ -39,7 +39,7 @@ It is not:
 | Storage | Stores raw events, findings, baselines, and notification logs in local SQLite. |
 | Noise control | Uses allowlists, minimum severity, finding deduplication, and configurable retention windows. |
 | Notifications | Sends alerts through Telegram, Email SMTP, generic webhook, ntfy, Gotify, Bark, and ServerChan. |
-| Operations | Provides a single CLI binary, JSON logs, systemd unit, one-command installer, update script, reload helper, and stop helper. |
+| Operations | Provides a single CLI binary, `vs` shorthand, JSON logs, systemd unit, one-command installer, update script, built-in reload command, and stop helper. |
 
 ## Detection Model
 
@@ -167,7 +167,7 @@ vps-sentinel targets Linux VPS hosts with `/proc`, a POSIX shell, and root-level
 
 CI runs the normal Rust test suite on Ubuntu, validates shell scripts, runs a temporary installer smoke test, and runs container compatibility tests on Debian Bookworm and Alpine musl. Release workflow targets are prepared for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, and `aarch64-unknown-linux-musl`.
 
-systemd is optional for installation but required for `vps-sentinel-reload`, `vps-sentinel-stop`, and automatic daemon management. Without systemd, the installer still builds the binary and writes configuration; run the daemon under your own init system. Running as non-root degrades visibility instead of crashing, but SSH logs, `/proc/<pid>/fd`, protected files, and persistence paths may be incomplete.
+systemd is optional for installation but required for service reload/start/stop management. Without systemd, the installer still builds the binary and writes configuration; run the daemon under your own init system. Running as non-root degrades visibility instead of crashing, but SSH logs, `/proc/<pid>/fd`, protected files, and persistence paths may be incomplete.
 
 ## Implementation And Effect
 
@@ -195,12 +195,13 @@ The installer:
 
 - detects apt, dnf, yum, apk, or pacman;
 - installs build dependencies if needed;
-- tries to install a release artifact by default and falls back to a source build when the artifact is unavailable;
+- tries to install a release artifact by default and falls back to a source build when the artifact is unavailable or cannot execute on the host;
 - installs Rust with rustup when a source build is needed and `cargo` is missing;
 - clones this repository to `/opt/vps-sentinel-src` only for source builds;
 - builds `vps-sentinel` in release mode when source fallback is used;
-- installs the binary to `/usr/local/bin/vps-sentinel`;
-- installs `vps-sentinel-install`, `vps-sentinel-update`, `vps-sentinel-reload`, and `vps-sentinel-stop` helper commands when the package or source tree contains them;
+- installs the binary to `/usr/local/bin/vps-sentinel` and the shorthand symlink `/usr/local/bin/vs`;
+- installs `vps-sentinel-install`, `vps-sentinel-update`, and `vps-sentinel-stop` helper commands when the package or source tree contains them;
+- tests a downloaded release binary with `--version` before installing it; if it cannot run on the host, the installer falls back to a source build;
 - creates `/etc/vps-sentinel/config.toml` only if it does not already exist;
 - optionally writes Telegram settings from environment variables;
 - installs the systemd unit before baseline bootstrap when systemd is available;
@@ -240,7 +241,7 @@ Useful installer switches:
 | `DATA_DIR` | `/var/lib/vps-sentinel` | SQLite data directory. |
 | `LOG_DIR` | `/var/log/vps-sentinel` | Runtime log directory. |
 | `INSTALL_DEPS` | `yes` | Set to `no` to skip package manager dependency installation. |
-| `INSTALL_METHOD` | `auto` | `auto` tries release artifact first and falls back to source; `release` requires a release artifact; `source` always builds locally. |
+| `INSTALL_METHOD` | `auto` | `auto` and `release` try a release artifact first and fall back to source if the artifact is missing or cannot execute on the host; `source` always builds locally. |
 | `RELEASE_VERSION` | `latest` | Release tag to download when `INSTALL_METHOD` is `auto` or `release`. |
 | `RELEASE_ARTIFACT_URL` | empty | Override the release artifact URL. Useful for mirrors, local artifact testing, and CI smoke tests. |
 | `TARGET_TRIPLE` | auto-detected | Override release artifact target, for example `x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-musl`. |
@@ -267,7 +268,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-The update script pulls the selected branch, rebuilds the binary, preserves the existing config, removes deprecated config keys after writing a `.bak` backup, validates it, refreshes the systemd unit when available, and restarts an active or enabled service so the new binary is actually running. It does not refresh an existing baseline by default, so unreviewed host drift such as `authorized_keys` changes is not silently trusted during an update. Unchanged systemd unit content is not rewritten, so routine updates do not churn unit file mtimes. Use `vps-sentinel-reload` for config-only changes that do not replace the binary.
+The update script pulls the selected branch, rebuilds the binary, preserves the existing config, removes deprecated config keys after writing a `.bak` backup, validates it, refreshes the systemd unit when available, updates the `vs` shorthand, and restarts an active or enabled service so the new binary is actually running. It does not refresh an existing baseline by default, so unreviewed host drift such as `authorized_keys` changes is not silently trusted during an update. Unchanged systemd unit content is not rewritten, so routine updates do not churn unit file mtimes. Use `vps-sentinel reload` or `vs reload` for config-only changes that do not replace the binary.
 
 Useful update switches:
 
@@ -291,7 +292,8 @@ Useful update switches:
 After editing `/etc/vps-sentinel/config.toml`, reload safely:
 
 ```bash
-sudo vps-sentinel-reload
+sudo vps-sentinel reload
+sudo vs reload
 ```
 
 Equivalent systemd command:
@@ -300,7 +302,7 @@ Equivalent systemd command:
 sudo systemctl reload vps-sentinel
 ```
 
-The reload path validates the TOML first. If validation fails, the daemon keeps the previous in-memory configuration.
+The reload path validates the TOML first, then asks systemd to reload the running service. If validation fails, the daemon keeps the previous in-memory configuration.
 
 ## Stop Service
 
@@ -353,6 +355,12 @@ Global options:
 | `--version` | Print the installed version. |
 | `--help` | Show command help. |
 
+Installed shorthand:
+
+| Command | Meaning |
+| --- | --- |
+| `vs ...` | Short alias for `vps-sentinel ...`, installed as a symlink by `install.sh`, `update.sh`, and release packages. |
+
 Commands:
 
 | Command | Meaning |
@@ -364,6 +372,7 @@ Commands:
 | `vps-sentinel config diff-default --config <path>` | Compare a config file with current defaults and list missing, unknown, and deprecated keys. |
 | `vps-sentinel config migrate --config <path>` | Remove deprecated keys after writing a `.bak` backup and validating the migrated config. |
 | `vps-sentinel config migrate --dry-run --config <path>` | Show deprecated keys that would be removed without changing the file. |
+| `vps-sentinel reload --config <path>` | Validate the config and reload the running systemd service. Use `vs reload` after installing the shorthand. |
 | `vps-sentinel doctor --config <path>` | Check runtime readiness: root visibility, Unix target support, storage directory writability, and configured auth log visibility. |
 | `vps-sentinel check --config <path>` | Run collectors and detectors once without persisting results or sending notifications. Good for quick inspection and CI-style smoke tests. |
 | `vps-sentinel scan --config <path>` | Run one full scan, persist raw events/findings, update notification logs, apply deduplication, and send enabled notifications. |
@@ -378,7 +387,6 @@ Commands:
 | `vps-sentinel rules list` | List built-in detection rules, severity, and descriptions. |
 | `vps-sentinel rules test <rule_id>` | Verify that a built-in rule ID exists and can be loaded. |
 | `vps-sentinel notify test --config <path>` | Send a synthetic Info finding through enabled notification channels. Use this to verify credentials and routing. |
-| `vps-sentinel-reload` | Validate `/etc/vps-sentinel/config.toml` and reload the running systemd service. |
 | `vps-sentinel-stop` | Stop the running systemd service while keeping config, data, logs, and binaries in place. |
 
 ## Configuration
@@ -545,7 +553,7 @@ Normal service wrappers such as `/bin/sh -c '/usr/local/bin/app --listen 0.0.0.0
 
 The repository includes a release workflow but publishing is intentionally tag-driven. A `v*` tag builds Linux tarballs for GNU and musl targets on x86_64/aarch64, validates package contents, generates SHA-256 checksum files, builds `.deb` and `.rpm` packages from the x86_64 GNU artifact, and uploads them to the GitHub release. The installer is prepared to consume these artifacts through `INSTALL_METHOD=auto` or `INSTALL_METHOD=release`, and `RELEASE_ARTIFACT_URL` supports mirrors or local package smoke tests.
 
-Until a release exists, `INSTALL_METHOD=auto` falls back to the existing source build path. Packaged installs still create `/etc/vps-sentinel/config.toml`, install helper scripts, validate config, bootstrap a baseline, and install systemd when available.
+Until a release exists, `INSTALL_METHOD=auto` and `INSTALL_METHOD=release` fall back to the existing source build path. Packaged installs still create `/etc/vps-sentinel/config.toml`, install the `vs` shorthand and helper scripts, validate config, bootstrap a baseline, and install systemd when available.
 
 ## Alert Format
 

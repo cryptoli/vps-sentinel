@@ -170,6 +170,11 @@ migrate_config() {
   fi
 }
 
+install_binary_aliases() {
+  ln -sf vps-sentinel "$PREFIX/bin/vs"
+  rm -f "$PREFIX/bin/vps-sentinel-reload"
+}
+
 if [ -d "$WORK_DIR/.git" ]; then
   git -C "$WORK_DIR" fetch origin "$BRANCH"
   git -C "$WORK_DIR" checkout "$BRANCH"
@@ -183,7 +188,8 @@ cd "$WORK_DIR"
 cargo build --release --locked
 install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
 install -m 0755 target/release/vps-sentinel "$PREFIX/bin/vps-sentinel"
-for script in reload stop update install; do
+install_binary_aliases
+for script in stop update install; do
   if [ -f "${script}.sh" ]; then
     install -m 0755 "${script}.sh" "$PREFIX/bin/vps-sentinel-${script}"
   fi

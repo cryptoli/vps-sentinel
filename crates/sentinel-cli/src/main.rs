@@ -9,6 +9,7 @@ use commands::{
     events::{run_events, EventsCommand},
     init::run_init,
     notify::{run_notify, NotifyCommand},
+    reload::run_reload,
     rules::{run_rules, RulesCommand},
     scan::{run_check, run_scan_command},
 };
@@ -69,6 +70,10 @@ enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    Reload {
+        #[arg(long, default_value = "vps-sentinel")]
+        service_name: String,
+    },
     Doctor,
 }
 
@@ -99,6 +104,10 @@ async fn main() -> Result<()> {
             run_notify(load_config(cli.config.as_deref())?, command).await
         }
         Command::Config { command } => run_config(cli.config.as_deref(), command),
+        Command::Reload { service_name } => {
+            let (_, path) = load_config_with_path(cli.config.as_deref())?;
+            run_reload(path, &service_name)
+        }
         Command::Doctor => run_doctor(load_config(cli.config.as_deref())?),
     }
 }

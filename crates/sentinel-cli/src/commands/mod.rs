@@ -4,5 +4,6 @@ pub mod doctor;
 pub mod events;
 pub mod init;
 pub mod notify;
+pub mod reload;
 pub mod rules;
 pub mod scan;
