@@ -1,8 +1,10 @@
 use crate::baseline::BaselineSnapshot;
+use blake3::Hasher;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use sentinel_core::{Finding, RawEvent, SentinelError, SentinelResult};
 use serde::{de::DeserializeOwned, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -33,16 +35,18 @@ impl SqliteStore {
             .transaction()
             .map_err(|err| SentinelError::Storage(err.to_string()))?;
         for event in events {
-            let payload = serde_json::to_string(event)
+            let mut stored_event = event.clone();
+            stored_event.id = raw_event_storage_id(event);
+            let payload = serde_json::to_string(&stored_event)
                 .map_err(|err| SentinelError::Storage(err.to_string()))?;
             tx.execute(
                 "INSERT OR REPLACE INTO raw_events (id, source, kind, timestamp, payload_json)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
-                    event.id,
-                    event.source,
-                    event.kind,
-                    event.timestamp.to_rfc3339(),
+                    stored_event.id,
+                    stored_event.source,
+                    stored_event.kind,
+                    stored_event.timestamp.to_rfc3339(),
                     payload
                 ],
             )
@@ -380,11 +384,93 @@ impl SqliteStore {
     }
 }
 
+fn raw_event_storage_id(event: &RawEvent) -> String {
+    let mut hasher = Hasher::new();
+    hasher.update(event.source.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(event.kind.as_bytes());
+    hasher.update(b"\n");
+    for (key, value) in stable_raw_event_fields(event) {
+        hasher.update(key.as_bytes());
+        hasher.update(b"=");
+        hasher.update(value.as_bytes());
+        hasher.update(b"\n");
+    }
+    format!("raw-{}", hasher.finalize().to_hex())
+}
+
+fn stable_raw_event_fields(event: &RawEvent) -> BTreeMap<String, String> {
+    let mut fields = BTreeMap::new();
+    match event.kind.as_str() {
+        "web_access" => {
+            if let Some(raw) = event.field("raw").filter(|value| !value.trim().is_empty()) {
+                insert_field(&mut fields, "log_source", event);
+                fields.insert("raw".to_string(), raw.to_string());
+            } else {
+                insert_fields(
+                    &mut fields,
+                    event,
+                    &["ip", "method", "path", "status", "log_source"],
+                );
+            }
+        }
+        "process_snapshot" => {
+            insert_fields(
+                &mut fields,
+                event,
+                &["pid", "process_start_ticks", "exe_path", "cmdline", "name"],
+            );
+        }
+        _ => {
+            for (key, value) in &event.fields {
+                if !is_volatile_raw_event_field(key) {
+                    fields.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    }
+    if fields.is_empty() {
+        for (key, value) in &event.fields {
+            fields.insert(key.clone(), value.clone());
+        }
+    }
+    fields
+}
+
+fn insert_fields(fields: &mut BTreeMap<String, String>, event: &RawEvent, keys: &[&str]) {
+    for key in keys {
+        insert_field(fields, key, event);
+    }
+}
+
+fn insert_field(fields: &mut BTreeMap<String, String>, key: &str, event: &RawEvent) {
+    if let Some(value) = event.field(key).filter(|value| !value.trim().is_empty()) {
+        fields.insert(key.to_string(), value.to_string());
+    }
+}
+
+fn is_volatile_raw_event_field(key: &str) -> bool {
+    matches!(
+        key,
+        "cpu_percent"
+            | "cpu_total_seconds"
+            | "process_age_seconds"
+            | "socket_fd_count"
+            | "outbound_connection_count"
+            | "public_outbound_count"
+            | "process_start_changed"
+            | "process_start_drift"
+            | "previous_process_start_ticks"
+            | "current_process_start_ticks"
+            | "package_activity_recent"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::SqliteStore;
     use chrono::Utc;
-    use sentinel_core::{Category, Finding, Severity};
+    use sentinel_core::{Category, Finding, RawEvent, Severity};
     use serde::{Deserialize, Serialize};
 
     #[test]
@@ -419,6 +505,37 @@ mod tests {
             store.notification_attempt_count_since(Utc::now() - chrono::Duration::minutes(1))?,
             1
         );
+        Ok(())
+    }
+
+    #[test]
+    fn raw_event_storage_replaces_duplicate_web_log_lines() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let raw = r#"203.0.113.9 - - [17/Jun/2026:10:00:00 +0000] "GET /.env HTTP/1.1" 404 123 "-" "curl/8""#;
+        let first = RawEvent::new("web", "web_access")
+            .with_field("ip", "203.0.113.9")
+            .with_field("method", "GET")
+            .with_field("path", "/.env")
+            .with_field("status", "404")
+            .with_field("log_source", "/var/log/nginx/access.log")
+            .with_field("raw", raw);
+        let second = RawEvent::new("web", "web_access")
+            .with_field("ip", "203.0.113.9")
+            .with_field("method", "GET")
+            .with_field("path", "/.env")
+            .with_field("status", "404")
+            .with_field("log_source", "/var/log/nginx/access.log")
+            .with_field("raw", raw);
+
+        store.save_raw_events(&[first, second])?;
+        let count: i64 =
+            store
+                .connection()?
+                .query_row("SELECT COUNT(*) FROM raw_events", [], |row| row.get(0))?;
+
+        assert_eq!(count, 1);
         Ok(())
     }
 

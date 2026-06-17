@@ -126,6 +126,12 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "method" => "method",
             "status" => "status",
             "log_source" => "log source",
+            "log_sources" => "log sources",
+            "methods" => "methods",
+            "probe_family" => "probe family",
+            "request_count" => "request count",
+            "response_profile" => "response profile",
+            "sample_paths" => "sample paths",
             "failure_count" => "failure count",
             other => other,
         },
@@ -177,6 +183,12 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "method" => "认证方式",
             "status" => "状态码",
             "log_source" => "日志来源",
+            "log_sources" => "日志来源",
+            "methods" => "请求方法",
+            "probe_family" => "探测类型",
+            "request_count" => "请求次数",
+            "response_profile" => "响应画像",
+            "sample_paths" => "样例路径",
             "failure_count" => "失败次数",
             other => other,
         },
@@ -185,6 +197,12 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
 }
 
 pub fn evidence_value_label(key: &str, value: &str, language: NotificationLanguage) -> String {
+    if key == "probe_family" {
+        return probe_family_value_label(value, language)
+            .unwrap_or(value)
+            .to_string();
+    }
+
     match (key, value, language) {
         ("process_start_drift", "changed", NotificationLanguage::En) => {
             "changed since previous scan".to_string()
@@ -192,6 +210,79 @@ pub fn evidence_value_label(key: &str, value: &str, language: NotificationLangua
         ("process_start_drift", "changed", NotificationLanguage::ZhCn) => {
             "较上一轮扫描发生变化".to_string()
         }
+        ("response_profile", "successful_response", NotificationLanguage::En) => {
+            "successful response".to_string()
+        }
+        ("response_profile", "protected_response", NotificationLanguage::En) => {
+            "protected response".to_string()
+        }
+        ("response_profile", "redirected_response", NotificationLanguage::En) => {
+            "redirected response".to_string()
+        }
+        ("response_profile", "missing_or_rejected", NotificationLanguage::En) => {
+            "missing or rejected".to_string()
+        }
+        ("response_profile", "server_error", NotificationLanguage::En) => {
+            "server error".to_string()
+        }
+        ("response_profile", "unknown_response", NotificationLanguage::En) => {
+            "unknown response".to_string()
+        }
+        ("response_profile", "successful_response", NotificationLanguage::ZhCn) => {
+            "成功响应".to_string()
+        }
+        ("response_profile", "protected_response", NotificationLanguage::ZhCn) => {
+            "受保护响应".to_string()
+        }
+        ("response_profile", "redirected_response", NotificationLanguage::ZhCn) => {
+            "重定向响应".to_string()
+        }
+        ("response_profile", "missing_or_rejected", NotificationLanguage::ZhCn) => {
+            "不存在或被拒绝".to_string()
+        }
+        ("response_profile", "server_error", NotificationLanguage::ZhCn) => {
+            "服务端错误".to_string()
+        }
+        ("response_profile", "unknown_response", NotificationLanguage::ZhCn) => {
+            "未知响应".to_string()
+        }
         _ => value.to_string(),
+    }
+}
+
+fn probe_family_value_label(value: &str, language: NotificationLanguage) -> Option<&'static str> {
+    match language {
+        NotificationLanguage::En => match value {
+            "env_file" => Some(".env exposure probe"),
+            "git_exposure" => Some(".git exposure probe"),
+            "phpunit_eval_stdin" => Some("PHPUnit eval-stdin probe"),
+            "cgi_shell_traversal" => Some("CGI shell traversal attempt"),
+            "command_injection" => Some("command-injection payload"),
+            "sql_injection" => Some("SQL-injection payload"),
+            "path_traversal" => Some("path-traversal probe"),
+            "phpmyadmin" => Some("phpMyAdmin probe"),
+            "wordpress_admin" => Some("WordPress admin probe"),
+            "boaform" => Some("Boa router form probe"),
+            "actuator" => Some("Spring actuator probe"),
+            "server_status" => Some("server-status probe"),
+            "generic_cgi" => Some("generic CGI probe"),
+            _ => None,
+        },
+        NotificationLanguage::ZhCn => match value {
+            "env_file" => Some(".env 暴露探测"),
+            "git_exposure" => Some(".git 暴露探测"),
+            "phpunit_eval_stdin" => Some("PHPUnit eval-stdin 探测"),
+            "cgi_shell_traversal" => Some("CGI shell 路径穿越尝试"),
+            "command_injection" => Some("命令注入 payload"),
+            "sql_injection" => Some("SQL 注入 payload"),
+            "path_traversal" => Some("路径穿越探测"),
+            "phpmyadmin" => Some("phpMyAdmin 探测"),
+            "wordpress_admin" => Some("WordPress admin 探测"),
+            "boaform" => Some("Boa 路由器表单探测"),
+            "actuator" => Some("Spring actuator 探测"),
+            "server_status" => Some("server-status 探测"),
+            "generic_cgi" => Some("通用 CGI 探测"),
+            _ => None,
+        },
     }
 }

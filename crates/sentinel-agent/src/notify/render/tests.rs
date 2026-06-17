@@ -76,6 +76,35 @@ fn localizes_process_start_drift_evidence_value() {
 }
 
 #[test]
+fn localizes_web_probe_family_evidence_value() {
+    let finding = Finding::new(
+        "host",
+        "Web vulnerability probing detected",
+        "Web requests match a known probing family.",
+        Severity::Medium,
+        Category::Web,
+        "WEB-001",
+        "203.0.113.40",
+    )
+    .with_evidence(vec![Evidence::new("probe_family", "command_injection")]);
+    let english = render_finding_with_language(
+        &finding,
+        NotificationFormat::PlainText,
+        NotificationLanguage::En,
+    );
+    let chinese = render_finding_with_language(
+        &finding,
+        NotificationFormat::PlainText,
+        NotificationLanguage::ZhCn,
+    );
+
+    assert!(english.contains("probe family: command-injection payload"));
+    assert!(chinese.contains("探测类型: 命令注入 payload"));
+    assert!(!english.contains("command_injection"));
+    assert!(!chinese.contains("command_injection"));
+}
+
+#[test]
 fn renders_html_without_raw_markup_in_values() {
     let finding = sample_finding().with_evidence(vec![Evidence::new("path", "<script>")]);
     let alert = render_alert(&finding);

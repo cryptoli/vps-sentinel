@@ -463,6 +463,17 @@ impl BehaviorAssessment {
     fn has_feature(&self, feature: &str) -> bool {
         self.features.contains(feature)
     }
+
+    fn has_primary_behavior_signal(&self) -> bool {
+        [
+            "kernel_thread_masquerade",
+            "web_path_executable",
+            "hidden_executable_name",
+            "suspicious_cwd",
+        ]
+        .iter()
+        .any(|feature| self.features.contains(*feature))
+    }
 }
 
 fn behavior_cluster_assessment(
@@ -559,7 +570,7 @@ fn behavior_cluster_assessment(
         );
     }
 
-    if assessment.score == 0 {
+    if assessment.score == 0 || !assessment.has_primary_behavior_signal() {
         None
     } else {
         Some(assessment)
@@ -1210,6 +1221,27 @@ mod tests {
         let event = process_event("/usr/sbin/nginx", "nginx", "nginx: worker process")
             .with_field("cwd", "/")
             .with_field("socket_fd_count", "64");
+
+        let findings = ProcessDetector.detect(&[event], &ctx);
+
+        assert!(findings.iter().all(|finding| finding.rule_id != "PROC-005"));
+    }
+
+    #[test]
+    fn behavior_cluster_ignores_business_service_with_root_sockets_and_restart() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event(
+            "/root/quant-qmt-RL-new/runtime/bin/quant-backend",
+            "quant-backend",
+            "/root/quant-qmt-RL-new/runtime/bin/quant-backend",
+        )
+        .with_field("cwd", "/root/quant-qmt-RL-new")
+        .with_field("euid", "0")
+        .with_field("socket_fd_count", "22")
+        .with_field("public_outbound_count", "14")
+        .with_field("process_start_changed", "true")
+        .with_field("previous_process_start_ticks", "100")
+        .with_field("current_process_start_ticks", "200");
 
         let findings = ProcessDetector.detect(&[event], &ctx);
 

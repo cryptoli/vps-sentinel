@@ -33,10 +33,10 @@
 | 持久化检查 | 监控 cron、systemd、shell profile、`ld.so.preload` 等启动相关位置，并对可疑启动命令进行风险评分。 |
 | 进程检查 | 读取 procfs argv、父进程、可执行路径、工作目录、UID 上下文、socket FD 数、CPU 生命周期指标、procfs 启动时间漂移、cgroup/container 上下文、systemd unit/ExecStart、可执行文件 owner/size/hash、软件包归属和出站连接画像，识别临时目录执行、达到风险评分阈值的 deleted executable、网络命令执行桥接、可疑行为聚类和已知挖矿/扫描器身份。 |
 | 网络检查 | 读取监听 socket 与所属进程；附加进程上下文和防火墙状态；检测高风险公网服务、可疑监听进程、监听 owner 基线漂移和新增公网监听。22/80/443 等预期端口会降低噪音，但不会被无脑信任。 |
-| Web 日志 | 解析常见 access log 行，检测自动化漏洞探测路径。 |
+| Web 日志 | 解析常见 access log 行，将自动化探测归类为攻击家族，并按来源聚合同类路径，避免按路径刷屏。 |
 | Rootkit 信号 | 采集轻量级本地指标，用于发现隐藏进程和可疑 procfs 行为。 |
 | Docker 上下文 | 检测 Docker 可用性并给出初始容器攻击面提示，不要求 Docker 写权限。 |
-| 本地存储 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和通知日志。 |
+| 本地存储 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和通知日志；重复 raw fact 使用稳定存储键，日志尾部重复扫描不会把相同行无限写入数据库。 |
 | 噪声控制 | 支持白名单、最低告警级别、finding 去重和保留周期。 |
 | 通知告警 | 支持 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan。 |
 | 运维部署 | 单 CLI 二进制、`vs` 简写、JSON 日志、systemd unit、一键安装脚本、更新脚本、内置重载命令和停止脚本。 |
@@ -179,7 +179,8 @@ CI 中使用的 Docker 容器只用于构建和兼容性测试，不代表推荐
 | SSH key 完整性 | 独立哈希监控 `authorized_keys` 和 `authorized_keys2`，不依赖总的文件完整性开关。 | 即使关闭通用文件完整性，也能发现 SSH 持久化 key 变化。 |
 | 文件和持久化漂移 | 使用 SQLite 保存本地基线，后续扫描做快照 diff；同一路径的文件/持久化 finding 会合并，并附带软件包活动上下文。 | 能发现真实漂移，同时减少合法软件更新时的判断成本；基线只会在用户明确执行命令时刷新。 |
 | WebShell 内容 | 对限定大小内的文件内容提取风险 marker，并结合 Web 路径、脚本类型和 marker 组合评分。 | 单个弱 marker 默认不告警，但能识别经典 Web 命令执行和编码 payload 组合。 |
-| 进程风险 | 读取 procfs argv、父进程、可执行路径、cwd、UID/EUID、deleted 状态、socket FD 数、生命周期 CPU 指标、启动时间漂移、cgroup/container 上下文、systemd unit/ExecStart、可执行文件元数据/hash、软件包归属和出站连接画像，并按规则评分、白名单、规则状态和同 PID 信号聚合处理。 | 识别临时路径执行、可疑 deleted executable、网络 shell 桥接、已知挖矿/扫描器身份和改名行为聚类，同时避免 PID、CPU、连接计数等波动字段导致重复消息。 |
+| Web 探测 | `WEB-001` 按来源 IP、探测家族和响应画像聚合。404 PHPUnit 目录爆破等未命中探测默认为 Low；敏感路径成功响应或受保护的 exploit 路径会提升等级。 | 扫描器命中大量路径变体时只生成一条可读 finding，而不是几十条 Telegram 消息。 |
+| 进程风险 | 读取 procfs argv、父进程、可执行路径、cwd、UID/EUID、deleted 状态、socket FD 数、生命周期 CPU 指标、启动时间漂移、cgroup/container 上下文、systemd unit/ExecStart、可执行文件元数据/hash、软件包归属和出站连接画像，并按规则评分、白名单、规则状态和同 PID 信号聚合处理。`PROC-005` 必须先出现伪装、隐藏、可疑目录或 Web 路径等主风险信号，socket、出站连接、重启漂移和 root 上下文只能辅助加权。 | 识别临时路径执行、可疑 deleted executable、网络 shell 桥接、已知挖矿/扫描器身份和改名行为聚类，同时避免 PID、CPU、连接计数等波动字段或正常高连接业务服务导致重复/误报消息。 |
 | 网络监听 | 解析 `/proc/net/tcp*` 和 `/proc/net/udp*`，通过 `/proc/<pid>/fd` 反查进程，与监听 owner 基线对比，附加进程/防火墙上下文，并优先报告可疑 owner 行为而不是普通端口暴露。 | 22/80/443 等预期端口只降低通用噪音；进程变化或可疑进程仍会告警，高风险端口画像和防火墙状态会作为证据保留。 |
 | 通知 | 将统一 `Finding` 模型按渠道模板渲染：Telegram HTML、Email HTML+纯文本、Markdown 或纯文本。 | 消息包含 VPS 名称、规范化时间、本地化字段、证据、影响和建议。 |
 | 噪声控制 | 使用扫描内去重、跨扫描去重、状态提醒间隔、安静时段和小时级通知预算。 | 减少重复消息，同时保留高价值告警的可见性。 |
@@ -509,7 +510,7 @@ Web 日志策略：
 error_burst_threshold = 20
 ```
 
-`error_burst_threshold` 控制同一来源 IP 在扫描窗口内产生多少次 403/404 后触发 `WEB-002`。小型私有服务可以调低，让探测更敏感；公开高流量站点如果自然存在大量缺失资源请求，可以适当调高，减少噪音。
+`WEB-001` 会识别 `.env`、`.git`、PHPUnit `eval-stdin.php`、CGI shell traversal、命令注入、SQL 注入、phpMyAdmin、WordPress admin、actuator、server-status 等探测家族。同一来源 IP 的相似路径会按探测家族和响应画像聚合。纯 404/400/301 目录爆破默认是 Low；敏感路径成功响应会升为 High；被拒绝的主动 exploit payload 保持 Medium 上下文。`error_burst_threshold` 控制未命中探测家族规则的同一来源 IP 在扫描窗口内产生多少次 403/404 后触发 `WEB-002`。小型私有服务可以调低，让探测更敏感；公开高流量站点如果自然存在大量缺失资源请求，可以适当调高，减少噪音。
 
 噪声控制：
 
@@ -592,7 +593,7 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 
 部分采集器需要 root 级别可见性。如果不是 root 运行，`doctor` 会报告可见性降低，相关模块会降级而不是崩溃。
 
-作为常驻 agent，运行时资源占用较小。在当前验证 VPS 上，默认 60 秒扫描循环下 daemon 进程 RSS 约为 10-13 MiB。systemd cgroup 的 `MemoryCurrent` 可能明显更高，从几十 MiB 到几百 MiB 都可能出现，因为 Linux 可能把近期触达的文件缓存和 cgroup 内存统计计入服务。实际内存压力会受日志尾部大小、文件完整性路径范围、内核统计方式和已启用通知渠道影响；判断 daemon 自身稳定占用时应优先看进程 RSS。
+作为常驻 agent，运行时资源占用较小。在当前验证 VPS 上，默认 60 秒扫描循环下 daemon 进程 RSS 约为 10-13 MiB。systemd cgroup 的 `MemoryCurrent` 可能明显更高，从几十 MiB 到几百 MiB 都可能出现，因为 Linux 可能把近期触达的文件缓存和 cgroup 内存统计计入服务。实际内存压力会受日志尾部大小、文件完整性路径范围、内核统计方式和已启用通知渠道影响；判断 daemon 自身稳定占用时应优先看进程 RSS。raw event 存储会对重复事实使用稳定键，因此重复扫描同一段日志尾部或未变化主机状态时会覆盖旧行，而不是每分钟追加相同数据。
 
 systemd unit 使用：
 
