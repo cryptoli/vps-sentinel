@@ -34,6 +34,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 install_deps() {
+  mode="${1:-source}"
   case "$INSTALL_DEPS" in
     yes|true|1) ;;
     no|false|0)
@@ -46,19 +47,51 @@ install_deps() {
       ;;
   esac
 
+  case "$mode" in
+    release|source) ;;
+    *)
+      echo "invalid dependency mode: $mode" >&2
+      exit 1
+      ;;
+  esac
+
   if command -v apt-get >/dev/null 2>&1; then
     apt-get update
-    apt-get install -y ca-certificates curl git build-essential pkg-config
+    if [ "$mode" = "release" ]; then
+      apt-get install -y ca-certificates curl tar
+    else
+      apt-get install -y ca-certificates curl git build-essential pkg-config
+    fi
   elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y ca-certificates curl git gcc gcc-c++ make pkgconf-pkg-config
+    if [ "$mode" = "release" ]; then
+      dnf install -y ca-certificates curl tar
+    else
+      dnf install -y ca-certificates curl git gcc gcc-c++ make pkgconf-pkg-config
+    fi
   elif command -v yum >/dev/null 2>&1; then
-    yum install -y ca-certificates curl git gcc gcc-c++ make pkgconfig
+    if [ "$mode" = "release" ]; then
+      yum install -y ca-certificates curl tar
+    else
+      yum install -y ca-certificates curl git gcc gcc-c++ make pkgconfig
+    fi
   elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache ca-certificates curl git build-base pkgconfig
+    if [ "$mode" = "release" ]; then
+      apk add --no-cache ca-certificates curl tar
+    else
+      apk add --no-cache ca-certificates curl git build-base pkgconfig
+    fi
   elif command -v pacman >/dev/null 2>&1; then
-    pacman -Sy --noconfirm ca-certificates curl git base-devel pkgconf
+    if [ "$mode" = "release" ]; then
+      pacman -Sy --noconfirm ca-certificates curl tar
+    else
+      pacman -Sy --noconfirm ca-certificates curl git base-devel pkgconf
+    fi
   else
-    echo "unsupported package manager; install curl, git, C compiler, make, and pkg-config manually" >&2
+    if [ "$mode" = "release" ]; then
+      echo "unsupported package manager; install curl, tar, and ca-certificates manually" >&2
+    else
+      echo "unsupported package manager; install curl, git, C compiler, make, and pkg-config manually" >&2
+    fi
     exit 1
   fi
 }
@@ -398,23 +431,26 @@ activate_systemd_service() {
   esac
 }
 
-install_deps
 case "$INSTALL_METHOD" in
   release)
+    install_deps release
     install_from_release || {
       echo "release installation failed" >&2
       exit 1
     }
     ;;
   auto)
+    install_deps release
     if ! install_from_release; then
       echo "release artifact unavailable; falling back to source build"
+      install_deps source
       ensure_rust
       checkout_or_update
       build_and_install
     fi
     ;;
   source)
+    install_deps source
     ensure_rust
     checkout_or_update
     build_and_install
