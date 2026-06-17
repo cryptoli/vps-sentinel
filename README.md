@@ -147,6 +147,35 @@ vps-sentinel/
 
 Collectors gather facts. Detectors convert facts into findings. Storage and notifications consume the unified `Finding` model, so new rules and channels can be added without coupling modules together.
 
+## Linux Compatibility
+
+vps-sentinel targets Linux VPS hosts with `/proc`, a POSIX shell, and root-level visibility. It builds from source with Rust 1.76+ and uses rustls plus bundled SQLite, so it does not require system OpenSSL or a system SQLite development package.
+
+| Environment | Compatibility |
+| --- | --- |
+| Debian / Ubuntu | First-class. Installer uses `apt-get`; SSH auth logs usually come from `/var/log/auth.log`, with `journalctl` fallback on systemd hosts. |
+| RHEL family, Rocky, AlmaLinux, CentOS, Amazon Linux | First-class. Installer uses `dnf` or `yum`; SSH auth logs usually come from `/var/log/secure`. |
+| Fedora | First-class through `dnf` and systemd. |
+| Arch / Manjaro | Supported through `pacman`; package activity context reads `/var/log/pacman.log`. |
+| Alpine | Best-effort supported through `apk`. The binary can run on musl targets, but systemd service installation is skipped unless systemd is actually present. Use another supervisor or run `vps-sentinel daemon --config ...` manually. |
+| Generic Linux | Supported when `curl`, `git`, a C toolchain, `pkg-config`, Rust, and procfs are available. Set `INSTALL_DEPS=no` if the package manager is unsupported. |
+| Non-Linux Unix / Windows | Not a runtime target. The code may compile for development, but host monitoring depends on Linux procfs, auth logs, and Linux filesystem layout. |
+
+systemd is optional for installation but required for `vps-sentinel-reload`, `vps-sentinel-stop`, and automatic daemon management. Without systemd, the installer still builds the binary and writes configuration; run the daemon under your own init system. Running as non-root degrades visibility instead of crashing, but SSH logs, `/proc/<pid>/fd`, protected files, and persistence paths may be incomplete.
+
+## Implementation And Effect
+
+| Feature | Implementation | Practical effect |
+| --- | --- | --- |
+| SSH login monitoring | Reads configured auth logs and falls back to `journalctl` for `ssh.service`/`sshd.service` when files are absent. | Detects root logins, password logins, ordinary successful logins, and brute-force clusters by source IP. |
+| SSH key integrity | Hashes `authorized_keys` and `authorized_keys2` independently of the broader file-integrity switch. | Detects SSH persistence changes even when general file integrity is disabled. |
+| File and persistence drift | Builds a local SQLite baseline, diffs later snapshots, coalesces related file/persistence findings for the same path, and attaches package-manager context. | Finds real drift while reducing confusion during legitimate package updates; baseline is refreshed only by explicit command. |
+| WebShell content | Scans bounded file content for risk markers and scores marker combinations plus web-path context. | Avoids alerting on one weak marker, while catching classic web command execution and encoded payload patterns. |
+| Process risk | Reads procfs argv, executable, cwd, UID/EUID, deleted state, and socket-FD count; uses rule-specific scoring and allowlists. | Detects temp-path executables, suspicious deleted executables, network shell bridges, known miner/scanner identities, and renamed behavior clusters. |
+| Network listeners | Parses `/proc/net/tcp*` and `/proc/net/udp*`, resolves owning processes through `/proc/<pid>/fd`, and compares listener owners with baseline. | Expected 22/80/443 ports reduce generic noise but still produce findings when the owning process changes or looks suspicious. |
+| Notifications | Renders one `Finding` model through channel-specific templates: Telegram HTML, Email HTML/plain text, Markdown-aware channels, or plain text. | Messages include the configured VPS name, normalized time, localized labels, evidence, impact, and recommendations. |
+| Noise control | Applies scan-level deduplication, persisted dedup windows, state reminder intervals, quiet hours, and hourly notification budgets. | Reduces repeat messages while keeping high-value alerts visible. |
+
 ## Quick Install
 
 Review the script before running it:

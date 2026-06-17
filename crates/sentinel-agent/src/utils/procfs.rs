@@ -125,3 +125,41 @@ fn socket_fd_count(process_dir: &Path) -> usize {
         })
         .count()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{collect_processes, ProcfsRoot};
+    use std::fs;
+
+    #[test]
+    fn collect_processes_extracts_linux_status_and_argv_fields(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let pid_dir = temp.path().join("1234");
+        fs::create_dir_all(&pid_dir)?;
+        fs::write(
+            pid_dir.join("status"),
+            "Name:\tkworker\nPPid:\t1\nUid:\t0\t0\t0\t0\n",
+        )?;
+        fs::write(
+            pid_dir.join("cmdline"),
+            b"/usr/local/bin/kworker\0--daemon\0",
+        )?;
+
+        let events = collect_processes(&ProcfsRoot::new(temp.path().to_path_buf()))?;
+
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.field("pid"), Some("1234"));
+        assert_eq!(event.field("name"), Some("kworker"));
+        assert_eq!(event.field("ppid"), Some("1"));
+        assert_eq!(event.field("uid"), Some("0"));
+        assert_eq!(event.field("euid"), Some("0"));
+        assert_eq!(
+            event.field("cmdline"),
+            Some("/usr/local/bin/kworker --daemon")
+        );
+        assert_eq!(event.field("socket_fd_count"), Some("0"));
+        Ok(())
+    }
+}

@@ -147,6 +147,35 @@ vps-sentinel/
 
 Collectors 负责采集事实，Detectors 把事实转换成 findings。存储与通知只消费统一的 `Finding` 模型，因此后续扩展规则和通知渠道时不需要让模块互相耦合。
 
+## Linux 兼容性
+
+vps-sentinel 面向带 `/proc`、POSIX shell 和 root 级可见性的 Linux VPS。项目使用 Rust 1.76+ 从源码构建，HTTP/TLS 使用 rustls，SQLite 使用 bundled SQLite，因此不依赖系统 OpenSSL 开发包或系统 SQLite 开发包。
+
+| 环境 | 兼容性 |
+| --- | --- |
+| Debian / Ubuntu | 一等支持。安装脚本使用 `apt-get`；SSH 认证日志通常来自 `/var/log/auth.log`，systemd 主机可回退到 `journalctl`。 |
+| RHEL 系、Rocky、AlmaLinux、CentOS、Amazon Linux | 一等支持。安装脚本使用 `dnf` 或 `yum`；SSH 认证日志通常来自 `/var/log/secure`。 |
+| Fedora | 通过 `dnf` 和 systemd 一等支持。 |
+| Arch / Manjaro | 通过 `pacman` 支持；软件包活动上下文读取 `/var/log/pacman.log`。 |
+| Alpine | 尽力支持。安装脚本使用 `apk`，程序可在 musl 目标运行；如果系统没有 systemd，会跳过 systemd service，需要用其它 supervisor 或手动运行 `vps-sentinel daemon --config ...`。 |
+| 通用 Linux | 当系统具备 `curl`、`git`、C 工具链、`pkg-config`、Rust 和 procfs 时可用；如果包管理器不受安装脚本支持，可设置 `INSTALL_DEPS=no` 后自行安装依赖。 |
+| 非 Linux Unix / Windows | 不是运行时目标。代码可用于开发编译，但主机监控依赖 Linux procfs、认证日志和 Linux 文件系统布局。 |
+
+systemd 对安装不是强制要求，但 `vps-sentinel-reload`、`vps-sentinel-stop` 和自动守护进程管理需要 systemd。没有 systemd 时，安装脚本仍会构建二进制并写入配置，daemon 需要交给用户自己的 init/supervisor 管理。非 root 运行时程序会降级而不是崩溃，但 SSH 日志、`/proc/<pid>/fd`、受保护文件和持久化路径可能不可见。
+
+## 功能实现方式与效果
+
+| 功能 | 实现方式 | 实际效果 |
+| --- | --- | --- |
+| SSH 登录监控 | 读取配置的 auth log；日志文件不存在时回退读取 `ssh.service`/`sshd.service` 的 `journalctl`。 | 识别 root 登录、密码登录、普通成功登录，以及按来源 IP 聚合的爆破行为。 |
+| SSH key 完整性 | 独立哈希监控 `authorized_keys` 和 `authorized_keys2`，不依赖总的文件完整性开关。 | 即使关闭通用文件完整性，也能发现 SSH 持久化 key 变化。 |
+| 文件和持久化漂移 | 使用 SQLite 保存本地基线，后续扫描做快照 diff；同一路径的文件/持久化 finding 会合并，并附带软件包活动上下文。 | 能发现真实漂移，同时减少合法软件更新时的判断成本；基线只会在用户明确执行命令时刷新。 |
+| WebShell 内容 | 对限定大小内的文件内容提取风险 marker，并结合 Web 路径、脚本类型和 marker 组合评分。 | 单个弱 marker 默认不告警，但能识别经典 Web 命令执行和编码 payload 组合。 |
+| 进程风险 | 读取 procfs argv、可执行路径、cwd、UID/EUID、deleted 状态和 socket FD 数，并按规则评分与白名单处理。 | 识别临时路径执行、可疑 deleted executable、网络 shell 桥接、已知挖矿/扫描器身份和改名行为聚类。 |
+| 网络监听 | 解析 `/proc/net/tcp*` 和 `/proc/net/udp*`，通过 `/proc/<pid>/fd` 反查进程，并与监听 owner 基线对比。 | 22/80/443 等预期端口只降低通用噪音；进程变化或可疑进程仍会告警。 |
+| 通知 | 将统一 `Finding` 模型按渠道模板渲染：Telegram HTML、Email HTML+纯文本、Markdown 或纯文本。 | 消息包含 VPS 名称、规范化时间、本地化字段、证据、影响和建议。 |
+| 噪声控制 | 使用扫描内去重、跨扫描去重、状态提醒间隔、安静时段和小时级通知预算。 | 减少重复消息，同时保留高价值告警的可见性。 |
+
 ## 一键安装
 
 建议先下载审阅脚本，再执行：
