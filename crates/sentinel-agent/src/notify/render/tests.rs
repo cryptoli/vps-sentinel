@@ -31,6 +31,24 @@ fn renders_chinese_alert_body() {
 }
 
 #[test]
+fn renders_chinese_root_password_login_as_single_combined_alert() {
+    let finding = sample_finding().with_evidence(vec![
+        Evidence::new("user", "root"),
+        Evidence::new("method", "password"),
+    ]);
+    let body = render_finding_with_language(
+        &finding,
+        NotificationFormat::PlainText,
+        NotificationLanguage::ZhCn,
+    );
+
+    assert!(body.contains("[高危] 检测到 root SSH 密码登录"));
+    assert!(body.contains("root 账号刚刚通过 SSH 密码认证成功登录"));
+    assert!(body.contains("关闭 SSH 密码登录"));
+    assert!(!body.contains("检测到 SSH 密码登录\n"));
+}
+
+#[test]
 fn renders_html_without_raw_markup_in_values() {
     let finding = sample_finding().with_evidence(vec![Evidence::new("path", "<script>")]);
     let alert = render_alert(&finding);

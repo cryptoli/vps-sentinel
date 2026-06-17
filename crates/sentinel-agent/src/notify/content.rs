@@ -24,6 +24,25 @@ fn from_finding(finding: &Finding) -> LocalizedFinding {
 }
 
 fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
+    if finding.rule_id == "SSH-001" && evidence_value(finding, "method") == Some("password") {
+        return Some(
+            RuleMessage {
+                title: "检测到 root SSH 密码登录",
+                description: "root 账号刚刚通过 SSH 密码认证成功登录。",
+                impact: &[
+                    "直接使用 root 登录会降低操作可追溯性，并扩大误操作或入侵后的影响范围。",
+                    "密码登录更容易受到撞库、弱口令和暴力破解影响。",
+                ],
+                recommendations: &[
+                    "确认登录来源和时间是否符合预期。",
+                    "如果不需要直接 root 登录，请关闭 PermitRootLogin。",
+                    "条件允许时优先使用密钥登录，并关闭 SSH 密码登录。",
+                    "如果该登录不符合预期，请轮换相关凭据。",
+                ],
+            }
+            .into_localized(),
+        );
+    }
     let message = match finding.rule_id.as_str() {
         "SYSTEM-TEST" => RuleMessage {
             title: "VPS Sentinel 测试通知",
@@ -287,6 +306,14 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
         _ => return None,
     };
     Some(message.into_localized())
+}
+
+fn evidence_value<'a>(finding: &'a Finding, key: &str) -> Option<&'a str> {
+    finding
+        .evidence
+        .iter()
+        .find(|item| item.key == key)
+        .map(|item| item.value.as_str())
 }
 
 struct RuleMessage {

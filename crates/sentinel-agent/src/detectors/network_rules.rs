@@ -68,10 +68,11 @@ impl Detector for NetworkDetector {
             if policy.is_allowlisted(port) {
                 continue;
             }
-            if policy.is_high_risk(port) {
-                findings.push(risky_port(event, ctx, policy.service_name(port)));
-            } else if let Some(profile) = ListenerRiskProfile::from_event(event, ctx) {
-                findings.push(suspicious_listener(event, ctx, profile));
+            let high_risk_service = policy.high_risk_service_name(port);
+            if let Some(profile) = ListenerRiskProfile::from_event(event, ctx) {
+                findings.push(suspicious_listener(event, ctx, profile, high_risk_service));
+            } else if let Some(service_name) = high_risk_service {
+                findings.push(risky_port(event, ctx, service_name));
             } else if event.kind == "listening_socket_owner_changed" {
                 findings.push(listener_owner_changed(event, ctx));
             } else if policy.is_expected_public(port) {
@@ -135,6 +136,7 @@ fn suspicious_listener(
     event: &RawEvent,
     ctx: &DetectContext,
     profile: ListenerRiskProfile,
+    high_risk_service: Option<&'static str>,
 ) -> Finding {
     Finding::new(
         &ctx.host_id,
@@ -155,6 +157,9 @@ fn suspicious_listener(
         items.push(evidence("risk_reasons", profile.reasons.join("; ")));
         if !profile.features.is_empty() {
             items.push(evidence("risk_features", profile.features.join(", ")));
+        }
+        if let Some(service_name) = high_risk_service {
+            items.push(evidence("service_profile", service_name));
         }
         items
     })
@@ -273,8 +278,9 @@ impl PortPolicy {
         self.high_risk_public.contains(&port)
     }
 
-    fn service_name(&self, port: u16) -> &'static str {
-        known_port_profile(port).unwrap_or("configured high-risk service")
+    fn high_risk_service_name(&self, port: u16) -> Option<&'static str> {
+        self.is_high_risk(port)
+            .then(|| known_port_profile(port).unwrap_or("configured high-risk service"))
     }
 }
 

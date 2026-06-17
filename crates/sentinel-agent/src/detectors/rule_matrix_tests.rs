@@ -59,6 +59,22 @@ fn every_builtin_risk_rule_has_positive_and_negative_coverage() {
     }
 }
 
+#[test]
+fn root_password_login_is_one_combined_alert() {
+    let findings = detect_all(
+        vec![ssh_success("root", "password")],
+        SentinelConfig::default(),
+    );
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "SSH-001");
+    assert!(findings[0]
+        .evidence
+        .iter()
+        .any(|item| item.key == "method" && item.value == "password"));
+    assert!(!findings.iter().any(|finding| finding.rule_id == "SSH-002"));
+}
+
 fn detect_all(events: Vec<RawEvent>, config: SentinelConfig) -> Vec<Finding> {
     let ctx = DetectContext::new(Arc::new(config));
     let mut findings = Vec::new();

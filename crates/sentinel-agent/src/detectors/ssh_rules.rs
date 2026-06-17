@@ -63,14 +63,9 @@ impl Detector for SshDetector {
                         && event.field("method") == Some("password");
                     if root_alerted {
                         findings.push(root_login_finding(event, ctx));
-                    }
-                    if password_alerted {
+                    } else if password_alerted {
                         findings.push(password_login_finding(event, ctx));
-                    }
-                    if ctx.config.ssh.alert_on_successful_login
-                        && !root_alerted
-                        && !password_alerted
-                    {
+                    } else if ctx.config.ssh.alert_on_successful_login {
                         findings.push(successful_login_finding(event, ctx));
                     }
                 }
@@ -122,10 +117,19 @@ fn successful_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
 
 fn root_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
     let ip = string_field(event, "source_ip");
-    Finding::new(
+    let password_login = event.field("method") == Some("password");
+    let mut finding = Finding::new(
         &ctx.host_id,
-        "Root SSH login detected",
-        "The root account successfully authenticated through SSH.",
+        if password_login {
+            "Root password SSH login detected"
+        } else {
+            "Root SSH login detected"
+        },
+        if password_login {
+            "The root account successfully authenticated through SSH using password authentication."
+        } else {
+            "The root account successfully authenticated through SSH."
+        },
         Severity::High,
         Category::Ssh,
         "SSH-001",
@@ -148,7 +152,18 @@ fn root_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
         "Confirm the login source and time with the expected administrator.".to_string(),
         "Disable direct root SSH login if it is not required.".to_string(),
         "Rotate credentials if the login is unexpected.".to_string(),
-    ])
+    ]);
+    if password_login {
+        finding.impact.push(
+            "Password SSH login is more exposed to credential stuffing and brute force."
+                .to_string(),
+        );
+        finding.recommendations.push(
+            "Prefer key-based SSH authentication and disable password login when practical."
+                .to_string(),
+        );
+    }
+    finding
 }
 
 fn password_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
@@ -243,6 +258,14 @@ mod tests {
         let root_findings = detector.detect(&[success_event("root", "publickey")], &ctx);
         assert_eq!(root_findings.len(), 1);
         assert_eq!(root_findings[0].rule_id, "SSH-001");
+
+        let root_password_findings = detector.detect(&[success_event("root", "password")], &ctx);
+        assert_eq!(root_password_findings.len(), 1);
+        assert_eq!(root_password_findings[0].rule_id, "SSH-001");
+        assert!(root_password_findings[0]
+            .recommendations
+            .iter()
+            .any(|item| item.contains("disable password login")));
 
         let password_findings = detector.detect(&[success_event("deploy", "password")], &ctx);
         assert_eq!(password_findings.len(), 1);
