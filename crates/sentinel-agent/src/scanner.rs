@@ -796,6 +796,7 @@ fn save_log_integrity_state(events: &[RawEvent], store: &SqliteStore) -> Sentine
     let files = events
         .iter()
         .filter(|event| event.kind == "log_file_snapshot")
+        .filter(|event| event.field("log_file_missing") != Some("true"))
         .filter_map(|event| {
             let path = event.field("path")?.trim();
             (!path.is_empty()).then(|| (path.to_string(), log_file_record(event)))
@@ -842,7 +843,10 @@ fn significant_log_size_drop(
     if old.size == 0 {
         return false;
     }
-    let drop_percent = dropped.saturating_mul(100) / old.size;
+    let drop_percent = dropped
+        .saturating_mul(100)
+        .checked_div(old.size)
+        .unwrap_or(0);
     drop_percent >= config.log_integrity.truncate_drop_percent as u64
 }
 

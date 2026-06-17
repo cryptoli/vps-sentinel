@@ -417,6 +417,31 @@ fn log_integrity_state_marks_previously_seen_log_missing() -> Result<(), Box<dyn
     Ok(())
 }
 
+#[test]
+fn log_integrity_state_does_not_save_synthetic_missing_snapshot(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+    let config = SentinelConfig::default();
+    let first = log_event("/var/log/auth.log", 4096);
+
+    save_log_integrity_state(std::slice::from_ref(&first), &store)?;
+
+    let mut missing = Vec::new();
+    enrich_log_integrity_state(&mut missing, &store, &config)?;
+    save_log_integrity_state(&missing, &store)?;
+
+    let mut repeated_missing = Vec::new();
+    enrich_log_integrity_state(&mut repeated_missing, &store, &config)?;
+
+    assert_eq!(
+        repeated_missing[0].field("previous_file_type"),
+        Some("file")
+    );
+    assert_eq!(repeated_missing[0].field("previous_size"), Some("4096"));
+    Ok(())
+}
+
 fn process_event(exe_path: &str, name: &str, start_ticks: &str) -> RawEvent {
     RawEvent::new("process", "process_snapshot")
         .with_field("exe_path", exe_path)
