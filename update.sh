@@ -389,7 +389,7 @@ post_update() {
 
 checkout_or_update() {
   if [ -d "$WORK_DIR/.git" ]; then
-    git -C "$WORK_DIR" fetch origin "$BRANCH"
+    git -C "$WORK_DIR" fetch origin "$BRANCH:refs/remotes/origin/$BRANCH"
     if git -C "$WORK_DIR" show-ref --verify --quiet "refs/heads/$BRANCH"; then
       git -C "$WORK_DIR" checkout "$BRANCH"
     else
