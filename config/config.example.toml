@@ -51,6 +51,7 @@ paths = [
 [web]
 enabled = true
 web_roots = ["/var/www", "/srv", "/opt"]
+error_burst_threshold = 20
 log_paths = [
   "/var/log/nginx/access.log",
   "/var/log/nginx/error.log",

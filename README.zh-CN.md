@@ -408,6 +408,15 @@ suspicious_command_min_score = 70
 
 `suspicious_command_min_score` 控制何时产生 `PERSIST-002`。启动命令会按下载后管道执行、临时路径自启动、编码 shell payload、网络执行桥等组合特征评分。合法 systemd 单元中常见的普通 shell 包装命令不会单独超过默认阈值。
 
+Web 日志策略：
+
+```toml
+[web]
+error_burst_threshold = 20
+```
+
+`error_burst_threshold` 控制同一来源 IP 在扫描窗口内产生多少次 403/404 后触发 `WEB-002`。小型私有服务可以调低，让探测更敏感；公开高流量站点如果自然存在大量缺失资源请求，可以适当调高，减少噪音。
+
 噪声控制：
 
 ```toml

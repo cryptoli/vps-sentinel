@@ -124,6 +124,7 @@ pub struct WebConfig {
     pub enabled: bool,
     pub web_roots: Vec<PathBuf>,
     pub log_paths: Vec<PathBuf>,
+    pub error_burst_threshold: usize,
 }
 
 impl Default for WebConfig {
@@ -141,6 +142,7 @@ impl Default for WebConfig {
                 PathBuf::from("/var/log/caddy/access.log"),
                 PathBuf::from("/var/log/apache2/access.log"),
             ],
+            error_burst_threshold: 20,
         }
     }
 }

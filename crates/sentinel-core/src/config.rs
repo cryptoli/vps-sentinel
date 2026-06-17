@@ -91,6 +91,11 @@ impl SentinelConfig {
                 "file_integrity.max_file_size_mb must be greater than 0".to_string(),
             ));
         }
+        if self.web.error_burst_threshold == 0 {
+            return Err(SentinelError::Config(
+                "web.error_burst_threshold must be greater than 0".to_string(),
+            ));
+        }
         if self.notifications.request_timeout_seconds == 0 {
             return Err(SentinelError::Config(
                 "notifications.request_timeout_seconds must be greater than 0".to_string(),
@@ -243,6 +248,13 @@ mod tests {
 
         let mut config = SentinelConfig::default();
         config.ssh.failed_login_window_seconds = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_web_error_threshold_is_rejected() {
+        let mut config = SentinelConfig::default();
+        config.web.error_burst_threshold = 0;
         assert!(config.validate().is_err());
     }
 

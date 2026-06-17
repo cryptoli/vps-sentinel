@@ -410,6 +410,15 @@ suspicious_command_min_score = 70
 
 `suspicious_command_min_score` controls when `PERSIST-002` is emitted. Startup commands are scored by combined traits such as download-to-shell, temporary-path autostart payloads, encoded shell payloads, and network execution bridges. Plain shell wrappers used by legitimate systemd units do not cross the default threshold on their own.
 
+Web log policy:
+
+```toml
+[web]
+error_burst_threshold = 20
+```
+
+`error_burst_threshold` controls when `WEB-002` is emitted for repeated 403/404 responses from one source IP in the scanned log window. Lower it on small private services where any probing matters; raise it on busy public sites that naturally receive high volumes of missing-asset requests.
+
 Noise control:
 
 ```toml

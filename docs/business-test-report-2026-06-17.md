@@ -52,7 +52,7 @@ This keeps the rule useful for real public services while reducing VPN/proxy/QUI
 | Network owner drift | Baseline owner comparison | public listener owner changed | private listener owner changed | Passed |
 | SSH config risk | Parsed sshd options | `PasswordAuthentication yes`, `PermitRootLogin yes` | both options set to `no` | Passed |
 | High-risk service exposure | Public port policy | Redis/Memcached-style risky public ports | ordinary public HTTPS port | Passed |
-| Web logs | Access log events | `/.env` probe, 20 repeated 404s from one IP | ordinary asset request, 19 errors below threshold | Passed |
+| Web logs | Access log events | `/.env` probe, `web.error_burst_threshold` repeated 404s from one IP | ordinary asset request, errors below configured threshold | Passed |
 | Docker context | Docker socket event | Docker socket exists | no Docker event | Passed |
 | Rootkit signal | ld preload event | active `ld.so.preload` entry | empty preload entries | Passed |
 | Notification rendering | Alert templates | VPS name, Chinese text, Telegram HTML, technical fields when enabled | no full HTML document in Telegram body, no technical fields by default | Passed |
@@ -67,9 +67,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test -p sentinel-agent network_rules
 cargo test -p sentinel-agent rule_matrix
 cargo test -p sentinel-agent scanner
+cargo test -p sentinel-agent web_rules
+cargo test -p sentinel-core config
 cargo test --workspace --all-targets
 cargo build --release --locked
 bash -n install.sh update.sh reload.sh stop.sh packaging/install.sh
 git diff --check
 ```
-

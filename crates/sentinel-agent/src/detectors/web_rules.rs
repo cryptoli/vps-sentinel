@@ -48,7 +48,7 @@ impl Detector for WebDetector {
         }
 
         for (ip, count) in errors_by_ip {
-            if count >= 20 {
+            if count >= ctx.config.web.error_burst_threshold {
                 findings.push(web_error_burst(&ip, count, ctx));
             }
         }
@@ -134,7 +134,10 @@ fn contains_attack_payload(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_attack_payload, is_probe_path};
+    use super::{contains_attack_payload, is_probe_path, WebDetector};
+    use crate::detectors::{DetectContext, Detector};
+    use sentinel_core::{RawEvent, SentinelConfig};
+    use std::sync::Arc;
 
     #[test]
     fn recognizes_common_web_probe_paths() {
@@ -144,5 +147,34 @@ mod tests {
         ));
         assert!(contains_attack_payload("/index.php?q=1%20union%20select"));
         assert!(!is_probe_path("/assets/app.css"));
+    }
+
+    #[test]
+    fn web_error_burst_threshold_is_configurable() {
+        let mut config = SentinelConfig::default();
+        config.web.error_burst_threshold = 3;
+        let ctx = DetectContext::new(Arc::new(config));
+        let events = vec![
+            access_error("203.0.113.10", "/missing-1"),
+            access_error("203.0.113.10", "/missing-2"),
+            access_error("203.0.113.10", "/missing-3"),
+            access_error("203.0.113.11", "/missing-1"),
+            access_error("203.0.113.11", "/missing-2"),
+        ];
+
+        let findings = WebDetector.detect(&events, &ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "WEB-002");
+        assert_eq!(findings[0].subject, "203.0.113.10");
+    }
+
+    fn access_error(ip: &str, path: &str) -> RawEvent {
+        RawEvent::new("web", "web_access")
+            .with_field("ip", ip)
+            .with_field("method", "GET")
+            .with_field("path", path)
+            .with_field("status", "404")
+            .with_field("log_source", "/var/log/nginx/access.log")
     }
 }
