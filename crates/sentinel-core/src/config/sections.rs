@@ -104,6 +104,7 @@ pub struct FileIntegrityConfig {
     pub enabled: bool,
     pub max_file_size_mb: u64,
     pub max_depth: usize,
+    pub webshell_min_score: u16,
     pub paths: Vec<PathBuf>,
 }
 
@@ -113,6 +114,7 @@ impl Default for FileIntegrityConfig {
             enabled: true,
             max_file_size_mb: 5,
             max_depth: 8,
+            webshell_min_score: 70,
             paths: default_file_integrity_paths(),
         }
     }
@@ -155,6 +157,8 @@ pub struct ProcessConfig {
     pub high_cpu_threshold_percent: f32,
     pub high_cpu_duration_seconds: u64,
     pub deleted_executable_min_score: u16,
+    pub behavior_min_score: u16,
+    pub suspicious_socket_fd_threshold: usize,
     pub suspicious_dirs: Vec<PathBuf>,
     #[serde(default = "default_known_bad_tool_names")]
     pub known_bad_tool_names: Vec<String>,
@@ -168,6 +172,8 @@ impl Default for ProcessConfig {
             high_cpu_threshold_percent: 80.0,
             high_cpu_duration_seconds: 120,
             deleted_executable_min_score: 70,
+            behavior_min_score: 70,
+            suspicious_socket_fd_threshold: 20,
             suspicious_dirs: ["/tmp", "/var/tmp", "/dev/shm", "/run"]
                 .into_iter()
                 .map(PathBuf::from)
@@ -182,6 +188,33 @@ fn default_known_bad_tool_names() -> Vec<String> {
         .into_iter()
         .map(str::to_string)
         .collect()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PackageManagerConfig {
+    pub enabled: bool,
+    pub log_paths: Vec<PathBuf>,
+    pub recent_activity_window_seconds: u64,
+    pub max_log_tail_bytes: u64,
+}
+
+impl Default for PackageManagerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            log_paths: vec![
+                PathBuf::from("/var/log/dpkg.log"),
+                PathBuf::from("/var/log/apt/history.log"),
+                PathBuf::from("/var/log/yum.log"),
+                PathBuf::from("/var/log/dnf.log"),
+                PathBuf::from("/var/log/pacman.log"),
+                PathBuf::from("/var/log/apk.log"),
+            ],
+            recent_activity_window_seconds: 3600,
+            max_log_tail_bytes: 8192,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

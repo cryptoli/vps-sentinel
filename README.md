@@ -27,11 +27,11 @@ It is not:
 | Area | What vps-sentinel supports |
 | --- | --- |
 | SSH monitoring | Parses Debian/Ubuntu and RHEL-family auth logs; detects root SSH login, password login, ordinary successful login, brute-force patterns, and `authorized_keys`/`authorized_keys2` drift. |
-| Baseline drift | Creates local baselines for users, SSH keys, critical files, persistence entries, and listeners; compares future scans against the stored baseline. |
+| Baseline drift | Creates local baselines for users, SSH keys, critical files, persistence entries, and listeners; compares future scans against the stored baseline and adds package-manager context when recent software updates may explain drift. |
 | User and privilege checks | Detects new users, UID 0 users, and privilege-relevant user changes. |
-| File integrity | Watches configured critical paths and web roots; hashes bounded file content; detects modified files, executable scripts in web roots, and WebShell-style markers. |
+| File integrity | Watches configured critical paths and web roots; hashes bounded file content; detects modified files, executable scripts in web roots, and risk-scored WebShell-style marker combinations. |
 | Persistence checks | Monitors cron, systemd, shell profile, and preload-related locations for new or risk-scored suspicious startup entries. |
-| Process checks | Reads procfs argv and executable metadata to flag temporary-path executables, risk-scored deleted executables, network command-execution bridges, and known miner/scanner tool names matched against process identity fields. |
+| Process checks | Reads procfs argv, executable path, cwd, socket-FD count, and UID context to flag temporary-path executables, risk-scored deleted executables, network command-execution bridges, suspicious behavior clusters, and known miner/scanner identities. |
 | Network checks | Reads listening sockets and owning process details; flags high-risk public services, suspicious listener processes, baseline owner drift, and ordinary new public listeners. Expected web/SSH ports such as 22, 80, and 443 reduce noise but are not blindly trusted. |
 | Web log checks | Parses common access log lines and detects common automated probing paths. |
 | Rootkit signals | Collects lightweight local indicators for hidden process and suspicious procfs behavior. |
@@ -48,6 +48,12 @@ The command-execution rules are behavior-profile rules, not simple tool-name or 
 Known miner/scanner detection is intentionally narrower: `PROC-004` matches known tool names such as `xmrig`, `masscan`, and `zmap` against process identity fields such as executable path, process name, and structured `argv[0]`, including `.exe` suffixes. It does not treat arbitrary substrings or ordinary command arguments as a hit when structured process identity is available.
 
 Deleted-executable and persistence-startup alerts are also scored. `PROC-002` requires additional suspicious traits such as a temporary executable path, memfd or anonymous backing, a hidden non-standard executable, a network execution bridge, or a known miner/scanner identity. A package-upgrade residue such as `systemd`, `dockerd`, or `python3` running from a deleted standard system path is treated as maintenance context unless other risk traits are present. `PERSIST-002` scores startup lines for combinations such as download-to-shell, temporary-path autostart payloads, base64 decode-to-shell, and network-to-shell execution bridges; a plain `bash -c` service wrapper is not enough by itself.
+
+File and persistence baseline drift is not suppressed just because package-manager activity exists. Instead, the agent collects recent apt/dpkg/yum/dnf/pacman/apk log activity and attaches that context to `FILE-001`, `PERSIST-001`, and `PERSIST-003` recommendations. This keeps real drift visible while making legitimate package updates easier to confirm before refreshing the baseline.
+
+WebShell content detection is risk-scored instead of marker-only. A single marker such as `eval` in a legitimate admin script is below the default threshold. Combinations such as command execution in a script-like web path, dynamic execution plus encoded payload markers, command execution plus encoding, or large encoded payloads in script-like web paths raise `FILE-002`.
+
+`PROC-005` covers renamed or lightly disguised processes that may not expose a known tool name, temporary executable path, or obvious network shell bridge. It combines weaker behavior signals such as kernel-thread masquerading, execution from configured web roots, hidden executable names, suspicious working directories, socket-FD activity, and effective-root privilege context. No single weak signal is enough at the default threshold.
 
 ## Notification Channels
 
@@ -366,6 +372,34 @@ auth_log_lookback_seconds = 300
 
 `alert_on_successful_login` covers ordinary successful SSH logins that are not already reported by the root-login or password-login rules. It is not limited to unfamiliar IP addresses. Ordinary successful-login findings are `Info`; root login remains `High`, and password login remains `Medium`. SSH login deduplication uses user plus source IP, while the session port is kept as evidence only. SSH brute-force deduplication uses the source IP, so a rising failure count does not create a new notification key every scan. `auth_log_lookback_seconds` limits how far back auth logs are considered on each scan so old login lines do not keep generating notifications. When configured auth log files such as `/var/log/auth.log` and `/var/log/secure` are absent, vps-sentinel falls back to `journalctl` for `ssh.service` and `sshd.service`.
 
+File-integrity scoring:
+
+```toml
+[file_integrity]
+webshell_min_score = 70
+```
+
+`webshell_min_score` controls when `FILE-002` is emitted. The detector scores marker combinations and web-script context instead of alerting on one isolated marker, which reduces false positives in legitimate admin scripts while still catching classic web command execution and encoded command-execution patterns.
+
+Package-manager context:
+
+```toml
+[package_manager]
+enabled = true
+recent_activity_window_seconds = 3600
+max_log_tail_bytes = 8192
+log_paths = [
+  "/var/log/dpkg.log",
+  "/var/log/apt/history.log",
+  "/var/log/yum.log",
+  "/var/log/dnf.log",
+  "/var/log/pacman.log",
+  "/var/log/apk.log",
+]
+```
+
+Recent package-manager activity is attached as evidence to file and persistence drift findings. It is not an allowlist and does not refresh the baseline automatically; review the drift against package logs first, then run `baseline create` only after the change is trusted.
+
 VPS identity in alerts:
 
 ```toml
@@ -396,10 +430,12 @@ Process indicator policy:
 ```toml
 [process]
 deleted_executable_min_score = 70
+behavior_min_score = 70
+suspicious_socket_fd_threshold = 20
 known_bad_tool_names = ["xmrig", "kinsing", "masscan", "zmap"]
 ```
 
-`deleted_executable_min_score` controls when `PROC-002` is emitted. Deleted executable state is scored with path, process identity, and command-behavior traits; a standard system binary left running after a package upgrade is not enough by itself. `known_bad_tool_names` controls the `PROC-004` known miner/scanner indicator list. Values are matched against process identity fields such as `exe_path`, `executable`, process name, and structured `argv[0]`, with `.exe` suffixes accepted. Legacy events without structured identity fall back to command token basename matching.
+`deleted_executable_min_score` controls when `PROC-002` is emitted. Deleted executable state is scored with path, process identity, and command-behavior traits; a standard system binary left running after a package upgrade is not enough by itself. `behavior_min_score` controls `PROC-005`, which combines weak process signals such as kernel-thread masquerading, web-root execution, hidden executable names, suspicious cwd, socket-FD activity, and effective-root context. `suspicious_socket_fd_threshold` defines when socket ownership becomes a stronger behavior signal. `known_bad_tool_names` controls the `PROC-004` known miner/scanner indicator list. Values are matched against process identity fields such as `exe_path`, `executable`, process name, and structured `argv[0]`, with `.exe` suffixes accepted. Legacy events without structured identity fall back to command token basename matching.
 
 Persistence indicator policy:
 
@@ -483,6 +519,7 @@ Example rules:
 - `PERSIST-002`: Suspicious startup command detected.
 - `PROC-002`: Risk-scored deleted executable still running.
 - `PROC-003`: Network command execution bridge detected.
+- `PROC-005`: Suspicious process behavior cluster.
 - `NET-001`: New public listening port detected relative to baseline.
 - `NET-002`: Public listener process changed relative to baseline.
 - `NET-003`: Suspicious process behind a public listener.

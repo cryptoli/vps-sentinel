@@ -27,11 +27,11 @@
 | 模块 | 支持能力 |
 | --- | --- |
 | SSH 监控 | 解析 Debian/Ubuntu 与 RHEL 系认证日志；检测 root 登录、密码登录、普通成功登录、爆破模式和 `authorized_keys`/`authorized_keys2` 基线漂移。 |
-| 基线漂移 | 为用户、SSH key、关键文件、持久化项和监听端口创建本地基线，并在后续扫描中对比变化。 |
+| 基线漂移 | 为用户、SSH key、关键文件、持久化项和监听端口创建本地基线，并在后续扫描中对比变化；近期软件包活动会作为上下文附加到漂移告警中。 |
 | 用户与权限 | 检测新增用户、UID 0 用户、权限相关用户变化。 |
-| 文件完整性 | 监控关键路径和 Web 根目录；对限定大小内文件做哈希和内容扫描；检测关键文件变化、Web 目录可执行脚本、WebShell 风格特征。 |
+| 文件完整性 | 监控关键路径和 Web 根目录；对限定大小内文件做哈希和内容扫描；检测关键文件变化、Web 目录可执行脚本、达到风险评分阈值的 WebShell 风格特征组合。 |
 | 持久化检查 | 监控 cron、systemd、shell profile、`ld.so.preload` 等启动相关位置，并对可疑启动命令进行风险评分。 |
-| 进程检查 | 读取 procfs argv 和可执行文件元数据，识别临时目录执行、达到风险评分阈值的 deleted executable、网络命令执行桥接，以及按进程身份字段匹配的已知挖矿/扫描器工具名。 |
+| 进程检查 | 读取 procfs argv、可执行路径、工作目录、socket FD 数和 UID 上下文，识别临时目录执行、达到风险评分阈值的 deleted executable、网络命令执行桥接、可疑行为聚类和已知挖矿/扫描器身份。 |
 | 网络检查 | 读取监听 socket 与所属进程；检测高风险公网服务、可疑监听进程、监听 owner 基线漂移和新增公网监听。22/80/443 等预期端口会降低噪音，但不会被无脑信任。 |
 | Web 日志 | 解析常见 access log 行，检测自动化漏洞探测路径。 |
 | Rootkit 信号 | 采集轻量级本地指标，用于发现隐藏进程和可疑 procfs 行为。 |
@@ -48,6 +48,12 @@
 已知挖矿/扫描器检测会更克制：`PROC-004` 只会用可执行文件路径、进程名、结构化 `argv[0]` 等进程身份字段匹配 `xmrig`、`masscan`、`zmap` 等已知工具名，并兼容 `.exe` 后缀。结构化进程身份可用时，普通命令参数里出现这些词不会直接告警。
 
 deleted executable 和启动项告警也采用评分模型。`PROC-002` 需要同时具备临时目录执行、memfd 或匿名文件、隐藏的非标准可执行文件、网络执行桥、已知挖矿/扫描器身份等风险特征；系统升级后遗留的 `systemd`、`dockerd`、`python3` 等标准路径 deleted 进程，如果没有其它风险特征，会被视为维护上下文。`PERSIST-002` 会对启动命令中的下载后管道执行、临时路径自启动、base64 解码后 shell 执行、网络到 shell 执行桥等组合进行评分；单独的 `bash -c` 服务包装不会触发默认阈值。
+
+文件和持久化基线漂移不会因为存在软件包活动就被自动压制。agent 会采集近期 apt/dpkg/yum/dnf/pacman/apk 日志活动，并把该上下文附加到 `FILE-001`、`PERSIST-001` 和 `PERSIST-003` 的证据与建议中。这样既不会隐藏真实漂移，也方便先对照软件包日志确认，再决定是否刷新基线。
+
+WebShell 内容检测也采用评分模型，不再因为单个 marker 直接告警。合法管理脚本中单独出现 `eval` 默认达不到阈值；Web 脚本中的命令执行、动态执行叠加编码 payload、命令执行叠加编码、Web 脚本中出现大块编码内容等组合才会触发 `FILE-002`。
+
+`PROC-005` 用于补充识别已改名、轻度伪装、没有明显临时路径或网络 shell 桥接的可疑进程。它组合内核线程伪装、Web 根目录执行、隐藏可执行文件名、可疑工作目录、socket FD 活动、有效 root 权限等弱信号。默认阈值下单个弱信号不会独立告警。
 
 ## 支持的通知渠道
 
@@ -364,6 +370,34 @@ auth_log_lookback_seconds = 300
 
 `alert_on_successful_login` 覆盖未被 root 登录或密码登录规则覆盖的普通成功 SSH 登录，并不只针对陌生 IP。普通成功登录为 `Info`，root 登录仍为 `High`，密码登录仍为 `Medium`。SSH 登录按“用户 + 来源 IP”去重，端口只作为证据展示；SSH 暴力破解按来源 IP 去重，失败次数上涨不会在每次扫描时生成新的去重 Key。`auth_log_lookback_seconds` 限制每次扫描读取认证日志时向前回看的时间窗口，避免旧登录日志反复产生通知。当 `/var/log/auth.log` 和 `/var/log/secure` 等配置的认证日志文件不存在时，vps-sentinel 会回退读取 `ssh.service` 和 `sshd.service` 的 `journalctl` 日志。
 
+文件完整性评分：
+
+```toml
+[file_integrity]
+webshell_min_score = 70
+```
+
+`webshell_min_score` 控制何时产生 `FILE-002`。检测器会对 marker 组合和 Web 脚本上下文评分，而不是单独命中一个 marker 就告警，从而减少合法管理脚本误报，同时保留对经典 Web 命令执行和编码命令执行组合的识别能力。
+
+软件包活动上下文：
+
+```toml
+[package_manager]
+enabled = true
+recent_activity_window_seconds = 3600
+max_log_tail_bytes = 8192
+log_paths = [
+  "/var/log/dpkg.log",
+  "/var/log/apt/history.log",
+  "/var/log/yum.log",
+  "/var/log/dnf.log",
+  "/var/log/pacman.log",
+  "/var/log/apk.log",
+]
+```
+
+近期软件包活动会作为证据附加到文件和持久化漂移 finding 中。它不是白名单，也不会自动刷新基线；应先对照软件包日志确认漂移可信，再执行 `baseline create` 重新捕获可信状态。
+
 告警中的 VPS 身份：
 
 ```toml
@@ -394,10 +428,12 @@ public_listen_allowlist = [22, 80, 443]
 ```toml
 [process]
 deleted_executable_min_score = 70
+behavior_min_score = 70
+suspicious_socket_fd_threshold = 20
 known_bad_tool_names = ["xmrig", "kinsing", "masscan", "zmap"]
 ```
 
-`deleted_executable_min_score` 控制何时产生 `PROC-002`。deleted executable 状态会结合路径、进程身份和命令行为评分；标准系统二进制在软件包升级后仍短暂运行，不会单独触发高危告警。`known_bad_tool_names` 控制 `PROC-004` 的已知挖矿/扫描器指标词表。它会匹配 `exe_path`、`executable`、进程名和结构化 `argv[0]` 等进程身份字段，并兼容 `.exe` 后缀；缺少结构化身份的旧事件才回退到命令 token basename 匹配。
+`deleted_executable_min_score` 控制何时产生 `PROC-002`。deleted executable 状态会结合路径、进程身份和命令行为评分；标准系统二进制在软件包升级后仍短暂运行，不会单独触发高危告警。`behavior_min_score` 控制 `PROC-005`，它会组合内核线程伪装、Web 根目录执行、隐藏可执行文件名、可疑工作目录、socket FD 活动和有效 root 权限等弱信号。`suspicious_socket_fd_threshold` 控制 socket 持有数量达到多少时成为更强的行为信号。`known_bad_tool_names` 控制 `PROC-004` 的已知挖矿/扫描器指标词表。它会匹配 `exe_path`、`executable`、进程名和结构化 `argv[0]` 等进程身份字段，并兼容 `.exe` 后缀；缺少结构化身份的旧事件才回退到命令 token basename 匹配。
 
 持久化命令评分：
 
@@ -481,6 +517,7 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 - `PERSIST-002`：可疑启动命令。
 - `PROC-002`：达到风险评分阈值的 deleted executable 进程。
 - `PROC-003`：网络命令执行桥接。
+- `PROC-005`：可疑进程行为聚类。
 - `NET-001`：相对基线新增的公网监听端口。
 - `NET-002`：公网监听端口背后的进程相对基线发生变化。
 - `NET-003`：公网监听端口背后存在可疑进程。

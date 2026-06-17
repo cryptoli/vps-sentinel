@@ -1,4 +1,8 @@
-use crate::detectors::{evidence, path_is_allowlisted, string_field, DetectContext, Detector};
+use crate::detectors::risk::RiskAssessment;
+use crate::detectors::{
+    evidence, package_activity_context, path_is_allowlisted, string_field, DetectContext, Detector,
+    PackageActivityContext,
+};
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
 
@@ -44,6 +48,7 @@ impl Detector for FileDetector {
 
     fn detect(&self, events: &[RawEvent], ctx: &DetectContext) -> Vec<Finding> {
         let mut findings = Vec::new();
+        let package_context = package_activity_context(events);
         for event in events {
             let path = string_field(event, "path");
             if path.is_empty() || path_is_allowlisted(&path, &ctx.config.allowlist.file_paths) {
@@ -54,14 +59,17 @@ impl Detector for FileDetector {
                     if is_authorized_keys_path(&path) {
                         findings.push(authorized_keys_changed(event, ctx));
                     } else if is_critical_path(&path) {
-                        findings.push(critical_file_changed(event, ctx));
+                        findings.push(critical_file_changed(event, ctx, &package_context));
                     } else if is_web_script_path(&path) && event.kind == "file_created" {
                         findings.push(webshell_path_created(event, ctx));
                     }
                 }
                 "file_snapshot" => {
                     if event.field("content_markers").is_some() {
-                        findings.push(webshell_content(event, ctx));
+                        let assessment = webshell_content_assessment(event);
+                        if assessment.is_suspicious(ctx.config.file_integrity.webshell_min_score) {
+                            findings.push(webshell_content(event, ctx, assessment));
+                        }
                     } else if event.field("is_web_path") == Some("true")
                         && (event.field("executable") == Some("true") || is_web_script_path(&path))
                     {
@@ -97,9 +105,13 @@ fn authorized_keys_changed(event: &RawEvent, ctx: &DetectContext) -> Finding {
     ])
 }
 
-fn critical_file_changed(event: &RawEvent, ctx: &DetectContext) -> Finding {
+fn critical_file_changed(
+    event: &RawEvent,
+    ctx: &DetectContext,
+    package_context: &PackageActivityContext,
+) -> Finding {
     let path = string_field(event, "path");
-    Finding::new(
+    let mut finding = Finding::new(
         &ctx.host_id,
         "Critical system file changed",
         "A monitored critical system file changed relative to the baseline.",
@@ -108,14 +120,22 @@ fn critical_file_changed(event: &RawEvent, ctx: &DetectContext) -> Finding {
         "FILE-001",
         &path,
     )
-    .with_evidence(diff_evidence(event))
+    .with_evidence({
+        let mut items = diff_evidence(event);
+        items.extend(package_context.evidence());
+        items
+    })
     .with_impact(vec![
         "Changes to identity, sudo, SSH, cron, or systemd files may affect persistence or privilege.".to_string(),
     ])
     .with_recommendations(vec![
         "Review the file diff from a trusted shell session.".to_string(),
         "Correlate this change with package updates or administrative activity.".to_string(),
-    ])
+    ]);
+    if let Some(recommendation) = package_context.recommendation() {
+        finding.recommendations.push(recommendation);
+    }
+    finding
 }
 
 fn webshell_path_created(event: &RawEvent, ctx: &DetectContext) -> Finding {
@@ -136,7 +156,7 @@ fn webshell_path_created(event: &RawEvent, ctx: &DetectContext) -> Finding {
     ])
 }
 
-fn webshell_content(event: &RawEvent, ctx: &DetectContext) -> Finding {
+fn webshell_content(event: &RawEvent, ctx: &DetectContext, assessment: RiskAssessment) -> Finding {
     let path = string_field(event, "path");
     Finding::new(
         &ctx.host_id,
@@ -151,6 +171,9 @@ fn webshell_content(event: &RawEvent, ctx: &DetectContext) -> Finding {
         evidence("path", path),
         evidence("content_markers", string_field(event, "content_markers")),
         evidence("size", string_field(event, "size")),
+        evidence("risk_score", assessment.score.to_string()),
+        evidence("risk_reasons", assessment.reason_text()),
+        evidence("risk_features", assessment.feature_names()),
     ])
     .with_impact(vec![
         "The file may allow remote command execution if reachable by a web server.".to_string(),
@@ -159,6 +182,120 @@ fn webshell_content(event: &RawEvent, ctx: &DetectContext) -> Finding {
         "Quarantine only after confirming it is not legitimate application code.".to_string(),
         "Review web logs and deployment history for the file.".to_string(),
     ])
+}
+
+fn webshell_content_assessment(event: &RawEvent) -> RiskAssessment {
+    let markers = marker_set(event);
+    let mut assessment = RiskAssessment::default();
+
+    let web_script_context =
+        event.field("is_web_path") == Some("true") && is_script_like_event(event);
+
+    if has_command_execution_markers(&markers) {
+        assessment.add_signal(
+            55,
+            "command_execution_marker",
+            "file contains command-execution style markers",
+        );
+    }
+    if has_dynamic_execution_markers(&markers) {
+        assessment.add_signal(
+            40,
+            "dynamic_code_marker",
+            "file contains dynamic code execution markers",
+        );
+    }
+    if has_encoded_payload_markers(&markers) {
+        assessment.add_signal(
+            35,
+            "encoded_payload_marker",
+            "file contains encoded-payload markers",
+        );
+    }
+    if web_script_context {
+        assessment.add_signal(
+            60,
+            "web_script_context",
+            "marker appears in a script-like file under a web path",
+        );
+    }
+    if has_command_execution_markers(&markers) && web_script_context {
+        assessment.add_signal(
+            80,
+            "web_command_execution",
+            "command-execution marker appears in a script-like web file",
+        );
+    }
+    if has_dynamic_and_encoded_markers(&markers) {
+        assessment.add_signal(
+            85,
+            "encoded_dynamic_execution",
+            "dynamic execution marker is combined with encoded payload markers",
+        );
+    }
+    if has_command_and_encoded_markers(&markers) {
+        assessment.add_signal(
+            90,
+            "encoded_command_execution",
+            "command-execution marker is combined with encoded payload markers",
+        );
+    }
+    if markers.contains("long_base64") && web_script_context {
+        assessment.add_signal(
+            75,
+            "large_encoded_web_script",
+            "large encoded token appears in a script-like web file",
+        );
+    }
+    if event.field("hidden") == Some("true") && assessment.score >= 55 {
+        assessment.add_signal(
+            75,
+            "hidden_suspicious_script",
+            "suspicious markers appear in a hidden file",
+        );
+    }
+    assessment
+}
+
+fn marker_set(event: &RawEvent) -> std::collections::BTreeSet<String> {
+    string_field(event, "content_markers")
+        .split(',')
+        .map(str::trim)
+        .filter(|marker| !marker.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn has_dynamic_and_encoded_markers(markers: &std::collections::BTreeSet<String>) -> bool {
+    has_dynamic_execution_markers(markers) && has_encoded_payload_markers(markers)
+}
+
+fn has_command_and_encoded_markers(markers: &std::collections::BTreeSet<String>) -> bool {
+    has_command_execution_markers(markers) && has_encoded_payload_markers(markers)
+}
+
+fn has_command_execution_markers(markers: &std::collections::BTreeSet<String>) -> bool {
+    markers.contains("system_call")
+        || markers.contains("shell_exec")
+        || markers.contains("passthru")
+        || markers.contains("dev_tcp")
+        || markers.contains("cmd_exe")
+}
+
+fn has_dynamic_execution_markers(markers: &std::collections::BTreeSet<String>) -> bool {
+    markers.contains("eval_call") || markers.contains("assert_call")
+}
+
+fn has_encoded_payload_markers(markers: &std::collections::BTreeSet<String>) -> bool {
+    markers.contains("base64_decode") || markers.contains("long_base64")
+}
+
+fn is_script_like_event(event: &RawEvent) -> bool {
+    let extension = string_field(event, "extension");
+    matches!(
+        extension.as_str(),
+        "php" | "phtml" | "jsp" | "asp" | "aspx" | "cgi" | "pl" | "py" | "sh"
+    ) || is_web_script_path(&string_field(event, "path"))
 }
 
 fn executable_web_file(event: &RawEvent, ctx: &DetectContext) -> Finding {
@@ -227,7 +364,7 @@ fn is_web_script_path(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_authorized_keys_path, FileDetector};
+    use super::{is_authorized_keys_path, webshell_content_assessment, FileDetector};
     use crate::detectors::{DetectContext, Detector};
     use sentinel_core::{RawEvent, SentinelConfig};
     use std::sync::Arc;
@@ -251,5 +388,57 @@ mod tests {
 
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, "SSH-005");
+    }
+
+    #[test]
+    fn webshell_content_requires_combined_risk_markers() {
+        let benign_admin_script = RawEvent::new("file", "file_snapshot")
+            .with_field("path", "/var/www/html/admin.php")
+            .with_field("extension", "php")
+            .with_field("is_web_path", "true")
+            .with_field("content_markers", "eval_call");
+        assert!(!webshell_content_assessment(&benign_admin_script).is_suspicious(70));
+
+        let encoded_shell = RawEvent::new("file", "file_snapshot")
+            .with_field("path", "/var/www/html/shell.php")
+            .with_field("extension", "php")
+            .with_field("is_web_path", "true")
+            .with_field("content_markers", "eval_call,base64_decode");
+        assert!(webshell_content_assessment(&encoded_shell).is_suspicious(70));
+
+        let classic_webshell = RawEvent::new("file", "file_snapshot")
+            .with_field("path", "/var/www/html/cmd.php")
+            .with_field("extension", "php")
+            .with_field("is_web_path", "true")
+            .with_field("content_markers", "system_call");
+        assert!(webshell_content_assessment(&classic_webshell).is_suspicious(70));
+
+        let non_web_helper = RawEvent::new("file", "file_snapshot")
+            .with_field("path", "/opt/admin/task.php")
+            .with_field("extension", "php")
+            .with_field("is_web_path", "false")
+            .with_field("content_markers", "system_call");
+        assert!(!webshell_content_assessment(&non_web_helper).is_suspicious(70));
+    }
+
+    #[test]
+    fn critical_file_drift_includes_package_activity_context() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let events = vec![
+            RawEvent::new("package_manager", "package_manager_activity")
+                .with_field("path", "/var/log/dpkg.log"),
+            RawEvent::new("baseline", "file_modified")
+                .with_field("path", "/etc/systemd/system/app.service")
+                .with_field("previous_hash", "old")
+                .with_field("current_hash", "new"),
+        ];
+
+        let findings = FileDetector.detect(&events, &ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|item| item.key == "package_activity_recent" && item.value == "true"));
     }
 }

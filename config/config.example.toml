@@ -32,6 +32,7 @@ failed_login_window_seconds = 300
 enabled = true
 max_file_size_mb = 5
 max_depth = 8
+webshell_min_score = 70
 paths = [
   "/etc/passwd",
   "/etc/shadow",
@@ -65,8 +66,23 @@ scan_interval_seconds = 30
 high_cpu_threshold_percent = 80.0
 high_cpu_duration_seconds = 120
 deleted_executable_min_score = 70
+behavior_min_score = 70
+suspicious_socket_fd_threshold = 20
 suspicious_dirs = ["/tmp", "/var/tmp", "/dev/shm", "/run"]
 known_bad_tool_names = ["xmrig", "kinsing", "masscan", "zmap"]
+
+[package_manager]
+enabled = true
+log_paths = [
+  "/var/log/dpkg.log",
+  "/var/log/apt/history.log",
+  "/var/log/yum.log",
+  "/var/log/dnf.log",
+  "/var/log/pacman.log",
+  "/var/log/apk.log"
+]
+recent_activity_window_seconds = 3600
+max_log_tail_bytes = 8192
 
 [network]
 enabled = true

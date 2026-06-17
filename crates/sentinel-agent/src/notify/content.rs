@@ -137,6 +137,15 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
                 "确认入侵后轮换相关凭据。",
             ],
         },
+        "PROC-005" => RuleMessage {
+            title: "检测到可疑进程行为组合",
+            description: "进程同时具备多个弱行为信号，例如伪装成内核线程、从 Web 路径运行、隐藏文件名或异常 socket 活动。",
+            impact: &["改名后的恶意程序可能避开简单命令行签名，需要结合路径、身份和网络行为判断。"],
+            recommendations: &[
+                "核对可执行文件路径、属主、软件包来源和网络连接。",
+                "如果该进程不符合预期，停止前先保留进程证据。",
+            ],
+        },
         "NET-001" => RuleMessage {
             title: "检测到新增公网监听端口",
             description: "一个公网监听端口相对已保存基线新增。",

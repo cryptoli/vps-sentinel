@@ -7,6 +7,7 @@ pub mod config_risk;
 pub mod docker;
 pub mod file_integrity;
 pub mod network;
+pub mod package_manager;
 pub mod persistence;
 pub mod process;
 pub mod rootkit;
@@ -52,6 +53,7 @@ pub fn default_collectors() -> Vec<Box<dyn Collector>> {
         Box::new(ssh::SshLogCollector),
         Box::new(file_integrity::FileIntegrityCollector),
         Box::new(users::UserCollector),
+        Box::new(package_manager::PackageManagerCollector),
         Box::new(persistence::PersistenceCollector),
         Box::new(process::ProcessCollector),
         Box::new(network::NetworkCollector),

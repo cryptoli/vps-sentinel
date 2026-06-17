@@ -21,7 +21,7 @@ fn every_builtin_risk_rule_has_positive_and_negative_coverage() {
     let positives = positive_cases();
     let negatives = negative_cases();
 
-    assert_eq!(positives.len(), 28);
+    assert_eq!(positives.len(), 29);
     assert_eq!(negatives.len(), positives.len());
 
     for case in positives {
@@ -246,6 +246,18 @@ fn positive_cases() -> Vec<PositiveCase> {
                 "/usr/local/bin/xmrig",
                 "/usr/local/bin/xmrig -o pool",
             )],
+        ),
+        positive(
+            "PROC-005",
+            "renamed web path process behavior cluster",
+            vec![process_event(
+                "46",
+                "kworker",
+                "/var/www/html/.cache/kworker",
+                "/var/www/html/.cache/kworker --serve",
+            )
+            .with_field("cwd", "/var/www/html")
+            .with_field("socket_fd_count", "3")],
         ),
         positive(
             "NET-001",
@@ -477,6 +489,15 @@ fn negative_cases() -> Vec<NegativeCase> {
                 "argv_json",
                 r#"["/usr/local/bin/worker","--profile","xmrig"]"#,
             )],
+        ),
+        negative(
+            "PROC-005",
+            "ordinary service with many sockets",
+            vec![
+                process_event("46", "nginx", "/usr/sbin/nginx", "nginx: worker process")
+                    .with_field("cwd", "/")
+                    .with_field("socket_fd_count", "64"),
+            ],
         ),
         negative(
             "NET-001",

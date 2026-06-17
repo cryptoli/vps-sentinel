@@ -5,6 +5,9 @@ use crate::detectors::risk::RiskAssessment;
 use crate::detectors::{evidence, path_is_allowlisted, string_field, DetectContext, Detector};
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
+use std::collections::BTreeSet;
+
+const ROOT_UID: &str = "0";
 
 pub struct ProcessDetector;
 
@@ -43,6 +46,13 @@ impl Detector for ProcessDetector {
                 Severity::Critical,
                 "A process command line contains common miner or scanner names.",
             ),
+            RuleMetadata::new(
+                "PROC-005",
+                "Suspicious process behavior cluster",
+                Category::Process,
+                Severity::High,
+                "A process combines multiple weak behavior signals such as masquerading, web-path execution, hidden names, or unusual socket activity.",
+            ),
         ]
     }
 
@@ -75,6 +85,11 @@ impl Detector for ProcessDetector {
             }
             if event_contains_miner_or_scanner(event, &ctx.config.process.known_bad_tool_names) {
                 findings.push(miner_or_scanner(event, ctx));
+            }
+            if let Some(assessment) = behavior_cluster_assessment(event, ctx) {
+                if assessment.is_suspicious(ctx.config.process.behavior_min_score) {
+                    findings.push(process_behavior_cluster(event, ctx, assessment));
+                }
             }
         }
         findings
@@ -226,6 +241,44 @@ fn miner_or_scanner(event: &RawEvent, ctx: &DetectContext) -> Finding {
     ])
 }
 
+fn process_behavior_cluster(
+    event: &RawEvent,
+    ctx: &DetectContext,
+    assessment: BehaviorAssessment,
+) -> Finding {
+    Finding::new(
+        &ctx.host_id,
+        "Suspicious process behavior cluster",
+        "A process combines multiple weak behavior signals that are more suspicious together than individually.",
+        Severity::High,
+        Category::Process,
+        "PROC-005",
+        string_field(event, "pid"),
+    )
+    .with_evidence({
+        let mut items = process_evidence(event);
+        items.push(evidence("cwd", string_field(event, "cwd")));
+        items.push(evidence("euid", string_field(event, "euid")));
+        items.push(evidence(
+            "socket_fd_count",
+            string_field(event, "socket_fd_count"),
+        ));
+        items.push(evidence("risk_score", assessment.score.to_string()));
+        items.push(evidence("risk_reasons", assessment.reason_text()));
+        items.push(evidence("risk_features", assessment.feature_names()));
+        items
+    })
+    .with_impact(vec![
+        "Renamed or lightly disguised malware may avoid simple command-line signatures."
+            .to_string(),
+    ])
+    .with_recommendations(vec![
+        "Verify the executable path, owner, package provenance, and network connections."
+            .to_string(),
+        "Preserve process evidence before stopping it if it is unexpected.".to_string(),
+    ])
+}
+
 fn process_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
     vec![
         evidence("pid", string_field(event, "pid")),
@@ -234,6 +287,119 @@ fn process_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
         evidence("exe_path", string_field(event, "exe_path")),
         evidence("cmdline", string_field(event, "cmdline")),
     ]
+}
+
+#[derive(Debug, Clone, Default)]
+struct BehaviorAssessment {
+    score: u16,
+    reasons: BTreeSet<String>,
+    features: BTreeSet<String>,
+}
+
+impl BehaviorAssessment {
+    fn add_signal(&mut self, score: u16, feature: impl Into<String>, reason: impl Into<String>) {
+        self.score = self.score.saturating_add(score);
+        self.features.insert(feature.into());
+        self.reasons.insert(reason.into());
+    }
+
+    fn is_suspicious(&self, min_score: u16) -> bool {
+        self.score >= min_score
+    }
+
+    fn reason_text(&self) -> String {
+        self.reasons.iter().cloned().collect::<Vec<_>>().join("; ")
+    }
+
+    fn feature_names(&self) -> String {
+        self.features.iter().cloned().collect::<Vec<_>>().join(", ")
+    }
+
+    #[cfg(test)]
+    fn has_feature(&self, feature: &str) -> bool {
+        self.features.contains(feature)
+    }
+}
+
+fn behavior_cluster_assessment(
+    event: &RawEvent,
+    ctx: &DetectContext,
+) -> Option<BehaviorAssessment> {
+    let mut assessment = BehaviorAssessment::default();
+    let name = string_field(event, "name");
+    let exe_path = string_field(event, "exe_path");
+    let cmdline = string_field(event, "cmdline");
+    let cwd = string_field(event, "cwd");
+    let euid = string_field(event, "euid");
+    let socket_fd_count = string_field(event, "socket_fd_count")
+        .parse::<usize>()
+        .unwrap_or(0);
+
+    if exe_path.is_empty() && cmdline.is_empty() {
+        return None;
+    }
+
+    if looks_like_kernel_thread_name(&name) && !exe_path.is_empty() && !cmdline.is_empty() {
+        assessment.add_signal(
+            55,
+            "kernel_thread_masquerade",
+            "userland process name resembles a kernel thread",
+        );
+    }
+    if path_in_web_roots(&exe_path, ctx) {
+        assessment.add_signal(
+            40,
+            "web_path_executable",
+            "process executable is under a configured web root",
+        );
+    }
+    if hidden_basename(&exe_path) {
+        assessment.add_signal(
+            25,
+            "hidden_executable_name",
+            "process executable has a hidden basename",
+        );
+    }
+    if path_in_suspicious_dirs(&cwd, &ctx.config.process.suspicious_dirs) {
+        assessment.add_signal(
+            30,
+            "suspicious_cwd",
+            "process current working directory is under a suspicious temporary path",
+        );
+    }
+    if socket_fd_count >= ctx.config.process.suspicious_socket_fd_threshold {
+        assessment.add_signal(
+            30,
+            "many_socket_fds",
+            "process owns many socket file descriptors",
+        );
+    } else if socket_fd_count > 0 {
+        assessment.add_signal(
+            15,
+            "socket_activity",
+            "process owns socket file descriptors",
+        );
+    }
+    if euid == ROOT_UID && assessment.score >= 55 {
+        assessment.add_signal(
+            15,
+            "privileged_suspicious_process",
+            "suspicious process signals are running with effective root privileges",
+        );
+    }
+
+    if assessment.score == 0 {
+        None
+    } else {
+        Some(assessment)
+    }
+}
+
+fn path_in_web_roots(path: &str, ctx: &DetectContext) -> bool {
+    ctx.config.web.web_roots.iter().any(|root| {
+        let root = root.to_string_lossy().replace('\\', "/");
+        path == root || path.starts_with(&format!("{root}/"))
+    })
 }
 
 fn process_evidence_with_assessment(
@@ -387,11 +553,25 @@ fn is_shell_process_name(name: &str) -> bool {
     )
 }
 
+fn looks_like_kernel_thread_name(name: &str) -> bool {
+    let normalized = name.trim_matches(|ch| ch == '[' || ch == ']');
+    normalized == "kworker"
+        || normalized == "kthreadd"
+        || normalized == "kswapd"
+        || normalized == "ksoftirqd"
+        || normalized == "watchdog"
+        || normalized == "migration"
+        || normalized.starts_with("kworker/")
+        || normalized.starts_with("ksoftirqd/")
+        || normalized.starts_with("rcu_")
+        || normalized.starts_with("jbd2/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        command_matches_allowlist, contains_miner_or_scanner, deleted_executable_assessment,
-        event_contains_miner_or_scanner, ProcessDetector,
+        behavior_cluster_assessment, command_matches_allowlist, contains_miner_or_scanner,
+        deleted_executable_assessment, event_contains_miner_or_scanner, ProcessDetector,
     };
     use crate::detectors::{
         command_profile::assess_network_execution_command, DetectContext, Detector,
@@ -532,6 +712,56 @@ mod tests {
         let findings = ProcessDetector.detect(&events, &ctx);
 
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn behavior_cluster_detects_renamed_web_path_process() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event(
+            "/var/www/html/.cache/kworker",
+            "kworker",
+            "/var/www/html/.cache/kworker --serve",
+        )
+        .with_field("cwd", "/var/www/html")
+        .with_field("euid", "33")
+        .with_field("socket_fd_count", "3");
+
+        let assessment = behavior_cluster_assessment(&event, &ctx);
+
+        assert!(assessment.is_some_and(|assessment| {
+            assessment.is_suspicious(70)
+                && assessment.has_feature("kernel_thread_masquerade")
+                && assessment.has_feature("web_path_executable")
+        }));
+    }
+
+    #[test]
+    fn behavior_cluster_ignores_normal_service_with_many_sockets() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event("/usr/sbin/nginx", "nginx", "nginx: worker process")
+            .with_field("cwd", "/")
+            .with_field("socket_fd_count", "64");
+
+        let findings = ProcessDetector.detect(&[event], &ctx);
+
+        assert!(findings.iter().all(|finding| finding.rule_id != "PROC-005"));
+    }
+
+    #[test]
+    fn behavior_cluster_detects_privileged_kernel_thread_masquerade() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event("/usr/local/bin/kworker", "kworker", "kworker --daemon")
+            .with_field("cwd", "/")
+            .with_field("euid", "0")
+            .with_field("socket_fd_count", "0");
+
+        let assessment = behavior_cluster_assessment(&event, &ctx);
+
+        assert!(assessment.is_some_and(|assessment| {
+            assessment.is_suspicious(70)
+                && assessment.has_feature("kernel_thread_masquerade")
+                && assessment.has_feature("privileged_suspicious_process")
+        }));
     }
 
     #[test]

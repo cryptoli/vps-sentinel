@@ -1,6 +1,9 @@
 use crate::detectors::command_profile::assess_network_execution_command;
 use crate::detectors::risk::RiskAssessment;
-use crate::detectors::{evidence, string_field, DetectContext, Detector};
+use crate::detectors::{
+    evidence, package_activity_context, string_field, DetectContext, Detector,
+    PackageActivityContext,
+};
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
 
@@ -39,13 +42,14 @@ impl Detector for PersistenceDetector {
 
     fn detect(&self, events: &[RawEvent], ctx: &DetectContext) -> Vec<Finding> {
         let mut findings = Vec::new();
+        let package_context = package_activity_context(events);
         for event in events {
             match event.kind.as_str() {
                 "persistence_created" | "persistence_modified" => {
                     if event.field("type") == Some("ld_preload") {
-                        findings.push(ld_preload_changed(event, ctx));
+                        findings.push(ld_preload_changed(event, ctx, &package_context));
                     } else {
-                        findings.push(persistence_changed(event, ctx));
+                        findings.push(persistence_changed(event, ctx, &package_context));
                     }
                 }
                 "persistence_entry" => {
@@ -62,9 +66,13 @@ impl Detector for PersistenceDetector {
     }
 }
 
-fn persistence_changed(event: &RawEvent, ctx: &DetectContext) -> Finding {
+fn persistence_changed(
+    event: &RawEvent,
+    ctx: &DetectContext,
+    package_context: &PackageActivityContext,
+) -> Finding {
     let path = string_field(event, "path");
-    Finding::new(
+    let mut finding = Finding::new(
         &ctx.host_id,
         "Persistence-related file changed",
         "A cron, systemd, or shell startup file changed compared with the baseline.",
@@ -73,13 +81,21 @@ fn persistence_changed(event: &RawEvent, ctx: &DetectContext) -> Finding {
         "PERSIST-001",
         &path,
     )
-    .with_evidence(diff_evidence(event))
+    .with_evidence({
+        let mut items = diff_evidence(event);
+        items.extend(package_context.evidence());
+        items
+    })
     .with_recommendations(vec![
         "Inspect the startup entry and verify it was added by an administrator or package update."
             .to_string(),
         "Check whether the referenced executable lives in temporary or web-writable paths."
             .to_string(),
-    ])
+    ]);
+    if let Some(recommendation) = package_context.recommendation() {
+        finding.recommendations.push(recommendation);
+    }
+    finding
 }
 
 fn suspicious_entry(event: &RawEvent, ctx: &DetectContext, assessment: RiskAssessment) -> Finding {
@@ -212,9 +228,13 @@ fn is_shell_wrapper_only(line: &str) -> bool {
         && !contains_base64_decode(line)
 }
 
-fn ld_preload_changed(event: &RawEvent, ctx: &DetectContext) -> Finding {
+fn ld_preload_changed(
+    event: &RawEvent,
+    ctx: &DetectContext,
+    package_context: &PackageActivityContext,
+) -> Finding {
     let path = string_field(event, "path");
-    Finding::new(
+    let mut finding = Finding::new(
         &ctx.host_id,
         "ld.so.preload changed",
         "Dynamic linker preload configuration changed relative to the baseline.",
@@ -223,12 +243,20 @@ fn ld_preload_changed(event: &RawEvent, ctx: &DetectContext) -> Finding {
         "PERSIST-003",
         &path,
     )
-    .with_evidence(diff_evidence(event))
+    .with_evidence({
+        let mut items = diff_evidence(event);
+        items.extend(package_context.evidence());
+        items
+    })
     .with_recommendations(vec![
         "Inspect preload entries and verify every referenced library.".to_string(),
         "Treat unknown entries as a possible rootkit signal, not a confirmed rootkit by itself."
             .to_string(),
-    ])
+    ]);
+    if let Some(recommendation) = package_context.recommendation() {
+        finding.recommendations.push(recommendation);
+    }
+    finding
 }
 
 fn diff_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
@@ -304,5 +332,27 @@ mod tests {
         let findings = PersistenceDetector.detect(&[event], &ctx);
 
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn persistence_drift_includes_package_activity_context() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let events = vec![
+            RawEvent::new("package_manager", "package_manager_activity")
+                .with_field("path", "/var/log/apt/history.log"),
+            RawEvent::new("baseline", "persistence_modified")
+                .with_field("path", "/lib/systemd/system/nginx.service")
+                .with_field("type", "systemd")
+                .with_field("previous_hash", "old")
+                .with_field("current_hash", "new"),
+        ];
+
+        let findings = PersistenceDetector.detect(&events, &ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|item| item.key == "package_activity_recent" && item.value == "true"));
     }
 }

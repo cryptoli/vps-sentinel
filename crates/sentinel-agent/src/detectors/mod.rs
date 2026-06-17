@@ -1,5 +1,6 @@
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Evidence, Finding, RawEvent, SentinelConfig};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -74,4 +75,46 @@ fn path_is_allowlisted(path: &str, allowlist: &[PathBuf]) -> bool {
 
 fn field_is_allowlisted(value: &str, allowlist: &[String]) -> bool {
     allowlist.iter().any(|allowed| allowed == value)
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PackageActivityContext {
+    sources: Vec<String>,
+}
+
+impl PackageActivityContext {
+    pub(crate) fn is_active(&self) -> bool {
+        !self.sources.is_empty()
+    }
+
+    pub(crate) fn evidence(&self) -> Vec<Evidence> {
+        if self.sources.is_empty() {
+            return Vec::new();
+        }
+        vec![
+            Evidence::new("package_activity_recent", "true"),
+            Evidence::new("package_activity_sources", self.sources.join(", ")),
+        ]
+    }
+
+    pub(crate) fn recommendation(&self) -> Option<String> {
+        self.is_active().then(|| {
+            "Recent package-manager activity was observed; compare the change with package logs before refreshing the baseline.".to_string()
+        })
+    }
+}
+
+pub(crate) fn package_activity_context(events: &[RawEvent]) -> PackageActivityContext {
+    let mut sources = BTreeSet::new();
+    for event in events
+        .iter()
+        .filter(|event| event.kind == "package_manager_activity")
+    {
+        if let Some(path) = event.field("path").filter(|path| !path.trim().is_empty()) {
+            sources.insert(path.to_string());
+        }
+    }
+    PackageActivityContext {
+        sources: sources.into_iter().collect(),
+    }
 }

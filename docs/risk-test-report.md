@@ -4,7 +4,7 @@ Date: 2026-06-17
 
 Scope:
 
-- All 28 built-in rules returned by `vps-sentinel rules list`.
+- All 29 built-in rules returned by `vps-sentinel rules list`.
 - Positive detector cases: each rule must fire for a controlled malicious or risky input.
 - Negative detector cases: each rule must stay silent for a realistic benign or below-threshold input.
 - Notification rendering: every positive finding is rendered through the same alert renderer used before Telegram, Email, Markdown, and plain-text delivery.
@@ -16,7 +16,7 @@ Transport note: the matrix verifies every rule's rendered Telegram HTML payload 
 
 | Area | Result |
 | --- | --- |
-| Rule count | 28 built-in rules |
+| Rule count | 29 built-in rules |
 | Positive rule coverage | Passed |
 | Negative rule coverage | Passed |
 | Telegram HTML rendering | Passed |
@@ -26,7 +26,7 @@ Transport note: the matrix verifies every rule's rendered Telegram HTML payload 
 | Rule ID uniqueness and format | Passed |
 | Rust formatting | Passed |
 | Clippy with warnings denied | Passed |
-| Workspace tests | Passed: 104 tests |
+| Workspace tests | Passed: 114 tests |
 | Locked release build | Passed |
 | Installer/update/reload/stop script syntax | Passed |
 | Secret scan for provided Telegram credentials | Passed |
@@ -45,7 +45,7 @@ Transport note: the matrix verifies every rule's rendered Telegram HTML payload 
 | `SSH-004` | ordinary non-root public-key SSH success | root login, which is classified as `SSH-001` |
 | `SSH-005` | `.ssh/authorized_keys` baseline hash drift | unrelated `/tmp/authorized_keys` drift |
 | `FILE-001` | `/etc/passwd` baseline drift | non-critical application file drift |
-| `FILE-002` | monitored file with webshell markers | clean web file snapshot |
+| `FILE-002` | command-execution marker in a script-like web file or encoded dynamic execution markers | clean web file snapshot and single weak marker below threshold |
 | `FILE-003` | executable file in configured web path | executable outside web path |
 | `USER-001` | new non-root local user | UID 0 user, which is classified as `USER-002` |
 | `USER-002` | non-root account with UID 0 | normal UID user |
@@ -57,6 +57,7 @@ Transport note: the matrix verifies every rule's rendered Telegram HTML payload 
 | `PROC-002` | deleted executable under `/dev/shm` | standard systemd deleted-executable package-upgrade residue |
 | `PROC-003` | `/dev/tcp` interactive shell bridge | plain traffic forwarding command |
 | `PROC-004` | known miner identity in executable/process name | known tool name appears only as a regular argument |
+| `PROC-005` | renamed web-path process with kernel-thread masquerade and socket activity | normal nginx worker with many sockets |
 | `NET-001` | new public listener from baseline drift | current unbaselined listener without baseline drift |
 | `NET-002` | public listener owner changed from baseline | private listener owner changed |
 | `NET-003` | public listener owned by suspicious temp executable | ordinary public web listener |
@@ -89,7 +90,9 @@ The latest-notification review also found two noisy `NET-001` alerts caused by v
 
 The code audit found one business threshold that was still hardcoded in detector logic: the `WEB-002` repeated 403/404 threshold. It is now configurable as `web.error_burst_threshold` with the previous default value of 20, and validation rejects zero.
 
-Existing detector modules already separate collection, rule evaluation, risk scoring, finding coalescing, notification rendering, and delivery concerns. The runtime noise-control policy now treats durable state findings differently from event findings, and the network detector now distinguishes ordinary TCP service exposure from generic UDP high-port dynamic traffic.
+This round also addresses three detection-science gaps. Package-manager activity is collected as context for file and persistence drift instead of silently trusting drift. WebShell content detection now uses marker-combination scoring so a single admin-script marker is below the default threshold. `PROC-005` adds a process behavior cluster for renamed or lightly disguised processes by combining weak signals such as kernel-thread masquerading, web-root execution, hidden executable names, suspicious cwd, socket-FD activity, and effective-root context.
+
+Existing detector modules already separate collection, rule evaluation, risk scoring, finding coalescing, notification rendering, and delivery concerns. The runtime noise-control policy treats durable state findings differently from event findings, the network detector distinguishes ordinary TCP service exposure from generic UDP high-port dynamic traffic, and the new context collectors feed facts into existing detector boundaries rather than coupling notification logic to collection.
 
 ## Commands
 

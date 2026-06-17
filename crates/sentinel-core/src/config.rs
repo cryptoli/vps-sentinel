@@ -14,8 +14,8 @@ pub use notifications::{
 };
 pub use sections::{
     AgentConfig, AllowlistConfig, DockerConfig, FileIntegrityConfig, NetworkConfig,
-    NoiseControlConfig, PersistenceConfig, PrivacyConfig, ProcessConfig, SentinelPaths, SshConfig,
-    StorageConfig, WebConfig,
+    NoiseControlConfig, PackageManagerConfig, PersistenceConfig, PrivacyConfig, ProcessConfig,
+    SentinelPaths, SshConfig, StorageConfig, WebConfig,
 };
 
 /// Top-level TOML configuration for the agent and CLI.
@@ -29,6 +29,7 @@ pub struct SentinelConfig {
     pub file_integrity: FileIntegrityConfig,
     pub web: WebConfig,
     pub process: ProcessConfig,
+    pub package_manager: PackageManagerConfig,
     pub network: NetworkConfig,
     pub persistence: PersistenceConfig,
     pub docker: DockerConfig,
@@ -91,9 +92,34 @@ impl SentinelConfig {
                 "file_integrity.max_file_size_mb must be greater than 0".to_string(),
             ));
         }
+        if self.file_integrity.webshell_min_score == 0 {
+            return Err(SentinelError::Config(
+                "file_integrity.webshell_min_score must be greater than 0".to_string(),
+            ));
+        }
         if self.web.error_burst_threshold == 0 {
             return Err(SentinelError::Config(
                 "web.error_burst_threshold must be greater than 0".to_string(),
+            ));
+        }
+        if self.process.behavior_min_score == 0 {
+            return Err(SentinelError::Config(
+                "process.behavior_min_score must be greater than 0".to_string(),
+            ));
+        }
+        if self.process.suspicious_socket_fd_threshold == 0 {
+            return Err(SentinelError::Config(
+                "process.suspicious_socket_fd_threshold must be greater than 0".to_string(),
+            ));
+        }
+        if self.package_manager.recent_activity_window_seconds == 0 {
+            return Err(SentinelError::Config(
+                "package_manager.recent_activity_window_seconds must be greater than 0".to_string(),
+            ));
+        }
+        if self.package_manager.max_log_tail_bytes == 0 {
+            return Err(SentinelError::Config(
+                "package_manager.max_log_tail_bytes must be greater than 0".to_string(),
             ));
         }
         if self.notifications.request_timeout_seconds == 0 {
@@ -255,6 +281,32 @@ mod tests {
     fn invalid_web_error_threshold_is_rejected() {
         let mut config = SentinelConfig::default();
         config.web.error_burst_threshold = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_risk_thresholds_are_rejected() {
+        let mut config = SentinelConfig::default();
+        config.file_integrity.webshell_min_score = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.process.behavior_min_score = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.process.suspicious_socket_fd_threshold = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_package_manager_windows_are_rejected() {
+        let mut config = SentinelConfig::default();
+        config.package_manager.recent_activity_window_seconds = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.package_manager.max_log_tail_bytes = 0;
         assert!(config.validate().is_err());
     }
 

@@ -34,6 +34,12 @@ Changed `NET-001` so ordinary new public-listener alerts only apply to TCP/TCP6 
 
 This keeps the rule useful for real public services while reducing VPN/proxy/QUIC-style UDP high-port false positives.
 
+Additional improvements in the current round:
+
+- File and persistence baseline drift now includes recent package-manager activity context from apt/dpkg/yum/dnf/pacman/apk logs. This does not suppress alerts or refresh baselines automatically; it gives the operator evidence for review.
+- WebShell content detection now uses a configurable score. A single marker such as `eval` in a web admin script is below the default threshold, while command execution in a script-like web path, encoded dynamic execution, and encoded command-execution combinations still trigger `FILE-002`.
+- `PROC-005` adds behavior-cluster detection for renamed or lightly disguised processes by combining kernel-thread masquerading, web-root execution, hidden executable names, suspicious cwd, socket-FD activity, and effective-root context.
+
 ## Simulated Business Test Matrix
 
 | Module | Test scope | Positive cases | Negative cases | Result |
@@ -42,11 +48,11 @@ This keeps the rule useful for real public services while reducing VPN/proxy/QUI
 | SSH brute force | Failure aggregation by source IP | 10+ failures from one IP | 9 failures remains below threshold | Passed |
 | SSH key integrity | Baseline drift | `.ssh/authorized_keys` hash change | unrelated `/tmp/authorized_keys` drift | Passed |
 | Critical files | Baseline drift | `/etc/passwd` modified | application config outside critical paths | Passed |
-| WebShell file | File snapshot markers | PHP-like file with webshell markers | clean web file | Passed |
+| WebShell file | File snapshot marker scoring | direct command execution in a script-like web file, encoded dynamic/command execution marker combinations | clean web file, single `eval` marker in an admin script, command helper outside web roots | Passed |
 | Web executable | Web root file metadata | executable/script file in web root | executable outside web root | Passed |
 | Users | User baseline drift | new user, UID 0 user, privilege-relevant change | current user snapshot without drift | Passed |
-| Persistence | Startup locations and command scoring | systemd/cron drift, ld preload drift, download-to-shell startup command | ordinary persistence snapshot, cloud-init shell wrapper | Passed |
-| Process | Process path and command behavior | temporary executable, deleted suspicious executable, network shell bridge, miner identity | standard system process, package-upgrade residue, plain traffic forwarder, tool name only in argument | Passed |
+| Persistence | Startup locations, command scoring, and package-update context | systemd/cron drift, ld preload drift, download-to-shell startup command, drift with recent package-manager activity | ordinary persistence snapshot, cloud-init shell wrapper | Passed |
+| Process | Process path, command behavior, and behavior clustering | temporary executable, deleted suspicious executable, network shell bridge, miner identity, renamed web-path process, privileged kernel-thread masquerade | standard system process, package-upgrade residue, plain traffic forwarder, tool name only in argument, nginx worker with many sockets | Passed |
 | Network TCP | Public socket baseline drift | new TCP public port | stable current generic public port without baseline drift | Passed |
 | Network UDP | Public socket baseline drift and risk exceptions | high-risk UDP port, suspicious UDP listener process | generic v2ray-like UDP6 high port | Passed |
 | Network owner drift | Baseline owner comparison | public listener owner changed | private listener owner changed | Passed |
@@ -57,6 +63,7 @@ This keeps the rule useful for real public services while reducing VPN/proxy/QUI
 | Rootkit signal | ld preload event | active `ld.so.preload` entry | empty preload entries | Passed |
 | Notification rendering | Alert templates | VPS name, Chinese text, Telegram HTML, technical fields when enabled | no full HTML document in Telegram body, no technical fields by default | Passed |
 | Noise control | Duplicate suppression | durable state duplicates use 24-hour reminder interval | SSH login events still use the normal event window | Passed |
+| Package-manager context | Drift explanation context | recent package log attached to file/persistence drift | no package log means no package context evidence | Passed |
 | Scripts | Shell syntax | install, update, reload, stop, packaging install | n/a | Passed |
 
 ## Commands Used For Verification
@@ -68,6 +75,11 @@ cargo test -p sentinel-agent network_rules
 cargo test -p sentinel-agent rule_matrix
 cargo test -p sentinel-agent scanner
 cargo test -p sentinel-agent web_rules
+cargo test -p sentinel-agent file_rules
+cargo test -p sentinel-agent persistence_rules
+cargo test -p sentinel-agent process_rules
+cargo test -p sentinel-agent package_manager
+cargo test -p sentinel-agent findings
 cargo test -p sentinel-core config
 cargo test --workspace --all-targets
 cargo build --release --locked

@@ -15,6 +15,8 @@ Security monitoring should be useful without waking users for expected operation
 - Add expected users, IPs, ports, file paths, or process paths to `[allowlist]`.
 - For legitimate forwarding or tunneling commands, prefer `allowlist.process_paths`; use `allowlist.process_command_contains` only with a precise identifying fragment.
 - For known miner/scanner findings, confirm the executable basename first. The rule matches process identity fields such as executable path, process name, and structured `argv[0]`, so ordinary arguments or longer unrelated names should not be treated as matches.
+- For file or persistence drift with `package_activity_recent=true`, compare the changed path against the listed package logs before refreshing the baseline. Package context explains possible maintenance activity; it is not an automatic allowlist.
+- For WebShell-like content, review the file location, owner, recent deployment history, and marker combination before isolation. The default score ignores a single weak marker, but legitimate admin scripts can still contain risky-looking constructs.
 - Put normal public service ports such as HTTP/HTTPS in `network.expected_public_ports`; they still receive process-risk and baseline-owner checks. Use `allowlist.listening_ports` only when a port should suppress all network findings, including high-risk exposure findings.
 - Keep baselines fresh after planned maintenance, but only after reviewing drift. The installer writes its own systemd unit before first baseline bootstrap; `update.sh` preserves the existing baseline by default and refreshes it only when `REFRESH_BASELINE=yes` is set.
 - Route noisy rules at `Low` or `Medium`.

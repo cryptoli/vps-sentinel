@@ -79,6 +79,8 @@ fn merge_evidence(primary: &Finding, related: &[Finding]) -> Vec<Evidence> {
     push_joined_evidence(&mut evidence, primary, related, "change");
     push_first_evidence(&mut evidence, primary, related, "previous_hash");
     push_first_evidence(&mut evidence, primary, related, "current_hash");
+    push_first_evidence(&mut evidence, primary, related, "package_activity_recent");
+    push_joined_evidence(&mut evidence, primary, related, "package_activity_sources");
     evidence
 }
 
@@ -176,6 +178,25 @@ mod tests {
             .evidence
             .iter()
             .any(|item| item.key == "signals" && item.value == "file integrity, persistence"));
+    }
+
+    #[test]
+    fn coalesced_drift_keeps_package_activity_context() {
+        let mut file = finding("FILE-001", Category::FileIntegrity);
+        file.evidence
+            .push(Evidence::new("package_activity_recent", "true"));
+        file.evidence.push(Evidence::new(
+            "package_activity_sources",
+            "/var/log/dpkg.log",
+        ));
+        let findings =
+            coalesce_related_findings(vec![file, finding("PERSIST-001", Category::Persistence)]);
+
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|item| item.key == "package_activity_recent" && item.value == "true"));
     }
 
     #[test]
