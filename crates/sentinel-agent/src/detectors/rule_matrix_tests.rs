@@ -21,7 +21,7 @@ fn every_builtin_risk_rule_has_positive_and_negative_coverage() {
     let positives = positive_cases();
     let negatives = negative_cases();
 
-    assert_eq!(positives.len(), 29);
+    assert_eq!(positives.len(), 30);
     assert_eq!(negatives.len(), positives.len());
 
     for case in positives {
@@ -276,6 +276,19 @@ fn positive_cases() -> Vec<PositiveCase> {
             .with_field("socket_fd_count", "3")],
         ),
         positive(
+            "PROC-006",
+            "renamed gpu process with mining-pool port",
+            vec![
+                process_event("47", ".sysd", "/root/.cache/.sysd", "/root/.cache/.sysd"),
+                gpu_event("47", "/root/.cache/.sysd", "4096"),
+                RawEvent::new("network", "outbound_connection")
+                    .with_field("pid", "47")
+                    .with_field("remote_addr", "198.51.100.10")
+                    .with_field("remote_port", "3333")
+                    .with_field("remote_public", "true"),
+            ],
+        ),
+        positive(
             "NET-001",
             "new public port",
             vec![listener(
@@ -516,6 +529,24 @@ fn negative_cases() -> Vec<NegativeCase> {
             ],
         ),
         negative(
+            "PROC-006",
+            "ordinary GPU training workload",
+            vec![
+                process_event(
+                    "47",
+                    "python",
+                    "/home/ml/.venv/bin/python",
+                    "python train.py --dataset s3://bucket",
+                ),
+                gpu_event("47", "/home/ml/.venv/bin/python", "24576"),
+                RawEvent::new("network", "outbound_connection")
+                    .with_field("pid", "47")
+                    .with_field("remote_addr", "203.0.113.20")
+                    .with_field("remote_port", "443")
+                    .with_field("remote_public", "true"),
+            ],
+        ),
+        negative(
             "NET-001",
             "current unbaselined port is context only",
             vec![listener(
@@ -662,6 +693,14 @@ fn process_event(pid: &str, name: &str, exe_path: &str, cmdline: &str) -> RawEve
         .with_field("name", name)
         .with_field("exe_path", exe_path)
         .with_field("cmdline", cmdline)
+}
+
+fn gpu_event(pid: &str, process_name: &str, memory_mb: &str) -> RawEvent {
+    RawEvent::new("gpu", "gpu_compute_process")
+        .with_field("pid", pid)
+        .with_field("gpu_process_name", process_name)
+        .with_field("gpu_memory_mb", memory_mb)
+        .with_field("gpu_uuid", "GPU-test")
 }
 
 fn listener(

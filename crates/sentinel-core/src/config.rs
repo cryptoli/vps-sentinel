@@ -14,8 +14,8 @@ pub use notifications::{
 };
 pub use sections::{
     ActiveResponseConfig, AgentConfig, AllowlistConfig, DockerConfig, FileIntegrityConfig,
-    NetworkConfig, NoiseControlConfig, PackageManagerConfig, PersistenceConfig, PrivacyConfig,
-    ProcessConfig, SentinelPaths, SshConfig, StorageConfig, WebConfig,
+    GpuConfig, NetworkConfig, NoiseControlConfig, PackageManagerConfig, PersistenceConfig,
+    PrivacyConfig, ProcessConfig, SentinelPaths, SshConfig, StorageConfig, WebConfig,
 };
 
 /// Top-level TOML configuration for the agent and CLI.
@@ -29,6 +29,7 @@ pub struct SentinelConfig {
     pub file_integrity: FileIntegrityConfig,
     pub web: WebConfig,
     pub process: ProcessConfig,
+    pub gpu: GpuConfig,
     pub package_manager: PackageManagerConfig,
     pub network: NetworkConfig,
     pub persistence: PersistenceConfig,
@@ -133,6 +134,26 @@ impl SentinelConfig {
         if self.process.suspicious_socket_fd_threshold == 0 {
             return Err(SentinelError::Config(
                 "process.suspicious_socket_fd_threshold must be greater than 0".to_string(),
+            ));
+        }
+        if self.gpu.enabled && self.gpu.nvidia_smi_path.trim().is_empty() {
+            return Err(SentinelError::Config(
+                "gpu.nvidia_smi_path is required when gpu.enabled is true".to_string(),
+            ));
+        }
+        if self.gpu.command_timeout_seconds == 0 {
+            return Err(SentinelError::Config(
+                "gpu.command_timeout_seconds must be greater than 0".to_string(),
+            ));
+        }
+        if self.gpu.min_memory_mb == 0 {
+            return Err(SentinelError::Config(
+                "gpu.min_memory_mb must be greater than 0".to_string(),
+            ));
+        }
+        if self.gpu.mining_min_score == 0 {
+            return Err(SentinelError::Config(
+                "gpu.mining_min_score must be greater than 0".to_string(),
             ));
         }
         if self.package_manager.recent_activity_window_seconds == 0 {

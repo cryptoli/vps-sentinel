@@ -60,7 +60,7 @@ fn process_group_key(finding: &Finding) -> String {
 fn is_process_signal(finding: &Finding) -> bool {
     matches!(
         finding.rule_id.as_str(),
-        "PROC-001" | "PROC-002" | "PROC-003" | "PROC-004" | "PROC-005"
+        "PROC-001" | "PROC-002" | "PROC-003" | "PROC-004" | "PROC-005" | "PROC-006"
     )
 }
 
@@ -114,10 +114,11 @@ fn rule_priority(rule_id: &str) -> u8 {
 fn process_rule_priority(rule_id: &str) -> u8 {
     match rule_id {
         "PROC-003" => 0,
-        "PROC-004" => 1,
-        "PROC-002" => 2,
-        "PROC-005" => 3,
-        "PROC-001" => 4,
+        "PROC-006" => 1,
+        "PROC-004" => 2,
+        "PROC-002" => 3,
+        "PROC-005" => 4,
+        "PROC-001" => 5,
         _ => 10,
     }
 }
@@ -167,6 +168,10 @@ fn merge_process_evidence(primary: &Finding, related: &[Finding]) -> Vec<Evidenc
         "outbound_connection_count",
         "public_outbound_count",
         "outbound_remote_ports",
+        "mining_pool_remote_ports",
+        "gpu_memory_mb",
+        "gpu_process_names",
+        "gpu_uuids",
         "package_activity_recent",
     ] {
         push_first_evidence(&mut evidence, primary, related, key);
@@ -217,6 +222,9 @@ fn process_signal_names(primary: &Finding, related: &[Finding]) -> Vec<&'static 
             }
             "PROC-005" => {
                 signals.insert("behavior cluster");
+            }
+            "PROC-006" => {
+                signals.insert("gpu mining indicator");
             }
             _ => {}
         }

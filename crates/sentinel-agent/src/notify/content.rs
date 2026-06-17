@@ -194,6 +194,16 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
                 "如果该进程不符合预期，停止前先保留进程证据。",
             ],
         },
+        "PROC-006" => RuleMessage {
+            title: "检测到可疑 GPU 计算进程",
+            description: "一个正在占用 GPU 的计算进程同时具备挖矿相关或高风险运行特征。",
+            impact: &["非预期的 GPU 计算活动可能表示加密货币挖矿、GPU 资源滥用或入侵后的算力劫持。"],
+            recommendations: &[
+                "确认该 GPU 任务是否由授权用户、调度器或业务程序启动。",
+                "检查可执行文件来源、父进程、GPU 显存占用和出站连接目标。",
+                "如果确认未授权，请先保留进程和网络证据，再终止相关任务。",
+            ],
+        },
         "NET-001" => RuleMessage {
             title: "检测到新增公网监听端口",
             description: "一个公网监听端口相对已保存基线新增。",

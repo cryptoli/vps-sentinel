@@ -57,12 +57,20 @@ impl Detector for ProcessDetector {
                 Severity::High,
                 "A process combines multiple weak behavior signals such as masquerading, web-path execution, hidden names, or unusual socket activity.",
             ),
+            RuleMetadata::new(
+                "PROC-006",
+                "Suspicious GPU compute process",
+                Category::Process,
+                Severity::Critical,
+                "A GPU compute process has mining-oriented or high-risk runtime traits.",
+            ),
         ]
     }
 
     fn detect(&self, events: &[RawEvent], ctx: &DetectContext) -> Vec<Finding> {
         let mut findings = Vec::new();
         let outbound_by_pid = outbound_context_by_pid(events);
+        let gpu_by_pid = gpu_context_by_pid(events);
         let package_activity = package_activity_context(events);
         let mut package_owner_cache = PackageOwnerCache::default();
         for event in events
@@ -76,6 +84,14 @@ impl Detector for ProcessDetector {
                         .with_field("outbound_connection_count", outbound.total.to_string())
                         .with_field("public_outbound_count", outbound.public.to_string())
                         .with_field("outbound_remote_ports", outbound.remote_ports.join(", "));
+                }
+                if let Some(gpu) = gpu_by_pid.get(pid) {
+                    enriched = enriched
+                        .with_field("gpu_memory_mb", gpu.memory_mb.to_string())
+                        .with_field("gpu_process_names", gpu.process_names.join(", "));
+                    if !gpu.gpu_uuids.is_empty() {
+                        enriched = enriched.with_field("gpu_uuids", gpu.gpu_uuids.join(", "));
+                    }
                 }
             }
             if package_activity.is_active() {
@@ -119,6 +135,14 @@ impl Detector for ProcessDetector {
                     event,
                     ctx,
                     tool_match,
+                    &mut package_owner_cache,
+                ));
+            }
+            if let Some(assessment) = gpu_mining_assessment(event, ctx) {
+                findings.push(gpu_compute_process(
+                    event,
+                    ctx,
+                    assessment,
                     &mut package_owner_cache,
                 ));
             }
@@ -345,6 +369,52 @@ fn miner_or_scanner(
     ])
 }
 
+fn gpu_compute_process(
+    event: &RawEvent,
+    ctx: &DetectContext,
+    assessment: RiskAssessment,
+    package_cache: &mut PackageOwnerCache,
+) -> Finding {
+    Finding::new(
+        &ctx.host_id,
+        "Suspicious GPU compute process",
+        "A GPU compute process has mining-oriented or high-risk runtime traits.",
+        Severity::Critical,
+        Category::Process,
+        "PROC-006",
+        process_subject(event),
+    )
+    .with_evidence_deduped_by(
+        {
+            let mut items = process_evidence(event, package_cache);
+            let mining_ports = mining_pool_remote_ports(event, ctx);
+            if !mining_ports.is_empty() {
+                items.push(evidence(
+                    "mining_pool_remote_ports",
+                    mining_ports.join(", "),
+                ));
+            }
+            items.push(evidence("risk_score", assessment.score.to_string()));
+            items.push(evidence("risk_reasons", assessment.reason_text()));
+            items.push(evidence("risk_features", assessment.feature_names()));
+            items
+        },
+        PROCESS_STABLE_DEDUP_KEYS,
+    )
+    .with_impact(vec![
+        "Unexpected GPU compute activity can indicate cryptomining or GPU resource abuse."
+            .to_string(),
+    ])
+    .with_recommendations(vec![
+        "Confirm whether this GPU workload was started by an authorized user or scheduler."
+            .to_string(),
+        "Review executable provenance, parent process, GPU memory use, and outbound destinations."
+            .to_string(),
+        "If unauthorized, preserve process and network evidence before terminating the workload."
+            .to_string(),
+    ])
+}
+
 fn process_behavior_cluster(
     event: &RawEvent,
     ctx: &DetectContext,
@@ -413,6 +483,9 @@ fn process_evidence(
     push_evidence_if_present(&mut items, event, "outbound_connection_count");
     push_evidence_if_present(&mut items, event, "public_outbound_count");
     push_evidence_if_present(&mut items, event, "outbound_remote_ports");
+    push_evidence_if_present(&mut items, event, "gpu_memory_mb");
+    push_evidence_if_present(&mut items, event, "gpu_process_names");
+    push_evidence_if_present(&mut items, event, "gpu_uuids");
     push_evidence_if_present(&mut items, event, "package_activity_recent");
     push_package_owner_if_available(&mut items, event, package_cache);
     items
@@ -576,6 +649,108 @@ fn behavior_cluster_assessment(
     } else {
         Some(assessment)
     }
+}
+
+fn gpu_mining_assessment(event: &RawEvent, ctx: &DetectContext) -> Option<RiskAssessment> {
+    let gpu_memory_mb = event.field("gpu_memory_mb")?.parse::<u64>().ok()?;
+    if gpu_memory_mb < ctx.config.gpu.min_memory_mb {
+        return None;
+    }
+
+    let mut assessment = RiskAssessment::default();
+    assessment.add_feature("gpu_compute_process");
+
+    if let Some(tool_match) = known_tool_match(event, &ctx.config.process.known_bad_tool_names) {
+        assessment.add_signal(
+            90,
+            "known_gpu_miner_identity",
+            format!(
+                "GPU compute process identity '{}' matches configured tool '{}'",
+                tool_match.value, tool_match.tool
+            ),
+        );
+    }
+
+    let exe_path = string_field(event, "exe_path");
+    let normalized_path = normalize_deleted_executable_path(&exe_path);
+    if is_deleted_executable_path(&exe_path) {
+        assessment.add_signal(
+            90,
+            "gpu_deleted_executable",
+            "GPU compute process executable is deleted while still running",
+        );
+    }
+    if is_memfd_or_anonymous_path(&normalized_path) {
+        assessment.add_signal(
+            95,
+            "gpu_anonymous_executable",
+            "GPU compute process is backed by memfd or an anonymous executable",
+        );
+    }
+    if path_in_suspicious_dirs(&normalized_path, &ctx.config.process.suspicious_dirs) {
+        assessment.add_signal(
+            85,
+            "gpu_temporary_executable",
+            "GPU compute process executable is under a suspicious temporary directory",
+        );
+    }
+
+    let mining_ports = mining_pool_remote_ports(event, ctx);
+    if !mining_ports.is_empty() {
+        assessment.add_signal(
+            85,
+            "mining_pool_remote_port",
+            format!(
+                "GPU compute process connects to configured mining-pool remote ports: {}",
+                mining_ports.join(", ")
+            ),
+        );
+    }
+
+    let command_assessment = network_execution_assessment_from_event(event);
+    if command_assessment.is_suspicious() {
+        assessment.add_signal(
+            90,
+            "gpu_network_execution_bridge",
+            command_assessment.reason_text(),
+        );
+    }
+
+    if hidden_basename(&normalized_path) {
+        assessment.add_signal(
+            55,
+            "gpu_hidden_executable_name",
+            "GPU compute process executable has a hidden non-standard basename",
+        );
+    }
+    if string_field(event, "public_outbound_count")
+        .parse::<usize>()
+        .unwrap_or(0)
+        > 0
+    {
+        assessment.add_signal(
+            35,
+            "gpu_public_outbound_connections",
+            "GPU compute process has established outbound connections to public addresses",
+        );
+    }
+    if let Some(cpu) = high_cpu_signal(event, ctx) {
+        assessment.add_signal(35, "gpu_sustained_high_cpu", cpu.reason());
+    }
+
+    let hidden_public_gpu = assessment.has_feature("gpu_hidden_executable_name")
+        && assessment.has_feature("gpu_public_outbound_connections");
+    if hidden_public_gpu {
+        assessment.add_signal(
+            80,
+            "hidden_gpu_process_with_public_outbound",
+            "hidden GPU compute executable also has public outbound network activity",
+        );
+    }
+
+    assessment
+        .is_suspicious(ctx.config.gpu.mining_min_score)
+        .then_some(assessment)
 }
 
 fn path_in_runtime_dir(path: &str) -> bool {
@@ -817,6 +992,64 @@ fn outbound_context_by_pid(events: &[RawEvent]) -> BTreeMap<String, OutboundCont
     by_pid
 }
 
+#[derive(Debug, Clone, Default)]
+struct GpuContext {
+    memory_mb: u64,
+    process_names: Vec<String>,
+    gpu_uuids: Vec<String>,
+}
+
+fn gpu_context_by_pid(events: &[RawEvent]) -> BTreeMap<String, GpuContext> {
+    let mut by_pid = BTreeMap::<String, GpuContext>::new();
+    for event in events
+        .iter()
+        .filter(|event| event.kind == "gpu_compute_process")
+    {
+        let Some(pid) = event.field("pid").filter(|pid| !pid.trim().is_empty()) else {
+            continue;
+        };
+        let context = by_pid.entry(pid.to_string()).or_default();
+        context.memory_mb = context.memory_mb.saturating_add(
+            event
+                .field("gpu_memory_mb")
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0),
+        );
+        push_unique_field(&mut context.process_names, event, "gpu_process_name");
+        push_unique_field(&mut context.gpu_uuids, event, "gpu_uuid");
+    }
+    by_pid
+}
+
+fn push_unique_field(values: &mut Vec<String>, event: &RawEvent, key: &str) {
+    let Some(value) = event.field(key).filter(|value| !value.trim().is_empty()) else {
+        return;
+    };
+    let value = value.trim().to_string();
+    if !values.contains(&value) {
+        values.push(value);
+    }
+}
+
+fn mining_pool_remote_ports(event: &RawEvent, ctx: &DetectContext) -> Vec<String> {
+    let configured = ctx
+        .config
+        .gpu
+        .mining_pool_ports
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut ports = string_field(event, "outbound_remote_ports")
+        .split(',')
+        .filter_map(|port| port.trim().parse::<u16>().ok())
+        .filter(|port| configured.contains(port))
+        .map(|port| port.to_string())
+        .collect::<Vec<_>>();
+    ports.sort();
+    ports.dedup();
+    ports
+}
+
 fn push_evidence_if_present(items: &mut Vec<sentinel_core::Evidence>, event: &RawEvent, key: &str) {
     let value = string_field(event, key);
     if !value.trim().is_empty() {
@@ -901,7 +1134,8 @@ fn looks_like_kernel_thread_name(name: &str) -> bool {
 mod tests {
     use super::{
         behavior_cluster_assessment, command_matches_allowlist, contains_miner_or_scanner,
-        deleted_executable_assessment, event_contains_miner_or_scanner, ProcessDetector,
+        deleted_executable_assessment, event_contains_miner_or_scanner, gpu_mining_assessment,
+        ProcessDetector,
     };
     use crate::detectors::{
         command_profile::assess_network_execution_command, DetectContext, Detector,
@@ -1014,6 +1248,101 @@ mod tests {
         let findings = ProcessDetector.detect(&[event], &ctx);
 
         assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn gpu_memory_alone_is_not_a_process_alert() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let process = process_event("/usr/bin/python3", "python3", "python3 train.py");
+        let gpu = gpu_event("42", "/usr/bin/python3", 16384);
+
+        let findings = ProcessDetector.detect(&[process, gpu], &ctx);
+
+        assert!(findings.iter().all(|finding| finding.rule_id != "PROC-006"));
+    }
+
+    #[test]
+    fn known_gpu_miner_identity_alerts_even_without_high_cpu() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let process = process_event(
+            "/opt/lolminer/lolminer",
+            "lolminer",
+            "/opt/lolminer/lolminer --pool example",
+        );
+        let gpu = gpu_event("42", "/opt/lolminer/lolminer", 4096);
+
+        let findings = ProcessDetector.detect(&[process, gpu], &ctx);
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.rule_id == "PROC-006")
+            .expect("gpu miner finding");
+        assert!(finding
+            .evidence
+            .iter()
+            .any(|item| item.key == "gpu_memory_mb" && item.value == "4096"));
+        assert!(finding.evidence.iter().any(|item| {
+            item.key == "risk_features" && item.value.contains("known_gpu_miner_identity")
+        }));
+    }
+
+    #[test]
+    fn renamed_gpu_process_with_pool_port_alerts() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let process = process_event("/root/.cache/.sysd", ".sysd", "/root/.cache/.sysd")
+            .with_field("cwd", "/root/.cache")
+            .with_field("euid", "0");
+        let gpu = gpu_event("42", "/root/.cache/.sysd", 6144);
+        let outbound = RawEvent::new("network", "outbound_connection")
+            .with_field("pid", "42")
+            .with_field("remote_addr", "198.51.100.10")
+            .with_field("remote_port", "3333")
+            .with_field("remote_public", "true");
+
+        let findings = ProcessDetector.detect(&[process, gpu, outbound], &ctx);
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.rule_id == "PROC-006")
+            .expect("renamed gpu miner finding");
+        assert!(finding.evidence.iter().any(|item| {
+            item.key == "risk_features" && item.value.contains("mining_pool_remote_port")
+        }));
+        assert!(finding
+            .evidence
+            .iter()
+            .any(|item| item.key == "mining_pool_remote_ports" && item.value == "3333"));
+    }
+
+    #[test]
+    fn ordinary_cuda_training_process_with_public_https_is_ignored() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let process = process_event(
+            "/home/ml/.venv/bin/python",
+            "python",
+            "python train.py --dataset s3://bucket",
+        )
+        .with_field("cwd", "/home/ml/project")
+        .with_field("euid", "1000");
+        let gpu = gpu_event("42", "/home/ml/.venv/bin/python", 24576);
+        let outbound = RawEvent::new("network", "outbound_connection")
+            .with_field("pid", "42")
+            .with_field("remote_addr", "203.0.113.20")
+            .with_field("remote_port", "443")
+            .with_field("remote_public", "true");
+
+        let findings = ProcessDetector.detect(&[process, gpu, outbound], &ctx);
+
+        assert!(findings.iter().all(|finding| finding.rule_id != "PROC-006"));
+    }
+
+    #[test]
+    fn gpu_assessment_requires_configured_memory_floor() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event("/opt/lolminer/lolminer", "lolminer", "lolminer")
+            .with_field("gpu_memory_mb", "64");
+
+        assert!(gpu_mining_assessment(&event, &ctx).is_none());
     }
 
     #[test]
@@ -1383,5 +1712,13 @@ mod tests {
             .with_field("name", name)
             .with_field("exe_path", exe_path)
             .with_field("cmdline", cmdline)
+    }
+
+    fn gpu_event(pid: &str, process_name: &str, memory_mb: u64) -> RawEvent {
+        RawEvent::new("gpu", "gpu_compute_process")
+            .with_field("pid", pid)
+            .with_field("gpu_process_name", process_name)
+            .with_field("gpu_memory_mb", memory_mb.to_string())
+            .with_field("gpu_uuid", "GPU-test")
     }
 }

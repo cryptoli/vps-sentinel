@@ -42,7 +42,6 @@ impl RiskAssessment {
         self.features.iter().cloned().collect::<Vec<_>>().join(", ")
     }
 
-    #[cfg(test)]
     pub(crate) fn has_feature(&self, feature: &str) -> bool {
         self.features.contains(feature)
     }

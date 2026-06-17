@@ -183,10 +183,57 @@ impl Default for ProcessConfig {
 }
 
 fn default_known_bad_tool_names() -> Vec<String> {
-    ["xmrig", "kinsing", "masscan", "zmap"]
-        .into_iter()
-        .map(str::to_string)
-        .collect()
+    [
+        "xmrig",
+        "xmr-stak",
+        "kinsing",
+        "masscan",
+        "zmap",
+        "lolminer",
+        "nbminer",
+        "gminer",
+        "t-rex",
+        "trex",
+        "teamredminer",
+        "phoenixminer",
+        "ethminer",
+        "ccminer",
+        "cpuminer",
+        "bminer",
+        "nanominer",
+        "wildrig",
+        "rigel",
+        "bzminer",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GpuConfig {
+    pub enabled: bool,
+    pub nvidia_smi_path: String,
+    pub command_timeout_seconds: u64,
+    pub min_memory_mb: u64,
+    pub mining_min_score: u16,
+    pub mining_pool_ports: Vec<u16>,
+}
+
+impl Default for GpuConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            nvidia_smi_path: "nvidia-smi".to_string(),
+            command_timeout_seconds: 2,
+            min_memory_mb: 256,
+            mining_min_score: 80,
+            mining_pool_ports: vec![
+                3333, 3334, 3335, 4444, 5555, 7777, 8888, 9999, 14444, 16000, 18081, 18082,
+            ],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

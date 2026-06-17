@@ -31,7 +31,7 @@ It is not:
 | User and privilege checks | Detects new users, UID 0 users, and privilege-relevant user changes. |
 | File integrity | Watches configured critical paths and web roots; hashes bounded file content; detects modified files, executable scripts in web roots, and risk-scored WebShell-style marker combinations. |
 | Persistence checks | Monitors cron, systemd, shell profile, and preload-related locations for new or risk-scored suspicious startup entries. |
-| Process checks | Reads procfs argv, parent process, executable path, cwd, UID context, socket-FD count, CPU lifetime metrics, procfs start-time drift, cgroup/container hints, systemd unit/ExecStart, executable owner/size/hash, package ownership, and outbound connection profile to flag temporary-path executables, risk-scored deleted executables, network command-execution bridges, suspicious behavior clusters, and known miner/scanner identities. |
+| Process and GPU checks | Reads procfs argv, parent process, executable path, cwd, UID context, socket-FD count, CPU lifetime metrics, procfs start-time drift, cgroup/container hints, systemd unit/ExecStart, executable owner/size/hash, package ownership, outbound connection profile, and NVIDIA GPU compute-process facts when `nvidia-smi` is available. It flags temporary-path executables, risk-scored deleted executables, network command-execution bridges, suspicious behavior clusters, known miner/scanner identities, and suspicious GPU compute workloads. |
 | Network checks | Reads listening sockets and owning process details; attaches process context and firewall state; flags high-risk public services, suspicious listener processes, baseline owner drift, and ordinary new public listeners. Expected web/SSH ports such as 22, 80, and 443 reduce noise but are not blindly trusted. |
 | Web log checks | Parses common access log lines, classifies automated probing into attack families, and aggregates similar paths from the same source to avoid path-by-path alert floods. |
 | Rootkit signals | Collects lightweight local indicators for hidden process and suspicious procfs behavior. |
@@ -55,6 +55,8 @@ File and persistence baseline drift is not suppressed just because package-manag
 WebShell content detection is risk-scored instead of marker-only. A single marker such as `eval` in a legitimate admin script is below the default threshold. Combinations such as command execution in a script-like web path, dynamic execution plus encoded payload markers, command execution plus encoding, or large encoded payloads in script-like web paths raise `FILE-002`.
 
 `PROC-005` covers renamed or lightly disguised processes that may not expose a known tool name, temporary executable path, or obvious network shell bridge. It combines weaker behavior signals such as kernel-thread masquerading, execution from configured web roots, hidden executable names, suspicious working directories, socket-FD activity, sustained high CPU, procfs start-time drift for the same process identity, and effective-root privilege context. No single weak signal is enough at the default threshold, and start-time drift only contributes after other suspicious context already exists.
+
+`PROC-006` adds NVIDIA GPU mining coverage when `nvidia-smi` is visible to the host service. The collector reads current compute apps and joins them with procfs and outbound-connection facts by PID. GPU memory use alone is not an alert because normal CUDA, AI, rendering, and transcoding jobs can be heavy; the rule requires stronger evidence such as a known GPU miner identity, configured mining-pool remote port, temporary or deleted executable, anonymous/memfd executable, network execution bridge, or a hidden GPU executable with public outbound activity. Non-NVIDIA GPU stacks and containerized deployments that cannot see host GPU/process namespaces are outside this signal unless the relevant runtime is visible from the host.
 
 Process and listener findings now include a broader evidence chain when the host exposes it: parent process name, systemd unit, systemd `ExecStart`, executable UID/GID, executable size, bounded BLAKE3 hash, dpkg/rpm/pacman/apk package ownership, cgroup/container context, procfs start-time drift, outbound connection counts, public outbound count, and remote port profile. Package ownership queries and firewall probes are bounded by short command timeouts and per-scan caching, so missing or slow platform tools degrade to absent evidence instead of blocking a scan. These fields are used as supporting evidence or weak signals. For example, a systemd `ExecStart` mismatch does not alert by itself, but it can upgrade an already changed listener owner into a suspicious-listener finding.
 
@@ -183,7 +185,7 @@ The Docker containers used in CI are build and compatibility test environments o
 | File and persistence drift | Builds a local SQLite baseline, diffs later snapshots, coalesces related file/persistence findings for the same path, and attaches package-manager context. | Finds real drift while reducing confusion during legitimate package updates; baseline is refreshed only by explicit command. |
 | WebShell content | Scans bounded file content for risk markers and scores marker combinations plus web-path context. | Avoids alerting on one weak marker, while catching classic web command execution and encoded payload patterns. |
 | Web probing | Groups `WEB-001` by source IP, probe family, and response profile. Missing/rejected probes such as 404 PHPUnit directory sweeps are Low context; successful sensitive-file responses or protected exploit paths are raised. | A scanner hitting many path variants creates one readable finding instead of dozens of Telegram messages. |
-| Process risk | Reads procfs argv, parent, executable, cwd, UID/EUID, deleted state, socket-FD count, lifetime CPU metrics, start-time drift, cgroup/container hints, systemd unit/ExecStart, executable metadata/hash, package owner, and outbound connection profile; uses rule-specific scoring, allowlists, rule-state storage, and same-PID signal coalescing. `PROC-005` requires a primary evasion/location signal before socket, outbound, restart, or root-context signals can alert. | Detects temp-path executables, suspicious deleted executables, network shell bridges, known miner/scanner identities, and renamed behavior clusters while avoiding duplicate messages caused by volatile PID/CPU/connection counters or normal high-connection services. |
+| Process and GPU risk | Reads procfs argv, parent, executable, cwd, UID/EUID, deleted state, socket-FD count, lifetime CPU metrics, start-time drift, cgroup/container hints, systemd unit/ExecStart, executable metadata/hash, package owner, outbound connection profile, and NVIDIA compute-process state; uses rule-specific scoring, allowlists, rule-state storage, and same-PID signal coalescing. `PROC-005` requires a primary evasion/location signal before socket, outbound, restart, or root-context signals can alert. `PROC-006` requires GPU compute activity plus mining or high-risk runtime evidence. | Detects temp-path executables, suspicious deleted executables, network shell bridges, known miner/scanner identities, renamed behavior clusters, and suspicious GPU mining workloads while avoiding duplicate messages caused by volatile PID/CPU/GPU/connection counters or normal high-connection services. |
 | Network listeners | Parses `/proc/net/tcp*` and `/proc/net/udp*`, resolves owning processes through `/proc/<pid>/fd`, compares listener owners with baseline, attaches process/firewall context, and prioritizes suspicious owner behavior over generic port exposure. | Expected 22/80/443 ports reduce generic noise but still produce findings when the owning process changes or looks suspicious; high-risk ports keep their service and firewall profile as evidence. |
 | Notifications | Renders one `Finding` model through channel-specific templates: Telegram HTML, Email HTML/plain text, Markdown-aware channels, or plain text. | Messages include the configured VPS name, normalized time, localized labels, evidence, impact, and recommendations. |
 | Noise control | Applies scan-level deduplication, persisted dedup windows, state reminder intervals, quiet hours, and hourly notification budgets. | Reduces repeat messages while keeping high-value alerts visible. |
@@ -522,10 +524,24 @@ behavior_min_score = 70
 high_cpu_threshold_percent = 80.0
 high_cpu_duration_seconds = 120
 suspicious_socket_fd_threshold = 20
-known_bad_tool_names = ["xmrig", "kinsing", "masscan", "zmap"]
+known_bad_tool_names = ["xmrig", "xmr-stak", "kinsing", "masscan", "zmap", "lolminer", "nbminer", "gminer", "t-rex", "trex", "teamredminer", "phoenixminer", "ethminer", "ccminer", "cpuminer", "bminer", "nanominer", "wildrig", "rigel", "bzminer"]
 ```
 
 `deleted_executable_min_score` controls when `PROC-002` is emitted. Deleted executable state is scored with path, process identity, and command-behavior traits; a standard system binary left running after a package upgrade is not enough by itself. `behavior_min_score` controls `PROC-005`, which combines weak process signals such as kernel-thread masquerading, web-root execution, hidden executable names, suspicious cwd, socket-FD activity, sustained high CPU, procfs start-time drift for the same process identity, and effective-root context. Start-time drift is stored in local rule state and only strengthens an already suspicious process; a normal restart does not alert by itself. `high_cpu_threshold_percent` and `high_cpu_duration_seconds` define sustained high CPU using procfs lifetime CPU time and process age; high CPU is a supporting signal, not an alert condition by itself. `suspicious_socket_fd_threshold` defines when socket ownership becomes a stronger behavior signal. `known_bad_tool_names` controls the `PROC-004` known miner/scanner indicator list. Values are matched against process identity fields such as `exe_path`, `executable`, process name, and structured `argv[0]`, with `.exe` suffixes accepted. Legacy events without structured identity fall back to command token basename matching. When several process rules match the same PID, the scanner keeps one highest-value finding and merges the process signals, risk reasons, impact, and recommendations.
+
+GPU indicator policy:
+
+```toml
+[gpu]
+enabled = true
+nvidia_smi_path = "nvidia-smi"
+command_timeout_seconds = 2
+min_memory_mb = 256
+mining_min_score = 80
+mining_pool_ports = [3333, 3334, 3335, 4444, 5555, 7777, 8888, 9999, 14444, 16000, 18081, 18082]
+```
+
+`PROC-006` is only available when the service can run `nvidia-smi` and see the host GPU compute process table. GPU memory alone is treated as normal workload context. Alerts require additional evidence such as a configured GPU miner identity, temporary/deleted/anonymous executable, configured mining-pool port, network execution bridge, or hidden GPU executable with public outbound connections. If you run vps-sentinel inside a container, it must have host PID/procfs and GPU runtime visibility to inspect host GPU miners accurately.
 
 Persistence indicator policy:
 
@@ -633,6 +649,7 @@ Example rules:
 - `PROC-002`: Risk-scored deleted executable still running.
 - `PROC-003`: Network command execution bridge detected.
 - `PROC-005`: Suspicious process behavior cluster.
+- `PROC-006`: Suspicious GPU compute or mining process.
 - `NET-001`: New public listening port detected relative to baseline.
 - `NET-002`: Public listener process changed relative to baseline.
 - `NET-003`: Suspicious process behind a public listener.

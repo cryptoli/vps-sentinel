@@ -77,6 +77,9 @@ pub fn severity_label(severity: Severity, language: NotificationLanguage) -> &'s
 }
 
 pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
+    if let Some(label) = gpu_evidence_label(key, language) {
+        return label.to_string();
+    }
     let text = match language {
         NotificationLanguage::En => match key {
             "argv_json" => "argv JSON",
@@ -278,6 +281,25 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
     text.to_string()
 }
 
+fn gpu_evidence_label(key: &str, language: NotificationLanguage) -> Option<&'static str> {
+    match language {
+        NotificationLanguage::En => match key {
+            "gpu_memory_mb" => Some("GPU memory MB"),
+            "gpu_process_names" => Some("GPU process names"),
+            "gpu_uuids" => Some("GPU UUIDs"),
+            "mining_pool_remote_ports" => Some("mining-pool remote ports"),
+            _ => None,
+        },
+        NotificationLanguage::ZhCn => match key {
+            "gpu_memory_mb" => Some("GPU 显存 MB"),
+            "gpu_process_names" => Some("GPU 进程名"),
+            "gpu_uuids" => Some("GPU UUID"),
+            "mining_pool_remote_ports" => Some("矿池远端端口"),
+            _ => None,
+        },
+    }
+}
+
 pub fn evidence_value_label(key: &str, value: &str, language: NotificationLanguage) -> String {
     let value = value.trim();
     if value.is_empty() {
@@ -475,6 +497,9 @@ fn match_source_label(value: &str) -> Option<&'static str> {
 }
 
 fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<&'static str> {
+    if let Some(label) = gpu_technical_token_label(value, language) {
+        return Some(label);
+    }
     match language {
         NotificationLanguage::En => match value {
             "dev_tcp" => Some("/dev/tcp"),
@@ -608,6 +633,43 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
                 Some("/dev/tcp 与交互式 Shell 和文件描述符重定向组合")
             }
             _ => content_marker_label(value),
+        },
+    }
+}
+
+fn gpu_technical_token_label(value: &str, language: NotificationLanguage) -> Option<&'static str> {
+    match language {
+        NotificationLanguage::En => match value {
+            "gpu_compute_process" => Some("GPU compute process"),
+            "gpu_deleted_executable" => Some("deleted GPU executable"),
+            "gpu_anonymous_executable" => Some("anonymous GPU executable"),
+            "gpu_temporary_executable" => Some("temporary-path GPU executable"),
+            "known_gpu_miner_identity" => Some("known GPU miner identity"),
+            "mining_pool_remote_port" => Some("mining-pool remote port"),
+            "gpu_network_execution_bridge" => Some("GPU network execution bridge"),
+            "gpu_hidden_executable_name" => Some("hidden GPU executable"),
+            "gpu_public_outbound_connections" => Some("GPU public outbound connections"),
+            "gpu_sustained_high_cpu" => Some("GPU process sustained high CPU"),
+            "hidden_gpu_process_with_public_outbound" => {
+                Some("hidden GPU process with public outbound activity")
+            }
+            "gpu mining indicator" => Some("GPU mining indicator"),
+            _ => None,
+        },
+        NotificationLanguage::ZhCn => match value {
+            "gpu_compute_process" => Some("GPU 计算进程"),
+            "gpu_deleted_executable" => Some("已删除的 GPU 可执行文件"),
+            "gpu_anonymous_executable" => Some("匿名 GPU 可执行文件"),
+            "gpu_temporary_executable" => Some("临时路径 GPU 可执行文件"),
+            "known_gpu_miner_identity" => Some("已知 GPU 挖矿器身份"),
+            "mining_pool_remote_port" => Some("矿池远端端口"),
+            "gpu_network_execution_bridge" => Some("GPU 网络命令执行桥接"),
+            "gpu_hidden_executable_name" => Some("隐藏 GPU 可执行文件"),
+            "gpu_public_outbound_connections" => Some("GPU 进程公网出站连接"),
+            "gpu_sustained_high_cpu" => Some("GPU 进程持续高 CPU"),
+            "hidden_gpu_process_with_public_outbound" => Some("隐藏 GPU 进程伴随公网出站连接"),
+            "gpu mining indicator" => Some("GPU 挖矿指标"),
+            _ => None,
         },
     }
 }
