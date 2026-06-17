@@ -359,7 +359,11 @@ release_url() {
 checkout_or_update() {
   if [ -d "$WORK_DIR/.git" ]; then
     git -C "$WORK_DIR" fetch origin "$BRANCH"
-    git -C "$WORK_DIR" checkout "$BRANCH"
+    if git -C "$WORK_DIR" show-ref --verify --quiet "refs/heads/$BRANCH"; then
+      git -C "$WORK_DIR" checkout "$BRANCH"
+    else
+      git -C "$WORK_DIR" checkout -b "$BRANCH" "origin/$BRANCH"
+    fi
     git -C "$WORK_DIR" pull --ff-only origin "$BRANCH"
   else
     install -d "$(dirname "$WORK_DIR")"
