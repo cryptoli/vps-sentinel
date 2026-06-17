@@ -203,7 +203,7 @@ The installer:
 - detects apt, dnf, yum, apk, or pacman;
 - installs build dependencies if needed;
 - tries to install a release artifact by default and falls back to a source build when the artifact is unavailable or cannot execute on the host;
-- installs Rust with rustup when a source build is needed and `cargo` is missing;
+- installs or repairs the Rust toolchain with rustup only when a source build is needed and `cargo` is missing or misconfigured;
 - clones this repository to `/opt/vps-sentinel-src` only for source builds;
 - builds `vps-sentinel` in release mode when source fallback is used;
 - installs the binary to `/usr/local/bin/vps-sentinel` and the shorthand symlink `/usr/local/bin/vs`;
@@ -283,7 +283,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-The update script pulls the selected branch, rebuilds the binary, preserves the existing config, removes deprecated config keys after writing a `.bak` backup, validates it, refreshes the systemd unit when available, updates the `vs` shorthand, and restarts an active or enabled service so the new binary is actually running. It does not refresh an existing baseline by default, so unreviewed host drift such as `authorized_keys` changes is not silently trusted during an update. Unchanged systemd unit content is not rewritten, so routine updates do not churn unit file mtimes. Use `vps-sentinel reload` or `vs reload` for config-only changes that do not replace the binary.
+The update script tries a release artifact by default, validates the downloaded binary with `--version`, and falls back to a source build only when the artifact is unavailable or cannot execute on the host. The source fallback pulls the selected branch, repairs a missing or misconfigured Rust toolchain when needed, and rebuilds the binary. Both paths preserve the existing config, remove deprecated config keys after writing a `.bak` backup, validate it, refresh the systemd unit when available, update the `vs` shorthand, and restart an active or enabled service so the new binary is actually running. It does not refresh an existing baseline by default, so unreviewed host drift such as `authorized_keys` changes is not silently trusted during an update. Unchanged systemd unit content is not rewritten, so routine updates do not churn unit file mtimes. Use `vps-sentinel reload` or `vs reload` for config-only changes that do not replace the binary.
 
 Useful update switches:
 
@@ -296,6 +296,11 @@ Useful update switches:
 | `CONFIG_DIR` | `/etc/vps-sentinel` | Existing config directory. |
 | `DATA_DIR` | `/var/lib/vps-sentinel` | SQLite data directory for the generated unit. |
 | `LOG_DIR` | `/var/log/vps-sentinel` | Log directory for the generated unit. |
+| `INSTALL_DEPS` | `yes` | Set to `no` to skip package manager dependency installation. |
+| `INSTALL_METHOD` | `auto` | `auto` and `release` try a release artifact first and fall back to source if the artifact is missing or cannot execute on the host; `source` always builds locally. |
+| `RELEASE_VERSION` | `latest` | Release tag to download when `INSTALL_METHOD` is `auto` or `release`. |
+| `RELEASE_ARTIFACT_URL` | empty | Override the release artifact URL. Useful for mirrors and local artifact validation. |
+| `TARGET_TRIPLE` | auto-detected | Override release artifact target, for example `x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-musl`. |
 | `INSTALL_SYSTEMD` | `auto` | Set to `no` to skip unit refresh. |
 | `RESTART_SERVICE` | `auto` | `auto`, `yes`, or `no` for reload/restart behavior. |
 | `VALIDATE_CONFIG` | `yes` | Validate existing config before service reload/restart. |
@@ -596,7 +601,7 @@ Normal service wrappers such as `/bin/sh -c '/usr/local/bin/app --listen 0.0.0.0
 
 ## Release Engineering
 
-The repository includes a release workflow but publishing is intentionally tag-driven. A `v*` tag builds Linux tarballs for GNU and musl targets on x86_64/aarch64, validates package contents, generates SHA-256 checksum files, builds `.deb` and `.rpm` packages from the x86_64 GNU artifact, and uploads them to the GitHub release. The installer is prepared to consume these artifacts through `INSTALL_METHOD=auto` or `INSTALL_METHOD=release`, and `RELEASE_ARTIFACT_URL` supports mirrors or local package smoke tests.
+The repository includes a release workflow but publishing is intentionally tag-driven. A `v*` tag builds Linux tarballs for GNU and musl targets on x86_64/aarch64, validates package contents, generates SHA-256 checksum files, builds `.deb` and `.rpm` packages from the x86_64 GNU artifact, and uploads them to the GitHub release. The installer and updater consume these artifacts through `INSTALL_METHOD=auto` or `INSTALL_METHOD=release`, validate the binary with `--version` before installing it, and fall back to source builds when the artifact is missing or incompatible. `RELEASE_ARTIFACT_URL` supports mirrors or local package validation.
 
 Until a release exists, `INSTALL_METHOD=auto` and `INSTALL_METHOD=release` fall back to the existing source build path. Packaged installs still create `/etc/vps-sentinel/config.toml`, install the `vs` shorthand and helper scripts, validate config, bootstrap a baseline, and install systemd when available.
 

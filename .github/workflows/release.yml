@@ -96,7 +96,7 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           if [ -z "${version}" ] || [ "${version}" = "${GITHUB_REF_NAME}" ]; then
-            version="0.1.1-dev"
+            version="0.1.2-dev"
           fi
           root="dist/pkgroot"
           work="dist/package-root"

@@ -203,7 +203,7 @@ sudo sh install.sh
 - 自动识别 apt、dnf、yum、apk、pacman；
 - 安装构建依赖；
 - 默认优先尝试下载 release artifact，artifact 不存在或不能在当前机器执行时回退到源码构建；
-- 需要源码构建且缺少 `cargo` 时通过 rustup 安装 Rust；
+- 只有在需要源码构建且 `cargo` 缺失或配置异常时，才通过 rustup 安装或修复 Rust toolchain；
 - 仅在源码构建时克隆源码到 `/opt/vps-sentinel-src`；
 - 回退源码构建时执行 release 构建；
 - 安装二进制到 `/usr/local/bin/vps-sentinel`，并创建简写 `/usr/local/bin/vs`；
@@ -280,7 +280,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-更新脚本会拉取 GitHub 最新代码、重新构建、保留已有配置、写入 `.bak` 备份后删除废弃配置字段、校验配置、刷新 systemd unit、更新 `vs` 简写，并在服务正在运行或已启用时 restart 服务，确保新二进制真正生效。它默认不会刷新已有基线，避免 `authorized_keys` 等未确认漂移在更新时被静默吸收为可信状态。systemd unit 内容未变化时不会重写文件，避免例行更新造成 unit mtime 变化。只修改配置、不替换二进制时使用 `vps-sentinel reload` 或 `vs reload`。
+更新脚本默认优先下载 release artifact，并先用 `--version` 验证二进制能否在当前机器执行；只有 artifact 不存在或不兼容时，才回退到源码构建。源码回退路径会拉取指定分支，并在 `cargo` 缺失或配置异常时通过 rustup 修复 Rust toolchain。两条路径都会保留已有配置、写入 `.bak` 备份后删除废弃配置字段、校验配置、刷新 systemd unit、更新 `vs` 简写，并在服务正在运行或已启用时 restart 服务，确保新二进制真正生效。它默认不会刷新已有基线，避免 `authorized_keys` 等未确认漂移在更新时被静默吸收为可信状态。systemd unit 内容未变化时不会重写文件，避免例行更新造成 unit mtime 变化。只修改配置、不替换二进制时使用 `vps-sentinel reload` 或 `vs reload`。
 
 常用更新变量：
 
@@ -293,6 +293,11 @@ sudo sh update.sh
 | `CONFIG_DIR` | `/etc/vps-sentinel` | 已有配置目录。 |
 | `DATA_DIR` | `/var/lib/vps-sentinel` | 生成 systemd unit 时使用的数据目录。 |
 | `LOG_DIR` | `/var/log/vps-sentinel` | 生成 systemd unit 时使用的日志目录。 |
+| `INSTALL_DEPS` | `yes` | 设为 `no` 可跳过系统依赖安装。 |
+| `INSTALL_METHOD` | `auto` | `auto` 和 `release` 都会优先下载 release artifact，如果 artifact 不存在或不能在当前机器执行，会回退源码构建；`source` 强制本地构建。 |
+| `RELEASE_VERSION` | `latest` | `INSTALL_METHOD=auto` 或 `release` 时下载的 release tag。 |
+| `RELEASE_ARTIFACT_URL` | 空 | 覆盖 release artifact 下载地址，适合镜像和本地 artifact 验证。 |
+| `TARGET_TRIPLE` | 自动识别 | 覆盖 release artifact 目标，例如 `x86_64-unknown-linux-gnu` 或 `aarch64-unknown-linux-musl`。 |
 | `INSTALL_SYSTEMD` | `auto` | 设为 `no` 可跳过 unit 刷新。 |
 | `RESTART_SERVICE` | `auto` | `auto`、`yes` 或 `no`，控制是否 reload/restart 服务。 |
 | `VALIDATE_CONFIG` | `yes` | 服务 reload/restart 前校验已有配置。 |
@@ -593,7 +598,7 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 
 ## 发布工程
 
-仓库已经包含 release workflow，但发布由 tag 触发。推送 `v*` tag 时会构建 x86_64/aarch64 的 GNU 与 musl Linux tarball，校验包内容，生成 SHA-256 checksum，并基于 x86_64 GNU artifact 生成 `.deb` 与 `.rpm` 包后上传到 GitHub Release。安装脚本已经支持通过 `INSTALL_METHOD=auto` 或 `INSTALL_METHOD=release` 消费这些 artifact；安装前会用 `--version` 验证二进制能否在当前机器执行，不能执行时回退源码构建。`RELEASE_ARTIFACT_URL` 可用于镜像或本地安装包冒烟测试。
+仓库已经包含 release workflow，但发布由 tag 触发。推送 `v*` tag 时会构建 x86_64/aarch64 的 GNU 与 musl Linux tarball，校验包内容，生成 SHA-256 checksum，并基于 x86_64 GNU artifact 生成 `.deb` 与 `.rpm` 包后上传到 GitHub Release。安装脚本和更新脚本都支持通过 `INSTALL_METHOD=auto` 或 `INSTALL_METHOD=release` 消费这些 artifact；安装前会用 `--version` 验证二进制能否在当前机器执行，不能执行时回退源码构建。`RELEASE_ARTIFACT_URL` 可用于镜像或本地安装包验证。
 
 在正式 release 存在前，`INSTALL_METHOD=auto` 和 `INSTALL_METHOD=release` 会自动回退到源码构建路径。包安装仍会创建 `/etc/vps-sentinel/config.toml`、安装 `vs` 简写和辅助脚本、校验配置、初始化基线，并在 systemd 可用时安装服务。
 

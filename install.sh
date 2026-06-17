@@ -274,15 +274,35 @@ configure_agent_identity() {
 }
 
 ensure_rust() {
-  if command -v cargo >/dev/null 2>&1; then
+  if command -v cargo >/dev/null 2>&1 && cargo --version >/dev/null 2>&1; then
     return
   fi
   if [ -x "$HOME/.cargo/bin/cargo" ]; then
     export PATH="$HOME/.cargo/bin:$PATH"
-    return
+    if cargo --version >/dev/null 2>&1; then
+      return
+    fi
   fi
-  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+  if command -v rustup >/dev/null 2>&1; then
+    rustup default stable
+    if cargo --version >/dev/null 2>&1; then
+      return
+    fi
+  elif [ -x "$HOME/.cargo/bin/rustup" ]; then
+    export PATH="$HOME/.cargo/bin:$PATH"
+    rustup default stable
+    if cargo --version >/dev/null 2>&1; then
+      return
+    fi
+  else
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --profile minimal --default-toolchain stable
+  fi
   export PATH="$HOME/.cargo/bin:$PATH"
+  if ! cargo --version >/dev/null 2>&1; then
+    echo "cargo is installed but cannot run; check the Rust toolchain before source install" >&2
+    exit 1
+  fi
 }
 
 detect_target_triple() {
@@ -305,6 +325,22 @@ detect_target_triple() {
   esac
 }
 
+repo_release_base() {
+  case "$REPO_URL" in
+    git@github.com:*)
+      repo_path="${REPO_URL#git@github.com:}"
+      printf 'https://github.com/%s\n' "${repo_path%.git}"
+      ;;
+    ssh://git@github.com/*)
+      repo_path="${REPO_URL#ssh://git@github.com/}"
+      printf 'https://github.com/%s\n' "${repo_path%.git}"
+      ;;
+    *)
+      printf '%s\n' "${REPO_URL%.git}"
+      ;;
+  esac
+}
+
 release_url() {
   if [ -n "$RELEASE_ARTIFACT_URL" ]; then
     printf '%s\n' "$RELEASE_ARTIFACT_URL"
@@ -312,10 +348,11 @@ release_url() {
   fi
   triple="$(detect_target_triple)"
   artifact="vps-sentinel-${triple}.tar.gz"
+  base_url="$(repo_release_base)"
   if [ "$RELEASE_VERSION" = "latest" ]; then
-    printf '%s/releases/latest/download/%s\n' "${REPO_URL%.git}" "$artifact"
+    printf '%s/releases/latest/download/%s\n' "$base_url" "$artifact"
   else
-    printf '%s/releases/download/%s/%s\n' "${REPO_URL%.git}" "$RELEASE_VERSION" "$artifact"
+    printf '%s/releases/download/%s/%s\n' "$base_url" "$RELEASE_VERSION" "$artifact"
   fi
 }
 

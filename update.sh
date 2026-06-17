@@ -11,6 +11,11 @@ LOG_DIR="${LOG_DIR:-/var/log/vps-sentinel}"
 SERVICE_NAME="${SERVICE_NAME:-vps-sentinel}"
 SERVICE_PATH="${SERVICE_PATH:-/etc/systemd/system/${SERVICE_NAME}.service}"
 SYSTEMD_TEMPLATE="${SYSTEMD_TEMPLATE:-packaging/systemd/vps-sentinel.service}"
+INSTALL_DEPS="${INSTALL_DEPS:-yes}"
+INSTALL_METHOD="${INSTALL_METHOD:-auto}"
+RELEASE_VERSION="${RELEASE_VERSION:-latest}"
+RELEASE_ARTIFACT_URL="${RELEASE_ARTIFACT_URL:-}"
+TARGET_TRIPLE="${TARGET_TRIPLE:-}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-auto}"
 RESTART_SERVICE="${RESTART_SERVICE:-auto}"
 VALIDATE_CONFIG="${VALIDATE_CONFIG:-yes}"
@@ -23,19 +28,128 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-if ! command -v git >/dev/null 2>&1; then
-  echo "git is required for update" >&2
-  exit 1
-fi
+install_deps() {
+  mode="${1:-source}"
+  case "$INSTALL_DEPS" in
+    yes|true|1) ;;
+    no|false|0)
+      echo "skipped dependency installation"
+      return
+      ;;
+    *)
+      echo "invalid INSTALL_DEPS value: $INSTALL_DEPS" >&2
+      exit 1
+      ;;
+  esac
 
-if ! command -v cargo >/dev/null 2>&1; then
-  if [ -x "$HOME/.cargo/bin/cargo" ]; then
-    export PATH="$HOME/.cargo/bin:$PATH"
+  case "$mode" in
+    release|source) ;;
+    *)
+      echo "invalid dependency mode: $mode" >&2
+      exit 1
+      ;;
+  esac
+
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update
+    if [ "$mode" = "release" ]; then
+      apt-get install -y ca-certificates curl tar
+    else
+      apt-get install -y ca-certificates curl git build-essential pkg-config
+    fi
+  elif command -v dnf >/dev/null 2>&1; then
+    if [ "$mode" = "release" ]; then
+      dnf install -y ca-certificates curl tar
+    else
+      dnf install -y ca-certificates curl git gcc gcc-c++ make pkgconf-pkg-config
+    fi
+  elif command -v yum >/dev/null 2>&1; then
+    if [ "$mode" = "release" ]; then
+      yum install -y ca-certificates curl tar
+    else
+      yum install -y ca-certificates curl git gcc gcc-c++ make pkgconfig
+    fi
+  elif command -v apk >/dev/null 2>&1; then
+    if [ "$mode" = "release" ]; then
+      apk add --no-cache ca-certificates curl tar
+    else
+      apk add --no-cache ca-certificates curl git build-base pkgconfig
+    fi
+  elif command -v pacman >/dev/null 2>&1; then
+    if [ "$mode" = "release" ]; then
+      pacman -Sy --noconfirm ca-certificates curl tar
+    else
+      pacman -Sy --noconfirm ca-certificates curl git base-devel pkgconf
+    fi
   else
-    echo "cargo is required; run install.sh first" >&2
+    if [ "$mode" = "release" ]; then
+      echo "unsupported package manager; install curl, tar, and ca-certificates manually" >&2
+    else
+      echo "unsupported package manager; install curl, git, C compiler, make, and pkg-config manually" >&2
+    fi
     exit 1
   fi
-fi
+}
+
+command_available() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+ensure_release_tools() {
+  if command_available curl && command_available tar; then
+    return
+  fi
+  install_deps release
+  if ! command_available curl || ! command_available tar; then
+    echo "curl and tar are required for release update" >&2
+    exit 1
+  fi
+}
+
+cargo_works() {
+  command_available cargo && cargo --version >/dev/null 2>&1
+}
+
+ensure_rust() {
+  if cargo_works; then
+    return
+  fi
+  if [ -x "$HOME/.cargo/bin/cargo" ]; then
+    export PATH="$HOME/.cargo/bin:$PATH"
+    if cargo_works; then
+      return
+    fi
+  fi
+  if command_available rustup; then
+    rustup default stable
+    if cargo_works; then
+      return
+    fi
+  elif [ -x "$HOME/.cargo/bin/rustup" ]; then
+    export PATH="$HOME/.cargo/bin:$PATH"
+    rustup default stable
+    if cargo_works; then
+      return
+    fi
+  else
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --profile minimal --default-toolchain stable
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  if ! cargo_works; then
+    echo "cargo is installed but cannot run; check the Rust toolchain before source update" >&2
+    exit 1
+  fi
+}
+
+ensure_source_tools() {
+  if ! command_available git; then
+    echo "git is required for source update" >&2
+    exit 1
+  fi
+  ensure_rust
+}
 
 systemd_available() {
   [ -d /etc/systemd/system ] \
@@ -175,45 +289,184 @@ install_binary_aliases() {
   rm -f "$PREFIX/bin/vps-sentinel-reload"
 }
 
-if [ -d "$WORK_DIR/.git" ]; then
-  git -C "$WORK_DIR" fetch origin "$BRANCH"
-  git -C "$WORK_DIR" checkout "$BRANCH"
-  git -C "$WORK_DIR" pull --ff-only origin "$BRANCH"
-else
-  install -d "$(dirname "$WORK_DIR")"
-  git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$WORK_DIR"
-fi
-
-cd "$WORK_DIR"
-cargo build --release --locked
-install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
-install -m 0755 target/release/vps-sentinel "$PREFIX/bin/vps-sentinel"
-install_binary_aliases
-for script in stop update install; do
-  if [ -f "${script}.sh" ]; then
-    install -m 0755 "${script}.sh" "$PREFIX/bin/vps-sentinel-${script}"
+detect_target_triple() {
+  if [ -n "$TARGET_TRIPLE" ]; then
+    printf '%s\n' "$TARGET_TRIPLE"
+    return
   fi
-done
 
-if [ ! -f "$CONFIG_DIR/config.toml" ]; then
-  install -m 0600 config/config.example.toml "$CONFIG_DIR/config.toml"
-fi
+  arch="$(uname -m)"
+  libc="gnu"
+  if ldd --version 2>&1 | grep -qi musl; then
+    libc="musl"
+  fi
 
-migrate_config
+  case "$arch" in
+    x86_64|amd64) printf 'x86_64-unknown-linux-%s\n' "$libc" ;;
+    aarch64|arm64) printf 'aarch64-unknown-linux-%s\n' "$libc" ;;
+    *)
+      echo "unsupported release artifact architecture: $arch" >&2
+      return 1
+      ;;
+  esac
+}
 
-case "$VALIDATE_CONFIG" in
-  yes|true|1)
-    "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" config validate
+repo_release_base() {
+  case "$REPO_URL" in
+    git@github.com:*)
+      repo_path="${REPO_URL#git@github.com:}"
+      printf 'https://github.com/%s\n' "${repo_path%.git}"
+      ;;
+    ssh://git@github.com/*)
+      repo_path="${REPO_URL#ssh://git@github.com/}"
+      printf 'https://github.com/%s\n' "${repo_path%.git}"
+      ;;
+    *)
+      printf '%s\n' "${REPO_URL%.git}"
+      ;;
+  esac
+}
+
+release_url() {
+  if [ -n "$RELEASE_ARTIFACT_URL" ]; then
+    printf '%s\n' "$RELEASE_ARTIFACT_URL"
+    return
+  fi
+
+  triple="$(detect_target_triple)"
+  artifact="vps-sentinel-${triple}.tar.gz"
+  base_url="$(repo_release_base)"
+  if [ "$RELEASE_VERSION" = "latest" ]; then
+    printf '%s/releases/latest/download/%s\n' "$base_url" "$artifact"
+  else
+    printf '%s/releases/download/%s/%s\n' "$base_url" "$RELEASE_VERSION" "$artifact"
+  fi
+}
+
+release_binary_works() {
+  binary="$1"
+  [ -x "$binary" ] || chmod 0755 "$binary" 2>/dev/null || return 1
+  "$binary" --version >/dev/null 2>&1
+}
+
+install_helper_scripts() {
+  source_dir="$1"
+  for script in stop update install; do
+    if [ -f "$source_dir/${script}.sh" ]; then
+      install -m 0755 "$source_dir/${script}.sh" "$PREFIX/bin/vps-sentinel-${script}"
+    fi
+  done
+}
+
+ensure_config_exists() {
+  source_config="$1"
+  if [ ! -f "$CONFIG_DIR/config.toml" ]; then
+    install -m 0600 "$source_config" "$CONFIG_DIR/config.toml"
+    echo "created $CONFIG_DIR/config.toml"
+  else
+    echo "kept existing $CONFIG_DIR/config.toml"
+  fi
+}
+
+post_update() {
+  migrate_config
+
+  case "$VALIDATE_CONFIG" in
+    yes|true|1)
+      "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" config validate
+      ;;
+    no|false|0) ;;
+    *)
+      echo "invalid VALIDATE_CONFIG value: $VALIDATE_CONFIG" >&2
+      exit 1
+      ;;
+  esac
+
+  install_systemd_unit_file
+  refresh_baseline
+  restart_updated_service
+}
+
+checkout_or_update() {
+  if [ -d "$WORK_DIR/.git" ]; then
+    git -C "$WORK_DIR" fetch origin "$BRANCH"
+    git -C "$WORK_DIR" checkout "$BRANCH"
+    git -C "$WORK_DIR" pull --ff-only origin "$BRANCH"
+  else
+    install -d "$(dirname "$WORK_DIR")"
+    git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$WORK_DIR"
+  fi
+}
+
+install_from_release() {
+  ensure_release_tools
+  url="$(release_url)" || return 1
+  tmp_dir="$(mktemp -d)"
+  archive="$tmp_dir/vps-sentinel.tar.gz"
+  echo "downloading release artifact: $url"
+  if ! curl -fsSL "$url" -o "$archive"; then
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+  if ! tar -xzf "$archive" -C "$tmp_dir"; then
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+  if ! release_binary_works "$tmp_dir/vps-sentinel"; then
+    echo "release artifact binary cannot execute on this host; falling back to source build"
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+
+  install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+  install -m 0755 "$tmp_dir/vps-sentinel" "$PREFIX/bin/vps-sentinel"
+  install_binary_aliases
+  install_helper_scripts "$tmp_dir"
+  ensure_config_exists "$tmp_dir/config.example.toml"
+
+  if [ -f "$tmp_dir/packaging/systemd/vps-sentinel.service" ]; then
+    SYSTEMD_TEMPLATE="$tmp_dir/packaging/systemd/vps-sentinel.service"
+  fi
+
+  post_update
+  rm -rf "$tmp_dir"
+  echo "vps-sentinel updated from release artifact"
+}
+
+build_and_install_from_source() {
+  install_deps source
+  ensure_source_tools
+  checkout_or_update
+  cd "$WORK_DIR"
+  cargo build --release --locked
+  install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+  install -m 0755 target/release/vps-sentinel "$PREFIX/bin/vps-sentinel"
+  install_binary_aliases
+  install_helper_scripts "$WORK_DIR"
+  ensure_config_exists "$WORK_DIR/config/config.example.toml"
+  SYSTEMD_TEMPLATE="$WORK_DIR/packaging/systemd/vps-sentinel.service"
+  post_update
+  echo "vps-sentinel updated from $REPO_URL ($BRANCH)"
+}
+
+case "$INSTALL_METHOD" in
+  release)
+    if ! install_from_release; then
+      echo "release update failed; falling back to source build"
+      build_and_install_from_source
+    fi
     ;;
-  no|false|0) ;;
+  auto)
+    if ! install_from_release; then
+      echo "release artifact unavailable; falling back to source build"
+      build_and_install_from_source
+    fi
+    ;;
+  source)
+    build_and_install_from_source
+    ;;
   *)
-    echo "invalid VALIDATE_CONFIG value: $VALIDATE_CONFIG" >&2
+    echo "invalid INSTALL_METHOD value: $INSTALL_METHOD" >&2
     exit 1
     ;;
 esac
-
-install_systemd_unit_file
-refresh_baseline
-restart_updated_service
-
-echo "vps-sentinel updated from $REPO_URL ($BRANCH)"
