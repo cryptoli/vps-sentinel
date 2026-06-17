@@ -169,6 +169,8 @@ CI runs the normal Rust test suite on Ubuntu, validates shell scripts, runs a te
 
 systemd is optional for installation but required for service reload/start/stop management. Without systemd, the installer still builds the binary and writes configuration; run the daemon under your own init system. Running as non-root degrades visibility instead of crashing, but SSH logs, `/proc/<pid>/fd`, protected files, and persistence paths may be incomplete.
 
+The Docker containers used in CI are build and compatibility test environments only. A normal containerized runtime can only see the container's own process table, filesystem, and logs, so it is not a reliable way to monitor host compromise. For production host intrusion monitoring, install the daemon directly on the VPS host with root visibility, preferably through the provided systemd unit.
+
 ## Implementation And Effect
 
 | Feature | Implementation | Practical effect |

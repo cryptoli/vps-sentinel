@@ -48,4 +48,4 @@ jobs:
           docker run --rm \
             -v "${{ github.workspace }}:/src:ro" \
             "${{ matrix.image }}" \
-            sh -lc "set -eu; ${{ matrix.setup }}; mkdir -p /work; cp -a /src/. /work/; cd /work; cargo test --workspace --locked"
+            sh -c "set -eu; ${{ matrix.setup }}; mkdir -p /work; cp -a /src/. /work/; cd /work; cargo test --workspace --locked"
