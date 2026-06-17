@@ -21,7 +21,7 @@ impl Default for NotificationsConfig {
     fn default() -> Self {
         Self {
             request_timeout_seconds: 15,
-            language: NotificationLanguage::En,
+            language: NotificationLanguage::ZhCn,
             time_zone: NotificationTimeZone::Local,
             include_technical_fields: false,
             telegram: TelegramConfig::default(),
@@ -38,8 +38,8 @@ impl Default for NotificationsConfig {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationLanguage {
-    #[default]
     En,
+    #[default]
     ZhCn,
 }
 

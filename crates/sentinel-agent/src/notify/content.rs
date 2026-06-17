@@ -10,7 +10,7 @@ pub struct LocalizedFinding {
 pub fn localized_finding(finding: &Finding, language: NotificationLanguage) -> LocalizedFinding {
     match language {
         NotificationLanguage::En => from_finding(finding),
-        NotificationLanguage::ZhCn => zh_rule(finding).unwrap_or_else(|| from_finding(finding)),
+        NotificationLanguage::ZhCn => zh_rule(finding).unwrap_or_else(|| zh_fallback(finding)),
     }
 }
 
@@ -20,6 +20,34 @@ fn from_finding(finding: &Finding) -> LocalizedFinding {
         description: finding.description.clone(),
         impact: finding.impact.clone(),
         recommendations: finding.recommendations.clone(),
+    }
+}
+
+fn zh_fallback(finding: &Finding) -> LocalizedFinding {
+    let title = if finding.rule_id.trim().is_empty() {
+        "检测到安全事件".to_string()
+    } else {
+        format!("检测到规则 {}", finding.rule_id)
+    };
+    LocalizedFinding {
+        title,
+        description: "该规则尚未配置中文消息模板，请结合证据、分类和处置建议确认风险。".to_string(),
+        impact: if finding.impact.is_empty() {
+            Vec::new()
+        } else {
+            vec!["原始规则提供了影响说明，但当前语言没有专用翻译，请结合证据确认。".to_string()]
+        },
+        recommendations: if finding.recommendations.is_empty() {
+            vec![
+                "查看证据字段和主机上下文。".to_string(),
+                "确认是否为计划内运维操作。".to_string(),
+            ]
+        } else {
+            vec![
+                "查看证据字段和主机上下文。".to_string(),
+                "按原始规则建议进行处置前，先确认该事件是否符合预期。".to_string(),
+            ]
+        },
     }
 }
 

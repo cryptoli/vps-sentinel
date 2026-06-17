@@ -72,6 +72,27 @@ pub struct StorageLimitReport {
     pub vacuumed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageStats {
+    pub database_bytes: u64,
+    pub raw_events: usize,
+    pub findings: usize,
+    pub notification_logs: usize,
+    pub scan_runs: usize,
+    pub baseline_snapshots: usize,
+    pub rule_states: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StorageClearTarget {
+    RawEvents,
+    Findings,
+    NotificationLogs,
+    ScanRuns,
+    BaselineSnapshots,
+    AllHistory,
+}
+
 impl SqliteStore {
     /// Open or create the database and run idempotent migrations.
     pub fn open(path: impl Into<PathBuf>) -> SentinelResult<Self> {
@@ -86,6 +107,19 @@ impl SqliteStore {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn stats(&self) -> SentinelResult<StorageStats> {
+        let conn = self.connection()?;
+        Ok(StorageStats {
+            database_bytes: self.database_footprint_bytes()?,
+            raw_events: table_row_count(&conn, "raw_events")?,
+            findings: table_row_count(&conn, "findings")?,
+            notification_logs: table_row_count(&conn, "notification_logs")?,
+            scan_runs: table_row_count(&conn, "scan_runs")?,
+            baseline_snapshots: table_row_count(&conn, "baseline_snapshots")?,
+            rule_states: table_row_count(&conn, "rule_states")?,
+        })
     }
 
     pub fn save_raw_events(&self, events: &[RawEvent]) -> SentinelResult<()> {
@@ -245,10 +279,8 @@ impl SqliteStore {
     }
 
     pub fn clear_baselines(&self) -> SentinelResult<()> {
-        let conn = self.connection()?;
-        conn.execute("DELETE FROM baseline_snapshots", [])
-            .map_err(|err| SentinelError::Storage(err.to_string()))?;
-        Ok(())
+        self.clear_storage(StorageClearTarget::BaselineSnapshots)
+            .map(|_| ())
     }
 
     pub fn load_rule_state<T>(&self, rule_id: &str) -> SentinelResult<Option<T>>
@@ -369,6 +401,24 @@ impl SqliteStore {
         Ok(deleted)
     }
 
+    pub fn clear_storage(&self, target: StorageClearTarget) -> SentinelResult<usize> {
+        let conn = self.connection()?;
+        let mut deleted = 0usize;
+        for table in target.tables() {
+            let sql = format!("DELETE FROM {table}");
+            deleted += conn
+                .execute(&sql, [])
+                .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        }
+        checkpoint_and_vacuum(&conn)?;
+        Ok(deleted)
+    }
+
+    pub fn vacuum(&self) -> SentinelResult<()> {
+        let conn = self.connection()?;
+        checkpoint_and_vacuum(&conn)
+    }
+
     pub fn enforce_size_limit(
         &self,
         max_database_size_mb: u64,
@@ -482,6 +532,19 @@ impl SqliteStore {
         )
         .map_err(|err| SentinelError::Storage(err.to_string()))?;
         Ok(())
+    }
+}
+
+impl StorageClearTarget {
+    fn tables(self) -> &'static [&'static str] {
+        match self {
+            Self::RawEvents => &["raw_events"],
+            Self::Findings => &["findings"],
+            Self::NotificationLogs => &["notification_logs"],
+            Self::ScanRuns => &["scan_runs"],
+            Self::BaselineSnapshots => &["baseline_snapshots"],
+            Self::AllHistory => &["raw_events", "findings", "notification_logs", "scan_runs"],
+        }
     }
 }
 
@@ -694,7 +757,7 @@ fn is_volatile_raw_event_field(key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::SqliteStore;
+    use super::{SqliteStore, StorageClearTarget};
     use crate::baseline::{snapshot::FileBaseline, BaselineSnapshot};
     use chrono::Utc;
     use sentinel_core::{Category, Finding, RawEvent, Severity};
@@ -835,6 +898,49 @@ mod tests {
         assert!(report.deleted_rows > 0);
         assert_eq!(latest.id, "baseline-2");
         assert_eq!(count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn clear_all_history_keeps_baseline_and_rule_state() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let raw = RawEvent::new("web", "web_access")
+            .with_field("ip", "8.8.8.8")
+            .with_field("method", "GET")
+            .with_field("path", "/.env")
+            .with_field("status", "404");
+        let finding = Finding::new(
+            "host",
+            "title",
+            "description",
+            Severity::High,
+            Category::Web,
+            "WEB-001",
+            "8.8.8.8",
+        );
+        let snapshot = BaselineSnapshot::default();
+        let state = TestRuleState {
+            value: "blocked".to_string(),
+            count: 1,
+        };
+        store.save_raw_events(&[raw])?;
+        store.save_findings(&[finding])?;
+        store.record_notification_log("finding", "telegram", "ok", "")?;
+        store.record_scan_run(1, 1, "ok")?;
+        store.save_baseline_snapshot(&snapshot)?;
+        store.save_rule_state("active_response_blocks", &state)?;
+
+        let deleted = store.clear_storage(StorageClearTarget::AllHistory)?;
+        let stats = store.stats()?;
+
+        assert_eq!(deleted, 4);
+        assert_eq!(stats.raw_events, 0);
+        assert_eq!(stats.findings, 0);
+        assert_eq!(stats.notification_logs, 0);
+        assert_eq!(stats.scan_runs, 0);
+        assert_eq!(stats.baseline_snapshots, 1);
+        assert_eq!(stats.rule_states, 1);
         Ok(())
     }
 

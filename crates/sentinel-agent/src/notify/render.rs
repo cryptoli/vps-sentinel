@@ -58,7 +58,7 @@ impl AlertRenderOptions {
 
 /// Render a finding in the standard alert shape.
 pub fn render_finding(finding: &Finding, format: NotificationFormat) -> String {
-    render_finding_with_language(finding, format, NotificationLanguage::En)
+    render_finding_with_language(finding, format, NotificationLanguage::ZhCn)
 }
 
 pub fn render_finding_with_language(
@@ -76,7 +76,7 @@ pub fn render_finding_with_language(
 }
 
 pub fn render_alert(finding: &Finding) -> RenderedAlert {
-    render_alert_with_language(finding, NotificationLanguage::En)
+    render_alert_with_language(finding, NotificationLanguage::ZhCn)
 }
 
 pub fn render_alert_with_language(

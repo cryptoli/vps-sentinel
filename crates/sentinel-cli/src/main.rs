@@ -4,6 +4,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use commands::{
     baseline::{run_baseline, BaselineCommand},
+    blocks::{run_blocks, BlocksCommand},
     config::{run_config, ConfigCommand},
     doctor::run_doctor,
     events::{run_events, EventsCommand},
@@ -12,6 +13,7 @@ use commands::{
     reload::run_reload,
     rules::{run_rules, RulesCommand},
     scan::{run_check, run_scan_command},
+    storage::{run_storage, StorageCommand},
 };
 use sentinel_core::SentinelConfig;
 use std::io;
@@ -54,6 +56,10 @@ enum Command {
         #[command(subcommand)]
         command: BaselineCommand,
     },
+    Blocks {
+        #[command(subcommand)]
+        command: BlocksCommand,
+    },
     Events {
         #[command(subcommand)]
         command: EventsCommand,
@@ -69,6 +75,10 @@ enum Command {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+    Storage {
+        #[command(subcommand)]
+        command: StorageCommand,
     },
     Reload {
         #[arg(long, default_value = "vps-sentinel")]
@@ -98,12 +108,14 @@ async fn main() -> Result<()> {
         Command::Baseline { command } => {
             run_baseline(load_config(cli.config.as_deref())?, command).await
         }
+        Command::Blocks { command } => run_blocks(load_config(cli.config.as_deref())?, command),
         Command::Events { command } => run_events(load_config(cli.config.as_deref())?, command),
         Command::Rules { command } => run_rules(command),
         Command::Notify { command } => {
             run_notify(load_config(cli.config.as_deref())?, command).await
         }
         Command::Config { command } => run_config(cli.config.as_deref(), command),
+        Command::Storage { command } => run_storage(load_config(cli.config.as_deref())?, command),
         Command::Reload { service_name } => {
             let (_, path) = load_config_with_path(cli.config.as_deref())?;
             run_reload(path, &service_name)

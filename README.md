@@ -76,12 +76,12 @@ All notification channels are disabled by default. Enable only the channels you 
 
 Each channel supports `min_severity`, so low-priority findings can be kept local while higher-risk findings are sent out. HTTP-based channels share `notifications.request_timeout_seconds`, which defaults to 15 seconds. Human-facing channels use a template strategy: Telegram uses Telegram-compatible HTML, Email sends multipart plain-text plus full HTML, ServerChan and Gotify use Markdown, and ntfy/Bark use plain text for maximum client compatibility.
 
-Notification text supports English and Simplified Chinese:
+Notification text supports Simplified Chinese by default and can be switched to English:
 
 ```toml
 [notifications]
 request_timeout_seconds = 15
-language = "en" # en or zh_cn
+language = "zh_cn" # zh_cn or en
 time_zone = "local" # local or utc
 include_technical_fields = false
 ```
@@ -169,6 +169,8 @@ vps-sentinel targets Linux VPS hosts with `/proc`, a POSIX shell, and root-level
 CI runs the normal Rust test suite on Ubuntu, validates shell scripts, runs a temporary installer smoke test, and runs container compatibility tests on Debian Bookworm and Alpine musl. Release workflow targets are prepared for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, and `aarch64-unknown-linux-musl`.
 
 systemd is optional for installation but required for service reload/start/stop management. Without systemd, the installer still builds the binary and writes configuration; run the daemon under your own init system. Running as non-root degrades visibility instead of crashing, but SSH logs, `/proc/<pid>/fd`, protected files, and persistence paths may be incomplete.
+
+Active response requires root privileges plus a working nftables or iptables/ip6tables userspace command. On hosts managed by firewalld, ufw, or manual firewall reloads, vps-sentinel re-checks stored blocks against the actual firewall on each scan and removes stale local state when rules disappear.
 
 The Docker containers used in CI are build and compatibility test environments only. A normal containerized runtime can only see the container's own process table, filesystem, and logs, so it is not a reliable way to monitor host compromise. For production host intrusion monitoring, install the daemon directly on the VPS host with root visibility, preferably through the provided systemd unit.
 
@@ -395,8 +397,16 @@ Commands:
 | `vps-sentinel baseline show --config <path>` | Print the stored baseline snapshot. |
 | `vps-sentinel baseline diff --config <path>` | Compare current local state against the stored baseline and print drift. |
 | `vps-sentinel baseline reset --config <path>` | Clear stored baselines. Run `baseline create` afterwards to capture a new trusted state. |
+| `vps-sentinel blocks list --config <path>` | List IPs currently recorded as active-response blocks. By default it verifies whether the firewall rule is still present. |
+| `vps-sentinel blocks cleanup --config <path>` | Remove expired block records and stale records whose firewall rule disappeared after firewalld/ufw reloads or manual changes. |
+| `vps-sentinel blocks unblock <ip> --config <path>` | Remove one blocked IP from available firewall backends and from local active-response state. |
+| `vps-sentinel blocks unblock-all --yes --config <path>` | Remove all recorded active-response blocks. `--yes` is required to avoid accidental mass unblocking. |
 | `vps-sentinel events list --config <path>` | List recent stored findings; use `--limit <n>` to control the count. |
 | `vps-sentinel events show <event_id> --config <path>` | Show one stored finding by ID as JSON. |
+| `vps-sentinel storage stats --config <path>` | Print SQLite row counts and database footprint. |
+| `vps-sentinel storage prune --config <path>` | Run the same retention and database-size cleanup used after normal persisted scans. |
+| `vps-sentinel storage clear <target> --yes --config <path>` | Manually clear selected history such as `raw-events`, `findings`, `notifications`, `scan-runs`, `baselines`, or `all-history`. |
+| `vps-sentinel storage vacuum --config <path>` | Run SQLite checkpoint/VACUUM/optimize without deleting rows. |
 | `vps-sentinel rules list` | List built-in detection rules, severity, and descriptions. |
 | `vps-sentinel rules test <rule_id>` | Verify that a built-in rule ID exists and can be loaded. |
 | `vps-sentinel notify test --config <path>` | Send a synthetic Info finding through enabled notification channels. Use this to verify credentials and routing. |
@@ -429,6 +439,8 @@ max_database_size_mb = 256
 ```
 
 `retention_days` removes old raw events, findings, notification logs, and scan runs by time. `max_database_size_mb` is an additional disk-safety cap. When the SQLite database plus WAL/SHM sidecars exceed the cap, vps-sentinel prunes the oldest high-volume rows, checkpoints WAL, runs `VACUUM`, and keeps baseline/rule-state tables intact. This protects small VPS disks from historical log growth; choose a larger cap if you need longer local forensics history.
+
+Automatic cleanup runs after each persisted scan. Manual cleanup uses the same storage layer: `vs storage prune` applies retention plus the configured size cap, `vs storage stats` shows row counts and footprint, `vs storage clear notifications --yes` clears notification delivery history, and `vs storage clear all-history --yes` clears raw events/findings/notification logs/scan runs without deleting baselines or rule state. Clearing `baselines` is intentionally separate because it changes future drift detection.
 
 SSH alert policy:
 
@@ -542,6 +554,8 @@ ssh_failed_login_block_threshold = 20
 ```
 
 Active response is disabled by default because it changes local firewall policy. When enabled, the scanner applies it after scan-level coalescing/deduplication but before persisted notification deduplication, so an escalating source can still be blocked even when repeated notifications are suppressed. Quiet hours and notification rate limits do not prevent blocking. The backend uses nftables when available and falls back to iptables/ip6tables. Blocks are temporary: nftables uses set timeouts and vps-sentinel also stores block state in SQLite so expired entries can be removed on later scans. Only public routable source IPs are eligible, and `[allowlist].ips` always wins.
+
+Every scan synchronizes active-response state with the real firewall before deciding whether a source is already blocked. If a rule expired, was removed by firewalld/ufw reload, or was changed manually, the stale state record is removed and a still-escalating source can be blocked again. The iptables backend checks for an existing rule before inserting, so repeated scans do not create duplicate DROP rules, and manual unblock removes duplicate matching rules if they exist. Use `vs blocks list`, `vs blocks cleanup`, `vs blocks unblock <ip>`, and `vs blocks unblock-all --yes` for operational control.
 
 Noise control:
 

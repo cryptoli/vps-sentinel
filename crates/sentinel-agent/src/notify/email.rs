@@ -142,13 +142,15 @@ fn email_transport_error(err: lettre::transport::smtp::Error) -> SentinelError {
 mod tests {
     use super::{build_message, smtp_transport_builder};
     use sentinel_core::{
-        Category, EmailConfig, EmailTlsMode, Evidence, Finding, SentinelConfig, Severity,
+        Category, EmailConfig, EmailTlsMode, Evidence, Finding, NotificationLanguage,
+        SentinelConfig, Severity,
     };
 
     #[test]
     fn builds_multipart_email_message() -> Result<(), Box<dyn std::error::Error>> {
         let config = email_config();
-        let sentinel_config = SentinelConfig::default();
+        let mut sentinel_config = SentinelConfig::default();
+        sentinel_config.notifications.language = NotificationLanguage::En;
         let message = build_message(&config, &sample_finding(), &sentinel_config)?;
         let formatted = String::from_utf8_lossy(&message.formatted()).to_string();
         assert!(formatted.contains("multipart/alternative"));

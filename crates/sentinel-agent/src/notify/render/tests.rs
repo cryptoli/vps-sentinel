@@ -7,12 +7,26 @@ use sentinel_core::{Category, Evidence, Finding, NotificationLanguage, SentinelC
 #[test]
 fn renders_standard_alert_body() {
     let finding = sample_finding();
-    let body = render_finding(&finding, NotificationFormat::PlainText);
+    let body = render_finding_with_language(
+        &finding,
+        NotificationFormat::PlainText,
+        NotificationLanguage::En,
+    );
     assert!(body.contains("VPS Sentinel Alert"));
     assert!(body.contains("[High] Root login"));
     assert!(!body.contains("Rule: SSH-001"));
     assert!(!body.contains("Dedup Key:"));
     assert!(body.contains("Evidence:"));
+}
+
+#[test]
+fn default_render_helpers_use_chinese() {
+    let finding = sample_finding();
+    let body = render_finding(&finding, NotificationFormat::PlainText);
+
+    assert!(body.contains("VPS Sentinel 告警"));
+    assert!(body.contains("[高危] 检测到 root SSH 登录"));
+    assert!(!body.contains("VPS Sentinel Alert"));
 }
 
 #[test]
@@ -113,9 +127,77 @@ fn renders_html_without_raw_markup_in_values() {
 }
 
 #[test]
+fn renders_unknown_rule_in_chinese_without_raw_english_message() {
+    let finding = Finding::new(
+        "host",
+        "Unexpected scheduler entry",
+        "English description should not leak in Chinese mode.",
+        Severity::Medium,
+        Category::System,
+        "CUSTOM-001",
+        "job",
+    )
+    .with_impact(vec!["English impact".to_string()])
+    .with_recommendations(vec!["English recommendation".to_string()]);
+
+    let body = render_finding_with_language(
+        &finding,
+        NotificationFormat::PlainText,
+        NotificationLanguage::ZhCn,
+    );
+
+    assert!(body.contains("检测到规则 CUSTOM-001"));
+    assert!(body.contains("该规则尚未配置中文消息模板"));
+    assert!(!body.contains("Unexpected scheduler entry"));
+    assert!(!body.contains("English description"));
+    assert!(!body.contains("English impact"));
+    assert!(!body.contains("English recommendation"));
+}
+
+#[test]
+fn localizes_common_evidence_keys_and_values() {
+    let finding = Finding::new(
+        "host",
+        "Custom test",
+        "Custom description",
+        Severity::Medium,
+        Category::System,
+        "CUSTOM-002",
+        "subject",
+    )
+    .with_evidence(vec![
+        Evidence::new("change", "file_modified"),
+        Evidence::new("method", "password"),
+        Evidence::new("exists", "true"),
+        Evidence::new("risk_features", "network_execution_bridge, temporary_path"),
+        Evidence::new(
+            "risk_reasons",
+            "network shell bridge; temporary executable path",
+        ),
+        Evidence::new("content_markers", "system_call, base64_decode"),
+    ]);
+
+    let body = render_finding_with_language(
+        &finding,
+        NotificationFormat::PlainText,
+        NotificationLanguage::ZhCn,
+    );
+
+    assert!(body.contains("变化类型: 文件修改"));
+    assert!(body.contains("方式: 密码认证"));
+    assert!(body.contains("是否存在: 是"));
+    assert!(body.contains("风险特征: 网络命令执行桥接，临时路径"));
+    assert!(body.contains("风险原因: 网络 Shell 桥接，临时目录可执行文件"));
+    assert!(body.contains("内容特征: system 调用，base64 解码"));
+    assert!(!body.contains("file_modified"));
+    assert!(!body.contains("network_execution_bridge"));
+}
+
+#[test]
 fn renders_configured_vps_name_in_subject() {
     let mut config = SentinelConfig::default();
     config.agent.display_name = "prod-web-1".to_string();
+    config.notifications.language = NotificationLanguage::En;
     let alert = render_alert_for_config(&sample_finding(), &config);
     assert!(alert.subject.starts_with("[prod-web-1][High]"));
     assert!(alert.plain_text.contains("VPS: prod-web-1"));
@@ -124,6 +206,7 @@ fn renders_configured_vps_name_in_subject() {
 #[test]
 fn renders_technical_fields_only_when_enabled() {
     let mut config = SentinelConfig::default();
+    config.notifications.language = NotificationLanguage::En;
     let hidden = render_alert_for_config(&sample_finding(), &config);
     assert!(!hidden.plain_text.contains("Dedup Key:"));
 
@@ -136,6 +219,7 @@ fn renders_technical_fields_only_when_enabled() {
 #[test]
 fn renders_normalized_utc_time() {
     let mut config = SentinelConfig::default();
+    config.notifications.language = NotificationLanguage::En;
     config.notifications.time_zone = sentinel_core::NotificationTimeZone::Utc;
     let alert = render_alert_for_config(&sample_finding(), &config);
     let time_line = alert
@@ -156,6 +240,7 @@ fn renders_telegram_html_without_full_html_document() {
     let finding = sample_finding().with_evidence(vec![Evidence::new("path", "<script>")]);
     let mut config = SentinelConfig::default();
     config.agent.display_name = "prod-web-1".to_string();
+    config.notifications.language = NotificationLanguage::En;
     let alert = render_alert_for_config(&finding, &config);
     assert!(alert.telegram_html.contains("<b>VPS Sentinel Alert</b>"));
     assert!(alert.telegram_html.contains("&lt;script&gt;"));

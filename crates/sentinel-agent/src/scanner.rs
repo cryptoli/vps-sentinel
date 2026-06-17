@@ -141,6 +141,8 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
                             failed_blocks = report.failed_blocks,
                             expired_blocks = report.expired_blocks,
                             failed_expirations = report.failed_expirations,
+                            stale_blocks = report.stale_blocks,
+                            failed_state_checks = report.failed_state_checks,
                             skipped_existing_blocks = report.skipped_existing_blocks,
                             "active response completed"
                         );

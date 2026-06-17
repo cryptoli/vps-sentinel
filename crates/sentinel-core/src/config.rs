@@ -328,7 +328,7 @@ fn validate_notifications(config: &NotificationsConfig) -> SentinelResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{EmailTlsMode, SentinelConfig};
+    use super::{EmailTlsMode, NotificationLanguage, SentinelConfig};
 
     #[test]
     fn default_config_round_trips_as_toml() -> Result<(), Box<dyn std::error::Error>> {
@@ -336,6 +336,8 @@ mod tests {
         let decoded: SentinelConfig = toml::from_str(&text)?;
         decoded.validate()?;
         assert_eq!(decoded.storage.r#type, "sqlite");
+        assert_eq!(decoded.notifications.language, NotificationLanguage::ZhCn);
+        assert!(text.contains("language = \"zh_cn\""));
         assert!(!decoded.ssh.auth_log_paths.is_empty());
         Ok(())
     }

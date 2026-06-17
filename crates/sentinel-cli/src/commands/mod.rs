@@ -1,4 +1,5 @@
 pub mod baseline;
+pub mod blocks;
 pub mod config;
 pub mod doctor;
 pub mod events;
@@ -7,3 +8,4 @@ pub mod notify;
 pub mod reload;
 pub mod rules;
 pub mod scan;
+pub mod storage;
