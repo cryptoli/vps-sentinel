@@ -13,7 +13,7 @@ fn suppresses_expected_web_ports() {
 fn classifies_public_listener_addresses_without_loopback_noise() {
     assert!(is_public_addr("0.0.0.0"));
     assert!(is_public_addr("::"));
-    assert!(is_public_addr("47.74.5.215"));
+    assert!(is_public_addr("8.8.8.8"));
     assert!(is_public_addr("2001:4860:4860::8888"));
     assert!(!is_public_addr("127.0.0.1"));
     assert!(!is_public_addr("::1"));
@@ -39,7 +39,7 @@ fn ignores_ipv6_loopback_listener_baseline_drift() {
 fn reports_specific_public_ip_high_risk_listener() {
     let findings = detect_with_default_config(vec![RawEvent::new("network", "listening_socket")
         .with_field("protocol", "tcp")
-        .with_field("local_addr", "47.74.5.215")
+        .with_field("local_addr", "8.8.8.8")
         .with_field("local_port", "6379")
         .with_field("process_name", "redis")
         .with_field("executable", "/usr/bin/redis-server")]);

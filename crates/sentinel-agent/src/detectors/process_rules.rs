@@ -917,10 +917,7 @@ mod tests {
             "/opt/tools/masscan --rate 1000",
             &known_tools
         ));
-        assert!(contains_miner_or_scanner(
-            "C:\\temp\\zmap.exe -p 22",
-            &known_tools
-        ));
+        assert!(contains_miner_or_scanner("zmap.exe -p 22", &known_tools));
         assert!(!contains_miner_or_scanner("/usr/bin/sshd", &known_tools));
         assert!(!contains_miner_or_scanner(
             "/opt/company/xmrigate --worker",

@@ -122,20 +122,10 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     let suppression = suppress_in_scan_duplicates(findings);
     findings = suppression.0;
     suppressed_duplicate_count += suppression.1;
-    if options.persist {
-        if let Some(store) = &store {
-            let suppression = suppress_recent_duplicates(store, findings, &config)?;
-            findings = suppression.0;
-            suppressed_duplicate_count += suppression.1;
-            if suppressed_duplicate_count > 0 {
-                debug!(
-                    suppressed_duplicates = suppressed_duplicate_count,
-                    "duplicate findings suppressed"
-                );
-            }
-        }
-    }
 
+    // Active response must evaluate current evidence before persisted duplicate
+    // suppression can hide an escalated failure/probe count. Block state prevents
+    // repeated firewall writes for already-blocked sources.
     let mut active_response_report = ActiveResponseReport::default();
     if config.active_response.enabled && options.persist {
         if let Some(store) = &store {
@@ -164,6 +154,20 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         }
     } else if config.active_response.enabled && !options.persist {
         warn!("active response skipped because persistence is disabled");
+    }
+
+    if options.persist {
+        if let Some(store) = &store {
+            let suppression = suppress_recent_duplicates(store, findings, &config)?;
+            findings = suppression.0;
+            suppressed_duplicate_count += suppression.1;
+            if suppressed_duplicate_count > 0 {
+                debug!(
+                    suppressed_duplicates = suppressed_duplicate_count,
+                    "duplicate findings suppressed"
+                );
+            }
+        }
     }
 
     if privacy_redaction_enabled(&config) {

@@ -12,6 +12,53 @@ const SIZE_LIMIT_TARGET_PERCENT: u64 = 80;
 const SIZE_LIMIT_MAX_PASSES: usize = 6;
 const MIN_SIZE_PRUNE_BATCH: usize = 1_000;
 
+#[derive(Debug, Clone, Copy)]
+struct SizePrunePolicy {
+    table: &'static str,
+    order_column: &'static str,
+    divisor: usize,
+    min_pass: usize,
+    keep_latest: usize,
+}
+
+const SIZE_PRUNE_POLICIES: &[SizePrunePolicy] = &[
+    SizePrunePolicy {
+        table: "raw_events",
+        order_column: "timestamp",
+        divisor: 4,
+        min_pass: 0,
+        keep_latest: 0,
+    },
+    SizePrunePolicy {
+        table: "notification_logs",
+        order_column: "attempted_at",
+        divisor: 3,
+        min_pass: 0,
+        keep_latest: 0,
+    },
+    SizePrunePolicy {
+        table: "scan_runs",
+        order_column: "finished_at",
+        divisor: 3,
+        min_pass: 0,
+        keep_latest: 0,
+    },
+    SizePrunePolicy {
+        table: "findings",
+        order_column: "timestamp",
+        divisor: 5,
+        min_pass: 1,
+        keep_latest: 0,
+    },
+    SizePrunePolicy {
+        table: "baseline_snapshots",
+        order_column: "created_at",
+        divisor: 2,
+        min_pass: 2,
+        keep_latest: 1,
+    },
+];
+
 /// SQLite-backed local event store.
 pub struct SqliteStore {
     path: PathBuf,
@@ -344,7 +391,10 @@ impl SqliteStore {
             vacuumed = true;
 
             let current_size = self.database_footprint_bytes()?;
-            if current_size <= target_bytes || deleted_this_pass == 0 {
+            if current_size <= target_bytes {
+                break;
+            }
+            if deleted_this_pass == 0 && !has_future_size_prune_candidates(&conn, pass)? {
                 break;
             }
         }
@@ -437,23 +487,56 @@ impl SqliteStore {
 
 fn prune_size_pressure_batch(conn: &Connection, pass: usize) -> SentinelResult<usize> {
     let mut deleted = 0;
-    for (table, column, divisor, min_pass) in [
-        ("raw_events", "timestamp", 4usize, 0usize),
-        ("notification_logs", "attempted_at", 3usize, 0usize),
-        ("scan_runs", "finished_at", 3usize, 0usize),
-        ("findings", "timestamp", 5usize, 1usize),
-    ] {
-        if pass < min_pass {
+    for policy in SIZE_PRUNE_POLICIES {
+        if pass < policy.min_pass {
             continue;
         }
-        let count = table_row_count(conn, table)?;
-        if count == 0 {
+        let batch = policy.prune_batch_size(conn)?;
+        if batch == 0 {
             continue;
         }
-        let batch = (count / divisor).max(MIN_SIZE_PRUNE_BATCH).min(count);
-        deleted += delete_oldest_rows(conn, table, column, batch)?;
+        deleted += if policy.keep_latest > 0 {
+            delete_oldest_rows_keep_latest(
+                conn,
+                policy.table,
+                policy.order_column,
+                batch,
+                policy.keep_latest,
+            )?
+        } else {
+            delete_oldest_rows(conn, policy.table, policy.order_column, batch)?
+        };
     }
     Ok(deleted)
+}
+
+fn has_future_size_prune_candidates(conn: &Connection, pass: usize) -> SentinelResult<bool> {
+    for policy in SIZE_PRUNE_POLICIES
+        .iter()
+        .filter(|policy| policy.min_pass > pass && policy.min_pass < SIZE_LIMIT_MAX_PASSES)
+    {
+        if policy.deletable_count(conn)? > 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+impl SizePrunePolicy {
+    fn prune_batch_size(&self, conn: &Connection) -> SentinelResult<usize> {
+        let deletable = self.deletable_count(conn)?;
+        if deletable == 0 {
+            return Ok(0);
+        }
+        Ok((deletable / self.divisor)
+            .max(MIN_SIZE_PRUNE_BATCH)
+            .min(deletable))
+    }
+
+    fn deletable_count(&self, conn: &Connection) -> SentinelResult<usize> {
+        let count = table_row_count(conn, self.table)?;
+        Ok(count.saturating_sub(self.keep_latest))
+    }
 }
 
 fn table_row_count(conn: &Connection, table: &str) -> SentinelResult<usize> {
@@ -480,6 +563,21 @@ fn delete_oldest_rows(
     );
     conn.execute(&sql, [limit as i64])
         .map_err(|err| SentinelError::Storage(err.to_string()))
+}
+
+fn delete_oldest_rows_keep_latest(
+    conn: &Connection,
+    table: &str,
+    order_column: &str,
+    limit: usize,
+    keep_latest: usize,
+) -> SentinelResult<usize> {
+    let count = table_row_count(conn, table)?;
+    let max_delete = count.saturating_sub(keep_latest).min(limit);
+    if max_delete == 0 {
+        return Ok(0);
+    }
+    delete_oldest_rows(conn, table, order_column, max_delete)
 }
 
 fn checkpoint_and_vacuum(conn: &Connection) -> SentinelResult<()> {
@@ -597,6 +695,7 @@ fn is_volatile_raw_event_field(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::SqliteStore;
+    use crate::baseline::{snapshot::FileBaseline, BaselineSnapshot};
     use chrono::Utc;
     use sentinel_core::{Category, Finding, RawEvent, Severity};
     use serde::{Deserialize, Serialize};
@@ -697,6 +796,45 @@ mod tests {
         assert!(report.deleted_rows > 0);
         assert!(after < before);
         assert!(report.size_after_bytes <= report.size_before_bytes);
+        Ok(())
+    }
+
+    #[test]
+    fn enforce_size_limit_keeps_latest_baseline_snapshot() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        for index in 0..3 {
+            let mut snapshot = BaselineSnapshot {
+                id: format!("baseline-{index}"),
+                created_at: Utc::now() - chrono::Duration::days(3 - index),
+                ..BaselineSnapshot::default()
+            };
+            snapshot.files.insert(
+                format!("sentinel-test-{index}"),
+                FileBaseline {
+                    hash: "x".repeat(700_000),
+                    size: "700000".to_string(),
+                    executable: "false".to_string(),
+                    is_web_path: "false".to_string(),
+                },
+            );
+            store.save_baseline_snapshot(&snapshot)?;
+        }
+
+        let report = store.enforce_size_limit(1)?.ok_or("expected cleanup")?;
+        let latest = store
+            .latest_baseline_snapshot()?
+            .ok_or("expected latest baseline")?;
+        let count: i64 = store.connection()?.query_row(
+            "SELECT COUNT(*) FROM baseline_snapshots",
+            [],
+            |row| row.get(0),
+        )?;
+
+        assert!(report.deleted_rows > 0);
+        assert_eq!(latest.id, "baseline-2");
+        assert_eq!(count, 1);
         Ok(())
     }
 

@@ -185,7 +185,7 @@ The Docker containers used in CI are build and compatibility test environments o
 | Network listeners | Parses `/proc/net/tcp*` and `/proc/net/udp*`, resolves owning processes through `/proc/<pid>/fd`, compares listener owners with baseline, attaches process/firewall context, and prioritizes suspicious owner behavior over generic port exposure. | Expected 22/80/443 ports reduce generic noise but still produce findings when the owning process changes or looks suspicious; high-risk ports keep their service and firewall profile as evidence. |
 | Notifications | Renders one `Finding` model through channel-specific templates: Telegram HTML, Email HTML/plain text, Markdown-aware channels, or plain text. | Messages include the configured VPS name, normalized time, localized labels, evidence, impact, and recommendations. |
 | Noise control | Applies scan-level deduplication, persisted dedup windows, state reminder intervals, quiet hours, and hourly notification budgets. | Reduces repeat messages while keeping high-value alerts visible. |
-| Active response | Evaluates persisted findings after deduplication and before notification delivery; only public IPs outside `[allowlist].ips` can be blocked. Web blocks require successful sensitive responses, repeated exploit-family probes, or high-volume probe/error bursts; SSH blocks require a stricter failed-login threshold than the alert rule. | Lets operators turn noisy, obvious scanners into temporary firewall drops without making every alert destructive. |
+| Active response | Evaluates current findings after scan-level coalescing/deduplication and before persisted notification deduplication; only public IPs outside `[allowlist].ips` can be blocked. Web blocks require successful sensitive responses, repeated exploit-family probes, or high-volume probe/error bursts; SSH blocks require a stricter failed-login threshold than the alert rule. | Lets operators turn noisy, obvious scanners into temporary firewall drops without making every alert destructive. |
 
 ## Quick Install
 
@@ -541,7 +541,7 @@ web_exploit_block_threshold = 5
 ssh_failed_login_block_threshold = 20
 ```
 
-Active response is disabled by default because it changes local firewall policy. When enabled, the scanner applies it after finding deduplication and before notification delivery, so quiet hours and notification rate limits do not prevent blocking. The backend uses nftables when available and falls back to iptables/ip6tables. Blocks are temporary: nftables uses set timeouts and vps-sentinel also stores block state in SQLite so expired entries can be removed on later scans. Only public routable source IPs are eligible, and `[allowlist].ips` always wins.
+Active response is disabled by default because it changes local firewall policy. When enabled, the scanner applies it after scan-level coalescing/deduplication but before persisted notification deduplication, so an escalating source can still be blocked even when repeated notifications are suppressed. Quiet hours and notification rate limits do not prevent blocking. The backend uses nftables when available and falls back to iptables/ip6tables. Blocks are temporary: nftables uses set timeouts and vps-sentinel also stores block state in SQLite so expired entries can be removed on later scans. Only public routable source IPs are eligible, and `[allowlist].ips` always wins.
 
 Noise control:
 
