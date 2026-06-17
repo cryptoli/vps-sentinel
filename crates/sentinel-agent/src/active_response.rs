@@ -442,8 +442,21 @@ fn is_public_ipv4(ip: Ipv4Addr) -> bool {
         || ip.is_link_local()
         || ip.is_broadcast()
         || ip.is_multicast()
+        || is_this_network_ipv4(ip)
+        || is_protocol_assignment_ipv4(ip)
         || is_documentation_ipv4(ip)
+        || is_benchmark_ipv4(ip)
+        || is_reserved_ipv4(ip)
         || is_shared_address_space_ipv4(ip))
+}
+
+fn is_this_network_ipv4(ip: Ipv4Addr) -> bool {
+    ip.octets()[0] == 0
+}
+
+fn is_protocol_assignment_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 192 && octets[1] == 0 && octets[2] == 0
 }
 
 fn is_documentation_ipv4(ip: Ipv4Addr) -> bool {
@@ -454,9 +467,18 @@ fn is_documentation_ipv4(ip: Ipv4Addr) -> bool {
     )
 }
 
+fn is_benchmark_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 198 && matches!(octets[1], 18 | 19)
+}
+
 fn is_shared_address_space_ipv4(ip: Ipv4Addr) -> bool {
     let octets = ip.octets();
     octets[0] == 100 && (64..=127).contains(&octets[1])
+}
+
+fn is_reserved_ipv4(ip: Ipv4Addr) -> bool {
+    ip.octets()[0] >= 240
 }
 
 fn is_public_ipv6(ip: Ipv6Addr) -> bool {
@@ -950,7 +972,12 @@ mod tests {
         assert!(is_public_remote_ip("8.8.8.8".parse().unwrap()));
         assert!(!is_public_remote_ip("127.0.0.1".parse().unwrap()));
         assert!(!is_public_remote_ip("172.16.0.1".parse().unwrap()));
+        assert!(!is_public_remote_ip("0.1.2.3".parse().unwrap()));
+        assert!(!is_public_remote_ip("100.64.0.1".parse().unwrap()));
+        assert!(!is_public_remote_ip("192.0.0.9".parse().unwrap()));
         assert!(!is_public_remote_ip("192.0.2.1".parse().unwrap()));
+        assert!(!is_public_remote_ip("198.18.0.1".parse().unwrap()));
+        assert!(!is_public_remote_ip("240.0.0.1".parse().unwrap()));
         assert!(!is_public_remote_ip("::1".parse().unwrap()));
         assert!(!is_public_remote_ip("fc00::1".parse().unwrap()));
         assert!(!is_public_remote_ip("2001:db8::1".parse().unwrap()));

@@ -56,6 +56,7 @@ jobs:
           ln -s vps-sentinel "${package_dir}/vs"
           cp config/config.example.toml "${package_dir}/config.example.toml"
           cp install.sh update.sh stop.sh "${package_dir}/"
+          cp rust-toolchain.toml "${package_dir}/"
           cp README.md README.zh-CN.md LICENSE CHANGELOG.md SECURITY.md "${package_dir}/"
           cp packaging/systemd/vps-sentinel.service "${package_dir}/packaging/systemd/"
           chmod 0755 "${package_dir}/vps-sentinel" "${package_dir}"/*.sh
@@ -67,6 +68,7 @@ jobs:
           grep -qx "install.sh" "dist/vps-sentinel-${target}.manifest"
           grep -qx "update.sh" "dist/vps-sentinel-${target}.manifest"
           grep -qx "stop.sh" "dist/vps-sentinel-${target}.manifest"
+          grep -qx "rust-toolchain.toml" "dist/vps-sentinel-${target}.manifest"
           grep -qx "packaging/systemd/vps-sentinel.service" "dist/vps-sentinel-${target}.manifest"
           sha256sum "dist/vps-sentinel-${target}.tar.gz" > "dist/vps-sentinel-${target}.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
