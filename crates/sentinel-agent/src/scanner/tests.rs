@@ -1,10 +1,11 @@
 use super::{
-    duplicate_suppression_window_seconds, quiet_hours_allowed_findings, redact_findings,
-    suppress_in_scan_duplicates, suppress_recent_duplicates,
+    duplicate_suppression_window_seconds, enrich_process_start_drift, quiet_hours_allowed_findings,
+    redact_findings, save_process_start_state, suppress_in_scan_duplicates,
+    suppress_recent_duplicates,
 };
 use crate::storage::SqliteStore;
 use chrono::{Duration, Utc};
-use sentinel_core::{Category, Evidence, Finding, SentinelConfig, Severity};
+use sentinel_core::{Category, Evidence, Finding, RawEvent, SentinelConfig, Severity};
 
 #[test]
 fn redacts_finding_subject_and_evidence() {
@@ -187,4 +188,51 @@ fn quiet_hours_keep_high_value_findings_by_default() {
 
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].rule_id, "SSH-005");
+}
+
+#[test]
+fn process_start_state_marks_same_identity_start_drift() -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+    let first = process_event("/usr/local/bin/.sysd", ".sysd", "100");
+
+    save_process_start_state(std::slice::from_ref(&first), &store)?;
+
+    let mut second = vec![process_event("/usr/local/bin/.sysd", ".sysd", "200")];
+    enrich_process_start_drift(&mut second, &store)?;
+
+    assert_eq!(second[0].field("process_start_changed"), Some("true"));
+    assert_eq!(second[0].field("process_start_drift"), Some("changed"));
+    assert_eq!(second[0].field("previous_process_start_ticks"), Some("100"));
+    assert_eq!(second[0].field("current_process_start_ticks"), Some("200"));
+    Ok(())
+}
+
+#[test]
+fn process_start_state_ignores_missing_or_changed_identity(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+    let first = process_event("/usr/local/bin/worker", "worker", "100");
+
+    save_process_start_state(std::slice::from_ref(&first), &store)?;
+
+    let mut missing_start = vec![
+        RawEvent::new("process", "process_snapshot")
+            .with_field("exe_path", "/usr/local/bin/worker")
+            .with_field("name", "worker"),
+        process_event("/usr/local/bin/other", "worker", "200"),
+    ];
+    enrich_process_start_drift(&mut missing_start, &store)?;
+
+    assert_eq!(missing_start[0].field("process_start_changed"), None);
+    assert_eq!(missing_start[1].field("process_start_changed"), None);
+    Ok(())
+}
+
+fn process_event(exe_path: &str, name: &str, start_ticks: &str) -> RawEvent {
+    RawEvent::new("process", "process_snapshot")
+        .with_field("exe_path", exe_path)
+        .with_field("name", name)
+        .with_field("process_start_ticks", start_ticks)
 }

@@ -14,6 +14,7 @@ SYSTEMD_TEMPLATE="${SYSTEMD_TEMPLATE:-packaging/systemd/vps-sentinel.service}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-auto}"
 RESTART_SERVICE="${RESTART_SERVICE:-auto}"
 VALIDATE_CONFIG="${VALIDATE_CONFIG:-yes}"
+MIGRATE_CONFIG="${MIGRATE_CONFIG:-yes}"
 REFRESH_BASELINE="${REFRESH_BASELINE:-no}"
 SYSTEMD_UNIT_INSTALLED=0
 
@@ -152,6 +153,23 @@ refresh_baseline() {
   esac
 }
 
+yes_enabled() {
+  case "$1" in
+    yes|true|1) return 0 ;;
+    no|false|0) return 1 ;;
+    *)
+      echo "invalid boolean value: $1" >&2
+      exit 1
+      ;;
+  esac
+}
+
+migrate_config() {
+  if yes_enabled "$MIGRATE_CONFIG"; then
+    "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" config migrate
+  fi
+}
+
 if [ -d "$WORK_DIR/.git" ]; then
   git -C "$WORK_DIR" fetch origin "$BRANCH"
   git -C "$WORK_DIR" checkout "$BRANCH"
@@ -165,16 +183,17 @@ cd "$WORK_DIR"
 cargo build --release --locked
 install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
 install -m 0755 target/release/vps-sentinel "$PREFIX/bin/vps-sentinel"
-if [ -f reload.sh ]; then
-  install -m 0755 reload.sh "$PREFIX/bin/vps-sentinel-reload"
-fi
-if [ -f stop.sh ]; then
-  install -m 0755 stop.sh "$PREFIX/bin/vps-sentinel-stop"
-fi
+for script in reload stop update install; do
+  if [ -f "${script}.sh" ]; then
+    install -m 0755 "${script}.sh" "$PREFIX/bin/vps-sentinel-${script}"
+  fi
+done
 
 if [ ! -f "$CONFIG_DIR/config.toml" ]; then
   install -m 0600 config/config.example.toml "$CONFIG_DIR/config.toml"
 fi
+
+migrate_config
 
 case "$VALIDATE_CONFIG" in
   yes|true|1)

@@ -14,10 +14,12 @@ SYSTEMD_TEMPLATE="${SYSTEMD_TEMPLATE:-packaging/systemd/vps-sentinel.service}"
 INSTALL_DEPS="${INSTALL_DEPS:-yes}"
 INSTALL_METHOD="${INSTALL_METHOD:-auto}"
 RELEASE_VERSION="${RELEASE_VERSION:-latest}"
+RELEASE_ARTIFACT_URL="${RELEASE_ARTIFACT_URL:-}"
 TARGET_TRIPLE="${TARGET_TRIPLE:-}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-auto}"
 ENABLE_SERVICE="${ENABLE_SERVICE:-yes}"
 RUN_DOCTOR="${RUN_DOCTOR:-yes}"
+MIGRATE_CONFIG="${MIGRATE_CONFIG:-yes}"
 BOOTSTRAP_BASELINE="${BOOTSTRAP_BASELINE:-yes}"
 RUN_FIRST_SCAN="${RUN_FIRST_SCAN:-yes}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
@@ -239,6 +241,10 @@ detect_target_triple() {
 }
 
 release_url() {
+  if [ -n "$RELEASE_ARTIFACT_URL" ]; then
+    printf '%s\n' "$RELEASE_ARTIFACT_URL"
+    return
+  fi
   triple="$(detect_target_triple)"
   artifact="vps-sentinel-${triple}.tar.gz"
   if [ "$RELEASE_VERSION" = "latest" ]; then
@@ -299,12 +305,11 @@ build_and_install() {
   cargo build --release --locked
   install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
   install -m 0755 target/release/vps-sentinel "$PREFIX/bin/vps-sentinel"
-  if [ -f reload.sh ]; then
-    install -m 0755 reload.sh "$PREFIX/bin/vps-sentinel-reload"
-  fi
-  if [ -f stop.sh ]; then
-    install -m 0755 stop.sh "$PREFIX/bin/vps-sentinel-stop"
-  fi
+  for script in reload stop update install; do
+    if [ -f "${script}.sh" ]; then
+      install -m 0755 "${script}.sh" "$PREFIX/bin/vps-sentinel-${script}"
+    fi
+  done
 
   if [ ! -f "$CONFIG_DIR/config.toml" ]; then
     install -m 0600 config/config.example.toml "$CONFIG_DIR/config.toml"
@@ -332,8 +337,16 @@ yes_enabled() {
   esac
 }
 
+maybe_migrate_config() {
+  config_path="$CONFIG_DIR/config.toml"
+  if yes_enabled "$MIGRATE_CONFIG"; then
+    "$PREFIX/bin/vps-sentinel" --config "$config_path" config migrate
+  fi
+}
+
 post_install_setup() {
   config_path="$CONFIG_DIR/config.toml"
+  maybe_migrate_config
   "$PREFIX/bin/vps-sentinel" --config "$config_path" config validate
   if yes_enabled "$RUN_DOCTOR"; then
     "$PREFIX/bin/vps-sentinel" --config "$config_path" doctor

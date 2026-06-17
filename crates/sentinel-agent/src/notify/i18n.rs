@@ -79,12 +79,15 @@ pub fn severity_label(severity: Severity, language: NotificationLanguage) -> &'s
 pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
     let text = match language {
         NotificationLanguage::En => match key {
+            "protocol" => "protocol",
             "local_addr" => "local address",
             "local_port" => "local port",
             "port" => "port",
             "process_name" => "process",
             "previous_process_name" => "previous process",
             "previous_executable" => "previous executable",
+            "pid" => "process ID",
+            "ppid" => "parent process ID",
             "source_ip" | "ip" => "source IP",
             "cmdline" => "command line",
             "container_context" => "container context",
@@ -109,6 +112,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "package_owner" => "package owner",
             "parent_name" => "parent process",
             "process_age_seconds" => "process age seconds",
+            "process_start_drift" => "process start drift",
             "public_outbound_count" => "public outbound connections",
             "risk_score" => "risk score",
             "risk_reasons" => "risk reasons",
@@ -117,6 +121,12 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "signals" => "signals",
             "systemd_execstart" => "systemd ExecStart",
             "systemd_unit" => "systemd unit",
+            "path" => "path",
+            "user" => "user",
+            "method" => "method",
+            "status" => "status",
+            "log_source" => "log source",
+            "failure_count" => "failure count",
             other => other,
         },
         NotificationLanguage::ZhCn => match key {
@@ -128,6 +138,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "previous_process_name" => "原进程",
             "previous_executable" => "原可执行文件",
             "pid" => "进程 ID",
+            "ppid" => "父进程 ID",
             "source_ip" | "ip" => "来源 IP",
             "cmdline" => "命令行",
             "container_context" => "容器上下文",
@@ -151,7 +162,8 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "package_activity_sources" => "软件包日志",
             "package_owner" => "软件包归属",
             "parent_name" => "父进程",
-            "process_age_seconds" => "进程年龄秒数",
+            "process_age_seconds" => "进程运行秒数",
+            "process_start_drift" => "进程启动变化",
             "public_outbound_count" => "公网出站连接数",
             "risk_score" => "风险评分",
             "risk_reasons" => "风险原因",
@@ -170,4 +182,16 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
         },
     };
     text.to_string()
+}
+
+pub fn evidence_value_label(key: &str, value: &str, language: NotificationLanguage) -> String {
+    match (key, value, language) {
+        ("process_start_drift", "changed", NotificationLanguage::En) => {
+            "changed since previous scan".to_string()
+        }
+        ("process_start_drift", "changed", NotificationLanguage::ZhCn) => {
+            "较上一轮扫描发生变化".to_string()
+        }
+        _ => value.to_string(),
+    }
 }

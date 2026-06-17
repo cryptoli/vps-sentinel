@@ -2,6 +2,7 @@ use crate::baseline::BaselineSnapshot;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use sentinel_core::{Finding, RawEvent, SentinelError, SentinelResult};
+use serde::{de::DeserializeOwned, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -187,6 +188,46 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub fn load_rule_state<T>(&self, rule_id: &str) -> SentinelResult<Option<T>>
+    where
+        T: DeserializeOwned,
+    {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare("SELECT state_json FROM rule_states WHERE rule_id = ?1")
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        let mut rows = stmt
+            .query([rule_id])
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        if let Some(row) = rows
+            .next()
+            .map_err(|err| SentinelError::Storage(err.to_string()))?
+        {
+            let payload: String = row
+                .get(0)
+                .map_err(|err| SentinelError::Storage(err.to_string()))?;
+            let state = serde_json::from_str(&payload)
+                .map_err(|err| SentinelError::Storage(err.to_string()))?;
+            return Ok(Some(state));
+        }
+        Ok(None)
+    }
+
+    pub fn save_rule_state<T>(&self, rule_id: &str, state: &T) -> SentinelResult<()>
+    where
+        T: Serialize,
+    {
+        let conn = self.connection()?;
+        let payload =
+            serde_json::to_string(state).map_err(|err| SentinelError::Storage(err.to_string()))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO rule_states (rule_id, state_json) VALUES (?1, ?2)",
+            params![rule_id, payload],
+        )
+        .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        Ok(())
+    }
+
     pub fn record_scan_run(
         &self,
         raw_count: usize,
@@ -344,6 +385,7 @@ mod tests {
     use super::SqliteStore;
     use chrono::Utc;
     use sentinel_core::{Category, Finding, Severity};
+    use serde::{Deserialize, Serialize};
 
     #[test]
     fn stores_and_reads_findings() -> Result<(), Box<dyn std::error::Error>> {
@@ -376,6 +418,32 @@ mod tests {
         assert_eq!(
             store.notification_attempt_count_since(Utc::now() - chrono::Duration::minutes(1))?,
             1
+        );
+        Ok(())
+    }
+
+    #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+    struct TestRuleState {
+        value: String,
+        count: usize,
+    }
+
+    #[test]
+    fn stores_and_reads_rule_state() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let state = TestRuleState {
+            value: "process-start".to_string(),
+            count: 2,
+        };
+
+        store.save_rule_state("process_start_times", &state)?;
+        let loaded = store.load_rule_state::<TestRuleState>("process_start_times")?;
+
+        assert_eq!(loaded, Some(state));
+        assert_eq!(
+            store.load_rule_state::<TestRuleState>("missing-rule")?,
+            None
         );
         Ok(())
     }

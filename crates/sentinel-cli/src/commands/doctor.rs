@@ -1,7 +1,10 @@
 use anyhow::Result;
+use sentinel_agent::utils::command::command_output;
 use sentinel_core::SentinelConfig;
 use std::fs;
-use std::process::Command;
+use std::time::Duration;
+
+const JOURNALCTL_DOCTOR_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub fn run_doctor(config: SentinelConfig) -> Result<()> {
     println!("vps-sentinel doctor");
@@ -33,8 +36,9 @@ pub fn run_doctor(config: SentinelConfig) -> Result<()> {
 }
 
 fn journalctl_ssh_available() -> bool {
-    Command::new("journalctl")
-        .args([
+    command_output(
+        "journalctl",
+        &[
             "-u",
             "ssh.service",
             "-u",
@@ -42,10 +46,11 @@ fn journalctl_ssh_available() -> bool {
             "-n",
             "1",
             "--no-pager",
-        ])
-        .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        ],
+        JOURNALCTL_DOCTOR_TIMEOUT,
+    )
+    .map(|output| output.status_success)
+    .unwrap_or(false)
 }
 
 fn running_as_root() -> bool {

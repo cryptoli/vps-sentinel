@@ -6,7 +6,7 @@ use crate::detectors::{
     evidence, package_activity_context, path_is_allowlisted, string_field, DetectContext, Detector,
 };
 use crate::rules::model::RuleMetadata;
-use crate::utils::package::package_owner_for_path;
+use crate::utils::package::PackageOwnerCache;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -64,6 +64,7 @@ impl Detector for ProcessDetector {
         let mut findings = Vec::new();
         let outbound_by_pid = outbound_context_by_pid(events);
         let package_activity = package_activity_context(events);
+        let mut package_owner_cache = PackageOwnerCache::default();
         for event in events
             .iter()
             .filter(|event| event.kind == "process_snapshot")
@@ -93,23 +94,42 @@ impl Detector for ProcessDetector {
             }
             if let Some(assessment) = deleted_executable_assessment(event, ctx) {
                 if assessment.is_suspicious(ctx.config.process.deleted_executable_min_score) {
-                    findings.push(deleted_executable(event, ctx, assessment));
+                    findings.push(deleted_executable(
+                        event,
+                        ctx,
+                        assessment,
+                        &mut package_owner_cache,
+                    ));
                 }
             }
             if process_from_suspicious_dir(&exe_path, ctx) {
-                findings.push(temp_process(event, ctx));
+                findings.push(temp_process(event, ctx, &mut package_owner_cache));
             }
             if network_execution_assessment_from_event(event).is_suspicious() {
-                findings.push(network_execution_bridge(event, ctx));
+                findings.push(network_execution_bridge(
+                    event,
+                    ctx,
+                    &mut package_owner_cache,
+                ));
             }
             if let Some(tool_match) =
                 known_tool_match(event, &ctx.config.process.known_bad_tool_names)
             {
-                findings.push(miner_or_scanner(event, ctx, tool_match));
+                findings.push(miner_or_scanner(
+                    event,
+                    ctx,
+                    tool_match,
+                    &mut package_owner_cache,
+                ));
             }
             if let Some(assessment) = behavior_cluster_assessment(event, ctx) {
                 if assessment.is_suspicious(ctx.config.process.behavior_min_score) {
-                    findings.push(process_behavior_cluster(event, ctx, assessment));
+                    findings.push(process_behavior_cluster(
+                        event,
+                        ctx,
+                        assessment,
+                        &mut package_owner_cache,
+                    ));
                 }
             }
         }
@@ -117,7 +137,11 @@ impl Detector for ProcessDetector {
     }
 }
 
-fn temp_process(event: &RawEvent, ctx: &DetectContext) -> Finding {
+fn temp_process(
+    event: &RawEvent,
+    ctx: &DetectContext,
+    package_cache: &mut PackageOwnerCache,
+) -> Finding {
     let subject = string_field(event, "exe_path");
     Finding::new(
         &ctx.host_id,
@@ -128,7 +152,7 @@ fn temp_process(event: &RawEvent, ctx: &DetectContext) -> Finding {
         "PROC-001",
         subject,
     )
-    .with_evidence_deduped_by(process_evidence(event), &["exe_path"])
+    .with_evidence_deduped_by(process_evidence(event, package_cache), &["exe_path"])
     .with_recommendations(vec![
         "Inspect the executable hash, parent process, and file owner.".to_string(),
         "Preserve evidence before stopping or removing the process.".to_string(),
@@ -139,6 +163,7 @@ fn deleted_executable(
     event: &RawEvent,
     ctx: &DetectContext,
     assessment: RiskAssessment,
+    package_cache: &mut PackageOwnerCache,
 ) -> Finding {
     Finding::new(
         &ctx.host_id,
@@ -151,7 +176,7 @@ fn deleted_executable(
     )
     .with_evidence_deduped_by(
         {
-            let mut items = process_evidence(event);
+            let mut items = process_evidence(event, package_cache);
             items.push(evidence("risk_score", assessment.score.to_string()));
             items.push(evidence("risk_reasons", assessment.reason_text()));
             items.push(evidence("risk_features", assessment.feature_names()));
@@ -232,7 +257,11 @@ fn deleted_executable_assessment(event: &RawEvent, ctx: &DetectContext) -> Optio
     Some(assessment)
 }
 
-fn network_execution_bridge(event: &RawEvent, ctx: &DetectContext) -> Finding {
+fn network_execution_bridge(
+    event: &RawEvent,
+    ctx: &DetectContext,
+    package_cache: &mut PackageOwnerCache,
+) -> Finding {
     let assessment = network_execution_assessment_from_event(event);
     Finding::new(
         &ctx.host_id,
@@ -244,7 +273,7 @@ fn network_execution_bridge(event: &RawEvent, ctx: &DetectContext) -> Finding {
         process_subject(event),
     )
     .with_evidence_deduped_by(
-        process_evidence_with_assessment(event, &assessment),
+        process_evidence_with_assessment(event, &assessment, package_cache),
         PROCESS_STABLE_DEDUP_KEYS,
     )
     .with_impact(vec![
@@ -257,7 +286,12 @@ fn network_execution_bridge(event: &RawEvent, ctx: &DetectContext) -> Finding {
     ])
 }
 
-fn miner_or_scanner(event: &RawEvent, ctx: &DetectContext, tool_match: KnownToolMatch) -> Finding {
+fn miner_or_scanner(
+    event: &RawEvent,
+    ctx: &DetectContext,
+    tool_match: KnownToolMatch,
+    package_cache: &mut PackageOwnerCache,
+) -> Finding {
     let high_cpu = high_cpu_signal(event, ctx);
     Finding::new(
         &ctx.host_id,
@@ -278,7 +312,7 @@ fn miner_or_scanner(event: &RawEvent, ctx: &DetectContext, tool_match: KnownTool
     )
     .with_evidence_deduped_by(
         {
-            let mut items = process_evidence(event);
+            let mut items = process_evidence(event, package_cache);
             items.push(evidence("matched_tool", tool_match.tool));
             items.push(evidence("match_source", tool_match.source));
             items.push(evidence("matched_value", tool_match.value));
@@ -315,6 +349,7 @@ fn process_behavior_cluster(
     event: &RawEvent,
     ctx: &DetectContext,
     assessment: BehaviorAssessment,
+    package_cache: &mut PackageOwnerCache,
 ) -> Finding {
     Finding::new(
         &ctx.host_id,
@@ -327,7 +362,7 @@ fn process_behavior_cluster(
     )
     .with_evidence_deduped_by(
         {
-            let mut items = process_evidence(event);
+            let mut items = process_evidence(event, package_cache);
             items.push(evidence("cwd", string_field(event, "cwd")));
             items.push(evidence("euid", string_field(event, "euid")));
             items.push(evidence(
@@ -352,7 +387,10 @@ fn process_behavior_cluster(
     ])
 }
 
-fn process_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
+fn process_evidence(
+    event: &RawEvent,
+    package_cache: &mut PackageOwnerCache,
+) -> Vec<sentinel_core::Evidence> {
     let mut items = vec![
         evidence("pid", string_field(event, "pid")),
         evidence("ppid", string_field(event, "ppid")),
@@ -371,11 +409,12 @@ fn process_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
     push_evidence_if_present(&mut items, event, "cpu_percent");
     push_evidence_if_present(&mut items, event, "cpu_total_seconds");
     push_evidence_if_present(&mut items, event, "process_age_seconds");
+    push_evidence_if_present(&mut items, event, "process_start_drift");
     push_evidence_if_present(&mut items, event, "outbound_connection_count");
     push_evidence_if_present(&mut items, event, "public_outbound_count");
     push_evidence_if_present(&mut items, event, "outbound_remote_ports");
     push_evidence_if_present(&mut items, event, "package_activity_recent");
-    push_package_owner_if_available(&mut items, event);
+    push_package_owner_if_available(&mut items, event, package_cache);
     items
 }
 
@@ -498,6 +537,13 @@ fn behavior_cluster_assessment(
             "process has established outbound connections to public addresses",
         );
     }
+    if string_field(event, "process_start_changed") == "true" && assessment.score >= 40 {
+        assessment.add_signal(
+            10,
+            "process_start_drift",
+            "same process identity has a different procfs start time than the previous scan",
+        );
+    }
     if !string_field(event, "container_context").is_empty() && assessment.score >= 40 {
         assessment.add_signal(
             10,
@@ -530,8 +576,9 @@ fn path_in_web_roots(path: &str, ctx: &DetectContext) -> bool {
 fn process_evidence_with_assessment(
     event: &RawEvent,
     assessment: &CommandAssessment,
+    package_cache: &mut PackageOwnerCache,
 ) -> Vec<sentinel_core::Evidence> {
-    let mut items = process_evidence(event);
+    let mut items = process_evidence(event, package_cache);
     items.push(evidence("risk_score", assessment.score.to_string()));
     items.push(evidence("risk_reasons", assessment.reason_text()));
     items.push(evidence("risk_features", assessment.feature_names()));
@@ -745,9 +792,13 @@ fn push_evidence_if_present(items: &mut Vec<sentinel_core::Evidence>, event: &Ra
     }
 }
 
-fn push_package_owner_if_available(items: &mut Vec<sentinel_core::Evidence>, event: &RawEvent) {
+fn push_package_owner_if_available(
+    items: &mut Vec<sentinel_core::Evidence>,
+    event: &RawEvent,
+    package_cache: &mut PackageOwnerCache,
+) {
     let path = string_field(event, "exe_path");
-    if let Some(owner) = package_owner_for_path(&path) {
+    if let Some(owner) = package_cache.owner_for_path(&path) {
         items.push(evidence("package_owner", owner));
     }
 }
@@ -952,6 +1003,32 @@ mod tests {
             assessment.is_suspicious(70)
                 && assessment.has_feature("sustained_high_cpu")
                 && assessment.has_feature("hidden_executable_name")
+        }));
+    }
+
+    #[test]
+    fn process_start_drift_is_only_a_supporting_behavior_signal() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let normal_restart = process_event("/usr/local/bin/app", "app", "app --serve")
+            .with_field("process_start_changed", "true")
+            .with_field("previous_process_start_ticks", "100")
+            .with_field("current_process_start_ticks", "200");
+
+        assert!(behavior_cluster_assessment(&normal_restart, &ctx).is_none());
+
+        let suspicious_restart =
+            process_event("/var/www/html/.cache/kworker", "kworker", "kworker --serve")
+                .with_field("cwd", "/")
+                .with_field("socket_fd_count", "1")
+                .with_field("process_start_changed", "true")
+                .with_field("previous_process_start_ticks", "100")
+                .with_field("current_process_start_ticks", "200");
+
+        let assessment = behavior_cluster_assessment(&suspicious_restart, &ctx);
+
+        assert!(assessment.is_some_and(|assessment| {
+            assessment.has_feature("process_start_drift")
+                && assessment.has_feature("kernel_thread_masquerade")
         }));
     }
 

@@ -1,5 +1,5 @@
 use super::content::{localized_finding, LocalizedFinding};
-use super::i18n::{catalog, evidence_label, severity_label, MessageCatalog};
+use super::i18n::{catalog, evidence_label, evidence_value_label, severity_label, MessageCatalog};
 use chrono::Local;
 use sentinel_core::{Finding, NotificationLanguage, NotificationTimeZone, SentinelConfig};
 use std::borrow::Cow;
@@ -172,7 +172,7 @@ pub(super) fn alert_lists(
                     format!(
                         "{}: {}",
                         evidence_label(&item.key, options.language),
-                        item.value
+                        evidence_value_label(&item.key, &item.value, options.language)
                     )
                 })
                 .collect(),

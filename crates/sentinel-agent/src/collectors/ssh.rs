@@ -1,11 +1,12 @@
 use crate::collectors::{CollectContext, Collector};
+use crate::utils::command::command_output;
 use crate::utils::fs::{path_string, read_tail};
 use async_trait::async_trait;
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone};
 use sentinel_core::{RawEvent, SentinelResult};
-use std::process::Command;
 
 const MAX_AUTH_LOG_BYTES: u64 = 1024 * 1024;
+const JOURNALCTL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub struct SshLogCollector;
 
@@ -48,8 +49,9 @@ impl Collector for SshLogCollector {
 
 fn collect_journalctl_ssh(now: DateTime<Local>, lookback: Duration) -> Vec<RawEvent> {
     let since_arg = format!("@{}", (now - lookback).timestamp());
-    let Ok(output) = Command::new("journalctl")
-        .args([
+    let Some(output) = command_output(
+        "journalctl",
+        &[
             "-u",
             "ssh.service",
             "-u",
@@ -59,15 +61,16 @@ fn collect_journalctl_ssh(now: DateTime<Local>, lookback: Duration) -> Vec<RawEv
             "--no-pager",
             "-o",
             "short-iso",
-        ])
-        .output()
-    else {
+        ],
+        JOURNALCTL_TIMEOUT,
+    ) else {
         return Vec::new();
     };
-    if !output.status.success() {
+    if !output.status_success {
         return Vec::new();
     }
-    String::from_utf8_lossy(&output.stdout)
+    output
+        .stdout
         .lines()
         .filter_map(|line| parse_ssh_line(line, "journalctl:ssh"))
         .collect()

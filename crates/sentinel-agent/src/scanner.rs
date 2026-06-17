@@ -9,10 +9,13 @@ use chrono::{Duration, Local, Timelike, Utc};
 use sentinel_core::{
     Category, Evidence, Finding, MinuteWindow, RawEvent, SentinelConfig, SentinelResult,
 };
-use std::collections::BTreeSet;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, warn};
+
+const PROCESS_START_STATE_RULE_ID: &str = "process_start_times";
 
 /// Controls side effects performed by one scan.
 #[derive(Debug, Clone)]
@@ -97,6 +100,11 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     let raw_event_count = raw_events.len();
     let mut detection_events = raw_events;
     detection_events.extend(diff_events);
+    if options.persist {
+        if let Some(store) = &store {
+            enrich_process_start_drift(&mut detection_events, store)?;
+        }
+    }
 
     let detect_context = DetectContext::new(Arc::clone(&config));
     let mut findings = Vec::new();
@@ -135,6 +143,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             } else {
                 store.save_raw_events(&detection_events)?;
             }
+            save_process_start_state(&detection_events, store)?;
             store.save_findings(&findings)?;
             store.record_scan_run(detection_events.len(), findings.len(), "ok")?;
         }
@@ -415,6 +424,123 @@ fn is_state_finding(finding: &Finding) -> bool {
             | Category::Rootkit
             | Category::User
     ) || finding.rule_id == "SSH-005"
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct ProcessStartState {
+    processes: BTreeMap<String, ProcessStartRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ProcessStartRecord {
+    start_ticks: String,
+    name: String,
+    exe_path: String,
+    exe_hash_blake3: String,
+    systemd_unit: String,
+}
+
+fn enrich_process_start_drift(events: &mut [RawEvent], store: &SqliteStore) -> SentinelResult<()> {
+    let Some(previous) = store.load_rule_state::<ProcessStartState>(PROCESS_START_STATE_RULE_ID)?
+    else {
+        return Ok(());
+    };
+
+    for event in events
+        .iter_mut()
+        .filter(|event| event.kind == "process_snapshot")
+    {
+        let Some(current) = process_start_record(event) else {
+            continue;
+        };
+        let Some(identity) = process_start_identity_from_record(&current) else {
+            continue;
+        };
+        let Some(old) = previous.processes.get(&identity) else {
+            continue;
+        };
+        if old.start_ticks != current.start_ticks {
+            event
+                .fields
+                .insert("process_start_changed".to_string(), "true".to_string());
+            event
+                .fields
+                .insert("process_start_drift".to_string(), "changed".to_string());
+            event.fields.insert(
+                "previous_process_start_ticks".to_string(),
+                old.start_ticks.clone(),
+            );
+            event.fields.insert(
+                "current_process_start_ticks".to_string(),
+                current.start_ticks,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn save_process_start_state(events: &[RawEvent], store: &SqliteStore) -> SentinelResult<()> {
+    let processes = events
+        .iter()
+        .filter(|event| event.kind == "process_snapshot")
+        .filter_map(|event| {
+            let record = process_start_record(event)?;
+            Some((process_start_identity_from_record(&record)?, record))
+        })
+        .collect::<BTreeMap<_, _>>();
+    if processes.is_empty() {
+        return Ok(());
+    }
+    store.save_rule_state(
+        PROCESS_START_STATE_RULE_ID,
+        &ProcessStartState { processes },
+    )
+}
+
+fn process_start_identity_from_record(record: &ProcessStartRecord) -> Option<String> {
+    let exe_path = record.exe_path.trim();
+    let name = record.name.trim();
+    if exe_path.is_empty() && name.is_empty() {
+        return None;
+    }
+    Some(
+        [
+            ("exe", exe_path),
+            ("name", name),
+            ("hash", record.exe_hash_blake3.trim()),
+            ("unit", record.systemd_unit.trim()),
+        ]
+        .into_iter()
+        .filter(|(_, value)| !value.is_empty())
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("|"),
+    )
+}
+
+fn process_start_record(event: &RawEvent) -> Option<ProcessStartRecord> {
+    let start_ticks = event.field("process_start_ticks")?.trim();
+    if start_ticks.is_empty() {
+        return None;
+    }
+    Some(ProcessStartRecord {
+        start_ticks: start_ticks.to_string(),
+        name: event.field("name").unwrap_or("").trim().to_string(),
+        exe_path: normalized_process_path(event.field("exe_path").unwrap_or("")),
+        exe_hash_blake3: event
+            .field("exe_hash_blake3")
+            .unwrap_or("")
+            .trim()
+            .to_string(),
+        systemd_unit: event.field("systemd_unit").unwrap_or("").trim().to_string(),
+    })
+}
+
+fn normalized_process_path(path: &str) -> String {
+    path.trim()
+        .strip_suffix(" (deleted)")
+        .unwrap_or_else(|| path.trim())
+        .to_string()
 }
 
 fn suppress_in_scan_duplicates(findings: Vec<Finding>) -> (Vec<Finding>, usize) {

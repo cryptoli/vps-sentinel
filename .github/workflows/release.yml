@@ -59,6 +59,14 @@ jobs:
           cp packaging/systemd/vps-sentinel.service "${package_dir}/packaging/systemd/"
           chmod 0755 "${package_dir}/vps-sentinel" "${package_dir}"/*.sh
           tar -czf "dist/vps-sentinel-${target}.tar.gz" -C "${package_dir}" .
+          tar -tzf "dist/vps-sentinel-${target}.tar.gz" | sed 's#^\./##' > "dist/vps-sentinel-${target}.manifest"
+          grep -qx "vps-sentinel" "dist/vps-sentinel-${target}.manifest"
+          grep -qx "config.example.toml" "dist/vps-sentinel-${target}.manifest"
+          grep -qx "install.sh" "dist/vps-sentinel-${target}.manifest"
+          grep -qx "update.sh" "dist/vps-sentinel-${target}.manifest"
+          grep -qx "reload.sh" "dist/vps-sentinel-${target}.manifest"
+          grep -qx "stop.sh" "dist/vps-sentinel-${target}.manifest"
+          grep -qx "packaging/systemd/vps-sentinel.service" "dist/vps-sentinel-${target}.manifest"
           sha256sum "dist/vps-sentinel-${target}.tar.gz" > "dist/vps-sentinel-${target}.tar.gz.sha256"
       - uses: actions/upload-artifact@v4
         with:

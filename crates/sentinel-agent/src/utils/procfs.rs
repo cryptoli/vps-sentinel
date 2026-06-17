@@ -116,7 +116,8 @@ pub fn collect_processes(root: &ProcfsRoot) -> SentinelResult<Vec<RawEvent>> {
             event = event
                 .with_field("cpu_percent", format!("{:.1}", cpu.percent))
                 .with_field("cpu_total_seconds", format!("{:.1}", cpu.total_seconds))
-                .with_field("process_age_seconds", format!("{:.1}", cpu.age_seconds));
+                .with_field("process_age_seconds", format!("{:.1}", cpu.age_seconds))
+                .with_field("process_start_ticks", cpu.start_ticks.to_string());
         }
         events.push(event);
     }
@@ -296,6 +297,7 @@ struct CpuUsage {
     percent: f64,
     total_seconds: f64,
     age_seconds: f64,
+    start_ticks: u64,
 }
 
 fn parse_process_cpu(
@@ -311,9 +313,9 @@ fn parse_process_cpu(
     let fields = after_comm.split_whitespace().collect::<Vec<_>>();
     let user_ticks = fields.get(11)?.parse::<f64>().ok()?;
     let system_ticks = fields.get(12)?.parse::<f64>().ok()?;
-    let start_ticks = fields.get(19)?.parse::<f64>().ok()?;
+    let start_ticks = fields.get(19)?.parse::<u64>().ok()?;
     let total_seconds = (user_ticks + system_ticks) / clock_ticks;
-    let start_seconds = start_ticks / clock_ticks;
+    let start_seconds = start_ticks as f64 / clock_ticks;
     let age_seconds = (uptime_seconds - start_seconds).max(0.0);
     if age_seconds <= 0.0 {
         return None;
@@ -322,6 +324,7 @@ fn parse_process_cpu(
         percent: (total_seconds / age_seconds) * 100.0,
         total_seconds,
         age_seconds,
+        start_ticks,
     })
 }
 
@@ -424,6 +427,7 @@ mod tests {
         assert!(event.field("cpu_percent").is_some());
         assert!(event.field("cpu_total_seconds").is_some());
         assert!(event.field("process_age_seconds").is_some());
+        assert_eq!(event.field("process_start_ticks"), Some("500"));
         Ok(())
     }
 
@@ -435,5 +439,6 @@ mod tests {
         assert!((usage.total_seconds - 100.0).abs() < 0.01);
         assert!((usage.age_seconds - 150.0).abs() < 0.01);
         assert!((usage.percent - 66.7).abs() < 0.1);
+        assert_eq!(usage.start_ticks, 5000);
     }
 }

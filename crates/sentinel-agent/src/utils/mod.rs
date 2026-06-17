@@ -1,3 +1,4 @@
+pub mod command;
 pub mod fs;
 pub mod package;
 pub mod procfs;

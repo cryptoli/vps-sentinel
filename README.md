@@ -31,11 +31,11 @@ It is not:
 | User and privilege checks | Detects new users, UID 0 users, and privilege-relevant user changes. |
 | File integrity | Watches configured critical paths and web roots; hashes bounded file content; detects modified files, executable scripts in web roots, and risk-scored WebShell-style marker combinations. |
 | Persistence checks | Monitors cron, systemd, shell profile, and preload-related locations for new or risk-scored suspicious startup entries. |
-| Process checks | Reads procfs argv, parent process, executable path, cwd, UID context, socket-FD count, CPU lifetime metrics, cgroup/container hints, systemd unit/ExecStart, executable owner/size/hash, package ownership, and outbound connection profile to flag temporary-path executables, risk-scored deleted executables, network command-execution bridges, suspicious behavior clusters, and known miner/scanner identities. |
+| Process checks | Reads procfs argv, parent process, executable path, cwd, UID context, socket-FD count, CPU lifetime metrics, procfs start-time drift, cgroup/container hints, systemd unit/ExecStart, executable owner/size/hash, package ownership, and outbound connection profile to flag temporary-path executables, risk-scored deleted executables, network command-execution bridges, suspicious behavior clusters, and known miner/scanner identities. |
 | Network checks | Reads listening sockets and owning process details; attaches process context and firewall state; flags high-risk public services, suspicious listener processes, baseline owner drift, and ordinary new public listeners. Expected web/SSH ports such as 22, 80, and 443 reduce noise but are not blindly trusted. |
 | Web log checks | Parses common access log lines and detects common automated probing paths. |
 | Rootkit signals | Collects lightweight local indicators for hidden process and suspicious procfs behavior. |
-| Docker context | Detects Docker availability and emits initial container-surface context; deeper inspection is planned for later releases. |
+| Docker context | Detects Docker availability and emits initial container-surface context without requiring Docker-specific write access. |
 | Storage | Stores raw events, findings, baselines, and notification logs in local SQLite. |
 | Noise control | Uses allowlists, minimum severity, finding deduplication, and configurable retention windows. |
 | Notifications | Sends alerts through Telegram, Email SMTP, generic webhook, ntfy, Gotify, Bark, and ServerChan. |
@@ -53,9 +53,9 @@ File and persistence baseline drift is not suppressed just because package-manag
 
 WebShell content detection is risk-scored instead of marker-only. A single marker such as `eval` in a legitimate admin script is below the default threshold. Combinations such as command execution in a script-like web path, dynamic execution plus encoded payload markers, command execution plus encoding, or large encoded payloads in script-like web paths raise `FILE-002`.
 
-`PROC-005` covers renamed or lightly disguised processes that may not expose a known tool name, temporary executable path, or obvious network shell bridge. It combines weaker behavior signals such as kernel-thread masquerading, execution from configured web roots, hidden executable names, suspicious working directories, socket-FD activity, sustained high CPU, and effective-root privilege context. No single weak signal is enough at the default threshold.
+`PROC-005` covers renamed or lightly disguised processes that may not expose a known tool name, temporary executable path, or obvious network shell bridge. It combines weaker behavior signals such as kernel-thread masquerading, execution from configured web roots, hidden executable names, suspicious working directories, socket-FD activity, sustained high CPU, procfs start-time drift for the same process identity, and effective-root privilege context. No single weak signal is enough at the default threshold, and start-time drift only contributes after other suspicious context already exists.
 
-Process and listener findings now include a broader evidence chain when the host exposes it: parent process name, systemd unit, systemd `ExecStart`, executable UID/GID, executable size, bounded BLAKE3 hash, dpkg/rpm/pacman/apk package ownership, cgroup/container context, outbound connection counts, public outbound count, and remote port profile. These fields are used as supporting evidence or weak signals. For example, a systemd `ExecStart` mismatch does not alert by itself, but it can upgrade an already changed listener owner into a suspicious-listener finding.
+Process and listener findings now include a broader evidence chain when the host exposes it: parent process name, systemd unit, systemd `ExecStart`, executable UID/GID, executable size, bounded BLAKE3 hash, dpkg/rpm/pacman/apk package ownership, cgroup/container context, procfs start-time drift, outbound connection counts, public outbound count, and remote port profile. Package ownership queries and firewall probes are bounded by short command timeouts and per-scan caching, so missing or slow platform tools degrade to absent evidence instead of blocking a scan. These fields are used as supporting evidence or weak signals. For example, a systemd `ExecStart` mismatch does not alert by itself, but it can upgrade an already changed listener owner into a suspicious-listener finding.
 
 Firewall state is auxiliary context, not the source of truth. Socket exposure still comes from `/proc/net/*`; `ufw`, `firewalld`, `nftables`, and `iptables` status are attached so operators can decide whether a public listener is actually reachable through local policy.
 
@@ -165,7 +165,7 @@ vps-sentinel targets Linux VPS hosts with `/proc`, a POSIX shell, and root-level
 | Generic Linux | Supported when `curl`, `git`, a C toolchain, `pkg-config`, Rust, and procfs are available. Set `INSTALL_DEPS=no` if the package manager is unsupported. |
 | Non-Linux Unix / Windows | Not a runtime target. The code may compile for development, but host monitoring depends on Linux procfs, auth logs, and Linux filesystem layout. |
 
-CI runs the normal Rust test suite on Ubuntu and container smoke tests on Debian Bookworm and Alpine musl. Release workflow targets are prepared for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, and `aarch64-unknown-linux-musl`.
+CI runs the normal Rust test suite on Ubuntu, validates shell scripts, runs a temporary installer smoke test, and runs container compatibility tests on Debian Bookworm and Alpine musl. Release workflow targets are prepared for `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, and `aarch64-unknown-linux-musl`.
 
 systemd is optional for installation but required for `vps-sentinel-reload`, `vps-sentinel-stop`, and automatic daemon management. Without systemd, the installer still builds the binary and writes configuration; run the daemon under your own init system. Running as non-root degrades visibility instead of crashing, but SSH logs, `/proc/<pid>/fd`, protected files, and persistence paths may be incomplete.
 
@@ -177,7 +177,7 @@ systemd is optional for installation but required for `vps-sentinel-reload`, `vp
 | SSH key integrity | Hashes `authorized_keys` and `authorized_keys2` independently of the broader file-integrity switch. | Detects SSH persistence changes even when general file integrity is disabled. |
 | File and persistence drift | Builds a local SQLite baseline, diffs later snapshots, coalesces related file/persistence findings for the same path, and attaches package-manager context. | Finds real drift while reducing confusion during legitimate package updates; baseline is refreshed only by explicit command. |
 | WebShell content | Scans bounded file content for risk markers and scores marker combinations plus web-path context. | Avoids alerting on one weak marker, while catching classic web command execution and encoded payload patterns. |
-| Process risk | Reads procfs argv, parent, executable, cwd, UID/EUID, deleted state, socket-FD count, lifetime CPU metrics, cgroup/container hints, systemd unit/ExecStart, executable metadata/hash, package owner, and outbound connection profile; uses rule-specific scoring, allowlists, and same-PID signal coalescing. | Detects temp-path executables, suspicious deleted executables, network shell bridges, known miner/scanner identities, and renamed behavior clusters while avoiding duplicate messages caused by volatile PID/CPU/connection counters. |
+| Process risk | Reads procfs argv, parent, executable, cwd, UID/EUID, deleted state, socket-FD count, lifetime CPU metrics, start-time drift, cgroup/container hints, systemd unit/ExecStart, executable metadata/hash, package owner, and outbound connection profile; uses rule-specific scoring, allowlists, rule-state storage, and same-PID signal coalescing. | Detects temp-path executables, suspicious deleted executables, network shell bridges, known miner/scanner identities, and renamed behavior clusters while avoiding duplicate messages caused by volatile PID/CPU/connection counters. |
 | Network listeners | Parses `/proc/net/tcp*` and `/proc/net/udp*`, resolves owning processes through `/proc/<pid>/fd`, compares listener owners with baseline, attaches process/firewall context, and prioritizes suspicious owner behavior over generic port exposure. | Expected 22/80/443 ports reduce generic noise but still produce findings when the owning process changes or looks suspicious; high-risk ports keep their service and firewall profile as evidence. |
 | Notifications | Renders one `Finding` model through channel-specific templates: Telegram HTML, Email HTML/plain text, Markdown-aware channels, or plain text. | Messages include the configured VPS name, normalized time, localized labels, evidence, impact, and recommendations. |
 | Noise control | Applies scan-level deduplication, persisted dedup windows, state reminder intervals, quiet hours, and hourly notification budgets. | Reduces repeat messages while keeping high-value alerts visible. |
@@ -200,11 +200,11 @@ The installer:
 - clones this repository to `/opt/vps-sentinel-src` only for source builds;
 - builds `vps-sentinel` in release mode when source fallback is used;
 - installs the binary to `/usr/local/bin/vps-sentinel`;
-- installs `vps-sentinel-reload` for safe config reloads;
-- installs `vps-sentinel-stop` for stopping the service without deleting config or data;
+- installs `vps-sentinel-install`, `vps-sentinel-update`, `vps-sentinel-reload`, and `vps-sentinel-stop` helper commands when the package or source tree contains them;
 - creates `/etc/vps-sentinel/config.toml` only if it does not already exist;
 - optionally writes Telegram settings from environment variables;
 - installs the systemd unit before baseline bootstrap when systemd is available;
+- removes deprecated config keys after writing a `.bak` backup, unless `MIGRATE_CONFIG=no`;
 - validates config, runs `doctor`, creates the first baseline when missing, and runs one no-notify warm-up scan;
 - enables the systemd service after the baseline includes the installed unit.
 
@@ -242,10 +242,12 @@ Useful installer switches:
 | `INSTALL_DEPS` | `yes` | Set to `no` to skip package manager dependency installation. |
 | `INSTALL_METHOD` | `auto` | `auto` tries release artifact first and falls back to source; `release` requires a release artifact; `source` always builds locally. |
 | `RELEASE_VERSION` | `latest` | Release tag to download when `INSTALL_METHOD` is `auto` or `release`. |
+| `RELEASE_ARTIFACT_URL` | empty | Override the release artifact URL. Useful for mirrors, local artifact testing, and CI smoke tests. |
 | `TARGET_TRIPLE` | auto-detected | Override release artifact target, for example `x86_64-unknown-linux-gnu` or `aarch64-unknown-linux-musl`. |
 | `INSTALL_SYSTEMD` | `auto` | `auto`, `yes`, or `no` for systemd unit installation. |
 | `ENABLE_SERVICE` | `yes` | Set to `no` to install the unit without starting it. |
 | `RUN_DOCTOR` | `yes` | Run runtime environment checks during install. |
+| `MIGRATE_CONFIG` | `yes` | Remove deprecated config keys after writing a `.bak` backup. Set to `no` to skip. |
 | `BOOTSTRAP_BASELINE` | `yes` | Create the first baseline if no baseline exists. |
 | `RUN_FIRST_SCAN` | `yes` | Run one `scan --no-notify` and write full output to `<LOG_DIR>/first-scan.log`. |
 | `VPS_NAME` | empty | Optional human-readable VPS name written to `agent.display_name`; shown in notification subjects. |
@@ -265,7 +267,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-The update script pulls the selected branch, rebuilds the binary, preserves the existing config, validates it, refreshes the systemd unit when available, and restarts an active or enabled service so the new binary is actually running. It does not refresh an existing baseline by default, so unreviewed host drift such as `authorized_keys` changes is not silently trusted during an update. Unchanged systemd unit content is not rewritten, so routine updates do not churn unit file mtimes. Use `vps-sentinel-reload` for config-only changes that do not replace the binary.
+The update script pulls the selected branch, rebuilds the binary, preserves the existing config, removes deprecated config keys after writing a `.bak` backup, validates it, refreshes the systemd unit when available, and restarts an active or enabled service so the new binary is actually running. It does not refresh an existing baseline by default, so unreviewed host drift such as `authorized_keys` changes is not silently trusted during an update. Unchanged systemd unit content is not rewritten, so routine updates do not churn unit file mtimes. Use `vps-sentinel-reload` for config-only changes that do not replace the binary.
 
 Useful update switches:
 
@@ -281,6 +283,7 @@ Useful update switches:
 | `INSTALL_SYSTEMD` | `auto` | Set to `no` to skip unit refresh. |
 | `RESTART_SERVICE` | `auto` | `auto`, `yes`, or `no` for reload/restart behavior. |
 | `VALIDATE_CONFIG` | `yes` | Validate existing config before service reload/restart. |
+| `MIGRATE_CONFIG` | `yes` | Remove deprecated config keys after writing a `.bak` backup. Set to `no` to skip. |
 | `REFRESH_BASELINE` | `no` | Set to `yes` only after you have reviewed current drift and want the update to refresh the existing baseline. |
 
 ## Reload Configuration
@@ -481,7 +484,7 @@ suspicious_socket_fd_threshold = 20
 known_bad_tool_names = ["xmrig", "kinsing", "masscan", "zmap"]
 ```
 
-`deleted_executable_min_score` controls when `PROC-002` is emitted. Deleted executable state is scored with path, process identity, and command-behavior traits; a standard system binary left running after a package upgrade is not enough by itself. `behavior_min_score` controls `PROC-005`, which combines weak process signals such as kernel-thread masquerading, web-root execution, hidden executable names, suspicious cwd, socket-FD activity, sustained high CPU, and effective-root context. `high_cpu_threshold_percent` and `high_cpu_duration_seconds` define sustained high CPU using procfs lifetime CPU time and process age; high CPU is a supporting signal, not an alert condition by itself. `suspicious_socket_fd_threshold` defines when socket ownership becomes a stronger behavior signal. `known_bad_tool_names` controls the `PROC-004` known miner/scanner indicator list. Values are matched against process identity fields such as `exe_path`, `executable`, process name, and structured `argv[0]`, with `.exe` suffixes accepted. Legacy events without structured identity fall back to command token basename matching. When several process rules match the same PID, the scanner keeps one highest-value finding and merges the process signals, risk reasons, impact, and recommendations.
+`deleted_executable_min_score` controls when `PROC-002` is emitted. Deleted executable state is scored with path, process identity, and command-behavior traits; a standard system binary left running after a package upgrade is not enough by itself. `behavior_min_score` controls `PROC-005`, which combines weak process signals such as kernel-thread masquerading, web-root execution, hidden executable names, suspicious cwd, socket-FD activity, sustained high CPU, procfs start-time drift for the same process identity, and effective-root context. Start-time drift is stored in local rule state and only strengthens an already suspicious process; a normal restart does not alert by itself. `high_cpu_threshold_percent` and `high_cpu_duration_seconds` define sustained high CPU using procfs lifetime CPU time and process age; high CPU is a supporting signal, not an alert condition by itself. `suspicious_socket_fd_threshold` defines when socket ownership becomes a stronger behavior signal. `known_bad_tool_names` controls the `PROC-004` known miner/scanner indicator list. Values are matched against process identity fields such as `exe_path`, `executable`, process name, and structured `argv[0]`, with `.exe` suffixes accepted. Legacy events without structured identity fall back to command token basename matching. When several process rules match the same PID, the scanner keeps one highest-value finding and merges the process signals, risk reasons, impact, and recommendations.
 
 Persistence indicator policy:
 
@@ -540,7 +543,7 @@ Normal service wrappers such as `/bin/sh -c '/usr/local/bin/app --listen 0.0.0.0
 
 ## Release Engineering
 
-The repository includes a release workflow but publishing is intentionally tag-driven. A `v*` tag builds Linux tarballs for GNU and musl targets on x86_64/aarch64, generates SHA-256 checksum files, builds `.deb` and `.rpm` packages from the x86_64 GNU artifact, and uploads them to the GitHub release. The installer is already prepared to consume these artifacts through `INSTALL_METHOD=auto` or `INSTALL_METHOD=release`.
+The repository includes a release workflow but publishing is intentionally tag-driven. A `v*` tag builds Linux tarballs for GNU and musl targets on x86_64/aarch64, validates package contents, generates SHA-256 checksum files, builds `.deb` and `.rpm` packages from the x86_64 GNU artifact, and uploads them to the GitHub release. The installer is prepared to consume these artifacts through `INSTALL_METHOD=auto` or `INSTALL_METHOD=release`, and `RELEASE_ARTIFACT_URL` supports mirrors or local package smoke tests.
 
 Until a release exists, `INSTALL_METHOD=auto` falls back to the existing source build path. Packaged installs still create `/etc/vps-sentinel/config.toml`, install helper scripts, validate config, bootstrap a baseline, and install systemd when available.
 
@@ -625,9 +628,3 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). New rules must be defensive, explainable
 ## Security
 
 Please report vulnerabilities privately according to [SECURITY.md](SECURITY.md).
-
-## Roadmap
-
-- v0.1: CLI, config, SQLite, baseline, SSH/file/user/persistence/process/network/web-log detection, notifications, systemd.
-- v0.2: deeper Docker inspection, improved dedup/aggregation, Prometheus metrics, richer rule engine.
-- v0.3: local HTTP API, simple dashboard, optional dry-run active response, quarantine workflow.

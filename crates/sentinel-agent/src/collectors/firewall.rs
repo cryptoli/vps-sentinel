@@ -1,7 +1,10 @@
 use crate::collectors::{CollectContext, Collector};
+use crate::utils::command::successful_stdout;
 use async_trait::async_trait;
 use sentinel_core::{RawEvent, SentinelResult};
-use std::process::Command;
+use std::time::Duration;
+
+const FIREWALL_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct FirewallCollector;
 
@@ -91,12 +94,7 @@ fn firewall_state_from_outputs(
 }
 
 fn run_command(program: &str, args: &[&str]) -> Option<String> {
-    Command::new(program)
-        .args(args)
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).to_string())
+    successful_stdout(program, args, FIREWALL_COMMAND_TIMEOUT)
 }
 
 #[cfg(test)]

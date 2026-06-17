@@ -49,6 +49,33 @@ fn renders_chinese_root_password_login_as_single_combined_alert() {
 }
 
 #[test]
+fn localizes_process_start_drift_evidence_value() {
+    let finding = Finding::new(
+        "host",
+        "Suspicious process behavior cluster",
+        "Suspicious process behavior.",
+        Severity::High,
+        Category::Process,
+        "PROC-005",
+        "/usr/local/bin/.sysd",
+    )
+    .with_evidence(vec![Evidence::new("process_start_drift", "changed")]);
+    let english = render_finding_with_language(
+        &finding,
+        NotificationFormat::PlainText,
+        NotificationLanguage::En,
+    );
+    let chinese = render_finding_with_language(
+        &finding,
+        NotificationFormat::PlainText,
+        NotificationLanguage::ZhCn,
+    );
+
+    assert!(english.contains("process start drift: changed since previous scan"));
+    assert!(chinese.contains("进程启动变化: 较上一轮扫描发生变化"));
+}
+
+#[test]
 fn renders_html_without_raw_markup_in_values() {
     let finding = sample_finding().with_evidence(vec![Evidence::new("path", "<script>")]);
     let alert = render_alert(&finding);

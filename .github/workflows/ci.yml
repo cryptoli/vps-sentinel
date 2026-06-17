@@ -19,7 +19,16 @@ jobs:
       - name: Test
         run: cargo test --workspace
       - name: Release build
-        run: cargo build --release
+        run: cargo build --release --locked
+      - name: Shell script syntax
+        run: |
+          bash -n install.sh
+          bash -n update.sh
+          bash -n reload.sh
+          bash -n stop.sh
+          bash -n tests/install_script_smoke.sh
+      - name: Installer smoke test
+        run: bash tests/install_script_smoke.sh
 
   linux-compat:
     runs-on: ubuntu-latest
