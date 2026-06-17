@@ -559,7 +559,7 @@ Example rules:
 
 Some collectors need root-level visibility. If the agent runs without root permissions, `doctor` reports reduced visibility and affected modules degrade instead of crashing.
 
-Runtime footprint is intentionally small for a continuously running agent. On the current validation VPS, the daemon process reports about 12-13 MiB RSS during the normal 60-second scan loop; systemd cgroup `MemoryCurrent` may report around 50-55 MiB depending on kernel accounting and recently touched file cache. Actual memory can rise with larger log tails, broader file-integrity paths, and enabled notification channels.
+Runtime footprint is intentionally small for a continuously running agent. On the current validation VPS, the daemon process reports about 10-13 MiB RSS during the normal 60-second scan loop. systemd cgroup `MemoryCurrent` can be much higher, from tens of MiB to a few hundred MiB, because Linux may charge recently touched file cache and cgroup memory accounting to the service. Actual memory pressure depends on log tail size, file-integrity path scope, kernel accounting, and enabled notification channels; process RSS is the best steady-state indicator for the daemon itself.
 
 The systemd unit uses:
 
