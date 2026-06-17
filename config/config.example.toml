@@ -51,7 +51,7 @@ paths = [
 
 [web]
 enabled = true
-web_roots = ["/var/www", "/srv", "/opt"]
+web_roots = ["/var/www", "/srv", "/usr/share/nginx/html", "/usr/share/httpd/noindex"]
 error_burst_threshold = 20
 log_paths = [
   "/var/log/nginx/access.log",

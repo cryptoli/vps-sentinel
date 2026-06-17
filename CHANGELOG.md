@@ -9,6 +9,7 @@
 - Added durable finding deduplication state so storage size cleanup cannot make old repeated findings look new and trigger notification bursts.
 - Added active-response firewall state reconciliation to remove stale local block records after firewall reloads or manual rule changes.
 - Added database size limiting and retention cleanup to reduce disk-full risk on small VPS hosts.
+- Reduced process false positives for standard container/runtime services by downgrading `/run` working-directory context and treating broad `/opt` web-root matches more conservatively.
 - Improved web alert aggregation, stricter active-response block thresholds, and safer process/network risk scoring context.
 - Switched notification language default to Simplified Chinese and completed Chinese/English rendering for built-in rules and evidence fields.
 - Fixed `vps-sentinel-update` to prefer release artifacts and fall back to source builds only when the artifact is unavailable or incompatible.

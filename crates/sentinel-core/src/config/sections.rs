@@ -136,7 +136,8 @@ impl Default for WebConfig {
             web_roots: vec![
                 PathBuf::from("/var/www"),
                 PathBuf::from("/srv"),
-                PathBuf::from("/opt"),
+                PathBuf::from("/usr/share/nginx/html"),
+                PathBuf::from("/usr/share/httpd/noindex"),
             ],
             log_paths: vec![
                 PathBuf::from("/var/log/nginx/access.log"),

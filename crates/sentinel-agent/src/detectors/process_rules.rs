@@ -519,11 +519,19 @@ fn behavior_cluster_assessment(
         );
     }
     if path_in_suspicious_dirs(&cwd, &ctx.config.process.suspicious_dirs) {
-        assessment.add_signal(
-            30,
-            "suspicious_cwd",
-            "process current working directory is under a suspicious temporary path",
-        );
+        if path_in_runtime_dir(&cwd) {
+            assessment.add_signal(
+                10,
+                "runtime_cwd",
+                "process current working directory is under a runtime state path",
+            );
+        } else {
+            assessment.add_signal(
+                30,
+                "suspicious_cwd",
+                "process current working directory is under a suspicious temporary path",
+            );
+        }
     }
     if socket_fd_count >= ctx.config.process.suspicious_socket_fd_threshold {
         assessment.add_signal(
@@ -555,13 +563,6 @@ fn behavior_cluster_assessment(
             "same process identity has a different procfs start time than the previous scan",
         );
     }
-    if !string_field(event, "container_context").is_empty() && assessment.score >= 40 {
-        assessment.add_signal(
-            10,
-            "container_context",
-            "process is running inside a container or container-managed cgroup",
-        );
-    }
     if euid == ROOT_UID && assessment.score >= 55 {
         assessment.add_signal(
             15,
@@ -577,10 +578,30 @@ fn behavior_cluster_assessment(
     }
 }
 
+fn path_in_runtime_dir(path: &str) -> bool {
+    path == "/run" || path.starts_with("/run/")
+}
+
 fn path_in_web_roots(path: &str, ctx: &DetectContext) -> bool {
     ctx.config.web.web_roots.iter().any(|root| {
         let root = root.to_string_lossy().replace('\\', "/");
-        path == root || path.starts_with(&format!("{root}/"))
+        if !(path == root || path.starts_with(&format!("{root}/"))) {
+            return false;
+        }
+        !is_broad_application_root(&root) || has_web_content_segment(path)
+    })
+}
+
+fn is_broad_application_root(root: &str) -> bool {
+    matches!(root.trim_end_matches('/'), "/opt" | "/srv")
+}
+
+fn has_web_content_segment(path: &str) -> bool {
+    path.split('/').map(str::to_ascii_lowercase).any(|segment| {
+        matches!(
+            segment.as_str(),
+            "www" | "html" | "htdocs" | "public" | "public_html" | "wwwroot" | "web" | "static"
+        )
     })
 }
 
@@ -1163,6 +1184,35 @@ mod tests {
     }
 
     #[test]
+    fn behavior_cluster_does_not_treat_plain_opt_service_as_web_executable() {
+        let mut config = SentinelConfig::default();
+        config.web.web_roots.push("/opt".into());
+        let ctx = DetectContext::new(Arc::new(config));
+        let service = process_event("/opt/sub2api/sub2api", "sub2api", "/opt/sub2api/sub2api")
+            .with_field("cwd", "/opt/sub2api")
+            .with_field("euid", "998")
+            .with_field("socket_fd_count", "141");
+        let web_payload = process_event(
+            "/opt/customer/public/.worker",
+            ".worker",
+            "/opt/customer/public/.worker",
+        )
+        .with_field("cwd", "/opt/customer/public")
+        .with_field("euid", "998")
+        .with_field("socket_fd_count", "141");
+
+        let service_assessment = behavior_cluster_assessment(&service, &ctx);
+        let web_assessment = behavior_cluster_assessment(&web_payload, &ctx);
+
+        assert!(service_assessment.is_none());
+        assert!(web_assessment.is_some_and(|assessment| {
+            assessment.has_feature("web_path_executable")
+                && assessment.has_feature("hidden_executable_name")
+                && assessment.is_suspicious(70)
+        }));
+    }
+
+    #[test]
     fn temporary_process_dedup_uses_executable_path_not_pid() {
         let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
         let first = process_event("/tmp/.x", ".x", "/tmp/.x");
@@ -1243,6 +1293,50 @@ mod tests {
         let findings = ProcessDetector.detect(&[event], &ctx);
 
         assert!(findings.iter().all(|finding| finding.rule_id != "PROC-005"));
+    }
+
+    #[test]
+    fn behavior_cluster_treats_runtime_cwd_as_context_not_primary_signal() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let container_runtime = process_event(
+            "/usr/bin/containerd-shim-runc-v2",
+            "containerd-shim",
+            "/usr/bin/containerd-shim-runc-v2 -namespace moby -id abc",
+        )
+        .with_field(
+            "cwd",
+            "/run/containerd/io.containerd.runtime.v2.task/moby/abc",
+        )
+        .with_field("euid", "0")
+        .with_field("socket_fd_count", "1")
+        .with_field("container_context", "containerd");
+        let container_service = process_event("/usr/libexec/dovecot/auth", "auth", "dovecot/auth")
+            .with_field("cwd", "/run/dovecot")
+            .with_field("euid", "401")
+            .with_field("socket_fd_count", "20")
+            .with_field("container_context", "docker")
+            .with_field("process_start_changed", "true");
+
+        let findings = ProcessDetector.detect(&[container_runtime, container_service], &ctx);
+
+        assert!(findings.iter().all(|finding| finding.rule_id != "PROC-005"));
+    }
+
+    #[test]
+    fn behavior_cluster_still_detects_temp_cwd_payload() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event("/usr/local/bin/worker", "worker", "worker")
+            .with_field("cwd", "/tmp/.stage")
+            .with_field("euid", "0")
+            .with_field("socket_fd_count", "20");
+
+        let assessment = behavior_cluster_assessment(&event, &ctx);
+
+        assert!(assessment.is_some_and(|assessment| {
+            assessment.is_suspicious(70)
+                && assessment.has_feature("suspicious_cwd")
+                && assessment.has_feature("privileged_suspicious_process")
+        }));
     }
 
     #[test]
