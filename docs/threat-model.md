@@ -18,13 +18,14 @@ vps-sentinel focuses on early detection of host compromise signals on small Linu
 - Detecting suspicious process command lines and temporary-path executables.
 - Detecting WebShell-like file markers under configured size limits.
 - Sending local-summary notifications through explicitly configured channels.
+- Optional TTL-based firewall blocking for strict, high-confidence public-source Web and SSH brute-force findings when `[active_response].enabled = true`.
 
 ## Out of Scope
 
 - Exploit development or vulnerability scanning of third-party hosts.
 - Password brute force or credential collection.
 - Kernel-level Rootkit certainty.
-- Default destructive remediation.
+- Default destructive remediation; active response is disabled unless explicitly configured.
 - Mandatory cloud upload.
 
 ## Trust Boundaries

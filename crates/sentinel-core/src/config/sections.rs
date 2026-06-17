@@ -51,6 +51,7 @@ pub struct StorageConfig {
     pub r#type: String,
     pub path: PathBuf,
     pub retention_days: u32,
+    pub max_database_size_mb: u64,
 }
 
 impl Default for StorageConfig {
@@ -59,6 +60,7 @@ impl Default for StorageConfig {
             r#type: "sqlite".to_string(),
             path: PathBuf::from(SentinelPaths::DB_PATH),
             retention_days: 30,
+            max_database_size_mb: 256,
         }
     }
 }
@@ -317,6 +319,38 @@ impl Default for NoiseControlConfig {
             rate_limit_bypass_min_severity: Severity::High,
             quiet_hours_bypass_min_severity: Severity::High,
             quiet_hours: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ActiveResponseConfig {
+    pub enabled: bool,
+    pub firewall_backend: String,
+    pub block_ttl_seconds: u64,
+    pub command_timeout_seconds: u64,
+    pub max_blocks_per_scan: usize,
+    pub web_enabled: bool,
+    pub web_probe_block_threshold: usize,
+    pub web_exploit_block_threshold: usize,
+    pub ssh_enabled: bool,
+    pub ssh_failed_login_block_threshold: usize,
+}
+
+impl Default for ActiveResponseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            firewall_backend: "auto".to_string(),
+            block_ttl_seconds: 3600,
+            command_timeout_seconds: 3,
+            max_blocks_per_scan: 20,
+            web_enabled: true,
+            web_probe_block_threshold: 25,
+            web_exploit_block_threshold: 5,
+            ssh_enabled: true,
+            ssh_failed_login_block_threshold: 20,
         }
     }
 }

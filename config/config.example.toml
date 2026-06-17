@@ -15,6 +15,7 @@ mask_command_args = false
 type = "sqlite"
 path = "/var/lib/vps-sentinel/sentinel.db"
 retention_days = 30
+max_database_size_mb = 256
 
 [ssh]
 enabled = true
@@ -164,6 +165,18 @@ max_alerts_per_hour = 30
 rate_limit_bypass_min_severity = "High"
 quiet_hours_bypass_min_severity = "High"
 quiet_hours = [] # Example: ["22:00-07:00"]
+
+[active_response]
+enabled = false
+firewall_backend = "auto" # auto, nftables, or iptables
+block_ttl_seconds = 3600
+command_timeout_seconds = 3
+max_blocks_per_scan = 20
+web_enabled = true
+web_probe_block_threshold = 25
+web_exploit_block_threshold = 5
+ssh_enabled = true
+ssh_failed_login_block_threshold = 20
 
 [allowlist]
 users = []

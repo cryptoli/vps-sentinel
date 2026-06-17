@@ -1,5 +1,6 @@
 //! Runtime implementation for the VPS Sentinel agent.
 
+pub mod active_response;
 pub mod baseline;
 pub mod collectors;
 pub mod daemon;

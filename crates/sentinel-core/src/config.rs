@@ -13,9 +13,9 @@ pub use notifications::{
     WebhookConfig,
 };
 pub use sections::{
-    AgentConfig, AllowlistConfig, DockerConfig, FileIntegrityConfig, NetworkConfig,
-    NoiseControlConfig, PackageManagerConfig, PersistenceConfig, PrivacyConfig, ProcessConfig,
-    SentinelPaths, SshConfig, StorageConfig, WebConfig,
+    ActiveResponseConfig, AgentConfig, AllowlistConfig, DockerConfig, FileIntegrityConfig,
+    NetworkConfig, NoiseControlConfig, PackageManagerConfig, PersistenceConfig, PrivacyConfig,
+    ProcessConfig, SentinelPaths, SshConfig, StorageConfig, WebConfig,
 };
 
 /// Top-level TOML configuration for the agent and CLI.
@@ -35,6 +35,7 @@ pub struct SentinelConfig {
     pub docker: DockerConfig,
     pub notifications: NotificationsConfig,
     pub noise_control: NoiseControlConfig,
+    pub active_response: ActiveResponseConfig,
     pub allowlist: AllowlistConfig,
 }
 
@@ -70,6 +71,11 @@ impl SentinelConfig {
         if self.storage.retention_days == 0 {
             return Err(SentinelError::Config(
                 "storage.retention_days must be greater than 0".to_string(),
+            ));
+        }
+        if self.storage.max_database_size_mb < 16 {
+            return Err(SentinelError::Config(
+                "storage.max_database_size_mb must be at least 16".to_string(),
             ));
         }
         if self.ssh.failed_login_threshold == 0 {
@@ -149,6 +155,7 @@ impl SentinelConfig {
                 "noise_control.max_alerts_per_hour must be greater than 0".to_string(),
             ));
         }
+        validate_active_response(&self.active_response)?;
         for quiet_hour in &self.noise_control.quiet_hours {
             quiet_hour.parse::<MinuteWindow>().map_err(|err| {
                 SentinelError::Config(format!(
@@ -181,6 +188,48 @@ impl SentinelConfig {
         }
         self.host_id()
     }
+}
+
+fn validate_active_response(config: &ActiveResponseConfig) -> SentinelResult<()> {
+    match config.firewall_backend.as_str() {
+        "auto" | "nftables" | "iptables" => {}
+        other => {
+            return Err(SentinelError::Config(format!(
+                "active_response.firewall_backend '{other}' is invalid; use auto, nftables, or iptables"
+            )));
+        }
+    }
+    if config.block_ttl_seconds == 0 {
+        return Err(SentinelError::Config(
+            "active_response.block_ttl_seconds must be greater than 0".to_string(),
+        ));
+    }
+    if config.command_timeout_seconds == 0 {
+        return Err(SentinelError::Config(
+            "active_response.command_timeout_seconds must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_blocks_per_scan == 0 {
+        return Err(SentinelError::Config(
+            "active_response.max_blocks_per_scan must be greater than 0".to_string(),
+        ));
+    }
+    if config.web_probe_block_threshold == 0 {
+        return Err(SentinelError::Config(
+            "active_response.web_probe_block_threshold must be greater than 0".to_string(),
+        ));
+    }
+    if config.web_exploit_block_threshold == 0 {
+        return Err(SentinelError::Config(
+            "active_response.web_exploit_block_threshold must be greater than 0".to_string(),
+        ));
+    }
+    if config.ssh_failed_login_block_threshold == 0 {
+        return Err(SentinelError::Config(
+            "active_response.ssh_failed_login_block_threshold must be greater than 0".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_notifications(config: &NotificationsConfig) -> SentinelResult<()> {
@@ -303,6 +352,10 @@ mod tests {
         let mut config = SentinelConfig::default();
         config.storage.retention_days = 0;
         assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.storage.max_database_size_mb = 15;
+        assert!(config.validate().is_err());
     }
 
     #[test]
@@ -396,6 +449,25 @@ mod tests {
 
         let mut config = SentinelConfig::default();
         config.package_manager.max_log_tail_bytes = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_active_response_settings_are_rejected() {
+        let mut config = SentinelConfig::default();
+        config.active_response.firewall_backend = "pf".to_string();
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.active_response.block_ttl_seconds = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.active_response.web_probe_block_threshold = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.active_response.ssh_failed_login_block_threshold = 0;
         assert!(config.validate().is_err());
     }
 

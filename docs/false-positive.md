@@ -20,6 +20,7 @@ Security monitoring should be useful without waking users for expected operation
 - Put normal public service ports such as HTTP/HTTPS in `network.expected_public_ports`; they still receive process-risk and baseline-owner checks. Use `allowlist.listening_ports` only when a port should suppress all network findings, including high-risk exposure findings.
 - Keep baselines fresh after planned maintenance, but only after reviewing drift. The installer writes its own systemd unit before first baseline bootstrap; `update.sh` preserves the existing baseline by default and refreshes it only when `REFRESH_BASELINE=yes` is set.
 - Route noisy rules at `Low` or `Medium`.
+- Before enabling active response, add trusted admin, office, monitoring, CDN, and reverse-proxy source IPs to `[allowlist].ips`. Active response only considers public source IPs and requires stricter thresholds than normal alerting, but it still changes firewall state.
 - Investigate correlations before taking destructive action.
 
 ## Safe Response

@@ -73,7 +73,7 @@ fn path_is_allowlisted(path: &str, allowlist: &[PathBuf]) -> bool {
     })
 }
 
-fn field_is_allowlisted(value: &str, allowlist: &[String]) -> bool {
+pub(crate) fn field_is_allowlisted(value: &str, allowlist: &[String]) -> bool {
     allowlist.iter().any(|allowed| allowed == value)
 }
 

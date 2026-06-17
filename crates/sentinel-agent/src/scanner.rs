@@ -1,3 +1,4 @@
+use crate::active_response::{apply_active_response, ActiveResponseReport};
 use crate::baseline::{diff_snapshots, BaselineSnapshot};
 use crate::collectors::{default_collectors, CollectContext};
 use crate::detectors::{default_detectors, DetectContext};
@@ -47,6 +48,10 @@ pub struct ScanReport {
     pub notification_attempt_count: usize,
     pub notification_success_count: usize,
     pub notification_failure_count: usize,
+    pub active_response_planned_count: usize,
+    pub active_response_applied_count: usize,
+    pub active_response_failed_count: usize,
+    pub active_response_expired_count: usize,
     pub findings: Vec<Finding>,
     pub collector_errors: Vec<String>,
 }
@@ -129,6 +134,36 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
                 );
             }
         }
+    }
+
+    let mut active_response_report = ActiveResponseReport::default();
+    if config.active_response.enabled && options.persist {
+        if let Some(store) = &store {
+            match apply_active_response(&findings, &config, store) {
+                Ok(report) => {
+                    if report.applied_blocks > 0
+                        || report.failed_blocks > 0
+                        || report.expired_blocks > 0
+                    {
+                        warn!(
+                            planned_blocks = report.planned_blocks,
+                            applied_blocks = report.applied_blocks,
+                            failed_blocks = report.failed_blocks,
+                            expired_blocks = report.expired_blocks,
+                            failed_expirations = report.failed_expirations,
+                            skipped_existing_blocks = report.skipped_existing_blocks,
+                            "active response completed"
+                        );
+                    }
+                    active_response_report = report;
+                }
+                Err(err) => {
+                    warn!(error = %err, "active response failed");
+                }
+            }
+        }
+    } else if config.active_response.enabled && !options.persist {
+        warn!("active response skipped because persistence is disabled");
     }
 
     if privacy_redaction_enabled(&config) {
@@ -236,6 +271,31 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             if pruned > 0 {
                 debug!(deleted_rows = pruned, "old storage rows pruned");
             }
+            if let Some(report) = store.enforce_size_limit(config.storage.max_database_size_mb)? {
+                if report.size_after_bytes
+                    > config
+                        .storage
+                        .max_database_size_mb
+                        .saturating_mul(1024 * 1024)
+                {
+                    warn!(
+                        size_before_bytes = report.size_before_bytes,
+                        size_after_bytes = report.size_after_bytes,
+                        deleted_rows = report.deleted_rows,
+                        max_database_size_mb = config.storage.max_database_size_mb,
+                        "storage size limit cleanup ran but database remains above configured limit"
+                    );
+                } else {
+                    debug!(
+                        size_before_bytes = report.size_before_bytes,
+                        size_after_bytes = report.size_after_bytes,
+                        deleted_rows = report.deleted_rows,
+                        vacuumed = report.vacuumed,
+                        max_database_size_mb = config.storage.max_database_size_mb,
+                        "storage size limit cleanup completed"
+                    );
+                }
+            }
         }
     }
 
@@ -250,6 +310,10 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         notification_attempts = notification_attempt_count,
         notification_successes = notification_success_count,
         notification_failures = notification_failure_count,
+        active_response_planned = active_response_report.planned_blocks,
+        active_response_applied = active_response_report.applied_blocks,
+        active_response_failed = active_response_report.failed_blocks,
+        active_response_expired = active_response_report.expired_blocks,
         collector_errors = collector_errors.len(),
         "scan completed"
     );
@@ -263,6 +327,10 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         notification_attempt_count,
         notification_success_count,
         notification_failure_count,
+        active_response_planned_count: active_response_report.planned_blocks,
+        active_response_applied_count: active_response_report.applied_blocks,
+        active_response_failed_count: active_response_report.failed_blocks,
+        active_response_expired_count: active_response_report.expired_blocks,
         findings,
         collector_errors,
     })

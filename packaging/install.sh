@@ -14,6 +14,14 @@ ENABLE_SERVICE="${ENABLE_SERVICE:-no}"
 RUN_DOCTOR="${RUN_DOCTOR:-yes}"
 BOOTSTRAP_BASELINE="${BOOTSTRAP_BASELINE:-yes}"
 RUN_FIRST_SCAN="${RUN_FIRST_SCAN:-yes}"
+STORAGE_MAX_DATABASE_SIZE_MB="${STORAGE_MAX_DATABASE_SIZE_MB:-}"
+ACTIVE_RESPONSE_ENABLED="${ACTIVE_RESPONSE_ENABLED:-}"
+ACTIVE_RESPONSE_FIREWALL_BACKEND="${ACTIVE_RESPONSE_FIREWALL_BACKEND:-}"
+ACTIVE_RESPONSE_BLOCK_TTL_SECONDS="${ACTIVE_RESPONSE_BLOCK_TTL_SECONDS:-}"
+ACTIVE_RESPONSE_MAX_BLOCKS_PER_SCAN="${ACTIVE_RESPONSE_MAX_BLOCKS_PER_SCAN:-}"
+ACTIVE_RESPONSE_WEB_PROBE_BLOCK_THRESHOLD="${ACTIVE_RESPONSE_WEB_PROBE_BLOCK_THRESHOLD:-}"
+ACTIVE_RESPONSE_WEB_EXPLOIT_BLOCK_THRESHOLD="${ACTIVE_RESPONSE_WEB_EXPLOIT_BLOCK_THRESHOLD:-}"
+ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD="${ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD:-}"
 SYSTEMD_UNIT_INSTALLED=0
 
 if [ ! -f "$BIN_PATH" ]; then
@@ -41,6 +49,109 @@ if [ ! -f "$CONFIG_DIR/config.toml" ]; then
 else
   echo "kept existing $CONFIG_DIR/config.toml"
 fi
+
+toml_string() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/'
+}
+
+toml_bool() {
+  case "$1" in
+    yes|true|1) printf '%s\n' "true" ;;
+    no|false|0) printf '%s\n' "false" ;;
+    *)
+      echo "invalid boolean value: $1" >&2
+      exit 1
+      ;;
+  esac
+}
+
+set_toml_value() {
+  file="$1"
+  section="$2"
+  key="$3"
+  value="$4"
+  tmp="${file}.tmp.$$"
+  awk -v section="$section" -v key="$key" -v value="$value" '
+    BEGIN { header = "[" section "]"; in_section = 0; written = 0; seen = 0 }
+    /^\[.*\]$/ {
+      if (in_section && !written) {
+        print key " = " value
+        written = 1
+      }
+      in_section = ($0 == header)
+      if (in_section) {
+        seen = 1
+      }
+    }
+    in_section && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+      if (!written) {
+        print key " = " value
+        written = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!written) {
+        if (!seen) {
+          print ""
+          print header
+        }
+        print key " = " value
+      }
+    }
+  ' "$file" > "$tmp"
+  mv "$tmp" "$file"
+}
+
+configure_storage_limits() {
+  if [ -z "$STORAGE_MAX_DATABASE_SIZE_MB" ]; then
+    return
+  fi
+  config_path="$CONFIG_DIR/config.toml"
+  set_toml_value "$config_path" "storage" "max_database_size_mb" "$STORAGE_MAX_DATABASE_SIZE_MB"
+  chmod 0600 "$config_path"
+  echo "configured storage size limit in $config_path"
+}
+
+configure_active_response() {
+  if [ -z "$ACTIVE_RESPONSE_ENABLED" ] \
+    && [ -z "$ACTIVE_RESPONSE_FIREWALL_BACKEND" ] \
+    && [ -z "$ACTIVE_RESPONSE_BLOCK_TTL_SECONDS" ] \
+    && [ -z "$ACTIVE_RESPONSE_MAX_BLOCKS_PER_SCAN" ] \
+    && [ -z "$ACTIVE_RESPONSE_WEB_PROBE_BLOCK_THRESHOLD" ] \
+    && [ -z "$ACTIVE_RESPONSE_WEB_EXPLOIT_BLOCK_THRESHOLD" ] \
+    && [ -z "$ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD" ]; then
+    return
+  fi
+  config_path="$CONFIG_DIR/config.toml"
+  if [ -n "$ACTIVE_RESPONSE_ENABLED" ]; then
+    set_toml_value "$config_path" "active_response" "enabled" "$(toml_bool "$ACTIVE_RESPONSE_ENABLED")"
+  fi
+  if [ -n "$ACTIVE_RESPONSE_FIREWALL_BACKEND" ]; then
+    set_toml_value "$config_path" "active_response" "firewall_backend" "$(toml_string "$ACTIVE_RESPONSE_FIREWALL_BACKEND")"
+  fi
+  if [ -n "$ACTIVE_RESPONSE_BLOCK_TTL_SECONDS" ]; then
+    set_toml_value "$config_path" "active_response" "block_ttl_seconds" "$ACTIVE_RESPONSE_BLOCK_TTL_SECONDS"
+  fi
+  if [ -n "$ACTIVE_RESPONSE_MAX_BLOCKS_PER_SCAN" ]; then
+    set_toml_value "$config_path" "active_response" "max_blocks_per_scan" "$ACTIVE_RESPONSE_MAX_BLOCKS_PER_SCAN"
+  fi
+  if [ -n "$ACTIVE_RESPONSE_WEB_PROBE_BLOCK_THRESHOLD" ]; then
+    set_toml_value "$config_path" "active_response" "web_probe_block_threshold" "$ACTIVE_RESPONSE_WEB_PROBE_BLOCK_THRESHOLD"
+  fi
+  if [ -n "$ACTIVE_RESPONSE_WEB_EXPLOIT_BLOCK_THRESHOLD" ]; then
+    set_toml_value "$config_path" "active_response" "web_exploit_block_threshold" "$ACTIVE_RESPONSE_WEB_EXPLOIT_BLOCK_THRESHOLD"
+  fi
+  if [ -n "$ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD" ]; then
+    set_toml_value "$config_path" "active_response" "ssh_failed_login_block_threshold" "$ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD"
+  fi
+  chmod 0600 "$config_path"
+  echo "configured active response in $config_path"
+}
+
+configure_storage_limits
+configure_active_response
 
 systemd_available() {
   [ -d /etc/systemd/system ] \

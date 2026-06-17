@@ -8,9 +8,21 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const SIZE_LIMIT_TARGET_PERCENT: u64 = 80;
+const SIZE_LIMIT_MAX_PASSES: usize = 6;
+const MIN_SIZE_PRUNE_BATCH: usize = 1_000;
+
 /// SQLite-backed local event store.
 pub struct SqliteStore {
     path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StorageLimitReport {
+    pub size_before_bytes: u64,
+    pub size_after_bytes: u64,
+    pub deleted_rows: usize,
+    pub vacuumed: bool,
 }
 
 impl SqliteStore {
@@ -310,6 +322,45 @@ impl SqliteStore {
         Ok(deleted)
     }
 
+    pub fn enforce_size_limit(
+        &self,
+        max_database_size_mb: u64,
+    ) -> SentinelResult<Option<StorageLimitReport>> {
+        let limit_bytes = max_database_size_mb.saturating_mul(1024 * 1024);
+        let size_before = self.database_footprint_bytes()?;
+        if size_before <= limit_bytes {
+            return Ok(None);
+        }
+
+        let target_bytes = limit_bytes.saturating_mul(SIZE_LIMIT_TARGET_PERCENT) / 100;
+        let conn = self.connection()?;
+        let mut deleted_rows = 0;
+        let mut vacuumed = false;
+
+        for pass in 0..SIZE_LIMIT_MAX_PASSES {
+            let deleted_this_pass = prune_size_pressure_batch(&conn, pass)?;
+            deleted_rows += deleted_this_pass;
+            checkpoint_and_vacuum(&conn)?;
+            vacuumed = true;
+
+            let current_size = self.database_footprint_bytes()?;
+            if current_size <= target_bytes || deleted_this_pass == 0 {
+                break;
+            }
+        }
+
+        Ok(Some(StorageLimitReport {
+            size_before_bytes: size_before,
+            size_after_bytes: self.database_footprint_bytes()?,
+            deleted_rows,
+            vacuumed,
+        }))
+    }
+
+    fn database_footprint_bytes(&self) -> SentinelResult<u64> {
+        database_footprint_bytes(&self.path)
+    }
+
     fn connection(&self) -> SentinelResult<Connection> {
         Connection::open(&self.path).map_err(|err| SentinelError::Storage(err.to_string()))
     }
@@ -382,6 +433,83 @@ impl SqliteStore {
         .map_err(|err| SentinelError::Storage(err.to_string()))?;
         Ok(())
     }
+}
+
+fn prune_size_pressure_batch(conn: &Connection, pass: usize) -> SentinelResult<usize> {
+    let mut deleted = 0;
+    for (table, column, divisor, min_pass) in [
+        ("raw_events", "timestamp", 4usize, 0usize),
+        ("notification_logs", "attempted_at", 3usize, 0usize),
+        ("scan_runs", "finished_at", 3usize, 0usize),
+        ("findings", "timestamp", 5usize, 1usize),
+    ] {
+        if pass < min_pass {
+            continue;
+        }
+        let count = table_row_count(conn, table)?;
+        if count == 0 {
+            continue;
+        }
+        let batch = (count / divisor).max(MIN_SIZE_PRUNE_BATCH).min(count);
+        deleted += delete_oldest_rows(conn, table, column, batch)?;
+    }
+    Ok(deleted)
+}
+
+fn table_row_count(conn: &Connection, table: &str) -> SentinelResult<usize> {
+    let sql = format!("SELECT COUNT(*) FROM {table}");
+    let count = conn
+        .query_row(&sql, [], |row| row.get::<_, i64>(0))
+        .map_err(|err| SentinelError::Storage(err.to_string()))?;
+    Ok(count.max(0) as usize)
+}
+
+fn delete_oldest_rows(
+    conn: &Connection,
+    table: &str,
+    order_column: &str,
+    limit: usize,
+) -> SentinelResult<usize> {
+    let sql = format!(
+        "DELETE FROM {table}
+         WHERE rowid IN (
+             SELECT rowid FROM {table}
+             ORDER BY {order_column} ASC
+             LIMIT ?1
+         )"
+    );
+    conn.execute(&sql, [limit as i64])
+        .map_err(|err| SentinelError::Storage(err.to_string()))
+}
+
+fn checkpoint_and_vacuum(conn: &Connection) -> SentinelResult<()> {
+    conn.execute_batch(
+        r#"
+        PRAGMA wal_checkpoint(TRUNCATE);
+        VACUUM;
+        PRAGMA optimize;
+        "#,
+    )
+    .map_err(|err| SentinelError::Storage(err.to_string()))
+}
+
+fn database_footprint_bytes(path: &Path) -> SentinelResult<u64> {
+    let mut total = file_len(path)?;
+    total = total.saturating_add(file_len(&sidecar_path(path, "wal"))?);
+    total = total.saturating_add(file_len(&sidecar_path(path, "shm"))?);
+    Ok(total)
+}
+
+fn file_len(path: &Path) -> SentinelResult<u64> {
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.len()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(err) => Err(SentinelError::io(path, err)),
+    }
+}
+
+fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+    PathBuf::from(format!("{}-{suffix}", path.display()))
 }
 
 fn raw_event_storage_id(event: &RawEvent) -> String {
@@ -536,6 +664,39 @@ mod tests {
                 .query_row("SELECT COUNT(*) FROM raw_events", [], |row| row.get(0))?;
 
         assert_eq!(count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn enforce_size_limit_prunes_old_raw_events() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let events = (0..400)
+            .map(|index| {
+                RawEvent::new("web", "web_access")
+                    .with_field("ip", format!("198.51.100.{}", index % 200))
+                    .with_field("method", "GET")
+                    .with_field("path", format!("/probe-{index}"))
+                    .with_field("status", "404")
+                    .with_field("log_source", "/var/log/nginx/access.log")
+                    .with_field("raw", format!("{} {}", index, "x".repeat(10_000)))
+            })
+            .collect::<Vec<_>>();
+        store.save_raw_events(&events)?;
+        let before: i64 =
+            store
+                .connection()?
+                .query_row("SELECT COUNT(*) FROM raw_events", [], |row| row.get(0))?;
+
+        let report = store.enforce_size_limit(1)?.ok_or("expected cleanup")?;
+        let after: i64 =
+            store
+                .connection()?
+                .query_row("SELECT COUNT(*) FROM raw_events", [], |row| row.get(0))?;
+
+        assert!(report.deleted_rows > 0);
+        assert!(after < before);
+        assert!(report.size_after_bytes <= report.size_before_bytes);
         Ok(())
     }
 

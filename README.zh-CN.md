@@ -36,8 +36,9 @@
 | Web 日志 | 解析常见 access log 行，将自动化探测归类为攻击家族，并按来源聚合同类路径，避免按路径刷屏。 |
 | Rootkit 信号 | 采集轻量级本地指标，用于发现隐藏进程和可疑 procfs 行为。 |
 | Docker 上下文 | 检测 Docker 可用性并给出初始容器攻击面提示，不要求 Docker 写权限。 |
-| 本地存储 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和通知日志；重复 raw fact 使用稳定存储键，日志尾部重复扫描不会把相同行无限写入数据库。 |
+| 本地存储 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和通知日志；重复 raw fact 使用稳定存储键，并提供可配置数据库容量上限，避免无限增长。 |
 | 噪声控制 | 支持白名单、最低告警级别、finding 去重和保留周期。 |
+| 主动响应 | 可选通过 nftables 或 iptables 临时封禁高置信公网来源 IP，例如明显 Web 探测和 SSH 爆破；默认关闭。 |
 | 通知告警 | 支持 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan。 |
 | 运维部署 | 单 CLI 二进制、`vs` 简写、JSON 日志、systemd unit、一键安装脚本、更新脚本、内置重载命令和停止脚本。 |
 
@@ -184,6 +185,7 @@ CI 中使用的 Docker 容器只用于构建和兼容性测试，不代表推荐
 | 网络监听 | 解析 `/proc/net/tcp*` 和 `/proc/net/udp*`，通过 `/proc/<pid>/fd` 反查进程，与监听 owner 基线对比，附加进程/防火墙上下文，并优先报告可疑 owner 行为而不是普通端口暴露。 | 22/80/443 等预期端口只降低通用噪音；进程变化或可疑进程仍会告警，高风险端口画像和防火墙状态会作为证据保留。 |
 | 通知 | 将统一 `Finding` 模型按渠道模板渲染：Telegram HTML、Email HTML+纯文本、Markdown 或纯文本。 | 消息包含 VPS 名称、规范化时间、本地化字段、证据、影响和建议。 |
 | 噪声控制 | 使用扫描内去重、跨扫描去重、状态提醒间隔、安静时段和小时级通知预算。 | 减少重复消息，同时保留高价值告警的可见性。 |
+| 主动响应 | 在 finding 去重后、通知发送前评估封禁候选；只有不在 `[allowlist].ips` 中的公网 IP 才可能被封。Web 需要敏感路径成功响应、重复 exploit 家族探测，或高频探测/错误突发；SSH 需要达到比告警更严格的失败次数阈值。 | 可把明显扫描源临时丢进防火墙，同时避免每条告警都变成破坏性动作。 |
 
 ## 一键安装
 
@@ -258,6 +260,14 @@ sudo TELEGRAM_BOT_TOKEN="<telegram-bot-token>" \
 | `TELEGRAM_CHAT_ID` | 空 | 写入本地配置的 Telegram chat ID。 |
 | `TELEGRAM_MIN_SEVERITY` | `Medium` | Telegram 通知的最低等级。 |
 | `RUN_NOTIFY_TEST` | `auto` | `auto`、`yes` 或 `no`；`auto` 会在提供 Telegram 环境变量时发送测试通知。 |
+| `STORAGE_MAX_DATABASE_SIZE_MB` | 空 | 可选覆盖 `[storage].max_database_size_mb`；已有配置只会在传入该变量时被修改。 |
+| `ACTIVE_RESPONSE_ENABLED` | 空 | 设置为 `yes` 会写入 `active_response.enabled = true`；主动响应默认关闭。 |
+| `ACTIVE_RESPONSE_FIREWALL_BACKEND` | 空 | 可选 `auto`、`nftables` 或 `iptables`。 |
+| `ACTIVE_RESPONSE_BLOCK_TTL_SECONDS` | 空 | 可选临时封禁 TTL。 |
+| `ACTIVE_RESPONSE_MAX_BLOCKS_PER_SCAN` | 空 | 可选单轮扫描新增封禁数量上限。 |
+| `ACTIVE_RESPONSE_WEB_PROBE_BLOCK_THRESHOLD` | 空 | 可选高频 Web 探测封禁阈值。 |
+| `ACTIVE_RESPONSE_WEB_EXPLOIT_BLOCK_THRESHOLD` | 空 | 可选重复 exploit 家族 Web 探测封禁阈值。 |
+| `ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD` | 空 | 可选 SSH 爆破封禁阈值。 |
 | `SERVICE_NAME` | `vps-sentinel` | systemd 服务名。 |
 | `SERVICE_PATH` | `/etc/systemd/system/<SERVICE_NAME>.service` | systemd unit 路径。 |
 
@@ -412,7 +422,10 @@ sudo journalctl -u vps-sentinel -f
 type = "sqlite"
 path = "/var/lib/vps-sentinel/sentinel.db"
 retention_days = 30
+max_database_size_mb = 256
 ```
+
+`retention_days` 会按时间删除旧 raw events、findings、通知日志和扫描记录。`max_database_size_mb` 是额外的磁盘安全上限；当 SQLite 主库加 WAL/SHM 旁路文件超过上限时，程序会优先裁剪最旧的高容量数据，执行 WAL checkpoint 和 `VACUUM` 回收磁盘空间，并保留 baseline 与 rule_state。小磁盘 VPS 可以降低该值；如果需要更长本地取证历史，可以适当调大。
 
 SSH 告警策略：
 
@@ -512,6 +525,21 @@ error_burst_threshold = 20
 
 `WEB-001` 会识别 `.env`、`.git`、PHPUnit `eval-stdin.php`、CGI shell traversal、命令注入、SQL 注入、phpMyAdmin、WordPress admin、actuator、server-status 等探测家族。同一来源 IP 的相似路径会按探测家族和响应画像聚合。纯 404/400/301 目录爆破默认是 Low；敏感路径成功响应会升为 High；被拒绝的主动 exploit payload 保持 Medium 上下文。`error_burst_threshold` 控制未命中探测家族规则的同一来源 IP 在扫描窗口内产生多少次 403/404 后触发 `WEB-002`。小型私有服务可以调低，让探测更敏感；公开高流量站点如果自然存在大量缺失资源请求，可以适当调高，减少噪音。
 
+主动响应策略：
+
+```toml
+[active_response]
+enabled = false
+firewall_backend = "auto"
+block_ttl_seconds = 3600
+max_blocks_per_scan = 20
+web_probe_block_threshold = 25
+web_exploit_block_threshold = 5
+ssh_failed_login_block_threshold = 20
+```
+
+主动响应默认关闭，因为它会修改本机防火墙策略。启用后，扫描器会在 finding 去重之后、通知发送之前执行封禁，所以安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。封禁是临时的：nftables 使用 set timeout，程序也会把封禁状态写入 SQLite，后续扫描会清理过期记录。只有公网可路由来源 IP 才会被考虑，`[allowlist].ips` 始终优先。
+
 噪声控制：
 
 ```toml
@@ -593,7 +621,7 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 
 部分采集器需要 root 级别可见性。如果不是 root 运行，`doctor` 会报告可见性降低，相关模块会降级而不是崩溃。
 
-作为常驻 agent，运行时资源占用较小。在当前验证 VPS 上，默认 60 秒扫描循环下 daemon 进程 RSS 约为 10-13 MiB。systemd cgroup 的 `MemoryCurrent` 可能明显更高，从几十 MiB 到几百 MiB 都可能出现，因为 Linux 可能把近期触达的文件缓存和 cgroup 内存统计计入服务。实际内存压力会受日志尾部大小、文件完整性路径范围、内核统计方式和已启用通知渠道影响；判断 daemon 自身稳定占用时应优先看进程 RSS。raw event 存储会对重复事实使用稳定键，因此重复扫描同一段日志尾部或未变化主机状态时会覆盖旧行，而不是每分钟追加相同数据。
+作为常驻 agent，运行时资源占用较小。在当前验证 VPS 上，默认 60 秒扫描循环下 daemon 进程 RSS 约为 10-13 MiB。systemd cgroup 的 `MemoryCurrent` 可能明显更高，从几十 MiB 到几百 MiB 都可能出现，因为 Linux 可能把近期触达的文件缓存和 cgroup 内存统计计入服务。实际内存压力会受日志尾部大小、文件完整性路径范围、内核统计方式和已启用通知渠道影响；判断 daemon 自身稳定占用时应优先看进程 RSS。raw event 存储会对重复事实使用稳定键，因此重复扫描同一段日志尾部或未变化主机状态时会覆盖旧行，而不是每分钟追加相同数据。SQLite 存储还会受 `storage.max_database_size_mb` 约束；超过上限时会裁剪旧的高容量数据并执行 `VACUUM` 回收磁盘空间。
 
 systemd unit 使用：
 
@@ -608,7 +636,7 @@ systemd unit 使用：
 
 - 默认不上报日志；
 - 默认不启用通知渠道；
-- 默认不杀进程、不封 IP、不删除文件；
+- 默认不杀进程、不封 IP、不删除文件；只有显式设置 `[active_response].enabled = true` 时才会写入防火墙封禁规则；
 - SQLite 本地存储；
 - 文件内容扫描有大小限制，只提取特征；
 - token、密码、密钥应只放在本地配置文件中，不应提交到仓库。

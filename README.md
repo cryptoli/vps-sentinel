@@ -36,8 +36,9 @@ It is not:
 | Web log checks | Parses common access log lines, classifies automated probing into attack families, and aggregates similar paths from the same source to avoid path-by-path alert floods. |
 | Rootkit signals | Collects lightweight local indicators for hidden process and suspicious procfs behavior. |
 | Docker context | Detects Docker availability and emits initial container-surface context without requiring Docker-specific write access. |
-| Storage | Stores raw events, findings, baselines, and notification logs in local SQLite; repeated raw facts use stable storage keys so log-tail rescans do not grow the database with identical rows. |
+| Storage | Stores raw events, findings, baselines, and notification logs in local SQLite; repeated raw facts use stable storage keys and a configurable database size cap to prevent unbounded growth. |
 | Noise control | Uses allowlists, minimum severity, finding deduplication, and configurable retention windows. |
+| Active response | Optionally blocks strict, high-confidence public-source web probes and SSH brute-force sources through nftables or iptables with TTL-based expiry. Disabled by default. |
 | Notifications | Sends alerts through Telegram, Email SMTP, generic webhook, ntfy, Gotify, Bark, and ServerChan. |
 | Operations | Provides a single CLI binary, `vs` shorthand, JSON logs, systemd unit, one-command installer, update script, built-in reload command, and stop helper. |
 
@@ -184,6 +185,7 @@ The Docker containers used in CI are build and compatibility test environments o
 | Network listeners | Parses `/proc/net/tcp*` and `/proc/net/udp*`, resolves owning processes through `/proc/<pid>/fd`, compares listener owners with baseline, attaches process/firewall context, and prioritizes suspicious owner behavior over generic port exposure. | Expected 22/80/443 ports reduce generic noise but still produce findings when the owning process changes or looks suspicious; high-risk ports keep their service and firewall profile as evidence. |
 | Notifications | Renders one `Finding` model through channel-specific templates: Telegram HTML, Email HTML/plain text, Markdown-aware channels, or plain text. | Messages include the configured VPS name, normalized time, localized labels, evidence, impact, and recommendations. |
 | Noise control | Applies scan-level deduplication, persisted dedup windows, state reminder intervals, quiet hours, and hourly notification budgets. | Reduces repeat messages while keeping high-value alerts visible. |
+| Active response | Evaluates persisted findings after deduplication and before notification delivery; only public IPs outside `[allowlist].ips` can be blocked. Web blocks require successful sensitive responses, repeated exploit-family probes, or high-volume probe/error bursts; SSH blocks require a stricter failed-login threshold than the alert rule. | Lets operators turn noisy, obvious scanners into temporary firewall drops without making every alert destructive. |
 
 ## Quick Install
 
@@ -259,6 +261,14 @@ Useful installer switches:
 | `TELEGRAM_CHAT_ID` | empty | Telegram chat ID to write into local config. |
 | `TELEGRAM_MIN_SEVERITY` | `Medium` | Minimum severity for Telegram notifications. |
 | `RUN_NOTIFY_TEST` | `auto` | `auto`, `yes`, or `no`; `auto` sends a test when Telegram env vars are provided. |
+| `STORAGE_MAX_DATABASE_SIZE_MB` | empty | Optional override for `[storage].max_database_size_mb`. Existing configs are changed only when this variable is set. |
+| `ACTIVE_RESPONSE_ENABLED` | empty | Set to `yes` to write `active_response.enabled = true`; active response is disabled unless explicitly enabled. |
+| `ACTIVE_RESPONSE_FIREWALL_BACKEND` | empty | Optional `auto`, `nftables`, or `iptables` backend override. |
+| `ACTIVE_RESPONSE_BLOCK_TTL_SECONDS` | empty | Optional temporary block TTL override. |
+| `ACTIVE_RESPONSE_MAX_BLOCKS_PER_SCAN` | empty | Optional cap for new blocks in one scan. |
+| `ACTIVE_RESPONSE_WEB_PROBE_BLOCK_THRESHOLD` | empty | Optional high-volume Web probe block threshold. |
+| `ACTIVE_RESPONSE_WEB_EXPLOIT_BLOCK_THRESHOLD` | empty | Optional repeated exploit-family Web probe block threshold. |
+| `ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD` | empty | Optional SSH brute-force block threshold. |
 | `SERVICE_NAME` | `vps-sentinel` | systemd service name. |
 | `SERVICE_PATH` | `/etc/systemd/system/<SERVICE_NAME>.service` | systemd unit path. |
 
@@ -415,7 +425,10 @@ SQLite is used by default:
 type = "sqlite"
 path = "/var/lib/vps-sentinel/sentinel.db"
 retention_days = 30
+max_database_size_mb = 256
 ```
+
+`retention_days` removes old raw events, findings, notification logs, and scan runs by time. `max_database_size_mb` is an additional disk-safety cap. When the SQLite database plus WAL/SHM sidecars exceed the cap, vps-sentinel prunes the oldest high-volume rows, checkpoints WAL, runs `VACUUM`, and keeps baseline/rule-state tables intact. This protects small VPS disks from historical log growth; choose a larger cap if you need longer local forensics history.
 
 SSH alert policy:
 
@@ -515,6 +528,21 @@ error_burst_threshold = 20
 
 `WEB-001` is emitted for known probe families such as `.env`, `.git`, PHPUnit `eval-stdin.php`, CGI shell traversal, command injection, SQL injection, phpMyAdmin, WordPress admin, actuator, and server-status probes. Similar path variants are aggregated by source IP, probe family, and response profile. A pure 404/400/301 directory sweep is Low by default; successful responses for sensitive paths are High, while rejected active exploit payloads remain Medium context. `error_burst_threshold` controls when `WEB-002` is emitted for repeated 403/404 responses from one source IP that did not already produce a probe-family finding. Lower it on small private services where any probing matters; raise it on busy public sites that naturally receive high volumes of missing-asset requests.
 
+Active response:
+
+```toml
+[active_response]
+enabled = false
+firewall_backend = "auto"
+block_ttl_seconds = 3600
+max_blocks_per_scan = 20
+web_probe_block_threshold = 25
+web_exploit_block_threshold = 5
+ssh_failed_login_block_threshold = 20
+```
+
+Active response is disabled by default because it changes local firewall policy. When enabled, the scanner applies it after finding deduplication and before notification delivery, so quiet hours and notification rate limits do not prevent blocking. The backend uses nftables when available and falls back to iptables/ip6tables. Blocks are temporary: nftables uses set timeouts and vps-sentinel also stores block state in SQLite so expired entries can be removed on later scans. Only public routable source IPs are eligible, and `[allowlist].ips` always wins.
+
 Noise control:
 
 ```toml
@@ -596,7 +624,7 @@ Example rules:
 
 Some collectors need root-level visibility. If the agent runs without root permissions, `doctor` reports reduced visibility and affected modules degrade instead of crashing.
 
-Runtime footprint is intentionally small for a continuously running agent. On the current validation VPS, the daemon process reports about 10-13 MiB RSS during the normal 60-second scan loop. systemd cgroup `MemoryCurrent` can be much higher, from tens of MiB to a few hundred MiB, because Linux may charge recently touched file cache and cgroup memory accounting to the service. Actual memory pressure depends on log tail size, file-integrity path scope, kernel accounting, and enabled notification channels; process RSS is the best steady-state indicator for the daemon itself. Raw event storage uses stable keys for repeated facts, so rescanning the same log tail or unchanged host state replaces rows instead of appending identical data every minute.
+Runtime footprint is intentionally small for a continuously running agent. On the current validation VPS, the daemon process reports about 10-13 MiB RSS during the normal 60-second scan loop. systemd cgroup `MemoryCurrent` can be much higher, from tens of MiB to a few hundred MiB, because Linux may charge recently touched file cache and cgroup memory accounting to the service. Actual memory pressure depends on log tail size, file-integrity path scope, kernel accounting, and enabled notification channels; process RSS is the best steady-state indicator for the daemon itself. Raw event storage uses stable keys for repeated facts, so rescanning the same log tail or unchanged host state replaces rows instead of appending identical data every minute. SQLite storage is additionally bounded by `storage.max_database_size_mb`; when the cap is exceeded, old high-volume rows are pruned and SQLite is vacuumed to reclaim disk space.
 
 The systemd unit uses:
 
@@ -616,7 +644,7 @@ Defaults:
 - local SQLite only;
 - notification channels disabled;
 - bounded file-content scanning;
-- no default destructive remediation.
+- no default destructive remediation; firewall blocking runs only when `[active_response].enabled = true`.
 
 When `privacy.mask_ip` or `privacy.mask_command_args` is enabled, stored events, findings, and notification evidence are redacted before persistence and delivery.
 

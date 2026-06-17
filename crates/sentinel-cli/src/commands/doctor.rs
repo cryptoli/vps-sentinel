@@ -28,6 +28,14 @@ pub fn run_doctor(config: SentinelConfig) -> Result<()> {
         .count();
     println!("configured_auth_logs_existing: {readable_logs}");
     println!("journalctl_ssh_available: {}", journalctl_ssh_available());
+    println!(
+        "active_response_enabled: {}",
+        config.active_response.enabled
+    );
+    if config.active_response.enabled {
+        println!("nftables_available: {}", command_available("nft"));
+        println!("iptables_available: {}", command_available("iptables"));
+    }
 
     if !running_as_root() {
         println!("warning: some modules need root permissions for full visibility");
@@ -51,6 +59,12 @@ fn journalctl_ssh_available() -> bool {
     )
     .map(|output| output.status_success)
     .unwrap_or(false)
+}
+
+fn command_available(program: &str) -> bool {
+    command_output(program, &["--version"], JOURNALCTL_DOCTOR_TIMEOUT)
+        .map(|output| output.status_success)
+        .unwrap_or(false)
 }
 
 fn running_as_root() -> bool {
