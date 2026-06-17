@@ -12,6 +12,7 @@ blake3.workspace = true
 chrono.workspace = true
 glob.workspace = true
 lettre.workspace = true
+libc.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
 sentinel-core = { path = "../sentinel-core" }

@@ -32,6 +32,8 @@ pub fn collect_processes(root: &ProcfsRoot) -> SentinelResult<Vec<RawEvent>> {
     }
 
     let mut events = Vec::new();
+    let uptime_seconds = read_uptime_seconds(root.path().join("uptime"));
+    let clock_ticks = clock_ticks_per_second();
     let entries = match fs::read_dir(root.path()) {
         Ok(entries) => entries,
         Err(err) => return Err(sentinel_core::SentinelError::io(root.path(), err)),
@@ -63,20 +65,28 @@ pub fn collect_processes(root: &ProcfsRoot) -> SentinelResult<Vec<RawEvent>> {
         let name = parse_status_value(&status, "Name").unwrap_or_default();
         let uid = parse_status_first_value(&status, "Uid").unwrap_or_default();
         let euid = parse_status_indexed_value(&status, "Uid", 1).unwrap_or_default();
+        let cpu = fs::read_to_string(process_dir.join("stat"))
+            .ok()
+            .and_then(|stat| parse_process_cpu(&stat, uptime_seconds, clock_ticks));
 
-        events.push(
-            RawEvent::new("process", "process_snapshot")
-                .with_field("pid", pid.to_string())
-                .with_field("ppid", ppid)
-                .with_field("name", name)
-                .with_field("uid", uid)
-                .with_field("euid", euid)
-                .with_field("cmdline", cmdline)
-                .with_field("argv_json", argv_json)
-                .with_field("exe_path", exe_path)
-                .with_field("cwd", cwd)
-                .with_field("socket_fd_count", socket_fd_count.to_string()),
-        );
+        let mut event = RawEvent::new("process", "process_snapshot")
+            .with_field("pid", pid.to_string())
+            .with_field("ppid", ppid)
+            .with_field("name", name)
+            .with_field("uid", uid)
+            .with_field("euid", euid)
+            .with_field("cmdline", cmdline)
+            .with_field("argv_json", argv_json)
+            .with_field("exe_path", exe_path)
+            .with_field("cwd", cwd)
+            .with_field("socket_fd_count", socket_fd_count.to_string());
+        if let Some(cpu) = cpu {
+            event = event
+                .with_field("cpu_percent", format!("{:.1}", cpu.percent))
+                .with_field("cpu_total_seconds", format!("{:.1}", cpu.total_seconds))
+                .with_field("process_age_seconds", format!("{:.1}", cpu.age_seconds));
+        }
+        events.push(event);
     }
     Ok(events)
 }
@@ -111,6 +121,62 @@ fn parse_status_indexed_value(status: &str, key: &str, index: usize) -> Option<S
         .and_then(|value| value.split_whitespace().nth(index).map(str::to_string))
 }
 
+#[derive(Debug, Clone, Copy)]
+struct CpuUsage {
+    percent: f64,
+    total_seconds: f64,
+    age_seconds: f64,
+}
+
+fn parse_process_cpu(
+    stat: &str,
+    uptime_seconds: Option<f64>,
+    clock_ticks: f64,
+) -> Option<CpuUsage> {
+    let uptime_seconds = uptime_seconds?;
+    if clock_ticks <= 0.0 {
+        return None;
+    }
+    let after_comm = stat.rsplit_once(") ")?.1;
+    let fields = after_comm.split_whitespace().collect::<Vec<_>>();
+    let user_ticks = fields.get(11)?.parse::<f64>().ok()?;
+    let system_ticks = fields.get(12)?.parse::<f64>().ok()?;
+    let start_ticks = fields.get(19)?.parse::<f64>().ok()?;
+    let total_seconds = (user_ticks + system_ticks) / clock_ticks;
+    let start_seconds = start_ticks / clock_ticks;
+    let age_seconds = (uptime_seconds - start_seconds).max(0.0);
+    if age_seconds <= 0.0 {
+        return None;
+    }
+    Some(CpuUsage {
+        percent: (total_seconds / age_seconds) * 100.0,
+        total_seconds,
+        age_seconds,
+    })
+}
+
+fn read_uptime_seconds(path: impl AsRef<Path>) -> Option<f64> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|text| text.split_whitespace().next()?.parse::<f64>().ok())
+}
+
+#[cfg(unix)]
+fn clock_ticks_per_second() -> f64 {
+    // SAFETY: sysconf is a thread-safe libc query and does not dereference pointers.
+    let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
+    if ticks > 0 {
+        ticks as f64
+    } else {
+        100.0
+    }
+}
+
+#[cfg(not(unix))]
+fn clock_ticks_per_second() -> f64 {
+    100.0
+}
+
 fn socket_fd_count(process_dir: &Path) -> usize {
     let Ok(entries) = fs::read_dir(process_dir.join("fd")) else {
         return 0;
@@ -128,7 +194,7 @@ fn socket_fd_count(process_dir: &Path) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_processes, ProcfsRoot};
+    use super::{collect_processes, parse_process_cpu, ProcfsRoot};
     use std::fs;
 
     #[test]
@@ -145,6 +211,11 @@ mod tests {
             pid_dir.join("cmdline"),
             b"/usr/local/bin/kworker\0--daemon\0",
         )?;
+        fs::write(temp.path().join("uptime"), "1000.00 900.00\n")?;
+        fs::write(
+            pid_dir.join("stat"),
+            "1234 (kworker) S 1 0 0 0 0 0 0 0 0 0 200 100 0 0 20 0 1 0 500 0",
+        )?;
 
         let events = collect_processes(&ProcfsRoot::new(temp.path().to_path_buf()))?;
 
@@ -160,6 +231,19 @@ mod tests {
             Some("/usr/local/bin/kworker --daemon")
         );
         assert_eq!(event.field("socket_fd_count"), Some("0"));
+        assert!(event.field("cpu_percent").is_some());
+        assert!(event.field("cpu_total_seconds").is_some());
+        assert!(event.field("process_age_seconds").is_some());
         Ok(())
+    }
+
+    #[test]
+    fn parses_process_cpu_from_proc_stat() {
+        let stat = "1234 (miner worker) S 1 0 0 0 0 0 0 0 0 0 9000 1000 0 0 20 0 1 0 5000 0";
+        let usage = parse_process_cpu(stat, Some(200.0), 100.0).expect("cpu usage");
+
+        assert!((usage.total_seconds - 100.0).abs() < 0.01);
+        assert!((usage.age_seconds - 150.0).abs() < 0.01);
+        assert!((usage.percent - 66.7).abs() < 0.1);
     }
 }

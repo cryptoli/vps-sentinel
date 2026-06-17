@@ -149,10 +149,11 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
         },
         "PROC-004" => RuleMessage {
             title: "疑似挖矿或扫描进程",
-            description: "进程命令行包含常见挖矿或扫描器特征。",
-            impact: &[],
+            description: "进程身份匹配了配置中的挖矿或扫描器工具名。",
+            impact: &["如果该进程不是你主动安装或执行的，可能表示资源滥用、侦察扫描或入侵后的工具投放。"],
             recommendations: &[
-                "检查 CPU、网络用量以及该二进制是否由你安装。",
+                "确认该二进制是否由管理员安装、计划任务或自动化流程启动。",
+                "检查 CPU、网络连接、父进程、文件属主和软件包来源。",
                 "确认入侵后轮换相关凭据。",
             ],
         },

@@ -107,6 +107,18 @@ impl SentinelConfig {
                 "process.behavior_min_score must be greater than 0".to_string(),
             ));
         }
+        if !self.process.high_cpu_threshold_percent.is_finite()
+            || self.process.high_cpu_threshold_percent <= 0.0
+        {
+            return Err(SentinelError::Config(
+                "process.high_cpu_threshold_percent must be a positive finite number".to_string(),
+            ));
+        }
+        if self.process.high_cpu_duration_seconds == 0 {
+            return Err(SentinelError::Config(
+                "process.high_cpu_duration_seconds must be greater than 0".to_string(),
+            ));
+        }
         if self.process.suspicious_socket_fd_threshold == 0 {
             return Err(SentinelError::Config(
                 "process.suspicious_socket_fd_threshold must be greater than 0".to_string(),
@@ -292,6 +304,18 @@ mod tests {
 
         let mut config = SentinelConfig::default();
         config.process.behavior_min_score = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.process.high_cpu_threshold_percent = 0.0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.process.high_cpu_threshold_percent = f32::NAN;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.process.high_cpu_duration_seconds = 0;
         assert!(config.validate().is_err());
 
         let mut config = SentinelConfig::default();

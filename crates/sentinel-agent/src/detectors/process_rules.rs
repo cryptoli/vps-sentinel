@@ -44,7 +44,7 @@ impl Detector for ProcessDetector {
                 "Possible miner or scanner process",
                 Category::Process,
                 Severity::Critical,
-                "A process command line contains common miner or scanner names.",
+                "A process identity matches a configured miner or scanner tool name.",
             ),
             RuleMetadata::new(
                 "PROC-005",
@@ -83,8 +83,10 @@ impl Detector for ProcessDetector {
             if network_execution_assessment_from_event(event).is_suspicious() {
                 findings.push(network_execution_bridge(event, ctx));
             }
-            if event_contains_miner_or_scanner(event, &ctx.config.process.known_bad_tool_names) {
-                findings.push(miner_or_scanner(event, ctx));
+            if let Some(tool_match) =
+                known_tool_match(event, &ctx.config.process.known_bad_tool_names)
+            {
+                findings.push(miner_or_scanner(event, ctx, tool_match));
             }
             if let Some(assessment) = behavior_cluster_assessment(event, ctx) {
                 if assessment.is_suspicious(ctx.config.process.behavior_min_score) {
@@ -183,12 +185,18 @@ fn deleted_executable_assessment(event: &RawEvent, ctx: &DetectContext) -> Optio
         );
     }
 
-    if event_contains_miner_or_scanner(event, &ctx.config.process.known_bad_tool_names) {
+    if let Some(tool_match) = known_tool_match(event, &ctx.config.process.known_bad_tool_names) {
         assessment.add_signal(
             85,
             "known_bad_tool",
-            "process identity matches a configured miner or scanner tool name",
+            format!(
+                "process identity '{}' matches configured tool '{}'",
+                tool_match.value, tool_match.tool
+            ),
         );
+    }
+    if let Some(cpu) = high_cpu_signal(event, ctx) {
+        assessment.add_signal(55, "sustained_high_cpu", cpu.reason());
     }
 
     if is_shell_process_name(&string_field(event, "name")) {
@@ -224,19 +232,53 @@ fn network_execution_bridge(event: &RawEvent, ctx: &DetectContext) -> Finding {
     ])
 }
 
-fn miner_or_scanner(event: &RawEvent, ctx: &DetectContext) -> Finding {
+fn miner_or_scanner(event: &RawEvent, ctx: &DetectContext, tool_match: KnownToolMatch) -> Finding {
+    let high_cpu = high_cpu_signal(event, ctx);
     Finding::new(
         &ctx.host_id,
-        "Possible miner or scanner process",
-        "A process command line contains common miner or scanner indicators.",
+        if high_cpu.is_some() {
+            "Miner or scanner process with sustained CPU activity"
+        } else {
+            "Known miner or scanner process identity"
+        },
+        if high_cpu.is_some() {
+            "A running process matches a configured miner or scanner identity and has sustained CPU activity."
+        } else {
+            "A running process identity matches a configured miner or scanner tool name."
+        },
         Severity::Critical,
         Category::Process,
         "PROC-004",
         string_field(event, "pid"),
     )
-    .with_evidence(process_evidence(event))
+    .with_evidence({
+        let mut items = process_evidence(event);
+        items.push(evidence("matched_tool", tool_match.tool));
+        items.push(evidence("match_source", tool_match.source));
+        items.push(evidence("matched_value", tool_match.value));
+        if let Some(cpu) = high_cpu {
+            items.push(evidence("risk_score", "90"));
+            items.push(evidence("risk_reasons", cpu.reason()));
+            items.push(evidence(
+                "risk_features",
+                "known_bad_tool, sustained_high_cpu",
+            ));
+        } else {
+            items.push(evidence("risk_score", "70"));
+            items.push(evidence(
+                "risk_reasons",
+                "configured miner/scanner identity matched",
+            ));
+            items.push(evidence("risk_features", "known_bad_tool"));
+        }
+        items
+    })
+    .with_impact(vec![
+        "Unexpected miner or scanner processes can indicate resource abuse, reconnaissance, or post-compromise tooling.".to_string(),
+    ])
     .with_recommendations(vec![
-        "Check CPU/network usage and whether the binary was intentionally installed.".to_string(),
+        "Confirm whether the binary was intentionally installed and scheduled by an administrator.".to_string(),
+        "Review CPU usage, outbound connections, parent process, file owner, and package provenance.".to_string(),
         "Rotate credentials if compromise is confirmed.".to_string(),
     ])
 }
@@ -280,13 +322,17 @@ fn process_behavior_cluster(
 }
 
 fn process_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
-    vec![
+    let mut items = vec![
         evidence("pid", string_field(event, "pid")),
         evidence("ppid", string_field(event, "ppid")),
         evidence("name", string_field(event, "name")),
         evidence("exe_path", string_field(event, "exe_path")),
         evidence("cmdline", string_field(event, "cmdline")),
-    ]
+    ];
+    push_evidence_if_present(&mut items, event, "cpu_percent");
+    push_evidence_if_present(&mut items, event, "cpu_total_seconds");
+    push_evidence_if_present(&mut items, event, "process_age_seconds");
+    items
 }
 
 #[derive(Debug, Clone, Default)]
@@ -380,6 +426,9 @@ fn behavior_cluster_assessment(
             "process owns socket file descriptors",
         );
     }
+    if let Some(cpu) = high_cpu_signal(event, ctx) {
+        assessment.add_signal(25, "sustained_high_cpu", cpu.reason());
+    }
     if euid == ROOT_UID && assessment.score >= 55 {
         assessment.add_signal(
             15,
@@ -440,45 +489,89 @@ pub(crate) fn event_contains_miner_or_scanner(
     event: &RawEvent,
     known_tool_names: &[String],
 ) -> bool {
-    let candidates = process_identity_tokens(event);
-    if !candidates.is_empty() {
-        return args_contain_miner_or_scanner(
-            candidates.iter().map(String::as_str),
-            known_tool_names,
-        );
-    }
-    contains_miner_or_scanner(event.field("cmdline").unwrap_or_default(), known_tool_names)
+    known_tool_match(event, known_tool_names).is_some()
 }
 
-fn process_identity_tokens(event: &RawEvent) -> Vec<String> {
-    let mut candidates = ["exe_path", "executable", "name", "process_name"]
-        .into_iter()
-        .filter_map(|key| event.field(key))
-        .filter(|value| !value.trim().is_empty())
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+#[derive(Debug, Clone)]
+struct KnownToolMatch {
+    tool: String,
+    source: &'static str,
+    value: String,
+}
+
+fn known_tool_match(event: &RawEvent, known_tool_names: &[String]) -> Option<KnownToolMatch> {
+    let mut saw_identity = false;
+    for (field, source) in [
+        ("exe_path", "exe_path"),
+        ("executable", "executable"),
+        ("name", "process_name"),
+        ("process_name", "process_name"),
+    ] {
+        let Some(value) = event.field(field).filter(|value| !value.trim().is_empty()) else {
+            continue;
+        };
+        saw_identity = true;
+        if let Some(tool) =
+            matched_known_tool_name(&command_token_basename(value), known_tool_names)
+        {
+            return Some(KnownToolMatch {
+                tool,
+                source,
+                value: value.to_string(),
+            });
+        }
+    }
     if let Some(first_arg) = event
         .field("argv_json")
         .and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
         .and_then(|args| args.into_iter().next())
         .filter(|value| !value.trim().is_empty())
     {
-        candidates.push(first_arg);
+        saw_identity = true;
+        if let Some(tool) =
+            matched_known_tool_name(&command_token_basename(&first_arg), known_tool_names)
+        {
+            return Some(KnownToolMatch {
+                tool,
+                source: "argv0",
+                value: first_arg,
+            });
+        }
     }
-    candidates
+    if saw_identity {
+        return None;
+    }
+    event
+        .field("cmdline")
+        .and_then(|command| matched_tool_in_args(command.split_whitespace(), known_tool_names))
+        .map(|(tool, value)| KnownToolMatch {
+            tool,
+            source: "cmdline_token",
+            value,
+        })
 }
 
+#[cfg(test)]
 pub(crate) fn contains_miner_or_scanner(command: &str, known_tool_names: &[String]) -> bool {
     args_contain_miner_or_scanner(command.split_whitespace(), known_tool_names)
 }
 
+#[cfg(test)]
 fn args_contain_miner_or_scanner<'a, I>(args: I, known_tool_names: &[String]) -> bool
 where
     I: IntoIterator<Item = &'a str>,
 {
-    args.into_iter()
-        .map(command_token_basename)
-        .any(|name| matches_known_tool_name(&name, known_tool_names))
+    matched_tool_in_args(args, known_tool_names).is_some()
+}
+
+fn matched_tool_in_args<'a, I>(args: I, known_tool_names: &[String]) -> Option<(String, String)>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    args.into_iter().find_map(|arg| {
+        let name = command_token_basename(arg);
+        matched_known_tool_name(&name, known_tool_names).map(|tool| (tool, arg.to_string()))
+    })
 }
 
 fn command_token_basename(token: &str) -> String {
@@ -496,13 +589,51 @@ fn command_token_basename(token: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn matches_known_tool_name(name: &str, known_tool_names: &[String]) -> bool {
+fn matched_known_tool_name(name: &str, known_tool_names: &[String]) -> Option<String> {
     let normalized = name.strip_suffix(".exe").unwrap_or(name);
-    known_tool_names.iter().any(|tool| {
-        let tool = command_token_basename(tool);
-        let tool = tool.strip_suffix(".exe").unwrap_or(&tool);
-        !tool.is_empty() && normalized.eq_ignore_ascii_case(tool)
+    known_tool_names.iter().find_map(|tool| {
+        let candidate = command_token_basename(tool);
+        let candidate = candidate.strip_suffix(".exe").unwrap_or(&candidate);
+        (!candidate.is_empty() && normalized.eq_ignore_ascii_case(candidate))
+            .then(|| candidate.to_string())
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HighCpuSignal {
+    percent: f32,
+    age_seconds: f64,
+}
+
+impl HighCpuSignal {
+    fn reason(self) -> String {
+        format!(
+            "process lifetime average CPU {:.1}% for {:.0}s exceeds configured threshold",
+            self.percent, self.age_seconds
+        )
+    }
+}
+
+fn high_cpu_signal(event: &RawEvent, ctx: &DetectContext) -> Option<HighCpuSignal> {
+    let percent = event.field("cpu_percent")?.parse::<f32>().ok()?;
+    let age_seconds = event.field("process_age_seconds")?.parse::<f64>().ok()?;
+    if percent >= ctx.config.process.high_cpu_threshold_percent
+        && age_seconds >= ctx.config.process.high_cpu_duration_seconds as f64
+    {
+        Some(HighCpuSignal {
+            percent,
+            age_seconds,
+        })
+    } else {
+        None
+    }
+}
+
+fn push_evidence_if_present(items: &mut Vec<sentinel_core::Evidence>, event: &RawEvent, key: &str) {
+    let value = string_field(event, key);
+    if !value.trim().is_empty() {
+        items.push(evidence(key, value));
+    }
 }
 
 fn is_deleted_executable_path(path: &str) -> bool {
@@ -639,6 +770,73 @@ mod tests {
             .with_field("argv_json", benign_argv)
             .with_field("cmdline", "/usr/local/bin/worker --profile xmrig");
         assert!(!event_contains_miner_or_scanner(&benign, &tools));
+    }
+
+    #[test]
+    fn known_tool_finding_includes_match_source_and_cpu_context() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event(
+            "/usr/local/bin/xmrig",
+            "xmrig",
+            "/usr/local/bin/xmrig -o pool.example",
+        )
+        .with_field("cpu_percent", "96.5")
+        .with_field("cpu_total_seconds", "300.0")
+        .with_field("process_age_seconds", "240.0");
+
+        let findings = ProcessDetector.detect(&[event], &ctx);
+        let finding = findings
+            .iter()
+            .find(|finding| finding.rule_id == "PROC-004")
+            .expect("known tool finding");
+
+        assert!(finding.title.contains("sustained CPU"));
+        assert!(finding
+            .evidence
+            .iter()
+            .any(|item| item.key == "matched_tool" && item.value == "xmrig"));
+        assert!(finding
+            .evidence
+            .iter()
+            .any(|item| item.key == "match_source" && item.value == "exe_path"));
+        assert!(finding
+            .evidence
+            .iter()
+            .any(|item| item.key == "risk_features" && item.value.contains("sustained_high_cpu")));
+    }
+
+    #[test]
+    fn high_cpu_alone_is_not_a_process_alert() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event("/usr/local/bin/worker", "worker", "worker --serve")
+            .with_field("cpu_percent", "98.0")
+            .with_field("process_age_seconds", "600.0")
+            .with_field("cwd", "/")
+            .with_field("socket_fd_count", "0")
+            .with_field("euid", "1000");
+
+        let findings = ProcessDetector.detect(&[event], &ctx);
+
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn high_cpu_contributes_to_behavior_cluster_with_other_context() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event("/usr/local/bin/.sysd", ".sysd", ".sysd --worker")
+            .with_field("cpu_percent", "91.0")
+            .with_field("process_age_seconds", "600.0")
+            .with_field("cwd", "/")
+            .with_field("socket_fd_count", "1")
+            .with_field("euid", "0");
+
+        let assessment = behavior_cluster_assessment(&event, &ctx);
+
+        assert!(assessment.is_some_and(|assessment| {
+            assessment.is_suspicious(70)
+                && assessment.has_feature("sustained_high_cpu")
+                && assessment.has_feature("hidden_executable_name")
+        }));
     }
 
     #[test]

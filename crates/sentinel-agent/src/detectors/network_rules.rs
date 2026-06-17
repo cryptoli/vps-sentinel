@@ -344,7 +344,8 @@ impl ListenerRiskProfile {
         }
         if event_contains_miner_or_scanner(event, &ctx.config.process.known_bad_tool_names) {
             score += 70;
-            reasons.push("command line contains miner or scanner indicators".to_string());
+            reasons.push("process identity matches a configured miner or scanner tool".to_string());
+            features.push("known_bad_tool".to_string());
         }
         if is_shell_process_name(&process_name) {
             score += 35;

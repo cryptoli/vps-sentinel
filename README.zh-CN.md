@@ -31,7 +31,7 @@
 | 用户与权限 | 检测新增用户、UID 0 用户、权限相关用户变化。 |
 | 文件完整性 | 监控关键路径和 Web 根目录；对限定大小内文件做哈希和内容扫描；检测关键文件变化、Web 目录可执行脚本、达到风险评分阈值的 WebShell 风格特征组合。 |
 | 持久化检查 | 监控 cron、systemd、shell profile、`ld.so.preload` 等启动相关位置，并对可疑启动命令进行风险评分。 |
-| 进程检查 | 读取 procfs argv、可执行路径、工作目录、socket FD 数和 UID 上下文，识别临时目录执行、达到风险评分阈值的 deleted executable、网络命令执行桥接、可疑行为聚类和已知挖矿/扫描器身份。 |
+| 进程检查 | 读取 procfs argv、可执行路径、工作目录、socket FD 数、UID 上下文和 procfs 生命周期 CPU 指标，识别临时目录执行、达到风险评分阈值的 deleted executable、网络命令执行桥接、可疑行为聚类和已知挖矿/扫描器身份。 |
 | 网络检查 | 读取监听 socket 与所属进程；检测高风险公网服务、可疑监听进程、监听 owner 基线漂移和新增公网监听。22/80/443 等预期端口会降低噪音，但不会被无脑信任。 |
 | Web 日志 | 解析常见 access log 行，检测自动化漏洞探测路径。 |
 | Rootkit 信号 | 采集轻量级本地指标，用于发现隐藏进程和可疑 procfs 行为。 |
@@ -45,7 +45,7 @@
 
 命令执行相关规则是行为画像规则，不是简单的工具名或端口名匹配。vps-sentinel 会从 `/proc/<pid>/cmdline` 保留结构化 argv，构建命令画像，并且只有在网络通道、shell 目标、`SYSTEM:` 命令执行器、fd 复制、内联 socket 代码、TTY 分配等高风险特征组合出现时，才触发 `PROC-003` 或 `NET-003`。
 
-已知挖矿/扫描器检测会更克制：`PROC-004` 只会用可执行文件路径、进程名、结构化 `argv[0]` 等进程身份字段匹配 `xmrig`、`masscan`、`zmap` 等已知工具名，并兼容 `.exe` 后缀。结构化进程身份可用时，普通命令参数里出现这些词不会直接告警。
+已知挖矿/扫描器检测会更克制：`PROC-004` 只会用可执行文件路径、进程名、结构化 `argv[0]` 等进程身份字段匹配 `xmrig`、`masscan`、`zmap` 等已知工具名，并兼容 `.exe` 后缀。结构化进程身份可用时，普通命令参数里出现这些词不会直接告警。当 procfs CPU 数据可用时，告警会附带生命周期平均 CPU、进程年龄和累计 CPU 秒数；持续高 CPU 会增强判断，但单独高 CPU 不会触发告警。
 
 deleted executable 和启动项告警也采用评分模型。`PROC-002` 需要同时具备临时目录执行、memfd 或匿名文件、隐藏的非标准可执行文件、网络执行桥、已知挖矿/扫描器身份等风险特征；系统升级后遗留的 `systemd`、`dockerd`、`python3` 等标准路径 deleted 进程，如果没有其它风险特征，会被视为维护上下文。`PERSIST-002` 会对启动命令中的下载后管道执行、临时路径自启动、base64 解码后 shell 执行、网络到 shell 执行桥等组合进行评分；单独的 `bash -c` 服务包装不会触发默认阈值。
 
@@ -171,7 +171,7 @@ systemd 对安装不是强制要求，但 `vps-sentinel-reload`、`vps-sentinel-
 | SSH key 完整性 | 独立哈希监控 `authorized_keys` 和 `authorized_keys2`，不依赖总的文件完整性开关。 | 即使关闭通用文件完整性，也能发现 SSH 持久化 key 变化。 |
 | 文件和持久化漂移 | 使用 SQLite 保存本地基线，后续扫描做快照 diff；同一路径的文件/持久化 finding 会合并，并附带软件包活动上下文。 | 能发现真实漂移，同时减少合法软件更新时的判断成本；基线只会在用户明确执行命令时刷新。 |
 | WebShell 内容 | 对限定大小内的文件内容提取风险 marker，并结合 Web 路径、脚本类型和 marker 组合评分。 | 单个弱 marker 默认不告警，但能识别经典 Web 命令执行和编码 payload 组合。 |
-| 进程风险 | 读取 procfs argv、可执行路径、cwd、UID/EUID、deleted 状态和 socket FD 数，并按规则评分、白名单和同 PID 信号聚合处理。 | 识别临时路径执行、可疑 deleted executable、网络 shell 桥接、已知挖矿/扫描器身份和改名行为聚类，同时避免同一进程发送多条告警。 |
+| 进程风险 | 读取 procfs argv、可执行路径、cwd、UID/EUID、deleted 状态、socket FD 数和生命周期 CPU 指标，并按规则评分、白名单和同 PID 信号聚合处理。 | 识别临时路径执行、可疑 deleted executable、网络 shell 桥接、已知挖矿/扫描器身份和改名行为聚类，同时避免同一进程发送多条告警。 |
 | 网络监听 | 解析 `/proc/net/tcp*` 和 `/proc/net/udp*`，通过 `/proc/<pid>/fd` 反查进程，与监听 owner 基线对比，并优先报告可疑 owner 行为而不是普通端口暴露。 | 22/80/443 等预期端口只降低通用噪音；进程变化或可疑进程仍会告警，高风险端口画像会作为证据保留。 |
 | 通知 | 将统一 `Finding` 模型按渠道模板渲染：Telegram HTML、Email HTML+纯文本、Markdown 或纯文本。 | 消息包含 VPS 名称、规范化时间、本地化字段、证据、影响和建议。 |
 | 噪声控制 | 使用扫描内去重、跨扫描去重、状态提醒间隔、安静时段和小时级通知预算。 | 减少重复消息，同时保留高价值告警的可见性。 |
@@ -458,11 +458,13 @@ public_listen_allowlist = [22, 80, 443]
 [process]
 deleted_executable_min_score = 70
 behavior_min_score = 70
+high_cpu_threshold_percent = 80.0
+high_cpu_duration_seconds = 120
 suspicious_socket_fd_threshold = 20
 known_bad_tool_names = ["xmrig", "kinsing", "masscan", "zmap"]
 ```
 
-`deleted_executable_min_score` 控制何时产生 `PROC-002`。deleted executable 状态会结合路径、进程身份和命令行为评分；标准系统二进制在软件包升级后仍短暂运行，不会单独触发高危告警。`behavior_min_score` 控制 `PROC-005`，它会组合内核线程伪装、Web 根目录执行、隐藏可执行文件名、可疑工作目录、socket FD 活动和有效 root 权限等弱信号。`suspicious_socket_fd_threshold` 控制 socket 持有数量达到多少时成为更强的行为信号。`known_bad_tool_names` 控制 `PROC-004` 的已知挖矿/扫描器指标词表。它会匹配 `exe_path`、`executable`、进程名和结构化 `argv[0]` 等进程身份字段，并兼容 `.exe` 后缀；缺少结构化身份的旧事件才回退到命令 token basename 匹配。同一个 PID 同时命中多个进程规则时，扫描器会保留一条最高价值 finding，并合并进程信号、风险原因、影响和处置建议。
+`deleted_executable_min_score` 控制何时产生 `PROC-002`。deleted executable 状态会结合路径、进程身份和命令行为评分；标准系统二进制在软件包升级后仍短暂运行，不会单独触发高危告警。`behavior_min_score` 控制 `PROC-005`，它会组合内核线程伪装、Web 根目录执行、隐藏可执行文件名、可疑工作目录、socket FD 活动、持续高 CPU 和有效 root 权限等弱信号。`high_cpu_threshold_percent` 和 `high_cpu_duration_seconds` 基于 procfs 的生命周期 CPU 时间与进程年龄定义持续高 CPU；高 CPU 是辅助信号，不是单独告警条件。`suspicious_socket_fd_threshold` 控制 socket 持有数量达到多少时成为更强的行为信号。`known_bad_tool_names` 控制 `PROC-004` 的已知挖矿/扫描器指标词表。它会匹配 `exe_path`、`executable`、进程名和结构化 `argv[0]` 等进程身份字段，并兼容 `.exe` 后缀；缺少结构化身份的旧事件才回退到命令 token basename 匹配。同一个 PID 同时命中多个进程规则时，扫描器会保留一条最高价值 finding，并合并进程信号、风险原因、影响和处置建议。
 
 持久化命令评分：
 

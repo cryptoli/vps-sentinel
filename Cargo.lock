@@ -1241,6 +1241,7 @@ dependencies = [
  "chrono",
  "glob",
  "lettre",
+ "libc",
  "reqwest",
  "rusqlite",
  "sentinel-core",
