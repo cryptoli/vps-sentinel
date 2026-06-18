@@ -293,7 +293,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-The update script tries a release artifact by default, validates the downloaded binary with `--version`, and falls back to a source build only when the artifact is unavailable or cannot execute on the host. The source fallback pulls the selected branch, repairs a missing or misconfigured Rust toolchain when needed, and rebuilds the binary. Both paths preserve the existing config, remove deprecated config keys after writing a `.bak` backup, append missing default config keys without overwriting existing values, validate the final config, refresh the systemd unit when available, update the `vs` shorthand, and restart an active or enabled service so the new binary is actually running. It does not refresh an existing baseline by default, so unreviewed host drift such as `authorized_keys` changes is not silently trusted during an update. Unchanged systemd unit content is not rewritten, so routine updates do not churn unit file mtimes. Use `vps-sentinel reload` or `vs reload` for config-only changes that do not replace the binary.
+The update script tries a release artifact by default, validates the downloaded binary with `--version`, and falls back to a source build only when the artifact is unavailable or cannot execute on the host. The source fallback pulls the selected branch, repairs a missing or misconfigured Rust toolchain when needed, and rebuilds the binary. Both paths preserve the existing config, remove deprecated config keys after writing a `.bak` backup, append missing default config keys without overwriting existing values, validate the final config, refresh the systemd unit when available, update the `vs` shorthand, run a post-update `scan --no-notify` by default to warm duplicate and active-response state, and restart an active or enabled service so the new binary is actually running. It does not refresh an existing baseline by default, so unreviewed host drift such as `authorized_keys` changes is not silently trusted during an update. Unchanged systemd unit content is not rewritten, so routine updates do not churn unit file mtimes. Use `vps-sentinel reload` or `vs reload` for config-only changes that do not replace the binary.
 
 Useful update switches:
 
@@ -317,6 +317,7 @@ Useful update switches:
 | `MIGRATE_CONFIG` | `yes` | Remove deprecated config keys after writing a `.bak` backup. Set to `no` to skip. |
 | `SYNC_CONFIG_DEFAULTS` | `yes` | Append missing current-version default keys while preserving user-set values. Set to `no` to skip. |
 | `REFRESH_BASELINE` | `no` | Set to `yes` only after you have reviewed current drift and want the update to refresh the existing baseline. |
+| `POST_UPDATE_SCAN` | `yes` | Run one `scan --no-notify` before service restart to reduce update-time notification bursts. |
 
 ## Reload Configuration
 

@@ -290,7 +290,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-更新脚本默认优先下载 release artifact，并先用 `--version` 验证二进制能否在当前机器执行；只有 artifact 不存在或不兼容时，才回退到源码构建。源码回退路径会拉取指定分支，并在 `cargo` 缺失或配置异常时通过 rustup 修复 Rust toolchain。两条路径都会保留已有配置、写入 `.bak` 备份后删除废弃配置字段、追加当前版本缺失的默认配置项但不覆盖已有值、校验最终配置、刷新 systemd unit、更新 `vs` 简写，并在服务正在运行或已启用时 restart 服务，确保新二进制真正生效。它默认不会刷新已有基线，避免 `authorized_keys` 等未确认漂移在更新时被静默吸收为可信状态。systemd unit 内容未变化时不会重写文件，避免例行更新造成 unit mtime 变化。只修改配置、不替换二进制时使用 `vps-sentinel reload` 或 `vs reload`。
+更新脚本默认优先下载 release artifact，并先用 `--version` 验证二进制能否在当前机器执行；只有 artifact 不存在或不兼容时，才回退到源码构建。源码回退路径会拉取指定分支，并在 `cargo` 缺失或配置异常时通过 rustup 修复 Rust toolchain。两条路径都会保留已有配置、写入 `.bak` 备份后删除废弃配置字段、追加当前版本缺失的默认配置项但不覆盖已有值、校验最终配置、刷新 systemd unit、更新 `vs` 简写，默认执行一次 `scan --no-notify` 预热去重和主动响应状态，并在服务正在运行或已启用时 restart 服务，确保新二进制真正生效。它默认不会刷新已有基线，避免 `authorized_keys` 等未确认漂移在更新时被静默吸收为可信状态。systemd unit 内容未变化时不会重写文件，避免例行更新造成 unit mtime 变化。只修改配置、不替换二进制时使用 `vps-sentinel reload` 或 `vs reload`。
 
 常用更新变量：
 
@@ -314,6 +314,7 @@ sudo sh update.sh
 | `MIGRATE_CONFIG` | `yes` | 写入 `.bak` 备份后删除废弃配置字段；设置为 `no` 可跳过。 |
 | `SYNC_CONFIG_DEFAULTS` | `yes` | 追加当前版本缺失的默认配置项，不覆盖用户已有值；设置为 `no` 可跳过。 |
 | `REFRESH_BASELINE` | `no` | 只有在已经人工确认当前漂移可信时，才设置为 `yes` 让更新脚本刷新已有基线。 |
+| `POST_UPDATE_SCAN` | `yes` | 服务重启前执行一次 `scan --no-notify`，减少升级期间的重复通知。 |
 
 ## 重载配置
 

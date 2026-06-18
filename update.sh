@@ -22,7 +22,9 @@ VALIDATE_CONFIG="${VALIDATE_CONFIG:-yes}"
 MIGRATE_CONFIG="${MIGRATE_CONFIG:-yes}"
 SYNC_CONFIG_DEFAULTS="${SYNC_CONFIG_DEFAULTS:-yes}"
 REFRESH_BASELINE="${REFRESH_BASELINE:-no}"
+POST_UPDATE_SCAN="${POST_UPDATE_SCAN:-yes}"
 SYSTEMD_UNIT_INSTALLED=0
+SERVICE_WAS_ACTIVE=0
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "please run as root, for example: sudo sh update.sh" >&2
@@ -219,6 +221,35 @@ install_systemd_unit_file() {
   SYSTEMD_UNIT_INSTALLED=1
 }
 
+stop_service_before_update() {
+  case "$INSTALL_SYSTEMD" in
+    no|false|0) return ;;
+    yes|true|1|auto) ;;
+    *)
+      echo "invalid INSTALL_SYSTEMD value: $INSTALL_SYSTEMD" >&2
+      exit 1
+      ;;
+  esac
+
+  case "$RESTART_SERVICE" in
+    auto|yes|true|1) ;;
+    no|false|0) return ;;
+    *)
+      echo "invalid RESTART_SERVICE value: $RESTART_SERVICE" >&2
+      exit 1
+      ;;
+  esac
+
+  if ! systemd_available; then
+    return
+  fi
+
+  if systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
+    SERVICE_WAS_ACTIVE=1
+    systemctl stop "$SERVICE_NAME"
+  fi
+}
+
 restart_updated_service() {
   if [ "$SYSTEMD_UNIT_INSTALLED" -ne 1 ]; then
     return
@@ -226,9 +257,7 @@ restart_updated_service() {
 
   case "$RESTART_SERVICE" in
     auto)
-      if systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
-        systemctl restart "$SERVICE_NAME"
-      elif systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
+      if [ "$SERVICE_WAS_ACTIVE" -eq 1 ] || systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
         systemctl start "$SERVICE_NAME"
       else
         echo "updated systemd unit; service is not active or enabled"
@@ -243,6 +272,26 @@ restart_updated_service() {
       ;;
     *)
       echo "invalid RESTART_SERVICE value: $RESTART_SERVICE" >&2
+      exit 1
+      ;;
+  esac
+}
+
+post_update_scan() {
+  case "$POST_UPDATE_SCAN" in
+    yes|true|1)
+      log="$LOG_DIR/post-update-scan.log"
+      if "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" scan --no-notify > "$log" 2>&1; then
+        sed -n '1p' "$log"
+        echo "post-update scan details: $log"
+      else
+        echo "post-update no-notify scan failed; service restart continues" >&2
+        cat "$log" >&2
+      fi
+      ;;
+    no|false|0) ;;
+    *)
+      echo "invalid POST_UPDATE_SCAN value: $POST_UPDATE_SCAN" >&2
       exit 1
       ;;
   esac
@@ -392,6 +441,7 @@ post_update() {
 
   install_systemd_unit_file
   refresh_baseline
+  post_update_scan
   restart_updated_service
 }
 
@@ -431,6 +481,7 @@ install_from_release() {
   fi
 
   install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+  stop_service_before_update
   install -m 0755 "$tmp_dir/vps-sentinel" "$PREFIX/bin/vps-sentinel"
   install_binary_aliases
   install_helper_scripts "$tmp_dir"
@@ -452,6 +503,7 @@ build_and_install_from_source() {
   cd "$WORK_DIR"
   cargo build --release --locked
   install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+  stop_service_before_update
   install -m 0755 target/release/vps-sentinel "$PREFIX/bin/vps-sentinel"
   install_binary_aliases
   install_helper_scripts "$WORK_DIR"
