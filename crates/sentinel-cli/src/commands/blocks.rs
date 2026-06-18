@@ -38,14 +38,13 @@ pub fn run_blocks(config: SentinelConfig, command: BlocksCommand) -> Result<()> 
                     Some(false) => "missing",
                     None => "not_checked",
                 };
+                let expires_at = entry
+                    .expires_at
+                    .map(|timestamp| timestamp.to_rfc3339())
+                    .unwrap_or_else(|| "permanent".to_string());
                 println!(
                     "{} backend={} firewall={} expires_at={} rule={} reason={}",
-                    entry.ip,
-                    entry.backend,
-                    firewall,
-                    entry.expires_at.to_rfc3339(),
-                    entry.rule_id,
-                    entry.reason
+                    entry.ip, entry.backend, firewall, expires_at, entry.rule_id, entry.reason
                 );
             }
         }

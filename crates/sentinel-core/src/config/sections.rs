@@ -154,6 +154,8 @@ pub struct WebConfig {
     pub enabled: bool,
     pub web_roots: Vec<PathBuf>,
     pub log_paths: Vec<PathBuf>,
+    pub max_log_tail_bytes: u64,
+    pub include_rotated: bool,
     pub error_burst_threshold: usize,
 }
 
@@ -173,6 +175,8 @@ impl Default for WebConfig {
                 PathBuf::from("/var/log/caddy/access.log"),
                 PathBuf::from("/var/log/apache2/access.log"),
             ],
+            max_log_tail_bytes: 1024 * 1024,
+            include_rotated: true,
             error_burst_threshold: 20,
         }
     }
@@ -243,6 +247,7 @@ fn default_known_bad_tool_names() -> Vec<String> {
 pub struct GpuConfig {
     pub enabled: bool,
     pub nvidia_smi_path: String,
+    pub rocm_smi_path: String,
     pub command_timeout_seconds: u64,
     pub min_memory_mb: u64,
     pub mining_min_score: u16,
@@ -254,6 +259,7 @@ impl Default for GpuConfig {
         Self {
             enabled: true,
             nvidia_smi_path: "nvidia-smi".to_string(),
+            rocm_smi_path: "rocm-smi".to_string(),
             command_timeout_seconds: 2,
             min_memory_mb: 256,
             mining_min_score: 80,
@@ -403,11 +409,15 @@ impl Default for NoiseControlConfig {
 #[serde(default)]
 pub struct ActiveResponseConfig {
     pub enabled: bool,
+    pub strategy: String,
     pub firewall_backend: String,
     pub block_ttl_seconds: u64,
     pub command_timeout_seconds: u64,
     pub max_blocks_per_scan: usize,
     pub notification_detail_limit: usize,
+    pub permanent_block_enabled: bool,
+    pub permanent_block_threshold: usize,
+    pub permanent_block_window_seconds: u64,
     pub web_enabled: bool,
     pub web_probe_block_threshold: usize,
     pub web_exploit_block_threshold: usize,
@@ -419,11 +429,15 @@ impl Default for ActiveResponseConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            strategy: "balanced".to_string(),
             firewall_backend: "auto".to_string(),
             block_ttl_seconds: 3600,
             command_timeout_seconds: 3,
             max_blocks_per_scan: 20,
             notification_detail_limit: 3,
+            permanent_block_enabled: true,
+            permanent_block_threshold: 3,
+            permanent_block_window_seconds: 86_400,
             web_enabled: true,
             web_probe_block_threshold: 25,
             web_exploit_block_threshold: 5,

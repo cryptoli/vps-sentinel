@@ -89,6 +89,9 @@ impl Detector for ProcessDetector {
                     enriched = enriched
                         .with_field("gpu_memory_mb", gpu.memory_mb.to_string())
                         .with_field("gpu_process_names", gpu.process_names.join(", "));
+                    if !gpu.vendors.is_empty() {
+                        enriched = enriched.with_field("gpu_vendors", gpu.vendors.join(", "));
+                    }
                     if !gpu.gpu_uuids.is_empty() {
                         enriched = enriched.with_field("gpu_uuids", gpu.gpu_uuids.join(", "));
                     }
@@ -472,6 +475,8 @@ fn process_evidence(
     push_evidence_if_present(&mut items, event, "systemd_unit");
     push_evidence_if_present(&mut items, event, "systemd_execstart");
     push_evidence_if_present(&mut items, event, "container_context");
+    push_evidence_if_present(&mut items, event, "container_id");
+    push_evidence_if_present(&mut items, event, "container_cgroup");
     push_evidence_if_present(&mut items, event, "exe_uid");
     push_evidence_if_present(&mut items, event, "exe_gid");
     push_evidence_if_present(&mut items, event, "exe_size");
@@ -484,6 +489,7 @@ fn process_evidence(
     push_evidence_if_present(&mut items, event, "public_outbound_count");
     push_evidence_if_present(&mut items, event, "outbound_remote_ports");
     push_evidence_if_present(&mut items, event, "gpu_memory_mb");
+    push_evidence_if_present(&mut items, event, "gpu_vendors");
     push_evidence_if_present(&mut items, event, "gpu_process_names");
     push_evidence_if_present(&mut items, event, "gpu_uuids");
     push_evidence_if_present(&mut items, event, "package_activity_recent");
@@ -995,6 +1001,7 @@ fn outbound_context_by_pid(events: &[RawEvent]) -> BTreeMap<String, OutboundCont
 #[derive(Debug, Clone, Default)]
 struct GpuContext {
     memory_mb: u64,
+    vendors: Vec<String>,
     process_names: Vec<String>,
     gpu_uuids: Vec<String>,
 }
@@ -1015,6 +1022,7 @@ fn gpu_context_by_pid(events: &[RawEvent]) -> BTreeMap<String, GpuContext> {
                 .and_then(|value| value.parse::<u64>().ok())
                 .unwrap_or(0),
         );
+        push_unique_field(&mut context.vendors, event, "gpu_vendor");
         push_unique_field(&mut context.process_names, event, "gpu_process_name");
         push_unique_field(&mut context.gpu_uuids, event, "gpu_uuid");
     }

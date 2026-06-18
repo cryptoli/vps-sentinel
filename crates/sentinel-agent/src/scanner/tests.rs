@@ -369,6 +369,28 @@ fn new_active_response_block_bypasses_recent_duplicate_suppression(
 }
 
 #[test]
+fn permanent_active_response_block_bypasses_recent_duplicate_suppression(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+    let config = SentinelConfig::default();
+    let previous = ssh_bruteforce_finding("47.242.23.111", "16");
+    store.save_findings(std::slice::from_ref(&previous))?;
+
+    let mut permanent = previous.clone();
+    permanent.id = "permanent-block-finding".to_string();
+    permanent.evidence.push(Evidence::new(
+        "active_response_status",
+        "permanently_blocked",
+    ));
+    let (retained, suppressed) = suppress_recent_duplicates(&store, vec![permanent], &config)?;
+
+    assert_eq!(retained.len(), 1);
+    assert_eq!(suppressed, 0);
+    Ok(())
+}
+
+#[test]
 fn existing_active_response_block_still_uses_recent_duplicate_suppression(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;

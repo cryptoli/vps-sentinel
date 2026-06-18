@@ -59,6 +59,8 @@ rotation_grace_seconds = 900
 [web]
 enabled = true
 web_roots = ["/var/www", "/srv", "/usr/share/nginx/html", "/usr/share/httpd/noindex"]
+max_log_tail_bytes = 1048576
+include_rotated = true
 error_burst_threshold = 20
 log_paths = [
   "/var/log/nginx/access.log",
@@ -80,6 +82,7 @@ known_bad_tool_names = ["xmrig", "xmr-stak", "kinsing", "masscan", "zmap", "lolm
 [gpu]
 enabled = true
 nvidia_smi_path = "nvidia-smi"
+rocm_smi_path = "rocm-smi"
 command_timeout_seconds = 2
 min_memory_mb = 256
 mining_min_score = 80
@@ -183,11 +186,15 @@ quiet_hours = [] # Example: ["22:00-07:00"]
 
 [active_response]
 enabled = false
+strategy = "balanced" # observe, balanced, or strict
 firewall_backend = "auto" # auto, nftables, or iptables
 block_ttl_seconds = 3600
 command_timeout_seconds = 3
 max_blocks_per_scan = 20
 notification_detail_limit = 3
+permanent_block_enabled = true
+permanent_block_threshold = 3
+permanent_block_window_seconds = 86400
 web_enabled = true
 web_probe_block_threshold = 25
 web_exploit_block_threshold = 5

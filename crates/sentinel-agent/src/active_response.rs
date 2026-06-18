@@ -17,6 +17,7 @@ const STATE_RULE_ID: &str = "active_response_blocks";
 pub struct ActiveResponseReport {
     pub planned_blocks: usize,
     pub applied_blocks: usize,
+    pub permanent_blocks: usize,
     pub skipped_existing_blocks: usize,
     pub stale_blocks: usize,
     pub failed_blocks: usize,
@@ -39,7 +40,9 @@ pub struct BlockAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockActionStatus {
+    Observed,
     Blocked,
+    PermanentlyBlocked,
     AlreadyBlocked,
     Failed,
     SkippedLimit,
@@ -48,7 +51,9 @@ pub enum BlockActionStatus {
 impl BlockActionStatus {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Observed => "observed",
             Self::Blocked => "blocked",
+            Self::PermanentlyBlocked => "permanently_blocked",
             Self::AlreadyBlocked => "already_blocked",
             Self::Failed => "failed",
             Self::SkippedLimit => "skipped_limit",
@@ -64,7 +69,7 @@ pub struct BlockEntry {
     pub reason: String,
     pub backend: String,
     pub blocked_at: DateTime<Utc>,
-    pub expires_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
     pub expired: bool,
     pub firewall_present: Option<bool>,
 }
@@ -96,6 +101,8 @@ struct BlockCandidate {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct BlockState {
     blocks: BTreeMap<String, BlockRecord>,
+    #[serde(default)]
+    trigger_history: BTreeMap<String, TriggerRecord>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,12 +113,20 @@ struct BlockRecord {
     reason: String,
     backend: String,
     blocked_at: DateTime<Utc>,
-    expires_at: DateTime<Utc>,
+    #[serde(default)]
+    expires_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TriggerRecord {
+    first_seen_at: DateTime<Utc>,
+    last_seen_at: DateTime<Utc>,
+    count: usize,
 }
 
 trait IpBlocker {
     fn backend_name(&self) -> &'static str;
-    fn block_ip(&self, ip: IpAddr, ttl: Duration) -> SentinelResult<()>;
+    fn block_ip(&self, ip: IpAddr, ttl: Option<Duration>) -> SentinelResult<()>;
     fn unblock_ip(&self, ip: IpAddr) -> SentinelResult<bool>;
     fn is_blocked(&self, ip: IpAddr) -> SentinelResult<bool>;
 }
@@ -123,6 +138,25 @@ pub fn apply_active_response(
 ) -> SentinelResult<ActiveResponseReport> {
     if !config.active_response.enabled {
         return Ok(ActiveResponseReport::default());
+    }
+    if active_response_strategy(config) == ActiveResponseStrategy::Observe {
+        let candidates = block_candidates(findings, config);
+        return Ok(ActiveResponseReport {
+            planned_blocks: candidates.len(),
+            block_actions: candidates
+                .into_iter()
+                .map(|candidate| BlockAction {
+                    finding_id: candidate.finding_id,
+                    ip: candidate.ip,
+                    status: BlockActionStatus::Observed,
+                    reason: candidate.reason,
+                    backend: None,
+                    expires_at: None,
+                    detail: Some("active_response.strategy=observe".to_string()),
+                })
+                .collect(),
+            ..ActiveResponseReport::default()
+        });
     }
     let Some(blocker) = SystemIpBlocker::from_config(config) else {
         let candidates = block_candidates(findings, config);
@@ -166,26 +200,93 @@ fn apply_with_blocker(
         ..ActiveResponseReport::default()
     };
     let ttl = Duration::from_secs(config.active_response.block_ttl_seconds);
-    let expires_at = now + ChronoDuration::seconds(duration_seconds(ttl.as_secs()));
+    let temporary_expires_at = now + ChronoDuration::seconds(duration_seconds(ttl.as_secs()));
 
     let candidates = block_candidates(findings, config);
     report.planned_blocks = candidates.len();
-    let mut attempted_new_blocks = 0usize;
+    let permanent_decisions = permanent_block_decisions(&mut state, &candidates, config, now);
+    let mut firewall_write_count = 0usize;
     for candidate in candidates {
-        if let Some(existing) = state.blocks.get(&candidate.ip.to_string()) {
+        let key = candidate.ip.to_string();
+        let permanent_trigger_count = permanent_decisions.get(&key).copied();
+        let should_permanent_block = permanent_trigger_count.is_some();
+        if let Some(existing) = state.blocks.get(&key).cloned() {
+            if should_permanent_block && existing.expires_at.is_some() {
+                if firewall_write_count >= config.active_response.max_blocks_per_scan {
+                    report.block_actions.push(BlockAction {
+                        finding_id: candidate.finding_id,
+                        ip: candidate.ip,
+                        status: BlockActionStatus::SkippedLimit,
+                        reason: candidate.reason,
+                        backend: Some(existing.backend),
+                        expires_at: existing.expires_at,
+                        detail: Some("max blocks per scan reached".to_string()),
+                    });
+                    continue;
+                }
+                firewall_write_count += 1;
+                match promote_ip_to_permanent(blocker, candidate.ip) {
+                    Ok(()) => {
+                        report.applied_blocks += 1;
+                        report.permanent_blocks += 1;
+                        report.block_actions.push(BlockAction {
+                            finding_id: candidate.finding_id.clone(),
+                            ip: candidate.ip,
+                            status: BlockActionStatus::PermanentlyBlocked,
+                            reason: candidate.reason.clone(),
+                            backend: Some(blocker.backend_name().to_string()),
+                            expires_at: None,
+                            detail: Some(permanent_escalation_detail(
+                                permanent_trigger_count.unwrap_or_default(),
+                                config,
+                            )),
+                        });
+                        state.blocks.insert(
+                            key.clone(),
+                            BlockRecord {
+                                ip: key.clone(),
+                                rule_id: candidate.rule_id,
+                                finding_id: candidate.finding_id,
+                                reason: candidate.reason,
+                                backend: blocker.backend_name().to_string(),
+                                blocked_at: existing.blocked_at,
+                                expires_at: None,
+                            },
+                        );
+                        state.trigger_history.remove(&key);
+                    }
+                    Err(err) => {
+                        report.failed_blocks += 1;
+                        warn!(ip = %candidate.ip, error = %err, "active response permanent block promotion failed");
+                        report.block_actions.push(BlockAction {
+                            finding_id: candidate.finding_id,
+                            ip: candidate.ip,
+                            status: BlockActionStatus::Failed,
+                            reason: candidate.reason,
+                            backend: Some(blocker.backend_name().to_string()),
+                            expires_at: existing.expires_at,
+                            detail: Some(err.to_string()),
+                        });
+                    }
+                }
+                continue;
+            }
             report.skipped_existing_blocks += 1;
+            if should_permanent_block && existing.expires_at.is_none() {
+                state.trigger_history.remove(&key);
+            }
             report.block_actions.push(BlockAction {
                 finding_id: candidate.finding_id,
                 ip: candidate.ip,
                 status: BlockActionStatus::AlreadyBlocked,
                 reason: candidate.reason,
                 backend: Some(existing.backend.clone()),
-                expires_at: Some(existing.expires_at),
+                expires_at: existing.expires_at,
                 detail: None,
             });
             continue;
         }
-        if attempted_new_blocks >= config.active_response.max_blocks_per_scan {
+        if firewall_write_count >= config.active_response.max_blocks_per_scan {
             report.block_actions.push(BlockAction {
                 finding_id: candidate.finding_id,
                 ip: candidate.ip,
@@ -197,23 +298,41 @@ fn apply_with_blocker(
             });
             continue;
         }
-        attempted_new_blocks += 1;
-        match blocker.block_ip(candidate.ip, ttl) {
+        firewall_write_count += 1;
+        let block_ttl = if should_permanent_block {
+            None
+        } else {
+            Some(ttl)
+        };
+        match blocker.block_ip(candidate.ip, block_ttl) {
             Ok(()) => {
                 report.applied_blocks += 1;
+                if should_permanent_block {
+                    report.permanent_blocks += 1;
+                }
+                let expires_at = if should_permanent_block {
+                    None
+                } else {
+                    Some(temporary_expires_at)
+                };
                 report.block_actions.push(BlockAction {
                     finding_id: candidate.finding_id.clone(),
                     ip: candidate.ip,
-                    status: BlockActionStatus::Blocked,
+                    status: if should_permanent_block {
+                        BlockActionStatus::PermanentlyBlocked
+                    } else {
+                        BlockActionStatus::Blocked
+                    },
                     reason: candidate.reason.clone(),
                     backend: Some(blocker.backend_name().to_string()),
-                    expires_at: Some(expires_at),
-                    detail: None,
+                    expires_at,
+                    detail: permanent_trigger_count
+                        .map(|count| permanent_escalation_detail(count, config)),
                 });
                 state.blocks.insert(
-                    candidate.ip.to_string(),
+                    key.clone(),
                     BlockRecord {
-                        ip: candidate.ip.to_string(),
+                        ip: key.clone(),
                         rule_id: candidate.rule_id,
                         finding_id: candidate.finding_id,
                         reason: candidate.reason,
@@ -222,6 +341,9 @@ fn apply_with_blocker(
                         expires_at,
                     },
                 );
+                if should_permanent_block {
+                    state.trigger_history.remove(&key);
+                }
             }
             Err(err) => {
                 report.failed_blocks += 1;
@@ -240,6 +362,73 @@ fn apply_with_blocker(
     }
     store.save_rule_state(STATE_RULE_ID, &state)?;
     Ok(report)
+}
+
+fn promote_ip_to_permanent(blocker: &dyn IpBlocker, ip: IpAddr) -> SentinelResult<()> {
+    let _ = blocker.unblock_ip(ip)?;
+    blocker.block_ip(ip, None)
+}
+
+fn permanent_block_decisions(
+    state: &mut BlockState,
+    candidates: &[BlockCandidate],
+    config: &SentinelConfig,
+    now: DateTime<Utc>,
+) -> BTreeMap<String, usize> {
+    prune_trigger_history(state, config, now);
+    let mut decisions = BTreeMap::new();
+    if !config.active_response.permanent_block_enabled {
+        return decisions;
+    }
+    let window = permanent_block_window(config);
+    for candidate in candidates {
+        let key = candidate.ip.to_string();
+        let record = state
+            .trigger_history
+            .entry(key.clone())
+            .or_insert_with(|| TriggerRecord {
+                first_seen_at: now,
+                last_seen_at: now,
+                count: 0,
+            });
+        let age = now.signed_duration_since(record.first_seen_at);
+        if age < ChronoDuration::zero() || age > window {
+            record.first_seen_at = now;
+            record.count = 0;
+        }
+        record.last_seen_at = now;
+        record.count = record.count.saturating_add(1);
+        if record.count >= config.active_response.permanent_block_threshold {
+            decisions.insert(key, record.count);
+        }
+    }
+    decisions
+}
+
+fn prune_trigger_history(state: &mut BlockState, config: &SentinelConfig, now: DateTime<Utc>) {
+    let retention = ChronoDuration::seconds(duration_seconds(
+        config
+            .active_response
+            .permanent_block_window_seconds
+            .saturating_mul(2),
+    ));
+    state.trigger_history.retain(|_, record| {
+        let age = now.signed_duration_since(record.last_seen_at);
+        age >= ChronoDuration::zero() && age <= retention
+    });
+}
+
+fn permanent_block_window(config: &SentinelConfig) -> ChronoDuration {
+    ChronoDuration::seconds(duration_seconds(
+        config.active_response.permanent_block_window_seconds,
+    ))
+}
+
+fn permanent_escalation_detail(trigger_count: usize, config: &SentinelConfig) -> String {
+    format!(
+        "permanent_escalation trigger_count={trigger_count} window_seconds={}",
+        config.active_response.permanent_block_window_seconds
+    )
 }
 
 pub fn list_active_blocks(
@@ -268,7 +457,9 @@ pub fn list_active_blocks(
                 backend: record.backend.clone(),
                 blocked_at: record.blocked_at,
                 expires_at: record.expires_at,
-                expired: record.expires_at <= now,
+                expired: record
+                    .expires_at
+                    .is_some_and(|expires_at| expires_at <= now),
                 firewall_present,
             }
         })
@@ -305,6 +496,7 @@ pub fn unblock_active_ip(
     if state.blocks.remove(&ip.to_string()).is_some() {
         report.state_removed += 1;
     }
+    state.trigger_history.remove(&ip.to_string());
     store.save_rule_state(STATE_RULE_ID, &state)?;
     Ok(report)
 }
@@ -332,6 +524,7 @@ pub fn unblock_all_active_blocks(
                 if state.blocks.remove(&ip.to_string()).is_some() {
                     report.state_removed += 1;
                 }
+                state.trigger_history.remove(&ip.to_string());
             }
             Err(err) => {
                 report.failed_blocks += 1;
@@ -352,7 +545,11 @@ fn synchronize_block_state(
     let expired = state
         .blocks
         .iter()
-        .filter(|(_, record)| record.expires_at <= now)
+        .filter(|(_, record)| {
+            record
+                .expires_at
+                .is_some_and(|expires_at| expires_at <= now)
+        })
         .filter_map(|(ip, record)| {
             let parsed = record.ip.parse::<IpAddr>().ok()?;
             Some((ip.clone(), parsed, record.backend.clone()))
@@ -440,14 +637,7 @@ fn web_probe_candidate(finding: &Finding, config: &SentinelConfig) -> Option<Blo
     let family = evidence_value(finding, "probe_family")?;
     let response = evidence_value(finding, "response_profile")?;
     let request_count = evidence_usize(finding, "request_count")?;
-    let threshold =
-        if response == "successful_response" || probe_family_blocks_on_single_attempt(family) {
-            1
-        } else if probe_family_is_exploit(family) {
-            config.active_response.web_exploit_block_threshold
-        } else {
-            config.active_response.web_probe_block_threshold
-        };
+    let threshold = web_probe_threshold(family, response, config);
     if request_count < threshold {
         return None;
     }
@@ -464,7 +654,16 @@ fn web_probe_candidate(finding: &Finding, config: &SentinelConfig) -> Option<Blo
 fn web_error_candidate(finding: &Finding, config: &SentinelConfig) -> Option<BlockCandidate> {
     let ip = evidence_ip(finding, "ip")?;
     let error_count = evidence_usize(finding, "error_count")?;
-    if error_count < config.active_response.web_probe_block_threshold {
+    let threshold = match active_response_strategy(config) {
+        ActiveResponseStrategy::Strict => config
+            .active_response
+            .web_probe_block_threshold
+            .saturating_mul(2),
+        ActiveResponseStrategy::Observe | ActiveResponseStrategy::Balanced => {
+            config.active_response.web_probe_block_threshold
+        }
+    };
+    if error_count < threshold {
         return None;
     }
     Some(BlockCandidate {
@@ -478,7 +677,16 @@ fn web_error_candidate(finding: &Finding, config: &SentinelConfig) -> Option<Blo
 fn ssh_bruteforce_candidate(finding: &Finding, config: &SentinelConfig) -> Option<BlockCandidate> {
     let ip = evidence_ip(finding, "source_ip")?;
     let failure_count = evidence_usize(finding, "failure_count")?;
-    if failure_count < config.active_response.ssh_failed_login_block_threshold {
+    let threshold = match active_response_strategy(config) {
+        ActiveResponseStrategy::Strict => config
+            .active_response
+            .ssh_failed_login_block_threshold
+            .max(config.ssh.failed_login_threshold.saturating_mul(2)),
+        ActiveResponseStrategy::Observe | ActiveResponseStrategy::Balanced => {
+            config.active_response.ssh_failed_login_block_threshold
+        }
+    };
+    if failure_count < threshold {
         return None;
     }
     Some(BlockCandidate {
@@ -487,6 +695,47 @@ fn ssh_bruteforce_candidate(finding: &Finding, config: &SentinelConfig) -> Optio
         finding_id: finding.id.clone(),
         reason: format!("ssh brute force failure_count={failure_count}"),
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActiveResponseStrategy {
+    Observe,
+    Balanced,
+    Strict,
+}
+
+fn active_response_strategy(config: &SentinelConfig) -> ActiveResponseStrategy {
+    match config.active_response.strategy.as_str() {
+        "observe" => ActiveResponseStrategy::Observe,
+        "strict" => ActiveResponseStrategy::Strict,
+        _ => ActiveResponseStrategy::Balanced,
+    }
+}
+
+fn web_probe_threshold(family: &str, response: &str, config: &SentinelConfig) -> usize {
+    match active_response_strategy(config) {
+        ActiveResponseStrategy::Observe | ActiveResponseStrategy::Balanced => {
+            if response == "successful_response" || probe_family_blocks_on_single_attempt(family) {
+                1
+            } else if probe_family_is_exploit(family) {
+                config.active_response.web_exploit_block_threshold
+            } else {
+                config.active_response.web_probe_block_threshold
+            }
+        }
+        ActiveResponseStrategy::Strict => {
+            if response == "successful_response" {
+                1
+            } else if probe_family_is_exploit(family) {
+                config.active_response.web_exploit_block_threshold
+            } else {
+                config
+                    .active_response
+                    .web_probe_block_threshold
+                    .saturating_mul(2)
+            }
+        }
+    }
 }
 
 fn evidence_ip(finding: &Finding, key: &str) -> Option<IpAddr> {
@@ -594,7 +843,7 @@ impl IpBlocker for SystemIpBlocker {
         self.backend.name()
     }
 
-    fn block_ip(&self, ip: IpAddr, ttl: Duration) -> SentinelResult<()> {
+    fn block_ip(&self, ip: IpAddr, ttl: Option<Duration>) -> SentinelResult<()> {
         self.backend.block_ip(ip, ttl, self.timeout)
     }
 
@@ -638,10 +887,10 @@ impl FirewallBackend {
         }
     }
 
-    fn block_ip(self, ip: IpAddr, ttl: Duration, timeout: Duration) -> SentinelResult<()> {
+    fn block_ip(self, ip: IpAddr, ttl: Option<Duration>, timeout: Duration) -> SentinelResult<()> {
         match self {
             Self::Nftables => nft_block_ip(ip, ttl, timeout),
-            Self::Iptables => iptables_block_ip(ip, timeout),
+            Self::Iptables => iptables_block_ip(ip, ttl, timeout),
         }
     }
 
@@ -660,28 +909,27 @@ impl FirewallBackend {
     }
 }
 
-fn nft_block_ip(ip: IpAddr, ttl: Duration, timeout: Duration) -> SentinelResult<()> {
+fn nft_block_ip(ip: IpAddr, ttl: Option<Duration>, timeout: Duration) -> SentinelResult<()> {
     ensure_nftables_base(ip, timeout)?;
     if nft_is_blocked(ip, timeout)? {
         return Ok(());
     }
     let set_name = nft_set_name(ip);
-    run_command_required(
-        "nft",
-        &[
-            "add".to_string(),
-            "element".to_string(),
-            "inet".to_string(),
-            "vps_sentinel".to_string(),
-            set_name.to_string(),
-            "{".to_string(),
-            ip.to_string(),
-            "timeout".to_string(),
-            format!("{}s", ttl.as_secs()),
-            "}".to_string(),
-        ],
-        timeout,
-    )
+    let mut args = vec![
+        "add".to_string(),
+        "element".to_string(),
+        "inet".to_string(),
+        "vps_sentinel".to_string(),
+        set_name.to_string(),
+        "{".to_string(),
+        ip.to_string(),
+    ];
+    if let Some(ttl) = ttl {
+        args.push("timeout".to_string());
+        args.push(format!("{}s", ttl.as_secs()));
+    }
+    args.push("}".to_string());
+    run_command_required("nft", &args, timeout)
 }
 
 fn nft_unblock_ip(ip: IpAddr, timeout: Duration) -> SentinelResult<bool> {
@@ -818,7 +1066,7 @@ fn nft_set_name(ip: IpAddr) -> &'static str {
     }
 }
 
-fn iptables_block_ip(ip: IpAddr, timeout: Duration) -> SentinelResult<()> {
+fn iptables_block_ip(ip: IpAddr, _ttl: Option<Duration>, timeout: Duration) -> SentinelResult<()> {
     if iptables_is_blocked(ip, timeout)? {
         return Ok(());
     }
@@ -975,6 +1223,25 @@ mod tests {
     }
 
     #[test]
+    fn observe_strategy_reports_candidates_without_firewall_backend(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.strategy = "observe".to_string();
+        config.active_response.ssh_failed_login_block_threshold = 15;
+
+        let report = super::apply_active_response(&[ssh_finding("8.8.8.8", 16)], &config, &store)?;
+
+        assert_eq!(report.planned_blocks, 1);
+        assert_eq!(report.applied_blocks, 0);
+        assert_eq!(report.block_actions[0].status, BlockActionStatus::Observed);
+        assert_eq!(report.block_actions[0].ip.to_string(), "8.8.8.8");
+        Ok(())
+    }
+
+    #[test]
     fn high_confidence_web_exploit_blocks_on_single_attempt() {
         let mut config = SentinelConfig::default();
         config.active_response.enabled = true;
@@ -1020,6 +1287,30 @@ mod tests {
     }
 
     #[test]
+    fn strict_strategy_requires_repeated_rejected_exploit_probes() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.strategy = "strict".to_string();
+        config.active_response.web_exploit_block_threshold = 5;
+        let single_rejected =
+            web_finding("4.4.4.4", "cgi_shell_traversal", "missing_or_rejected", 1);
+        let repeated_rejected =
+            web_finding("4.4.4.5", "cgi_shell_traversal", "missing_or_rejected", 5);
+        let successful = web_finding("4.4.4.6", "env_file", "successful_response", 1);
+
+        let candidates =
+            block_candidates(&[single_rejected, repeated_rejected, successful], &config);
+
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates
+            .iter()
+            .any(|item| item.ip.to_string() == "4.4.4.5"));
+        assert!(candidates
+            .iter()
+            .any(|item| item.ip.to_string() == "4.4.4.6"));
+    }
+
+    #[test]
     fn block_report_tracks_per_finding_actions() -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
@@ -1038,6 +1329,65 @@ mod tests {
         assert_eq!(report.block_actions[0].status, BlockActionStatus::Blocked);
         assert_eq!(report.block_actions[0].backend.as_deref(), Some("memory"));
         assert_eq!(report.block_actions[0].ip.to_string(), "8.8.8.8");
+        Ok(())
+    }
+
+    #[test]
+    fn repeated_candidates_escalate_existing_block_to_permanent(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.ssh_failed_login_block_threshold = 15;
+        config.active_response.permanent_block_threshold = 2;
+        config.active_response.permanent_block_window_seconds = 3600;
+        let blocker = MemoryBlocker;
+
+        let first = apply_with_blocker(&[ssh_finding("8.8.8.8", 16)], &config, &store, &blocker)?;
+        assert_eq!(first.applied_blocks, 1);
+        assert_eq!(first.permanent_blocks, 0);
+        assert_eq!(first.block_actions[0].status, BlockActionStatus::Blocked);
+        assert!(first.block_actions[0].expires_at.is_some());
+
+        let second = apply_with_blocker(&[ssh_finding("8.8.8.8", 17)], &config, &store, &blocker)?;
+        assert_eq!(second.applied_blocks, 1);
+        assert_eq!(second.permanent_blocks, 1);
+        assert_eq!(
+            second.block_actions[0].status,
+            BlockActionStatus::PermanentlyBlocked
+        );
+        assert!(second.block_actions[0].expires_at.is_none());
+        assert!(second.block_actions[0]
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("trigger_count=2")));
+
+        let entries = list_active_blocks(&config, &store, false)?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].ip, "8.8.8.8");
+        assert!(entries[0].expires_at.is_none());
+        assert!(!entries[0].expired);
+        Ok(())
+    }
+
+    #[test]
+    fn disabled_permanent_block_keeps_temporary_block() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.ssh_failed_login_block_threshold = 15;
+        config.active_response.permanent_block_enabled = false;
+        config.active_response.permanent_block_threshold = 1;
+        let blocker = MemoryBlocker;
+
+        let report = apply_with_blocker(&[ssh_finding("8.8.4.4", 16)], &config, &store, &blocker)?;
+
+        assert_eq!(report.applied_blocks, 1);
+        assert_eq!(report.permanent_blocks, 0);
+        assert_eq!(report.block_actions[0].status, BlockActionStatus::Blocked);
+        assert!(report.block_actions[0].expires_at.is_some());
         Ok(())
     }
 
@@ -1093,10 +1443,16 @@ mod tests {
                 reason: "web probe".to_string(),
                 backend: "iptables".to_string(),
                 blocked_at: now,
-                expires_at: now + ChronoDuration::minutes(5),
+                expires_at: Some(now + ChronoDuration::minutes(5)),
             },
         );
-        store.save_rule_state(STATE_RULE_ID, &BlockState { blocks })?;
+        store.save_rule_state(
+            STATE_RULE_ID,
+            &BlockState {
+                blocks,
+                ..BlockState::default()
+            },
+        )?;
 
         let entries = list_active_blocks(&SentinelConfig::default(), &store, false)?;
 
@@ -1154,7 +1510,11 @@ mod tests {
             "memory"
         }
 
-        fn block_ip(&self, _ip: std::net::IpAddr, _ttl: std::time::Duration) -> SentinelResult<()> {
+        fn block_ip(
+            &self,
+            _ip: std::net::IpAddr,
+            _ttl: Option<std::time::Duration>,
+        ) -> SentinelResult<()> {
             Ok(())
         }
 

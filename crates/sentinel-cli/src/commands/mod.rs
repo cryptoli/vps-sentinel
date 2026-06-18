@@ -3,6 +3,7 @@ pub mod blocks;
 pub mod config;
 pub mod doctor;
 pub mod events;
+pub mod findings;
 pub mod init;
 pub mod notify;
 pub mod reload;

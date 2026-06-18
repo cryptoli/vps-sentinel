@@ -178,6 +178,13 @@ fn positive_cases() -> Vec<PositiveCase> {
             "ordinary ssh login",
             vec![ssh_success("deploy", "publickey")],
         ),
+        positive("SSH-007", "ssh brute force followed by success", {
+            let mut events = (0..10)
+                .map(|index| ssh_failure("203.0.113.21", &format!("user{index}")))
+                .collect::<Vec<_>>();
+            events.push(ssh_success_from("deploy", "password", "203.0.113.21"));
+            events
+        }),
         positive(
             "SSH-005",
             "authorized keys drift",
@@ -451,6 +458,13 @@ fn negative_cases() -> Vec<NegativeCase> {
             "root login is not ordinary login",
             vec![ssh_success("root", "publickey")],
         ),
+        negative("SSH-007", "ssh success without brute force threshold", {
+            let mut events = (0..3)
+                .map(|index| ssh_failure("203.0.113.21", &format!("user{index}")))
+                .collect::<Vec<_>>();
+            events.push(ssh_success_from("deploy", "password", "203.0.113.21"));
+            events
+        }),
         negative(
             "SSH-005",
             "unrelated authorized keys filename",
@@ -720,11 +734,15 @@ fn negative(rule_id: &'static str, name: &'static str, events: Vec<RawEvent>) ->
 }
 
 fn ssh_success(user: &str, method: &str) -> RawEvent {
+    ssh_success_from(user, method, "203.0.113.10")
+}
+
+fn ssh_success_from(user: &str, method: &str, ip: &str) -> RawEvent {
     RawEvent::new("ssh", "ssh_auth")
         .with_field("outcome", "success")
         .with_field("method", method)
         .with_field("user", user)
-        .with_field("source_ip", "203.0.113.10")
+        .with_field("source_ip", ip)
         .with_field("port", "54122")
         .with_field("log_source", "/var/log/auth.log")
 }

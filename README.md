@@ -26,20 +26,20 @@ It is not:
 
 | Area | What vps-sentinel supports |
 | --- | --- |
-| SSH monitoring | Parses Debian/Ubuntu and RHEL-family auth logs; detects root SSH login, password login, ordinary successful login, brute-force patterns, `authorized_keys`/`authorized_keys2` drift, unsafe key-file permissions, and risky key-file symlinks. |
-| Baseline drift | Creates local baselines for users, SSH keys, critical files, persistence entries, and listeners; compares future scans against the stored baseline and adds package-manager context when recent software updates may explain drift. |
+| SSH monitoring | Parses Debian/Ubuntu and RHEL-family auth logs; detects root SSH login, password login, ordinary successful login, brute-force patterns, brute-force followed by success, `authorized_keys`/`authorized_keys2` drift, unsafe key-file permissions, and risky key-file symlinks. |
+| Baseline drift | Creates local baselines for users, SSH keys, critical files, persistence entries, and listeners; compares future scans against the stored baseline, exposes approval keys for reviewed drift, and adds package-manager context when recent software updates may explain drift. |
 | User and privilege checks | Detects new users, UID 0 users, and privilege-relevant user changes. |
 | File integrity | Watches configured critical paths and web roots; hashes bounded file content; detects modified files, executable scripts in web roots, and risk-scored WebShell-style marker combinations. |
 | Log integrity | Watches sensitive authentication/login log files for risky symlinks and abrupt size drops that are not explained by recent rotation context. |
 | Persistence checks | Monitors cron, systemd, shell profile, and preload-related locations for new or risk-scored suspicious startup entries. |
-| Process and GPU checks | Reads procfs argv, parent process, executable path, cwd, UID context, socket-FD count, CPU lifetime metrics, procfs start-time drift, cgroup/container hints, systemd unit/ExecStart, executable owner/size/hash, package ownership, outbound connection profile, and NVIDIA GPU compute-process facts when `nvidia-smi` is available. It flags temporary-path executables, risk-scored deleted executables, network command-execution bridges, suspicious behavior clusters, known miner/scanner identities, and suspicious GPU compute workloads. |
+| Process and GPU checks | Reads procfs argv, parent process, executable path, cwd, UID context, socket-FD count, CPU lifetime metrics, procfs start-time drift, structured cgroup/container context, systemd unit/ExecStart, executable owner/size/hash, package ownership, outbound connection profile, NVIDIA GPU compute-process facts via `nvidia-smi`, and AMD/ROCm GPU process facts via `rocm-smi`. It flags temporary-path executables, risk-scored deleted executables, network command-execution bridges, suspicious behavior clusters, known miner/scanner identities, and suspicious GPU compute workloads. |
 | Network checks | Reads listening sockets and owning process details; attaches process context and firewall state; flags high-risk public services, suspicious listener processes, baseline owner drift, and ordinary new public listeners. Expected web/SSH ports such as 22, 80, and 443 reduce noise but are not blindly trusted. |
-| Web log checks | Parses common access log lines, classifies automated probing into attack families, and aggregates similar paths from the same source to avoid path-by-path alert floods. |
+| Web log checks | Parses common access logs, JSON access logs, Nginx-style error log request context, and optional `.1` rotated logs; classifies automated probing into attack families and aggregates similar paths from the same source to avoid path-by-path alert floods. |
 | Rootkit signals | Collects lightweight local indicators for hidden process and suspicious procfs behavior. |
 | Docker context | Detects Docker availability and emits initial container-surface context without requiring Docker-specific write access. |
 | Storage | Stores raw events, findings, baselines, and notification logs in local SQLite; repeated raw facts use stable storage keys and a configurable database size cap to prevent unbounded growth. |
 | Noise control | Uses allowlists, minimum severity, finding deduplication, and configurable retention windows. |
-| Active response | Optionally blocks strict, high-confidence public-source web probes and SSH brute-force sources through nftables or iptables with TTL-based expiry. Disabled by default. |
+| Active response | Optionally handles high-confidence public-source web probes and SSH brute-force sources through `observe`, `balanced`, or `strict` strategies; firewall writes use nftables or iptables with TTL-based expiry. Disabled by default. |
 | Notifications | Sends alerts through Telegram, Email SMTP, generic webhook, ntfy, Gotify, Bark, and ServerChan. |
 | Operations | Provides a single CLI binary, `vs` shorthand, JSON logs, systemd unit, one-command installer, update script, built-in reload command, and stop helper. |
 
@@ -53,7 +53,7 @@ Deleted-executable and persistence-startup alerts are also scored. `PROC-002` re
 
 File and persistence baseline drift is not suppressed just because package-manager activity exists. Instead, the agent collects recent apt/dpkg/yum/dnf/pacman/apk log activity and attaches that context to `FILE-001`, `PERSIST-001`, and `PERSIST-003` recommendations. This keeps real drift visible while making legitimate package updates easier to confirm before refreshing the baseline.
 
-SSH key-file state is checked independently from baseline drift. A changed `authorized_keys` still reports as persistence drift, while unsafe current state reports separately only when there is concrete filesystem evidence such as group/other-writable permissions or a symlink to a null device, temporary directory, shared memory, or runtime path. This catches a common local-persistence weakness without treating every symlink as malicious.
+SSH key-file state is checked independently from baseline drift. The collector reads default OpenSSH key paths and expands `AuthorizedKeysFile` directives from `sshd_config` and included `sshd_config.d/*.conf` files, so custom key locations are still monitored. A changed `authorized_keys` still reports as persistence drift, while unsafe current state reports separately only when there is concrete filesystem evidence such as group/other-writable permissions or a symlink to a null device, temporary directory, shared memory, or runtime path.
 
 Sensitive auth/login log integrity is stateful. vps-sentinel records the previous file type and size, reports risky symlinks such as `/var/log/auth.log -> /dev/null`, reports abrupt truncation only when the drop is large enough and there is no recently modified rotated sibling such as `auth.log.1`, and reports a configured sensitive log that existed in previous scans but disappears later. Normal log rotation therefore stays quiet, while log clearing or removal after a compromise becomes visible.
 
@@ -61,7 +61,7 @@ WebShell content detection is risk-scored instead of marker-only. A single marke
 
 `PROC-005` covers renamed or lightly disguised processes that may not expose a known tool name, temporary executable path, or obvious network shell bridge. It combines weaker behavior signals such as kernel-thread masquerading, execution from configured web roots, hidden executable names, suspicious working directories, socket-FD activity, sustained high CPU, procfs start-time drift for the same process identity, and effective-root privilege context. No single weak signal is enough at the default threshold, and start-time drift only contributes after other suspicious context already exists.
 
-`PROC-006` adds NVIDIA GPU mining coverage when `nvidia-smi` is visible to the host service. The collector reads current compute apps and joins them with procfs and outbound-connection facts by PID. GPU memory use alone is not an alert because normal CUDA, AI, rendering, and transcoding jobs can be heavy; the rule requires stronger evidence such as a known GPU miner identity, configured mining-pool remote port, temporary or deleted executable, anonymous/memfd executable, network execution bridge, or a hidden GPU executable with public outbound activity. Non-NVIDIA GPU stacks and containerized deployments that cannot see host GPU/process namespaces are outside this signal unless the relevant runtime is visible from the host.
+`PROC-006` adds GPU mining coverage when `nvidia-smi` or `rocm-smi` is visible to the host service. The collector reads current compute apps and joins them with procfs and outbound-connection facts by PID. GPU memory use alone is not an alert because normal CUDA, ROCm, AI, rendering, and transcoding jobs can be heavy; the rule requires stronger evidence such as a known GPU miner identity, configured mining-pool remote port, temporary or deleted executable, anonymous/memfd executable, network execution bridge, or a hidden GPU executable with public outbound activity. Containerized deployments that cannot see host GPU/process namespaces are outside this signal unless the relevant runtime is visible from the host.
 
 Process and listener findings now include a broader evidence chain when the host exposes it: parent process name, systemd unit, systemd `ExecStart`, executable UID/GID, executable size, bounded BLAKE3 hash, dpkg/rpm/pacman/apk package ownership, cgroup/container context, procfs start-time drift, outbound connection counts, public outbound count, and remote port profile. Package ownership queries and firewall probes are bounded by short command timeouts and per-scan caching, so missing or slow platform tools degrade to absent evidence instead of blocking a scan. These fields are used as supporting evidence or weak signals. For example, a systemd `ExecStart` mismatch does not alert by itself, but it can upgrade an already changed listener owner into a suspicious-listener finding.
 
@@ -278,6 +278,9 @@ Useful installer switches:
 | `ACTIVE_RESPONSE_FIREWALL_BACKEND` | empty | Optional `auto`, `nftables`, or `iptables` backend override. |
 | `ACTIVE_RESPONSE_BLOCK_TTL_SECONDS` | empty | Optional temporary block TTL override. |
 | `ACTIVE_RESPONSE_MAX_BLOCKS_PER_SCAN` | empty | Optional cap for new blocks in one scan. |
+| `ACTIVE_RESPONSE_PERMANENT_BLOCK_ENABLED` | empty | Optional `yes`/`no` override for repeated-source permanent block escalation. |
+| `ACTIVE_RESPONSE_PERMANENT_BLOCK_THRESHOLD` | empty | Optional number of repeated block-candidate scans before permanent escalation. |
+| `ACTIVE_RESPONSE_PERMANENT_BLOCK_WINDOW_SECONDS` | empty | Optional repeated-source counting window. |
 | `ACTIVE_RESPONSE_WEB_PROBE_BLOCK_THRESHOLD` | empty | Optional high-volume Web probe block threshold. |
 | `ACTIVE_RESPONSE_WEB_EXPLOIT_BLOCK_THRESHOLD` | empty | Optional repeated exploit-family Web probe block threshold. |
 | `ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD` | empty | Optional SSH brute-force block threshold. |
@@ -408,13 +411,15 @@ Commands:
 | `vps-sentinel config sync-defaults --dry-run --config <path>` | Show missing default keys that would be added without changing the file. |
 | `vps-sentinel reload --config <path>` | Validate the config and reload the running systemd service. Use `vs reload` after installing the shorthand. |
 | `vps-sentinel doctor --config <path>` | Check runtime readiness: root visibility, Unix target support, storage directory writability, and configured auth log visibility. |
-| `vps-sentinel check --config <path>` | Run collectors and detectors once without persisting results or sending notifications. Good for quick inspection and CI-style smoke tests. |
+| `vps-sentinel check --json --config <path>` | Run collectors and detectors once without persisting results, sending notifications, or applying active response. Omit `--json` for a human-readable summary. |
 | `vps-sentinel scan --config <path>` | Run one full scan, persist raw events/findings, update notification logs, apply deduplication, and send enabled notifications. |
-| `vps-sentinel scan --no-notify --config <path>` | Persist scan results but suppress notification delivery. Useful before enabling channels. |
+| `vps-sentinel scan --no-notify --json --config <path>` | Persist scan results but suppress notification delivery and active response. Useful before enabling channels. Omit `--json` for text output. |
 | `vps-sentinel daemon --config <path>` | Run continuous scans using `agent.scan_interval_seconds`; intended for systemd. |
 | `vps-sentinel baseline create --config <path>` | Capture the current known-good local state into SQLite. Run after installation and after approved system changes. |
 | `vps-sentinel baseline show --config <path>` | Print the stored baseline snapshot. |
-| `vps-sentinel baseline diff --config <path>` | Compare current local state against the stored baseline and print drift. |
+| `vps-sentinel baseline diff --json --config <path>` | Compare current local state against the stored baseline and print reviewable drift approval keys. |
+| `vps-sentinel baseline approve <key\|all> --config <path>` | Mark one pending baseline drift item, or all current items, as reviewed and approved. |
+| `vps-sentinel baseline refresh --config <path>` | Apply only approved baseline drift items to a new baseline snapshot. Use `--all` only when the entire current host state is trusted. |
 | `vps-sentinel baseline reset --config <path>` | Clear stored baselines. Run `baseline create` afterwards to capture a new trusted state. |
 | `vps-sentinel blocks list --config <path>` | List IPs currently recorded as active-response blocks. By default it verifies whether the firewall rule is still present. |
 | `vps-sentinel blocks cleanup --config <path>` | Remove expired block records and stale records whose firewall rule disappeared after firewalld/ufw reloads or manual changes. |
@@ -422,6 +427,8 @@ Commands:
 | `vps-sentinel blocks unblock-all --yes --config <path>` | Remove all recorded active-response blocks. `--yes` is required to avoid accidental mass unblocking. |
 | `vps-sentinel events list --config <path>` | List recent stored findings; use `--limit <n>` to control the count. |
 | `vps-sentinel events show <event_id> --config <path>` | Show one stored finding by ID as JSON. |
+| `vps-sentinel findings list --json --config <path>` | List recent stored findings with severity, confidence, rule ID, and subject. |
+| `vps-sentinel findings explain <finding_id> --json --config <path>` | Explain one stored finding with rule metadata, evidence, confidence, impact, and recommendations. |
 | `vps-sentinel storage stats --config <path>` | Print SQLite row counts and database footprint. |
 | `vps-sentinel storage prune --config <path>` | Run the same retention and database-size cleanup used after normal persisted scans. |
 | `vps-sentinel storage clear <target> --yes --config <path>` | Manually clear selected history such as `raw-events`, `findings`, `notifications`, `scan-runs`, `baselines`, or `all-history`. |
@@ -560,13 +567,14 @@ GPU indicator policy:
 [gpu]
 enabled = true
 nvidia_smi_path = "nvidia-smi"
+rocm_smi_path = "rocm-smi"
 command_timeout_seconds = 2
 min_memory_mb = 256
 mining_min_score = 80
 mining_pool_ports = [3333, 3334, 3335, 4444, 5555, 7777, 8888, 9999, 14444, 16000, 18081, 18082]
 ```
 
-`PROC-006` is only available when the service can run `nvidia-smi` and see the host GPU compute process table. GPU memory alone is treated as normal workload context. Alerts require additional evidence such as a configured GPU miner identity, temporary/deleted/anonymous executable, configured mining-pool port, network execution bridge, or hidden GPU executable with public outbound connections. If you run vps-sentinel inside a container, it must have host PID/procfs and GPU runtime visibility to inspect host GPU miners accurately.
+`PROC-006` is only available when the service can run `nvidia-smi` or `rocm-smi` and see the host GPU compute process table. GPU memory alone is treated as normal workload context. Alerts require additional evidence such as a configured GPU miner identity, temporary/deleted/anonymous executable, configured mining-pool port, network execution bridge, or hidden GPU executable with public outbound connections. If you run vps-sentinel inside a container, it must have host PID/procfs and GPU runtime visibility to inspect host GPU miners accurately.
 
 Persistence indicator policy:
 
@@ -581,26 +589,32 @@ Web log policy:
 
 ```toml
 [web]
+max_log_tail_bytes = 1048576
+include_rotated = true
 error_burst_threshold = 20
 ```
 
-`WEB-001` is emitted for known probe families such as `.env`, `.git`, PHPUnit `eval-stdin.php`, CGI shell traversal, command injection, PHP config-write payloads, LFI file reads, PHP stream wrappers, JNDI injection, SSRF cloud metadata probes, template injection, SQL injection, deserialization probes, phpMyAdmin, WordPress admin, actuator, and server-status probes. Similar path variants are aggregated by source IP, probe family, and response profile. A pure 404/400/301 directory sweep is Low by default; successful responses for sensitive paths are High, while rejected active exploit payloads remain Medium context. `error_burst_threshold` controls when `WEB-002` is emitted for repeated 403/404 responses from one source IP that did not already produce a probe-family finding. Lower it on small private services where any probing matters; raise it on busy public sites that naturally receive high volumes of missing-asset requests.
+`WEB-001` is emitted for known probe families such as `.env`, `.git`, PHPUnit `eval-stdin.php`, CGI shell traversal, command injection, PHP config-write payloads, LFI file reads, PHP stream wrappers, JNDI injection, SSRF cloud metadata probes, template injection, SQL injection, deserialization probes, phpMyAdmin, WordPress admin, actuator, and server-status probes. Similar path variants are aggregated by source IP, probe family, and response profile. The collector supports common access logs, JSON access logs, and Nginx-style error logs; `max_log_tail_bytes` bounds per-file reads and `include_rotated` includes `.1` siblings. A pure 404/400/301 directory sweep is Low by default; successful responses for sensitive paths are High, while rejected active exploit payloads remain Medium context. `error_burst_threshold` controls when `WEB-002` is emitted for repeated 403/404 responses from one source IP that did not already produce a probe-family finding.
 
 Active response:
 
 ```toml
 [active_response]
 enabled = false
+strategy = "balanced"
 firewall_backend = "auto"
 block_ttl_seconds = 3600
 max_blocks_per_scan = 20
 notification_detail_limit = 3
+permanent_block_enabled = true
+permanent_block_threshold = 3
+permanent_block_window_seconds = 86400
 web_probe_block_threshold = 25
 web_exploit_block_threshold = 5
 ssh_failed_login_block_threshold = 15
 ```
 
-Active response is disabled by default because it changes local firewall policy; set `active_response.enabled = true` or install with `ACTIVE_RESPONSE_ENABLED=yes` to allow firewall writes. When enabled, the scanner applies it after scan-level coalescing/deduplication but before persisted notification deduplication, so an escalating source can still be blocked even when repeated notifications are suppressed. SSH blocking requires an `SSH-003` finding and defaults to 15 failed logins in the scan window, while the alert threshold defaults to 10. Web blocking covers successful sensitive responses, single high-confidence RCE-style probes such as command injection, PHP config writes, LFI file reads, PHP stream wrappers, JNDI injection, SSRF cloud metadata probes, CGI shell traversal, and PHPUnit `eval-stdin.php`, repeated lower-confidence exploit probes, and high-volume error bursts. Quiet hours and notification rate limits do not prevent blocking. The backend uses nftables when available and falls back to iptables/ip6tables. Blocks are temporary: nftables uses set timeouts and vps-sentinel also stores block state in SQLite so expired entries can be removed on later scans. Only public routable source IPs are eligible, and `[allowlist].ips` always wins. When one scan creates at most `notification_detail_limit` new blocks, alerts include the blocked IP and reason; larger block bursts produce one summary alert and operators can inspect details with `vs blocks list --no-verify`.
+Active response is disabled by default because it changes local firewall policy; set `active_response.enabled = true` or install with `ACTIVE_RESPONSE_ENABLED=yes` to allow firewall writes. `strategy = "observe"` records block candidates without writing firewall rules, `balanced` is the default policy, and `strict` requires stronger evidence for rejected Web probes and SSH brute-force sources. When enabled, the scanner applies it after scan-level coalescing/deduplication but before persisted notification deduplication, so an escalating source can still be blocked even when repeated notifications are suppressed. SSH blocking requires an `SSH-003` finding and defaults to 15 failed logins in the scan window, while the alert threshold defaults to 10. Web blocking covers successful sensitive responses, high-confidence RCE-style exploit probes, repeated lower-confidence exploit probes, and high-volume error bursts. Quiet hours and notification limiters do not prevent blocking. The backend uses nftables when available and falls back to iptables/ip6tables. Normal blocks are temporary: nftables uses set timeouts and vps-sentinel also stores block state in SQLite so expired entries can be removed on later scans. If the same public source IP repeatedly becomes a block candidate at least `permanent_block_threshold` times within `permanent_block_window_seconds`, it is escalated to a permanent firewall block with no expiry. Permanent escalation still respects `[allowlist].ips`, `strategy = "observe"`, and `max_blocks_per_scan`, and operators can remove it with `vs blocks unblock <ip>` or `vs blocks unblock-all --yes`. Only public routable source IPs are eligible. When one scan creates at most `notification_detail_limit` new blocks, alerts include the blocked IP and reason; larger block bursts produce one summary alert and operators can inspect details with `vs blocks list --no-verify`.
 
 Every scan synchronizes active-response state with the real firewall before deciding whether a source is already blocked. If a rule expired, was removed by firewalld/ufw reload, or was changed manually, the stale state record is removed and a still-escalating source can be blocked again. The iptables backend checks for an existing rule before inserting, so repeated scans do not create duplicate DROP rules, and manual unblock removes duplicate matching rules if they exist. Use `vs blocks list`, `vs blocks cleanup`, `vs blocks unblock <ip>`, and `vs blocks unblock-all --yes` for operational control.
 
@@ -671,6 +685,7 @@ Example rules:
 - `SSH-004`: SSH login detected.
 - `SSH-005`: `authorized_keys` or `authorized_keys2` changed relative to baseline.
 - `SSH-006`: `authorized_keys` or `authorized_keys2` has unsafe permissions or a risky symlink target.
+- `SSH-007`: SSH brute-force failures followed by a successful login from the same source.
 - `USER-002`: UID 0 user added or changed.
 - `TAMPER-001`: Sensitive auth/login log path is redirected to a risky target.
 - `TAMPER-002`: Sensitive auth/login log file was abruptly truncated without rotation context.

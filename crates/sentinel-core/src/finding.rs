@@ -6,6 +6,27 @@ use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use uuid::Uuid;
 
+/// Detector confidence after evidence correlation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Confidence {
+    Low,
+    #[default]
+    Medium,
+    High,
+}
+
+impl Display for Confidence {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let text = match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        };
+        f.write_str(text)
+    }
+}
+
 /// High-level security area for a finding.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -69,6 +90,8 @@ pub struct Finding {
     pub title: String,
     pub description: String,
     pub severity: Severity,
+    #[serde(default)]
+    pub confidence: Confidence,
     pub category: Category,
     pub rule_id: String,
     pub timestamp: DateTime<Utc>,
@@ -100,6 +123,7 @@ impl Finding {
             title: title.into(),
             description: description.into(),
             severity,
+            confidence: confidence_for_severity(&severity),
             category,
             rule_id,
             timestamp: Utc::now(),
@@ -145,6 +169,20 @@ impl Finding {
     pub fn with_recommendations(mut self, recommendations: Vec<String>) -> Self {
         self.recommendations = recommendations;
         self
+    }
+
+    /// Override the detector confidence when evidence strength is known.
+    pub fn with_confidence(mut self, confidence: Confidence) -> Self {
+        self.confidence = confidence;
+        self
+    }
+}
+
+fn confidence_for_severity(severity: &Severity) -> Confidence {
+    match severity {
+        Severity::Critical | Severity::High => Confidence::High,
+        Severity::Medium => Confidence::Medium,
+        Severity::Low | Severity::Info => Confidence::Low,
     }
 }
 

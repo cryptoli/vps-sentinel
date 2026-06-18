@@ -94,6 +94,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "active_response_expires_at" => "active response expires at",
             "active_response_failed_count" => "active response failed count",
             "active_response_ip" => "active response IP",
+            "active_response_permanent_count" => "permanent block count",
             "active_response_reason" => "active response reason",
             "active_response_reason_summary" => "active response reason summary",
             "active_response_status" => "active response status",
@@ -198,6 +199,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "active_response_expires_at" => "封禁到期时间",
             "active_response_failed_count" => "封禁失败数量",
             "active_response_ip" => "封禁 IP",
+            "active_response_permanent_count" => "永久封禁数量",
             "active_response_reason" => "封禁原因",
             "active_response_reason_summary" => "封禁原因摘要",
             "active_response_status" => "主动响应状态",
@@ -391,11 +393,17 @@ fn direct_value_label(
             Some("temporary block applied")
         }
         ("active_response_status", "blocked", NotificationLanguage::ZhCn) => Some("已临时封禁"),
+        ("active_response_status", "permanently_blocked", NotificationLanguage::En) => {
+            Some("permanent block applied")
+        }
+        ("active_response_status", "permanently_blocked", NotificationLanguage::ZhCn) => {
+            Some("已永久封禁")
+        }
         ("active_response_status", "blocked_many", NotificationLanguage::En) => {
-            Some("multiple temporary blocks applied")
+            Some("multiple blocks applied")
         }
         ("active_response_status", "blocked_many", NotificationLanguage::ZhCn) => {
-            Some("已临时封禁多个 IP")
+            Some("已封禁多个 IP")
         }
         ("active_response_status", "failed", NotificationLanguage::En) => Some("block failed"),
         ("active_response_status", "failed", NotificationLanguage::ZhCn) => Some("封禁失败"),
@@ -518,6 +526,22 @@ fn localize_list_value(value: &str, language: NotificationLanguage) -> String {
 }
 
 fn dynamic_value_label(key: &str, value: &str, language: NotificationLanguage) -> Option<String> {
+    if key == "active_response_detail" && value.starts_with("permanent_escalation ") {
+        let parts = value
+            .split_whitespace()
+            .filter_map(|part| part.split_once('='))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let trigger_count = parts.get("trigger_count").copied().unwrap_or("0");
+        let window_seconds = parts.get("window_seconds").copied().unwrap_or("0");
+        return Some(match language {
+            NotificationLanguage::En => format!(
+                "escalated after {trigger_count} repeated block-candidate scans within {window_seconds}s"
+            ),
+            NotificationLanguage::ZhCn => {
+                format!("{window_seconds} 秒窗口内第 {trigger_count} 次触发封禁候选，已升级为永久封禁")
+            }
+        });
+    }
     if language != NotificationLanguage::ZhCn {
         return None;
     }

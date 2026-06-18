@@ -72,7 +72,7 @@ pub fn collect_processes(root: &ProcfsRoot) -> SentinelResult<Vec<RawEvent>> {
         let euid = parse_status_indexed_value(&status, "Uid", 1).unwrap_or_default();
         let parent_name = read_trimmed(root.path().join(&ppid).join("comm"));
         let cgroup = fs::read_to_string(process_dir.join("cgroup")).unwrap_or_default();
-        let container_context = container_context_from_cgroup(&cgroup);
+        let container_context = container_metadata_from_cgroup(&cgroup);
         let systemd_unit = systemd_unit_from_cgroup(&cgroup).unwrap_or_default();
         let systemd_execstart = systemd_execstart_for_unit(root.path(), &systemd_unit)
             .unwrap_or_default()
@@ -94,8 +94,14 @@ pub fn collect_processes(root: &ProcfsRoot) -> SentinelResult<Vec<RawEvent>> {
             .with_field("exe_path", exe_path)
             .with_field("cwd", cwd)
             .with_field("socket_fd_count", socket_fd_count.to_string());
-        if !container_context.is_empty() {
-            event = event.with_field("container_context", container_context);
+        if let Some(container) = container_context {
+            event = event.with_field("container_context", container.runtime);
+            if let Some(id) = container.id {
+                event = event.with_field("container_id", id);
+            }
+            if let Some(scope) = container.scope {
+                event = event.with_field("container_cgroup", scope);
+            }
         }
         if !systemd_unit.is_empty() {
             event = event.with_field("systemd_unit", systemd_unit);
@@ -214,21 +220,44 @@ fn metadata_gid(metadata: &fs::Metadata) -> String {
     }
 }
 
-fn container_context_from_cgroup(cgroup: &str) -> String {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ContainerMetadata {
+    runtime: String,
+    id: Option<String>,
+    scope: Option<String>,
+}
+
+fn container_metadata_from_cgroup(cgroup: &str) -> Option<ContainerMetadata> {
     let lowered = cgroup.to_ascii_lowercase();
-    if lowered.contains("kubepods") {
-        return "kubernetes".to_string();
+    let runtime = if lowered.contains("kubepods") {
+        "kubernetes"
+    } else if lowered.contains("containerd") || lowered.contains("cri-containerd") {
+        "containerd"
+    } else if lowered.contains("docker") {
+        "docker"
+    } else if lowered.contains("lxc") {
+        "lxc"
+    } else {
+        return None;
+    };
+    Some(ContainerMetadata {
+        runtime: runtime.to_string(),
+        id: extract_container_id(&lowered),
+        scope: cgroup
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .map(|line| line.trim().to_string()),
+    })
+}
+
+fn extract_container_id(cgroup: &str) -> Option<String> {
+    for token in cgroup.split(|ch: char| !ch.is_ascii_hexdigit()) {
+        if token.len() >= 12 && token.len() <= 128 && token.chars().all(|ch| ch.is_ascii_hexdigit())
+        {
+            return Some(token.to_string());
+        }
     }
-    if lowered.contains("docker") {
-        return "docker".to_string();
-    }
-    if lowered.contains("containerd") {
-        return "containerd".to_string();
-    }
-    if lowered.contains("lxc") {
-        return "lxc".to_string();
-    }
-    String::new()
+    None
 }
 
 fn systemd_unit_from_cgroup(cgroup: &str) -> Option<String> {
@@ -367,7 +396,7 @@ fn socket_fd_count(process_dir: &Path) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{collect_processes, parse_process_cpu, ProcfsRoot};
+    use super::{collect_processes, container_metadata_from_cgroup, parse_process_cpu, ProcfsRoot};
     use std::fs;
 
     #[test]
@@ -440,5 +469,21 @@ mod tests {
         assert!((usage.age_seconds - 150.0).abs() < 0.01);
         assert!((usage.percent - 66.7).abs() < 0.1);
         assert_eq!(usage.start_ticks, 5000);
+    }
+
+    #[test]
+    fn parses_container_runtime_and_id_from_cgroup() {
+        let cgroup = "0::/system.slice/docker-0123456789abcdef0123456789abcdef.scope\n";
+        let context = container_metadata_from_cgroup(cgroup).expect("container context");
+
+        assert_eq!(context.runtime, "docker");
+        assert_eq!(
+            context.id.as_deref(),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+        assert!(context
+            .scope
+            .as_deref()
+            .is_some_and(|scope| scope.contains("docker-")));
     }
 }

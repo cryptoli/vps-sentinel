@@ -8,6 +8,7 @@ use commands::{
     config::{run_config, ConfigCommand},
     doctor::run_doctor,
     events::{run_events, EventsCommand},
+    findings::{run_findings, FindingsCommand},
     init::run_init,
     notify::{run_notify, NotifyCommand},
     reload::run_reload,
@@ -46,10 +47,15 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
-    Check,
+    Check {
+        #[arg(long)]
+        json: bool,
+    },
     Scan {
         #[arg(long)]
         no_notify: bool,
+        #[arg(long)]
+        json: bool,
     },
     Daemon,
     Baseline {
@@ -63,6 +69,10 @@ enum Command {
     Events {
         #[command(subcommand)]
         command: EventsCommand,
+    },
+    Findings {
+        #[command(subcommand)]
+        command: FindingsCommand,
     },
     Rules {
         #[command(subcommand)]
@@ -95,9 +105,9 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Command::Init { path, force } => run_init(path, force),
-        Command::Check => run_check(load_config(cli.config.as_deref())?).await,
-        Command::Scan { no_notify } => {
-            run_scan_command(load_config(cli.config.as_deref())?, !no_notify).await
+        Command::Check { json } => run_check(load_config(cli.config.as_deref())?, json).await,
+        Command::Scan { no_notify, json } => {
+            run_scan_command(load_config(cli.config.as_deref())?, !no_notify, json).await
         }
         Command::Daemon => {
             let (config, path) = load_config_with_path(cli.config.as_deref())?;
@@ -110,6 +120,7 @@ async fn main() -> Result<()> {
         }
         Command::Blocks { command } => run_blocks(load_config(cli.config.as_deref())?, command),
         Command::Events { command } => run_events(load_config(cli.config.as_deref())?, command),
+        Command::Findings { command } => run_findings(load_config(cli.config.as_deref())?, command),
         Command::Rules { command } => run_rules(command),
         Command::Notify { command } => {
             run_notify(load_config(cli.config.as_deref())?, command).await

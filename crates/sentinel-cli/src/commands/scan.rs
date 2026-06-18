@@ -3,35 +3,41 @@ use sentinel_agent::{run_scan, ScanOptions};
 use sentinel_core::SentinelConfig;
 use std::path::PathBuf;
 
-pub async fn run_scan_command(config: SentinelConfig, notify: bool) -> Result<()> {
+pub async fn run_scan_command(config: SentinelConfig, notify: bool, json: bool) -> Result<()> {
     let report = run_scan(
         config,
         ScanOptions {
             persist: true,
             notify,
+            active_response: notify,
             scan_root: PathBuf::from("/"),
         },
     )
     .await?;
-    print_report(&report);
+    print_report(&report, json)?;
     Ok(())
 }
 
-pub async fn run_check(config: SentinelConfig) -> Result<()> {
+pub async fn run_check(config: SentinelConfig, json: bool) -> Result<()> {
     let report = run_scan(
         config,
         ScanOptions {
             persist: false,
             notify: false,
+            active_response: false,
             scan_root: PathBuf::from("/"),
         },
     )
     .await?;
-    print_report(&report);
+    print_report(&report, json)?;
     Ok(())
 }
 
-fn print_report(report: &sentinel_agent::ScanReport) {
+fn print_report(report: &sentinel_agent::ScanReport, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(report)?);
+        return Ok(());
+    }
     println!(
         "scan completed: raw_events={}, diff_events={}, findings={}, suppressed_duplicates={}, notifications={}/{} ok",
         report.raw_event_count,
@@ -67,8 +73,14 @@ fn print_report(report: &sentinel_agent::ScanReport) {
     }
     for finding in &report.findings {
         println!(
-            "[{}] {} ({}) subject={} id={}",
-            finding.severity, finding.title, finding.rule_id, finding.subject, finding.id
+            "[{} confidence={}] {} ({}) subject={} id={}",
+            finding.severity,
+            finding.confidence,
+            finding.title,
+            finding.rule_id,
+            finding.subject,
+            finding.id
         );
     }
+    Ok(())
 }

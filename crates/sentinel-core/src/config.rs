@@ -133,6 +133,11 @@ impl SentinelConfig {
                 "web.error_burst_threshold must be greater than 0".to_string(),
             ));
         }
+        if self.web.max_log_tail_bytes == 0 {
+            return Err(SentinelError::Config(
+                "web.max_log_tail_bytes must be greater than 0".to_string(),
+            ));
+        }
         if self.process.behavior_min_score == 0 {
             return Err(SentinelError::Config(
                 "process.behavior_min_score must be greater than 0".to_string(),
@@ -155,9 +160,13 @@ impl SentinelConfig {
                 "process.suspicious_socket_fd_threshold must be greater than 0".to_string(),
             ));
         }
-        if self.gpu.enabled && self.gpu.nvidia_smi_path.trim().is_empty() {
+        if self.gpu.enabled
+            && self.gpu.nvidia_smi_path.trim().is_empty()
+            && self.gpu.rocm_smi_path.trim().is_empty()
+        {
             return Err(SentinelError::Config(
-                "gpu.nvidia_smi_path is required when gpu.enabled is true".to_string(),
+                "gpu.nvidia_smi_path or gpu.rocm_smi_path is required when gpu.enabled is true"
+                    .to_string(),
             ));
         }
         if self.gpu.command_timeout_seconds == 0 {
@@ -239,6 +248,14 @@ fn validate_active_response(config: &ActiveResponseConfig, ssh: &SshConfig) -> S
             )));
         }
     }
+    match config.strategy.as_str() {
+        "observe" | "balanced" | "strict" => {}
+        other => {
+            return Err(SentinelError::Config(format!(
+                "active_response.strategy '{other}' is invalid; use observe, balanced, or strict"
+            )));
+        }
+    }
     if config.block_ttl_seconds == 0 {
         return Err(SentinelError::Config(
             "active_response.block_ttl_seconds must be greater than 0".to_string(),
@@ -257,6 +274,16 @@ fn validate_active_response(config: &ActiveResponseConfig, ssh: &SshConfig) -> S
     if config.notification_detail_limit == 0 {
         return Err(SentinelError::Config(
             "active_response.notification_detail_limit must be greater than 0".to_string(),
+        ));
+    }
+    if config.permanent_block_threshold == 0 {
+        return Err(SentinelError::Config(
+            "active_response.permanent_block_threshold must be greater than 0".to_string(),
+        ));
+    }
+    if config.permanent_block_window_seconds == 0 {
+        return Err(SentinelError::Config(
+            "active_response.permanent_block_window_seconds must be greater than 0".to_string(),
         ));
     }
     if config.web_probe_block_threshold == 0 {
@@ -521,6 +548,14 @@ mod tests {
 
         let mut config = SentinelConfig::default();
         config.active_response.notification_detail_limit = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.active_response.permanent_block_threshold = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.active_response.permanent_block_window_seconds = 0;
         assert!(config.validate().is_err());
 
         let mut config = SentinelConfig::default();

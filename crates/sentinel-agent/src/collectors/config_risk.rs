@@ -1,5 +1,6 @@
 use crate::collectors::{CollectContext, Collector};
 use crate::utils::fs::path_string;
+use crate::utils::ssh_config::{discover_authorized_key_patterns, parse_ssh_config_directives};
 use async_trait::async_trait;
 use sentinel_core::{RawEvent, SentinelResult};
 use std::fs;
@@ -34,6 +35,12 @@ impl Collector for ConfigRiskCollector {
                 }
             }
         }
+        for path in discover_authorized_key_patterns(&ctx.scan_root) {
+            events.push(
+                RawEvent::new("config_risk", "ssh_authorized_keys_file")
+                    .with_field("path", path_string(&path)),
+            );
+        }
         Ok(events)
     }
 }
@@ -61,22 +68,10 @@ fn collect_ssh_config_file(path: &Path, events: &mut Vec<RawEvent>) -> SentinelR
 
 /// Parse active sshd_config key-value directives.
 pub fn parse_ssh_config(content: &str) -> Vec<(String, String)> {
-    content
-        .lines()
-        .filter_map(|line| {
-            let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') {
-                return None;
-            }
-            let mut parts = trimmed.split_whitespace();
-            let key = parts.next()?;
-            let value = parts.collect::<Vec<_>>().join(" ");
-            if value.is_empty() {
-                None
-            } else {
-                Some((key.to_string(), value))
-            }
-        })
+    parse_ssh_config_directives(content)
+        .into_iter()
+        .filter(|directive| !directive.key.eq_ignore_ascii_case("Include"))
+        .map(|directive| (directive.key, directive.value))
         .collect()
 }
 

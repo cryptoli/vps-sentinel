@@ -1,5 +1,6 @@
 use crate::collectors::{CollectContext, Collector};
 use crate::utils::fs::{hash_file_limited, is_executable, is_hidden, path_string, read_small_text};
+use crate::utils::ssh_config::discover_authorized_key_patterns;
 use async_trait::async_trait;
 use glob::glob;
 use sentinel_core::{RawEvent, SentinelResult};
@@ -13,12 +14,6 @@ use std::os::unix::fs::PermissionsExt;
 
 const SKIPPED_DIRS: &[&str] = &["node_modules", "vendor", ".git", "cache", ".cache"];
 const MAX_CONTENT_SCAN_BYTES: u64 = 256 * 1024;
-const SSH_AUTHORIZED_KEY_PATHS: &[&str] = &[
-    "/root/.ssh/authorized_keys",
-    "/root/.ssh/authorized_keys2",
-    "/home/*/.ssh/authorized_keys",
-    "/home/*/.ssh/authorized_keys2",
-];
 
 pub struct FileIntegrityCollector;
 
@@ -37,17 +32,13 @@ impl Collector for FileIntegrityCollector {
         }
 
         if ctx.config.ssh.enabled && ctx.config.ssh.monitor_authorized_keys {
-            for configured_path in ssh_authorized_key_paths() {
+            for configured_path in discover_authorized_key_patterns(&ctx.scan_root) {
                 collect_configured_path(ctx, &configured_path, &mut events);
             }
         }
 
         Ok(events.into_values().collect())
     }
-}
-
-fn ssh_authorized_key_paths() -> impl Iterator<Item = PathBuf> {
-    SSH_AUTHORIZED_KEY_PATHS.iter().map(PathBuf::from)
 }
 
 fn collect_configured_path(

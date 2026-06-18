@@ -27,6 +27,7 @@ const LOG_INTEGRITY_STATE_RULE_ID: &str = "log_integrity_state";
 pub struct ScanOptions {
     pub persist: bool,
     pub notify: bool,
+    pub active_response: bool,
     pub scan_root: PathBuf,
 }
 
@@ -35,13 +36,14 @@ impl Default for ScanOptions {
         Self {
             persist: true,
             notify: true,
+            active_response: true,
             scan_root: PathBuf::from("/"),
         }
     }
 }
 
 /// Result summary for one scan run.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanReport {
     pub raw_event_count: usize,
     pub diff_event_count: usize,
@@ -65,6 +67,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     debug!(
         persist = options.persist,
         notify = options.notify,
+        active_response = options.active_response,
         scan_root = %options.scan_root.display(),
         "scan started"
     );
@@ -132,7 +135,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     // suppression can hide an escalated failure/probe count. Block state prevents
     // repeated firewall writes for already-blocked sources.
     let mut active_response_report = ActiveResponseReport::default();
-    if config.active_response.enabled && options.persist {
+    if config.active_response.enabled && options.persist && options.active_response {
         if let Some(store) = &store {
             match apply_active_response(&findings, &config, store) {
                 Ok(report) => {
@@ -164,8 +167,8 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
                 }
             }
         }
-    } else if config.active_response.enabled && !options.persist {
-        warn!("active response skipped because persistence is disabled");
+    } else if config.active_response.enabled && (!options.persist || !options.active_response) {
+        warn!("active response skipped because persistence or active_response is disabled for this scan");
     }
 
     if options.persist {
@@ -361,7 +364,12 @@ fn apply_active_response_notification_policy(
     let new_blocks = report
         .block_actions
         .iter()
-        .filter(|action| action.status == BlockActionStatus::Blocked)
+        .filter(|action| {
+            matches!(
+                action.status,
+                BlockActionStatus::Blocked | BlockActionStatus::PermanentlyBlocked
+            )
+        })
         .collect::<Vec<_>>();
     if new_blocks.len() > config.active_response.notification_detail_limit {
         findings.push(active_response_summary_finding(&new_blocks, report, config));
@@ -393,6 +401,12 @@ fn active_response_summary_finding(
         evidence.push(Evidence::new(
             "active_response_failed_count",
             report.failed_blocks.to_string(),
+        ));
+    }
+    if report.permanent_blocks > 0 {
+        evidence.push(Evidence::new(
+            "active_response_permanent_count",
+            report.permanent_blocks.to_string(),
         ));
     }
 
@@ -635,10 +649,10 @@ fn suppress_recent_duplicates(
 }
 
 fn has_new_active_response_block(finding: &Finding) -> bool {
-    finding
-        .evidence
-        .iter()
-        .any(|item| item.key == "active_response_status" && item.value == "blocked")
+    finding.evidence.iter().any(|item| {
+        item.key == "active_response_status"
+            && matches!(item.value.as_str(), "blocked" | "permanently_blocked")
+    })
 }
 
 fn duplicate_suppression_window_seconds(finding: &Finding, config: &SentinelConfig) -> u64 {

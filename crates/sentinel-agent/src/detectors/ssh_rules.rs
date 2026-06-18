@@ -1,6 +1,6 @@
 use crate::detectors::{evidence, field_is_allowlisted, string_field, DetectContext, Detector};
 use crate::rules::model::RuleMetadata;
-use sentinel_core::{Category, Finding, RawEvent, Severity};
+use sentinel_core::{Category, Confidence, Finding, RawEvent, Severity};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub struct SshDetector;
@@ -40,12 +40,20 @@ impl Detector for SshDetector {
                 Severity::Info,
                 "A user successfully authenticated through SSH.",
             ),
+            RuleMetadata::new(
+                "SSH-007",
+                "SSH brute force followed by successful login",
+                Category::Ssh,
+                Severity::High,
+                "A source IP produced many SSH failures and also had a successful login in the same scan window.",
+            ),
         ]
     }
 
     fn detect(&self, events: &[RawEvent], ctx: &DetectContext) -> Vec<Finding> {
         let mut findings = Vec::new();
         let mut failures: BTreeMap<String, (usize, BTreeSet<String>)> = BTreeMap::new();
+        let mut successes: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
         for event in events.iter().filter(|event| event.kind == "ssh_auth") {
             let ip = string_field(event, "source_ip");
@@ -58,6 +66,10 @@ impl Detector for SshDetector {
 
             match event.field("outcome") {
                 Some("success") => {
+                    successes
+                        .entry(ip.clone())
+                        .or_default()
+                        .insert(user.clone());
                     let root_alerted = ctx.config.ssh.alert_on_root_login && user == "root";
                     let password_alerted = ctx.config.ssh.alert_on_password_login
                         && event.field("method") == Some("password");
@@ -80,11 +92,63 @@ impl Detector for SshDetector {
 
         for (ip, (count, users)) in failures {
             if count >= ctx.config.ssh.failed_login_threshold {
+                if let Some(success_users) = successes.get(&ip) {
+                    findings.push(bruteforce_success_correlation(
+                        &ip,
+                        count,
+                        users.clone(),
+                        success_users.clone(),
+                        ctx,
+                    ));
+                }
                 findings.push(bruteforce_finding(&ip, count, users, ctx));
             }
         }
         findings
     }
+}
+
+fn bruteforce_success_correlation(
+    ip: &str,
+    failure_count: usize,
+    failed_users: BTreeSet<String>,
+    success_users: BTreeSet<String>,
+    ctx: &DetectContext,
+) -> Finding {
+    Finding::new(
+        &ctx.host_id,
+        "SSH brute force followed by successful login",
+        "The same source IP produced many SSH failures and also had a successful login in the scanned window.",
+        Severity::High,
+        Category::Ssh,
+        "SSH-007",
+        ip,
+    )
+    .with_confidence(Confidence::High)
+    .with_evidence_deduped_by(
+        vec![
+            evidence("source_ip", ip),
+            evidence("failure_count", failure_count.to_string()),
+            evidence(
+                "failed_users",
+                failed_users.into_iter().collect::<Vec<_>>().join(","),
+            ),
+            evidence(
+                "success_users",
+                success_users.into_iter().collect::<Vec<_>>().join(","),
+            ),
+        ],
+        &["source_ip"],
+    )
+    .with_impact(vec![
+        "A password guess, credential stuffing attempt, or reused credential may have succeeded."
+            .to_string(),
+    ])
+    .with_recommendations(vec![
+        "Immediately confirm whether the successful login was expected.".to_string(),
+        "Review commands, SSH keys, sudo activity, and file changes after the login.".to_string(),
+        "Rotate the affected account credentials if the login is not expected.".to_string(),
+    ])
 }
 
 fn successful_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
@@ -292,6 +356,29 @@ mod tests {
         assert_eq!(first.len(), 1);
         assert_eq!(second.len(), 1);
         assert_eq!(first[0].dedup_key, second[0].dedup_key);
+    }
+
+    #[test]
+    fn correlates_bruteforce_followed_by_success() {
+        let detector = SshDetector;
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let mut events = (0..10)
+            .map(|index| failure_event("203.0.113.30", &format!("user{index}")))
+            .collect::<Vec<_>>();
+        events.push(
+            RawEvent::new("ssh", "ssh_auth")
+                .with_field("outcome", "success")
+                .with_field("method", "password")
+                .with_field("user", "deploy")
+                .with_field("source_ip", "203.0.113.30")
+                .with_field("port", "54122")
+                .with_field("log_source", "/var/log/auth.log"),
+        );
+
+        let findings = detector.detect(&events, &ctx);
+
+        assert!(findings.iter().any(|finding| finding.rule_id == "SSH-003"));
+        assert!(findings.iter().any(|finding| finding.rule_id == "SSH-007"));
     }
 
     fn success_event(user: &str, method: &str) -> RawEvent {

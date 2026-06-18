@@ -14,6 +14,6 @@ pub use config::{
 };
 pub use error::{SentinelError, SentinelResult};
 pub use event::RawEvent;
-pub use finding::{Category, Evidence, Finding};
+pub use finding::{Category, Confidence, Evidence, Finding};
 pub use severity::Severity;
 pub use time_window::{minute_of_day, MinuteWindow};
