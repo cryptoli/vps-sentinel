@@ -438,13 +438,14 @@ fn web_probe_candidate(finding: &Finding, config: &SentinelConfig) -> Option<Blo
     let family = evidence_value(finding, "probe_family")?;
     let response = evidence_value(finding, "response_profile")?;
     let request_count = evidence_usize(finding, "request_count")?;
-    let threshold = if response == "successful_response" {
-        1
-    } else if is_exploit_probe_family(family) {
-        config.active_response.web_exploit_block_threshold
-    } else {
-        config.active_response.web_probe_block_threshold
-    };
+    let threshold =
+        if response == "successful_response" || is_single_attempt_web_exploit_family(family) {
+            1
+        } else if is_exploit_probe_family(family) {
+            config.active_response.web_exploit_block_threshold
+        } else {
+            config.active_response.web_probe_block_threshold
+        };
     if request_count < threshold {
         return None;
     }
@@ -490,6 +491,13 @@ fn is_exploit_probe_family(family: &str) -> bool {
     matches!(
         family,
         "cgi_shell_traversal" | "command_injection" | "sql_injection" | "phpunit_eval_stdin"
+    )
+}
+
+fn is_single_attempt_web_exploit_family(family: &str) -> bool {
+    matches!(
+        family,
+        "cgi_shell_traversal" | "command_injection" | "phpunit_eval_stdin"
     )
 }
 
@@ -1001,20 +1009,27 @@ mod tests {
         config.active_response.enabled = true;
         config.active_response.web_probe_block_threshold = 25;
         config.active_response.web_exploit_block_threshold = 5;
-        let low_noise = web_finding("8.8.8.8", "phpunit_eval_stdin", "missing_or_rejected", 3);
-        let high_volume = web_finding("8.8.4.4", "phpunit_eval_stdin", "missing_or_rejected", 25);
-        let exploit = web_finding("1.1.1.1", "command_injection", "missing_or_rejected", 5);
+        let low_noise = web_finding("8.8.8.8", "env_file", "missing_or_rejected", 3);
+        let high_volume = web_finding("8.8.4.4", "env_file", "missing_or_rejected", 25);
+        let exploit = web_finding("1.1.1.1", "command_injection", "missing_or_rejected", 1);
+        let repeated_sql = web_finding("1.0.0.1", "sql_injection", "missing_or_rejected", 5);
         let successful = web_finding("9.9.9.9", "env_file", "successful_response", 1);
 
-        let candidates = block_candidates(&[low_noise, high_volume, exploit, successful], &config);
+        let candidates = block_candidates(
+            &[low_noise, high_volume, exploit, repeated_sql, successful],
+            &config,
+        );
 
-        assert_eq!(candidates.len(), 3);
+        assert_eq!(candidates.len(), 4);
         assert!(candidates
             .iter()
             .any(|item| item.ip.to_string() == "8.8.4.4"));
         assert!(candidates
             .iter()
             .any(|item| item.ip.to_string() == "1.1.1.1"));
+        assert!(candidates
+            .iter()
+            .any(|item| item.ip.to_string() == "1.0.0.1"));
         assert!(candidates
             .iter()
             .any(|item| item.ip.to_string() == "9.9.9.9"));
@@ -1032,6 +1047,26 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].ip.to_string(), "1.1.1.1");
+    }
+
+    #[test]
+    fn high_confidence_web_exploit_blocks_on_single_attempt() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.web_exploit_block_threshold = 5;
+        let cgi_shell = web_finding("4.4.4.4", "cgi_shell_traversal", "missing_or_rejected", 1);
+        let phpunit = web_finding("4.4.8.8", "phpunit_eval_stdin", "missing_or_rejected", 1);
+        let sql_below_threshold = web_finding("8.8.4.4", "sql_injection", "missing_or_rejected", 1);
+
+        let candidates = block_candidates(&[cgi_shell, phpunit, sql_below_threshold], &config);
+
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates
+            .iter()
+            .any(|item| item.ip.to_string() == "4.4.4.4"));
+        assert!(candidates
+            .iter()
+            .any(|item| item.ip.to_string() == "4.4.8.8"));
     }
 
     #[test]

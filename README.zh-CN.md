@@ -195,7 +195,7 @@ CI 中使用的 Docker 容器只用于构建和兼容性测试，不代表推荐
 | 网络监听 | 解析 `/proc/net/tcp*` 和 `/proc/net/udp*`，通过 `/proc/<pid>/fd` 反查进程，与监听 owner 基线对比，附加进程/防火墙上下文，并优先报告可疑 owner 行为而不是普通端口暴露。 | 22/80/443 等预期端口只降低通用噪音；进程变化或可疑进程仍会告警，高风险端口画像和防火墙状态会作为证据保留。 |
 | 通知 | 将统一 `Finding` 模型按渠道模板渲染：Telegram HTML、Email HTML+纯文本、Markdown 或纯文本。 | 消息包含 VPS 名称、规范化时间、本地化字段、证据、影响和建议。 |
 | 噪声控制 | 使用扫描内去重、跨扫描去重、状态提醒间隔、安静时段和小时级通知预算。 | 减少重复消息，同时保留高价值告警的可见性。 |
-| 主动响应 | 在扫描内 finding 合并/去重后、跨扫描通知去重前评估封禁候选；只有不在 `[allowlist].ips` 中的公网 IP 才可能被封。Web 需要敏感路径成功响应、重复 exploit 家族探测，或高频探测/错误突发；SSH 需要达到比告警更严格的失败次数阈值。 | 可把明显扫描源临时丢进防火墙，同时避免每条告警都变成破坏性动作。 |
+| 主动响应 | 在扫描内 finding 合并/去重后、跨扫描通知去重前评估封禁候选；只有不在 `[allowlist].ips` 中的公网 IP 才可能被封。Web 需要敏感路径成功响应、单次高置信 RCE 风格 exploit 探测、重复低置信 exploit 探测，或高频探测/错误突发；SSH 需要达到比告警更严格的失败次数阈值。 | 可把明显扫描源临时丢进防火墙，同时避免每条告警都变成破坏性动作。 |
 
 ## 一键安装
 
@@ -590,7 +590,7 @@ web_exploit_block_threshold = 5
 ssh_failed_login_block_threshold = 15
 ```
 
-主动响应默认关闭，因为它会修改本机防火墙策略；需要设置 `active_response.enabled = true`，或安装时传入 `ACTIVE_RESPONSE_ENABLED=yes`，才会写入防火墙。启用后，扫描器会在扫描内合并/去重之后、跨扫描通知去重之前执行封禁，因此同一来源计数升高时，即使重复通知会被压制，也仍能触发封禁。SSH 封禁需要先形成 `SSH-003` finding，默认扫描窗口内 15 次失败触发封禁，而 SSH 告警阈值默认是 10。安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。封禁是临时的：nftables 使用 set timeout，程序也会把封禁状态写入 SQLite，后续扫描会清理过期记录。只有公网可路由来源 IP 才会被考虑，`[allowlist].ips` 始终优先。如果某条 finding 触发了主动响应决策，同一条告警会展示动作状态、IP、后端、原因、到期时间，以及失败或跳过详情。
+主动响应默认关闭，因为它会修改本机防火墙策略；需要设置 `active_response.enabled = true`，或安装时传入 `ACTIVE_RESPONSE_ENABLED=yes`，才会写入防火墙。启用后，扫描器会在扫描内合并/去重之后、跨扫描通知去重之前执行封禁，因此同一来源计数升高时，即使重复通知会被压制，也仍能触发封禁。SSH 封禁需要先形成 `SSH-003` finding，默认扫描窗口内 15 次失败触发封禁，而 SSH 告警阈值默认是 10。Web 封禁覆盖敏感路径成功响应、单次高置信 RCE 风格探测（例如命令注入、CGI shell traversal、PHPUnit `eval-stdin.php`）、重复低置信 exploit 探测和高频错误爆发。安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。封禁是临时的：nftables 使用 set timeout，程序也会把封禁状态写入 SQLite，后续扫描会清理过期记录。只有公网可路由来源 IP 才会被考虑，`[allowlist].ips` 始终优先。如果某条 finding 触发了主动响应决策，同一条告警会展示动作状态、IP、后端、原因、到期时间，以及失败或跳过详情。
 
 每次扫描都会先把主动响应状态和真实防火墙规则同步，再判断某个来源是否已经封禁。如果规则已过期、被 firewalld/ufw reload 清掉，或者被人工修改，程序会移除失效状态；如果该来源仍然满足高置信封禁条件，后续可以再次封禁。iptables 后端在插入前会用 `-C` 检查规则是否已存在，避免重复 DROP 规则；手动解除封禁会删除重复匹配规则。日常运维可以使用 `vs blocks list`、`vs blocks cleanup`、`vs blocks unblock <ip>` 和 `vs blocks unblock-all --yes`。
 
