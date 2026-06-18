@@ -220,6 +220,7 @@ sudo sh install.sh
 - 可通过环境变量直接写入 Telegram 配置；
 - systemd 可用时先写入 unit，使初始基线包含本程序自己的服务文件；
 - 写入 `.bak` 备份后删除废弃配置字段；如需跳过可设置 `MIGRATE_CONFIG=no`；
+- 追加当前版本新增的默认配置项，但不覆盖已有值；如需跳过可设置 `SYNC_CONFIG_DEFAULTS=no`；
 - 自动校验配置、运行 `doctor`、在缺少基线时创建初始基线，并执行一次不发送通知的预热扫描；
 - 初始基线完成后再启用 systemd 服务。
 
@@ -263,6 +264,7 @@ sudo TELEGRAM_BOT_TOKEN="<telegram-bot-token>" \
 | `ENABLE_SERVICE` | `yes` | 设为 `no` 时只安装 unit，不启动服务。 |
 | `RUN_DOCTOR` | `yes` | 安装过程中运行环境检查。 |
 | `MIGRATE_CONFIG` | `yes` | 写入 `.bak` 备份后删除废弃配置字段；设置为 `no` 可跳过。 |
+| `SYNC_CONFIG_DEFAULTS` | `yes` | 追加当前版本缺失的默认配置项，不覆盖用户已有值；设置为 `no` 可跳过。 |
 | `BOOTSTRAP_BASELINE` | `yes` | 没有基线时自动创建初始基线。 |
 | `RUN_FIRST_SCAN` | `yes` | 执行一次 `scan --no-notify`，完整输出写入 `<LOG_DIR>/first-scan.log`。 |
 | `VPS_NAME` | 空 | 可选的人类可读 VPS 名称，会写入 `agent.display_name` 并展示在通知标题中。 |
@@ -288,7 +290,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-更新脚本默认优先下载 release artifact，并先用 `--version` 验证二进制能否在当前机器执行；只有 artifact 不存在或不兼容时，才回退到源码构建。源码回退路径会拉取指定分支，并在 `cargo` 缺失或配置异常时通过 rustup 修复 Rust toolchain。两条路径都会保留已有配置、写入 `.bak` 备份后删除废弃配置字段、校验配置、刷新 systemd unit、更新 `vs` 简写，并在服务正在运行或已启用时 restart 服务，确保新二进制真正生效。它默认不会刷新已有基线，避免 `authorized_keys` 等未确认漂移在更新时被静默吸收为可信状态。systemd unit 内容未变化时不会重写文件，避免例行更新造成 unit mtime 变化。只修改配置、不替换二进制时使用 `vps-sentinel reload` 或 `vs reload`。
+更新脚本默认优先下载 release artifact，并先用 `--version` 验证二进制能否在当前机器执行；只有 artifact 不存在或不兼容时，才回退到源码构建。源码回退路径会拉取指定分支，并在 `cargo` 缺失或配置异常时通过 rustup 修复 Rust toolchain。两条路径都会保留已有配置、写入 `.bak` 备份后删除废弃配置字段、追加当前版本缺失的默认配置项但不覆盖已有值、校验最终配置、刷新 systemd unit、更新 `vs` 简写，并在服务正在运行或已启用时 restart 服务，确保新二进制真正生效。它默认不会刷新已有基线，避免 `authorized_keys` 等未确认漂移在更新时被静默吸收为可信状态。systemd unit 内容未变化时不会重写文件，避免例行更新造成 unit mtime 变化。只修改配置、不替换二进制时使用 `vps-sentinel reload` 或 `vs reload`。
 
 常用更新变量：
 
@@ -310,6 +312,7 @@ sudo sh update.sh
 | `RESTART_SERVICE` | `auto` | `auto`、`yes` 或 `no`，控制是否 reload/restart 服务。 |
 | `VALIDATE_CONFIG` | `yes` | 服务 reload/restart 前校验已有配置。 |
 | `MIGRATE_CONFIG` | `yes` | 写入 `.bak` 备份后删除废弃配置字段；设置为 `no` 可跳过。 |
+| `SYNC_CONFIG_DEFAULTS` | `yes` | 追加当前版本缺失的默认配置项，不覆盖用户已有值；设置为 `no` 可跳过。 |
 | `REFRESH_BASELINE` | `no` | 只有在已经人工确认当前漂移可信时，才设置为 `yes` 让更新脚本刷新已有基线。 |
 
 ## 重载配置
@@ -397,6 +400,8 @@ sudo journalctl -u vps-sentinel -f
 | `vps-sentinel config diff-default --config <path>` | 对比当前配置和默认配置，列出缺失、未知和废弃字段。 |
 | `vps-sentinel config migrate --config <path>` | 删除废弃字段，写入 `.bak` 备份，并验证迁移后的配置。 |
 | `vps-sentinel config migrate --dry-run --config <path>` | 只显示将被删除的废弃字段，不修改文件。 |
+| `vps-sentinel config sync-defaults --config <path>` | 追加当前版本缺失的默认配置项，保留已有值，写入 `.bak` 备份，并验证结果。 |
+| `vps-sentinel config sync-defaults --dry-run --config <path>` | 只显示将被追加的默认配置项，不修改文件。 |
 | `vps-sentinel doctor --config <path>` | 检查运行环境：root 可见性、Unix 目标支持、存储目录可写性、认证日志可见性。 |
 | `vps-sentinel check --config <path>` | 执行一次采集和检测，但不持久化结果、不发送通知。适合快速检查和冒烟测试。 |
 | `vps-sentinel scan --config <path>` | 执行一次完整扫描，持久化 raw events/findings，记录通知日志，应用去重，并发送已启用通知。 |

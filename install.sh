@@ -20,6 +20,7 @@ INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-auto}"
 ENABLE_SERVICE="${ENABLE_SERVICE:-yes}"
 RUN_DOCTOR="${RUN_DOCTOR:-yes}"
 MIGRATE_CONFIG="${MIGRATE_CONFIG:-yes}"
+SYNC_CONFIG_DEFAULTS="${SYNC_CONFIG_DEFAULTS:-yes}"
 BOOTSTRAP_BASELINE="${BOOTSTRAP_BASELINE:-yes}"
 RUN_FIRST_SCAN="${RUN_FIRST_SCAN:-yes}"
 TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-}"
@@ -472,9 +473,17 @@ maybe_migrate_config() {
   fi
 }
 
+maybe_sync_config_defaults() {
+  config_path="$CONFIG_DIR/config.toml"
+  if yes_enabled "$SYNC_CONFIG_DEFAULTS"; then
+    "$PREFIX/bin/vps-sentinel" --config "$config_path" config sync-defaults
+  fi
+}
+
 post_install_setup() {
   config_path="$CONFIG_DIR/config.toml"
   maybe_migrate_config
+  maybe_sync_config_defaults
   "$PREFIX/bin/vps-sentinel" --config "$config_path" config validate
   if yes_enabled "$RUN_DOCTOR"; then
     "$PREFIX/bin/vps-sentinel" --config "$config_path" doctor

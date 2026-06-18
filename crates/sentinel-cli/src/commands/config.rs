@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use clap::Subcommand;
 use sentinel_core::SentinelConfig;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -17,6 +17,10 @@ pub enum ConfigCommand {
     PrintDefault,
     DiffDefault,
     Migrate {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    SyncDefaults {
         #[arg(long)]
         dry_run: bool,
     },
@@ -50,6 +54,12 @@ pub fn run_config(path: Option<&Path>, command: ConfigCommand) -> Result<()> {
                 bail!("no configuration file found");
             };
             migrate_config(&path, dry_run)?;
+        }
+        ConfigCommand::SyncDefaults { dry_run } => {
+            let Some(path) = resolve_config_path(path) else {
+                bail!("no configuration file found");
+            };
+            sync_config_defaults(&path, dry_run)?;
         }
     }
     Ok(())
@@ -131,8 +141,7 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
         }
         return Ok(());
     }
-    let backup = path.with_extension("toml.bak");
-    fs::write(&backup, text)?;
+    let backup = write_config_backup(path, &text)?;
     fs::write(path, migrated)?;
     SentinelConfig::load(path)?;
     println!("configuration migrated: {}", path.display());
@@ -140,9 +149,64 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+fn sync_config_defaults(path: &Path, dry_run: bool) -> Result<()> {
+    let text = fs::read_to_string(path)?;
+    let missing = missing_default_entries(&text)?;
+    if missing.is_empty() {
+        println!(
+            "configuration already contains all default keys: {}",
+            path.display()
+        );
+        return Ok(());
+    }
+
+    let updated = insert_missing_default_keys(&text, &missing)?;
+    let config: SentinelConfig = toml::from_str(&updated)?;
+    config.validate()?;
+
+    if dry_run {
+        println!("default keys that would be added:");
+        for entry in missing {
+            println!("- {}", entry.path);
+        }
+        return Ok(());
+    }
+
+    let backup = write_config_backup(path, &text)?;
+    fs::write(path, updated)?;
+    SentinelConfig::load(path)?;
+    println!("configuration defaults synchronized: {}", path.display());
+    println!("backup written: {}", backup.display());
+    Ok(())
+}
+
 fn deprecated_keys_in_file(path: &Path) -> Result<Vec<String>> {
     let text = fs::read_to_string(path)?;
     Ok(deprecated_keys_in_text(&text))
+}
+
+fn write_config_backup(path: &Path, text: &str) -> Result<PathBuf> {
+    let backup = next_backup_path(path);
+    fs::write(&backup, text)?;
+    Ok(backup)
+}
+
+fn next_backup_path(path: &Path) -> PathBuf {
+    let extension = path.extension().and_then(|value| value.to_str());
+    let backup_extension = extension
+        .map(|value| format!("{value}.bak"))
+        .unwrap_or_else(|| "bak".to_string());
+    let first = path.with_extension(&backup_extension);
+    if !first.exists() {
+        return first;
+    }
+    for index in 1.. {
+        let candidate = path.with_extension(format!("{backup_extension}.{index}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    unreachable!("unbounded backup path search should always find a candidate")
 }
 
 fn deprecated_keys_in_text(text: &str) -> Vec<String> {
@@ -159,12 +223,8 @@ fn remove_deprecated_keys(text: &str) -> String {
     let mut output = Vec::new();
     for line in text.lines() {
         let trimmed = line.trim();
-        if trimmed.starts_with('[') && trimmed.ends_with(']') && !trimmed.starts_with("[[") {
-            section = trimmed
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .trim()
-                .to_string();
+        if let Some(next_section) = parse_toml_section_header(line) {
+            section = next_section;
             output.push(line.to_string());
             continue;
         }
@@ -187,6 +247,164 @@ fn remove_deprecated_keys(text: &str) -> String {
     let mut migrated = output.join("\n");
     migrated.push('\n');
     migrated
+}
+
+#[derive(Debug, Clone)]
+struct MissingDefaultEntry {
+    path: String,
+    section: String,
+    key: String,
+    value: toml::Value,
+}
+
+fn missing_default_entries(text: &str) -> Result<Vec<MissingDefaultEntry>> {
+    let default_text = SentinelConfig::default_toml()?;
+    let current_value: toml::Value = toml::from_str(text)?;
+    let default_value: toml::Value = toml::from_str(&default_text)?;
+    let mut current_keys = BTreeSet::new();
+    let mut default_keys = BTreeSet::new();
+
+    flatten_value("", &current_value, &mut current_keys);
+    flatten_value("", &default_value, &mut default_keys);
+
+    let mut entries = Vec::new();
+    for path in default_keys.difference(&current_keys) {
+        let Some(value) = toml_value_at_path(&default_value, path).cloned() else {
+            continue;
+        };
+        let (section, key) = path
+            .rsplit_once('.')
+            .map(|(section, key)| (section.to_string(), key.to_string()))
+            .unwrap_or_else(|| (String::new(), path.to_string()));
+        entries.push(MissingDefaultEntry {
+            path: path.to_string(),
+            section,
+            key,
+            value,
+        });
+    }
+    Ok(entries)
+}
+
+fn insert_missing_default_keys(text: &str, missing: &[MissingDefaultEntry]) -> Result<String> {
+    let mut groups: BTreeMap<String, Vec<&MissingDefaultEntry>> = BTreeMap::new();
+    for entry in missing {
+        groups.entry(entry.section.clone()).or_default().push(entry);
+    }
+
+    let mut output = Vec::new();
+    let mut emitted = BTreeSet::new();
+    let mut current_section = String::new();
+
+    for line in text.lines() {
+        if let Some(next_section) = parse_toml_section_header(line) {
+            emit_missing_for_section(&mut output, &groups, &mut emitted, &current_section)?;
+            current_section = next_section;
+        }
+        output.push(line.to_string());
+    }
+    emit_missing_for_section(&mut output, &groups, &mut emitted, &current_section)?;
+
+    for (section, entries) in &groups {
+        if emitted.contains(section) {
+            continue;
+        }
+        ensure_blank_separator(&mut output);
+        push_sync_defaults_header(&mut output);
+        if !section.is_empty() {
+            output.push(format!("[{section}]"));
+        }
+        push_default_entry_lines(&mut output, entries)?;
+        emitted.insert(section.clone());
+    }
+
+    let mut updated = output.join("\n");
+    updated.push('\n');
+    Ok(updated)
+}
+
+fn emit_missing_for_section(
+    output: &mut Vec<String>,
+    groups: &BTreeMap<String, Vec<&MissingDefaultEntry>>,
+    emitted: &mut BTreeSet<String>,
+    section: &str,
+) -> Result<()> {
+    let Some(entries) = groups.get(section) else {
+        return Ok(());
+    };
+    if emitted.contains(section) {
+        return Ok(());
+    }
+    ensure_blank_separator(output);
+    push_sync_defaults_header(output);
+    push_default_entry_lines(output, entries)?;
+    emitted.insert(section.to_string());
+    Ok(())
+}
+
+fn ensure_blank_separator(output: &mut Vec<String>) {
+    if !output.last().map_or(true, |line| line.trim().is_empty()) {
+        output.push(String::new());
+    }
+}
+
+fn push_sync_defaults_header(output: &mut Vec<String>) {
+    output.push("# Added by vps-sentinel config sync-defaults.".to_string());
+    output.push(
+        "# Existing values are preserved; only missing default keys are appended.".to_string(),
+    );
+}
+
+fn push_default_entry_lines(
+    output: &mut Vec<String>,
+    entries: &[&MissingDefaultEntry],
+) -> Result<()> {
+    for entry in entries {
+        output.push(format!(
+            "{} = {}",
+            entry.key,
+            format_toml_value(&entry.value)?
+        ));
+    }
+    Ok(())
+}
+
+fn format_toml_value(value: &toml::Value) -> Result<String> {
+    let mut table = toml::map::Map::new();
+    table.insert("value".to_string(), value.clone());
+    let rendered = toml::to_string(&toml::Value::Table(table))?;
+    let Some(line) = rendered.lines().next() else {
+        bail!("failed to render TOML value");
+    };
+    let Some((_, value_text)) = line.split_once('=') else {
+        bail!("failed to render TOML value");
+    };
+    Ok(value_text.trim().to_string())
+}
+
+fn toml_value_at_path<'a>(value: &'a toml::Value, path: &str) -> Option<&'a toml::Value> {
+    let mut current = value;
+    for segment in path.split('.') {
+        current = current.as_table()?.get(segment)?;
+    }
+    Some(current)
+}
+
+fn parse_toml_section_header(line: &str) -> Option<String> {
+    let trimmed = line.trim_start_matches('\u{feff}').trim_start();
+    if trimmed.starts_with("[[") || !trimmed.starts_with('[') {
+        return None;
+    }
+    let end = trimmed.find(']')?;
+    let trailing = trimmed[end + 1..].trim();
+    if !trailing.is_empty() && !trailing.starts_with('#') {
+        return None;
+    }
+    let section = trimmed[1..end].trim();
+    if section.is_empty() {
+        return None;
+    }
+    Some(section.to_string())
 }
 
 fn flatten_toml_keys(text: &str) -> Result<BTreeSet<String>> {
@@ -213,7 +431,12 @@ fn flatten_value(prefix: &str, value: &toml::Value, keys: &mut BTreeSet<String>)
 
 #[cfg(test)]
 mod tests {
-    use super::{deprecated_keys_in_text, flatten_toml_keys, remove_deprecated_keys};
+    use super::{
+        deprecated_keys_in_text, flatten_toml_keys, insert_missing_default_keys,
+        missing_default_entries, next_backup_path, remove_deprecated_keys,
+    };
+    use sentinel_core::SentinelConfig;
+    use std::fs;
 
     #[test]
     fn detects_and_removes_deprecated_keys() {
@@ -237,5 +460,58 @@ mod tests {
         let keys = flatten_toml_keys("[a]\nb = 1\n[a.c]\nd = true\n").unwrap();
         assert!(keys.contains("a.b"));
         assert!(keys.contains("a.c.d"));
+    }
+
+    #[test]
+    fn sync_defaults_adds_missing_keys_without_overwriting_existing_values() {
+        let text = "[agent]\nscan_interval_seconds = 120\n\n[notifications]\nlanguage = \"en\"\n";
+        let missing = missing_default_entries(text).unwrap();
+        assert!(missing
+            .iter()
+            .any(|entry| entry.path == "active_response.enabled"));
+        let synced = insert_missing_default_keys(text, &missing).unwrap();
+        assert!(synced.contains("scan_interval_seconds = 120"));
+        assert!(synced.contains("language = \"en\""));
+        assert!(synced.contains("[active_response]"));
+        assert!(synced.contains("enabled = false"));
+
+        let config: SentinelConfig = toml::from_str(&synced).unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.agent.scan_interval_seconds, 120);
+    }
+
+    #[test]
+    fn sync_defaults_is_noop_for_full_default_config() {
+        let text = SentinelConfig::default_toml().unwrap();
+        let missing = missing_default_entries(&text).unwrap();
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn sync_defaults_handles_utf8_bom_without_duplicate_sections() {
+        let text =
+            "\u{feff}[agent]\nscan_interval_seconds = 120\n\n[notifications]\nlanguage = \"en\"\n";
+        let missing = missing_default_entries(text).unwrap();
+        let synced = insert_missing_default_keys(text, &missing).unwrap();
+        let agent_headers = synced
+            .lines()
+            .filter(|line| line.trim_start_matches('\u{feff}').trim() == "[agent]")
+            .count();
+
+        assert_eq!(agent_headers, 1);
+        let config: SentinelConfig = toml::from_str(&synced).unwrap();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn backup_path_does_not_overwrite_existing_backups() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+        let first_backup = config_path.with_extension("toml.bak");
+        fs::write(&first_backup, "existing").unwrap();
+
+        let next = next_backup_path(&config_path);
+
+        assert_eq!(next, config_path.with_extension("toml.bak.1"));
     }
 }

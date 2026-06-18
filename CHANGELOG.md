@@ -19,6 +19,7 @@
 - Fixed `vps-sentinel-update` to prefer release artifacts and fall back to source builds only when the artifact is unavailable or incompatible.
 - Hardened install and update Rust toolchain checks so a rustup proxy without a default toolchain is repaired instead of failing at `cargo build`.
 - Added a project-level `rust-toolchain.toml` so older source-build updaters can bootstrap on rustup installations without a default toolchain.
+- Added config default synchronization during install and update, preserving user-set values while adding newly introduced default keys before validation.
 - Hardened source-based install/update when an existing source directory is detached or lacks the requested local branch.
 - Adjusted the default SSH active-response block threshold to 15 failed logins, while keeping active response disabled unless explicitly enabled.
 - Tightened active-response public IP classification to avoid blocking IPv4 special-use ranges.

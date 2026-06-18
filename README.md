@@ -221,6 +221,7 @@ The installer:
 - optionally writes Telegram settings from environment variables;
 - installs the systemd unit before baseline bootstrap when systemd is available;
 - removes deprecated config keys after writing a `.bak` backup, unless `MIGRATE_CONFIG=no`;
+- appends missing default config keys without overwriting existing values, unless `SYNC_CONFIG_DEFAULTS=no`;
 - validates config, runs `doctor`, creates the first baseline when missing, and runs one no-notify warm-up scan;
 - enables the systemd service after the baseline includes the installed unit.
 
@@ -264,6 +265,7 @@ Useful installer switches:
 | `ENABLE_SERVICE` | `yes` | Set to `no` to install the unit without starting it. |
 | `RUN_DOCTOR` | `yes` | Run runtime environment checks during install. |
 | `MIGRATE_CONFIG` | `yes` | Remove deprecated config keys after writing a `.bak` backup. Set to `no` to skip. |
+| `SYNC_CONFIG_DEFAULTS` | `yes` | Append newly introduced default config keys without overwriting existing values. Set to `no` to skip. |
 | `BOOTSTRAP_BASELINE` | `yes` | Create the first baseline if no baseline exists. |
 | `RUN_FIRST_SCAN` | `yes` | Run one `scan --no-notify` and write full output to `<LOG_DIR>/first-scan.log`. |
 | `VPS_NAME` | empty | Optional human-readable VPS name written to `agent.display_name`; shown in notification subjects. |
@@ -291,7 +293,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 sudo sh update.sh
 ```
 
-The update script tries a release artifact by default, validates the downloaded binary with `--version`, and falls back to a source build only when the artifact is unavailable or cannot execute on the host. The source fallback pulls the selected branch, repairs a missing or misconfigured Rust toolchain when needed, and rebuilds the binary. Both paths preserve the existing config, remove deprecated config keys after writing a `.bak` backup, validate it, refresh the systemd unit when available, update the `vs` shorthand, and restart an active or enabled service so the new binary is actually running. It does not refresh an existing baseline by default, so unreviewed host drift such as `authorized_keys` changes is not silently trusted during an update. Unchanged systemd unit content is not rewritten, so routine updates do not churn unit file mtimes. Use `vps-sentinel reload` or `vs reload` for config-only changes that do not replace the binary.
+The update script tries a release artifact by default, validates the downloaded binary with `--version`, and falls back to a source build only when the artifact is unavailable or cannot execute on the host. The source fallback pulls the selected branch, repairs a missing or misconfigured Rust toolchain when needed, and rebuilds the binary. Both paths preserve the existing config, remove deprecated config keys after writing a `.bak` backup, append missing default config keys without overwriting existing values, validate the final config, refresh the systemd unit when available, update the `vs` shorthand, and restart an active or enabled service so the new binary is actually running. It does not refresh an existing baseline by default, so unreviewed host drift such as `authorized_keys` changes is not silently trusted during an update. Unchanged systemd unit content is not rewritten, so routine updates do not churn unit file mtimes. Use `vps-sentinel reload` or `vs reload` for config-only changes that do not replace the binary.
 
 Useful update switches:
 
@@ -313,6 +315,7 @@ Useful update switches:
 | `RESTART_SERVICE` | `auto` | `auto`, `yes`, or `no` for reload/restart behavior. |
 | `VALIDATE_CONFIG` | `yes` | Validate existing config before service reload/restart. |
 | `MIGRATE_CONFIG` | `yes` | Remove deprecated config keys after writing a `.bak` backup. Set to `no` to skip. |
+| `SYNC_CONFIG_DEFAULTS` | `yes` | Append missing current-version default keys while preserving user-set values. Set to `no` to skip. |
 | `REFRESH_BASELINE` | `no` | Set to `yes` only after you have reviewed current drift and want the update to refresh the existing baseline. |
 
 ## Reload Configuration
@@ -400,6 +403,8 @@ Commands:
 | `vps-sentinel config diff-default --config <path>` | Compare a config file with current defaults and list missing, unknown, and deprecated keys. |
 | `vps-sentinel config migrate --config <path>` | Remove deprecated keys after writing a `.bak` backup and validating the migrated config. |
 | `vps-sentinel config migrate --dry-run --config <path>` | Show deprecated keys that would be removed without changing the file. |
+| `vps-sentinel config sync-defaults --config <path>` | Append missing default keys for the current version, preserve existing values, write a `.bak` backup, and validate the result. |
+| `vps-sentinel config sync-defaults --dry-run --config <path>` | Show missing default keys that would be added without changing the file. |
 | `vps-sentinel reload --config <path>` | Validate the config and reload the running systemd service. Use `vs reload` after installing the shorthand. |
 | `vps-sentinel doctor --config <path>` | Check runtime readiness: root visibility, Unix target support, storage directory writability, and configured auth log visibility. |
 | `vps-sentinel check --config <path>` | Run collectors and detectors once without persisting results or sending notifications. Good for quick inspection and CI-style smoke tests. |

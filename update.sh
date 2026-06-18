@@ -20,6 +20,7 @@ INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-auto}"
 RESTART_SERVICE="${RESTART_SERVICE:-auto}"
 VALIDATE_CONFIG="${VALIDATE_CONFIG:-yes}"
 MIGRATE_CONFIG="${MIGRATE_CONFIG:-yes}"
+SYNC_CONFIG_DEFAULTS="${SYNC_CONFIG_DEFAULTS:-yes}"
 REFRESH_BASELINE="${REFRESH_BASELINE:-no}"
 SYSTEMD_UNIT_INSTALLED=0
 
@@ -284,6 +285,12 @@ migrate_config() {
   fi
 }
 
+sync_config_defaults() {
+  if yes_enabled "$SYNC_CONFIG_DEFAULTS"; then
+    "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" config sync-defaults
+  fi
+}
+
 install_binary_aliases() {
   ln -sf vps-sentinel "$PREFIX/bin/vs"
   rm -f "$PREFIX/bin/vps-sentinel-reload"
@@ -370,6 +377,7 @@ ensure_config_exists() {
 
 post_update() {
   migrate_config
+  sync_config_defaults
 
   case "$VALIDATE_CONFIG" in
     yes|true|1)
