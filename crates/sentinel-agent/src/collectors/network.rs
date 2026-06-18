@@ -1,4 +1,5 @@
 use crate::collectors::{CollectContext, Collector};
+use crate::utils::ip::is_public_remote_ip;
 use async_trait::async_trait;
 use sentinel_core::{RawEvent, SentinelResult};
 use std::collections::{BTreeMap, BTreeSet};
@@ -90,20 +91,7 @@ fn parse_proc_net_line(line: &str, protocol: &str) -> Option<RawEvent> {
 
 fn is_public_remote_addr(addr: &str) -> bool {
     match addr.parse::<IpAddr>() {
-        Ok(IpAddr::V4(ip)) => {
-            !(ip.is_loopback()
-                || ip.is_private()
-                || ip.is_link_local()
-                || ip.is_broadcast()
-                || ip.is_multicast())
-        }
-        Ok(IpAddr::V6(ip)) => {
-            let first = ip.segments()[0];
-            !(ip.is_loopback()
-                || ip.is_multicast()
-                || first & 0xfe00 == 0xfc00
-                || first & 0xffc0 == 0xfe80)
-        }
+        Ok(ip) => is_public_remote_ip(ip),
         Err(_) => false,
     }
 }
@@ -295,6 +283,16 @@ mod tests {
         assert_eq!(events[0].field("remote_addr"), Some("8.8.8.8"));
         assert_eq!(events[0].field("remote_port"), Some("443"));
         assert_eq!(events[0].field("remote_public"), Some("true"));
+    }
+
+    #[test]
+    fn marks_special_use_remote_address_as_non_public() {
+        let text = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: 0100007F:9C40 017100CB:01BB 01 00000000:00000000 00:00000000 00000000 0 0 99";
+        let events = parse_proc_net(text, "tcp");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].field("remote_addr"), Some("203.0.113.1"));
+        assert_eq!(events[0].field("remote_public"), Some("false"));
     }
 
     #[test]

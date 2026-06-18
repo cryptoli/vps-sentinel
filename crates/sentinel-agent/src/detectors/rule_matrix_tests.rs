@@ -1,6 +1,7 @@
 use super::{default_detectors, DetectContext};
 use crate::notify::render_alert_for_config;
 use sentinel_core::{Finding, NotificationLanguage, RawEvent, SentinelConfig};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 struct PositiveCase {
@@ -20,9 +21,18 @@ fn every_builtin_risk_rule_has_positive_and_negative_coverage() {
     let config = SentinelConfig::default();
     let positives = positive_cases();
     let negatives = negative_cases();
+    let detector_rule_ids = detector_rule_ids();
+    let positive_rule_ids = positives
+        .iter()
+        .map(|case| case.rule_id)
+        .collect::<BTreeSet<_>>();
+    let negative_rule_ids = negatives
+        .iter()
+        .map(|case| case.rule_id)
+        .collect::<BTreeSet<_>>();
 
-    assert_eq!(positives.len(), 34);
-    assert_eq!(negatives.len(), positives.len());
+    assert_eq!(positive_rule_ids, detector_rule_ids);
+    assert_eq!(negative_rule_ids, detector_rule_ids);
 
     for case in positives {
         let findings = detect_all(case.events, config.clone());
@@ -82,6 +92,14 @@ fn detect_all(events: Vec<RawEvent>, config: SentinelConfig) -> Vec<Finding> {
         findings.extend(detector.detect(&events, &ctx));
     }
     findings
+}
+
+fn detector_rule_ids() -> BTreeSet<&'static str> {
+    default_detectors()
+        .into_iter()
+        .flat_map(|detector| detector.rules())
+        .map(|rule| rule.id)
+        .collect()
 }
 
 fn finding_for_rule<'a>(findings: &'a [Finding], rule_id: &str) -> Option<&'a Finding> {

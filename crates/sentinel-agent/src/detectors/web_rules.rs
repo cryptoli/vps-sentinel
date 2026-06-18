@@ -94,6 +94,32 @@ enum ProbeFamily {
 }
 
 impl ProbeFamily {
+    fn from_id(value: &str) -> Option<Self> {
+        match value {
+            "env_file" => Some(Self::EnvFile),
+            "git_exposure" => Some(Self::GitExposure),
+            "phpunit_eval_stdin" => Some(Self::PhpUnitEvalStdin),
+            "cgi_shell_traversal" => Some(Self::CgiShellTraversal),
+            "command_injection" => Some(Self::CommandInjection),
+            "php_config_injection" => Some(Self::PhpConfigInjection),
+            "lfi_file_read" => Some(Self::LfiFileRead),
+            "php_stream_wrapper" => Some(Self::PhpStreamWrapper),
+            "java_jndi_injection" => Some(Self::JavaJndiInjection),
+            "ssrf_metadata" => Some(Self::SsrfMetadata),
+            "template_injection" => Some(Self::TemplateInjection),
+            "deserialization_probe" => Some(Self::DeserializationProbe),
+            "sql_injection" => Some(Self::SqlInjection),
+            "path_traversal" => Some(Self::PathTraversal),
+            "phpmyadmin" => Some(Self::PhpMyAdmin),
+            "wordpress_admin" => Some(Self::WordpressAdmin),
+            "boaform" => Some(Self::BoaForm),
+            "actuator" => Some(Self::Actuator),
+            "server_status" => Some(Self::ServerStatus),
+            "generic_cgi" => Some(Self::GenericCgi),
+            _ => None,
+        }
+    }
+
     fn id(self) -> &'static str {
         match self {
             Self::EnvFile => "env_file",
@@ -174,6 +200,45 @@ impl ProbeFamily {
             _ => Severity::Low,
         }
     }
+
+    fn is_exploit(self) -> bool {
+        matches!(
+            self,
+            Self::CgiShellTraversal
+                | Self::CommandInjection
+                | Self::PhpConfigInjection
+                | Self::LfiFileRead
+                | Self::PhpStreamWrapper
+                | Self::JavaJndiInjection
+                | Self::SsrfMetadata
+                | Self::TemplateInjection
+                | Self::DeserializationProbe
+                | Self::SqlInjection
+                | Self::PhpUnitEvalStdin
+        )
+    }
+
+    fn blocks_on_single_attempt(self) -> bool {
+        matches!(
+            self,
+            Self::CgiShellTraversal
+                | Self::CommandInjection
+                | Self::PhpConfigInjection
+                | Self::LfiFileRead
+                | Self::PhpStreamWrapper
+                | Self::JavaJndiInjection
+                | Self::SsrfMetadata
+                | Self::PhpUnitEvalStdin
+        )
+    }
+}
+
+pub(crate) fn probe_family_is_exploit(family: &str) -> bool {
+    ProbeFamily::from_id(family).is_some_and(ProbeFamily::is_exploit)
+}
+
+pub(crate) fn probe_family_blocks_on_single_attempt(family: &str) -> bool {
+    ProbeFamily::from_id(family).is_some_and(ProbeFamily::blocks_on_single_attempt)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -613,7 +678,10 @@ fn hex_value(value: u8) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_attack_payload, is_probe_path, WebDetector};
+    use super::{
+        contains_attack_payload, is_probe_path, probe_family_blocks_on_single_attempt,
+        probe_family_is_exploit, ProbeFamily, WebDetector,
+    };
     use crate::detectors::{DetectContext, Detector};
     use sentinel_core::{RawEvent, SentinelConfig, Severity};
     use std::sync::Arc;
@@ -760,6 +828,45 @@ mod tests {
                 .evidence
                 .iter()
                 .any(|item| { item.key == "probe_family" && item.value == family }));
+        }
+    }
+
+    #[test]
+    fn active_response_probe_family_policy_is_owned_by_web_rules() {
+        assert!(probe_family_is_exploit("lfi_file_read"));
+        assert!(probe_family_blocks_on_single_attempt("lfi_file_read"));
+        assert!(probe_family_is_exploit("template_injection"));
+        assert!(!probe_family_blocks_on_single_attempt("template_injection"));
+        assert!(!probe_family_is_exploit("env_file"));
+        assert!(!probe_family_blocks_on_single_attempt("env_file"));
+        assert!(!probe_family_is_exploit("unknown_family"));
+    }
+
+    #[test]
+    fn probe_family_ids_round_trip() {
+        for family in [
+            ProbeFamily::EnvFile,
+            ProbeFamily::GitExposure,
+            ProbeFamily::PhpUnitEvalStdin,
+            ProbeFamily::CgiShellTraversal,
+            ProbeFamily::CommandInjection,
+            ProbeFamily::PhpConfigInjection,
+            ProbeFamily::LfiFileRead,
+            ProbeFamily::PhpStreamWrapper,
+            ProbeFamily::JavaJndiInjection,
+            ProbeFamily::SsrfMetadata,
+            ProbeFamily::TemplateInjection,
+            ProbeFamily::DeserializationProbe,
+            ProbeFamily::SqlInjection,
+            ProbeFamily::PathTraversal,
+            ProbeFamily::PhpMyAdmin,
+            ProbeFamily::WordpressAdmin,
+            ProbeFamily::BoaForm,
+            ProbeFamily::Actuator,
+            ProbeFamily::ServerStatus,
+            ProbeFamily::GenericCgi,
+        ] {
+            assert_eq!(ProbeFamily::from_id(family.id()), Some(family));
         }
     }
 

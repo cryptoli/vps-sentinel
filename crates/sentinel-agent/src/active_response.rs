@@ -1,11 +1,13 @@
 use crate::detectors::field_is_allowlisted;
+use crate::detectors::web_rules::{probe_family_blocks_on_single_attempt, probe_family_is_exploit};
 use crate::storage::SqliteStore;
 use crate::utils::command::command_output;
+use crate::utils::ip::is_public_remote_ip;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use sentinel_core::{Finding, SentinelConfig, SentinelError, SentinelResult};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 use std::time::Duration;
 use tracing::warn;
 
@@ -439,9 +441,9 @@ fn web_probe_candidate(finding: &Finding, config: &SentinelConfig) -> Option<Blo
     let response = evidence_value(finding, "response_profile")?;
     let request_count = evidence_usize(finding, "request_count")?;
     let threshold =
-        if response == "successful_response" || is_single_attempt_web_exploit_family(family) {
+        if response == "successful_response" || probe_family_blocks_on_single_attempt(family) {
             1
-        } else if is_exploit_probe_family(family) {
+        } else if probe_family_is_exploit(family) {
             config.active_response.web_exploit_block_threshold
         } else {
             config.active_response.web_probe_block_threshold
@@ -487,37 +489,6 @@ fn ssh_bruteforce_candidate(finding: &Finding, config: &SentinelConfig) -> Optio
     })
 }
 
-fn is_exploit_probe_family(family: &str) -> bool {
-    matches!(
-        family,
-        "cgi_shell_traversal"
-            | "command_injection"
-            | "php_config_injection"
-            | "lfi_file_read"
-            | "php_stream_wrapper"
-            | "java_jndi_injection"
-            | "ssrf_metadata"
-            | "template_injection"
-            | "deserialization_probe"
-            | "sql_injection"
-            | "phpunit_eval_stdin"
-    )
-}
-
-fn is_single_attempt_web_exploit_family(family: &str) -> bool {
-    matches!(
-        family,
-        "cgi_shell_traversal"
-            | "command_injection"
-            | "php_config_injection"
-            | "lfi_file_read"
-            | "php_stream_wrapper"
-            | "java_jndi_injection"
-            | "ssrf_metadata"
-            | "phpunit_eval_stdin"
-    )
-}
-
 fn evidence_ip(finding: &Finding, key: &str) -> Option<IpAddr> {
     evidence_value(finding, key)?.parse().ok()
 }
@@ -532,69 +503,6 @@ fn evidence_value<'a>(finding: &'a Finding, key: &str) -> Option<&'a str> {
         .iter()
         .find(|item| item.key == key)
         .map(|item| item.value.as_str())
-}
-
-fn is_public_remote_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => is_public_ipv4(ip),
-        IpAddr::V6(ip) => is_public_ipv6(ip),
-    }
-}
-
-fn is_public_ipv4(ip: Ipv4Addr) -> bool {
-    !(ip.is_unspecified()
-        || ip.is_loopback()
-        || ip.is_private()
-        || ip.is_link_local()
-        || ip.is_broadcast()
-        || ip.is_multicast()
-        || is_this_network_ipv4(ip)
-        || is_protocol_assignment_ipv4(ip)
-        || is_documentation_ipv4(ip)
-        || is_benchmark_ipv4(ip)
-        || is_reserved_ipv4(ip)
-        || is_shared_address_space_ipv4(ip))
-}
-
-fn is_this_network_ipv4(ip: Ipv4Addr) -> bool {
-    ip.octets()[0] == 0
-}
-
-fn is_protocol_assignment_ipv4(ip: Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    octets[0] == 192 && octets[1] == 0 && octets[2] == 0
-}
-
-fn is_documentation_ipv4(ip: Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    matches!(
-        octets,
-        [192, 0, 2, _] | [198, 51, 100, _] | [203, 0, 113, _]
-    )
-}
-
-fn is_benchmark_ipv4(ip: Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    octets[0] == 198 && matches!(octets[1], 18 | 19)
-}
-
-fn is_shared_address_space_ipv4(ip: Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    octets[0] == 100 && (64..=127).contains(&octets[1])
-}
-
-fn is_reserved_ipv4(ip: Ipv4Addr) -> bool {
-    ip.octets()[0] >= 240
-}
-
-fn is_public_ipv6(ip: Ipv6Addr) -> bool {
-    let segments = ip.segments();
-    !(ip.is_unspecified()
-        || ip.is_loopback()
-        || ip.is_multicast()
-        || (segments[0] & 0xfe00) == 0xfc00
-        || (segments[0] & 0xffc0) == 0xfe80
-        || (segments[0] == 0x2001 && segments[1] == 0x0db8))
 }
 
 fn record_firewall_present(config: &SentinelConfig, record: &BlockRecord) -> Option<bool> {
@@ -1161,6 +1069,12 @@ mod tests {
         assert!(!is_public_remote_ip("::1".parse().unwrap()));
         assert!(!is_public_remote_ip("fc00::1".parse().unwrap()));
         assert!(!is_public_remote_ip("2001:db8::1".parse().unwrap()));
+        assert!(!is_public_remote_ip("::ffff:10.0.0.1".parse().unwrap()));
+        assert!(!is_public_remote_ip("::ffff:8.8.8.8".parse().unwrap()));
+        assert!(!is_public_remote_ip("100::1".parse().unwrap()));
+        assert!(!is_public_remote_ip("2001:2::1".parse().unwrap()));
+        assert!(!is_public_remote_ip("2001:10::1".parse().unwrap()));
+        assert!(!is_public_remote_ip("64:ff9b:1::1".parse().unwrap()));
     }
 
     #[test]

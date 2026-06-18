@@ -1,12 +1,15 @@
 use crate::detectors::default_detectors;
 use crate::rules::model::RuleMetadata;
+use crate::rules::system;
 
-/// Return metadata for all built-in MVP rules.
+/// Return metadata for all built-in detector and system-generated rules.
 pub fn builtin_rules() -> Vec<RuleMetadata> {
-    default_detectors()
+    let mut rules = default_detectors()
         .into_iter()
         .flat_map(|detector| detector.rules())
-        .collect()
+        .collect::<Vec<_>>();
+    rules.extend(system::rules());
+    rules
 }
 
 /// Return one built-in rule by ID.
@@ -45,6 +48,14 @@ mod tests {
     #[test]
     fn find_rule_is_case_insensitive() {
         assert_eq!(find_rule("ssh-005").map(|rule| rule.id), Some("SSH-005"));
+    }
+
+    #[test]
+    fn builtin_rules_include_system_generated_findings() {
+        assert_eq!(
+            find_rule("ACTIVE-001").map(|rule| rule.id),
+            Some("ACTIVE-001")
+        );
     }
 
     fn is_normalized_rule_id(rule_id: &str) -> bool {

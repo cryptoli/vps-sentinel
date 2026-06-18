@@ -4,6 +4,7 @@ use crate::collectors::{default_collectors, CollectContext};
 use crate::detectors::{default_detectors, DetectContext};
 use crate::findings::coalesce_related_findings;
 use crate::notify::{NotificationManager, NotifyContext};
+use crate::rules::system::ACTIVE_RESPONSE_SUMMARY_RULE_ID;
 use crate::storage::SqliteStore;
 use crate::utils::fs::path_string;
 use crate::utils::redact::{mask_command_args, mask_ip, mask_ips_in_text};
@@ -20,7 +21,6 @@ use tracing::{debug, warn};
 
 const PROCESS_START_STATE_RULE_ID: &str = "process_start_times";
 const LOG_INTEGRITY_STATE_RULE_ID: &str = "log_integrity_state";
-const ACTIVE_RESPONSE_SUMMARY_RULE_ID: &str = "ACTIVE-001";
 
 /// Controls side effects performed by one scan.
 #[derive(Debug, Clone)]
