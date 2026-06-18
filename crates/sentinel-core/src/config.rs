@@ -601,6 +601,17 @@ mod tests {
         assert_eq!(decoded.notifications.language, NotificationLanguage::ZhCn);
         assert!(text.contains("language = \"zh_cn\""));
         assert!(!decoded.ssh.auth_log_paths.is_empty());
+        assert_eq!(decoded.ssh.failed_login_threshold, 6);
+        assert!(decoded.active_response.enabled);
+        assert_eq!(decoded.active_response.ssh_failed_login_block_threshold, 6);
+        assert!(decoded.reports.scheduled_enabled);
+        assert!(decoded.advanced_collectors.auditd_enabled);
+        assert!(decoded.advanced_collectors.ebpf_bridge_enabled);
+        assert!(decoded.external_rules.enabled);
+        assert!(decoded.external_rules.yara_enabled);
+        assert!(decoded.threat_intel.enabled);
+        assert!(decoded.fleet.enabled);
+        assert!(!decoded.maintenance.enabled);
         Ok(())
     }
 

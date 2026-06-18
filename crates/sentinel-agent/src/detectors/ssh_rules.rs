@@ -341,13 +341,13 @@ mod tests {
         let detector = SshDetector;
         let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
         let first = detector.detect(
-            &(0..10)
+            &(0..6)
                 .map(|index| failure_event("203.0.113.20", &format!("user{index}")))
                 .collect::<Vec<_>>(),
             &ctx,
         );
         let second = detector.detect(
-            &(0..20)
+            &(0..12)
                 .map(|index| failure_event("203.0.113.20", &format!("user{index}")))
                 .collect::<Vec<_>>(),
             &ctx,
@@ -362,7 +362,7 @@ mod tests {
     fn correlates_bruteforce_followed_by_success() {
         let detector = SshDetector;
         let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
-        let mut events = (0..10)
+        let mut events = (0..6)
             .map(|index| failure_event("203.0.113.30", &format!("user{index}")))
             .collect::<Vec<_>>();
         events.push(

@@ -39,14 +39,14 @@ It is not:
 | Docker context | Detects Docker availability and emits initial container-surface context without requiring Docker-specific write access. |
 | Incident correlation | Correlates findings by source IP, path, process, category, and time window into local incidents with timelines. |
 | Service profile | Maintains a service-owner profile for listening sockets and reports new services or executable drift on known listeners. |
-| Advanced collectors | Optionally reads auditd logs and an eBPF JSONL/command bridge when configured. Both are disabled by default. |
-| External rules | Supports Sigma-like TOML event rules and optional YARA CLI scans for user-supplied defensive rules. Disabled by default. |
+| Advanced collectors | Reads auditd logs when present and accepts an eBPF JSONL/command bridge when configured. The collectors are enabled by default and safely produce no events when their inputs are absent. |
+| External rules | Supports Sigma-like TOML event rules and optional YARA CLI scans for user-supplied defensive rules. The rule engine is enabled by default; it runs only when rule or scan paths are configured. |
 | Threat intelligence | Optionally enriches findings with local or remote indicators for IPs, paths, domains, and hashes. Indicator matches are supporting evidence, not standalone block triggers. |
 | Fleet view | Exports and ingests lightweight node snapshots so several VPS hosts can be reviewed from one local SQLite store. |
 | Maintenance mode | Provides a bounded maintenance window that can suppress low/medium baseline drift during planned upgrades without hiding high-risk activity. |
 | Storage | Stores raw events, findings, baselines, and notification logs in local SQLite; repeated raw facts use stable storage keys and a configurable database size cap to prevent unbounded growth. |
 | Noise control | Uses allowlists, minimum severity, finding deduplication, and configurable retention windows. |
-| Active response | Optionally handles high-confidence public-source web probes and SSH brute-force sources through `observe`, `balanced`, or `strict` strategies; firewall writes use nftables or iptables with TTL-based expiry. Disabled by default. |
+| Active response | Handles high-confidence public-source web probes and SSH brute-force sources through `observe`, `balanced`, or `strict` strategies; firewall writes use nftables or iptables with TTL-based expiry and public-IP safety checks. Enabled by default for new installs. |
 | Notifications | Sends alerts through Telegram, Email SMTP, generic webhook, ntfy, Gotify, Bark, and ServerChan. |
 | Operations | Provides a single CLI binary, `vs` shorthand, JSON logs, systemd unit, one-command installer, update script, built-in reload command, stop helper, config migration, reports, and advice commands. |
 
@@ -288,7 +288,7 @@ Useful installer switches:
 | `TELEGRAM_MIN_SEVERITY` | `Medium` | Minimum severity for Telegram notifications. |
 | `RUN_NOTIFY_TEST` | `auto` | `auto`, `yes`, or `no`; `auto` sends a test when Telegram env vars are provided. |
 | `STORAGE_MAX_DATABASE_SIZE_MB` | empty | Optional override for `[storage].max_database_size_mb`. Existing configs are changed only when this variable is set. |
-| `ACTIVE_RESPONSE_ENABLED` | empty | Set to `yes` to write `active_response.enabled = true`; active response is disabled unless explicitly enabled. |
+| `ACTIVE_RESPONSE_ENABLED` | empty | Overrides `active_response.enabled`; new default configs enable active response, while existing user configs are preserved on upgrade. Use `no` to force observe-only deployments without firewall writes. |
 | `ACTIVE_RESPONSE_FIREWALL_BACKEND` | empty | Optional `auto`, `nftables`, or `iptables` backend override. |
 | `ACTIVE_RESPONSE_BLOCK_TTL_SECONDS` | empty | Optional temporary block TTL override. |
 | `ACTIVE_RESPONSE_MAX_BLOCKS_PER_SCAN` | empty | Optional cap for new blocks in one scan. |
@@ -629,7 +629,7 @@ Active response:
 
 ```toml
 [active_response]
-enabled = false
+enabled = true
 strategy = "balanced"
 firewall_backend = "auto"
 block_ttl_seconds = 3600
@@ -640,10 +640,10 @@ permanent_block_threshold = 3
 permanent_block_window_seconds = 86400
 web_probe_block_threshold = 25
 web_exploit_block_threshold = 5
-ssh_failed_login_block_threshold = 10
+ssh_failed_login_block_threshold = 6
 ```
 
-Active response is disabled by default because it changes local firewall policy; set `active_response.enabled = true` or install with `ACTIVE_RESPONSE_ENABLED=yes` to allow firewall writes. `strategy = "observe"` records block candidates without writing firewall rules, `balanced` is the default policy, and `strict` requires stronger evidence for rejected Web probes and SSH brute-force sources. When enabled, the scanner applies it after scan-level coalescing/deduplication but before persisted notification deduplication, so an escalating source can still be blocked even when repeated notifications are suppressed. SSH blocking requires an `SSH-003` finding and defaults to 10 failed logins in the scan window. Web blocking covers successful sensitive responses, high-confidence RCE-style exploit probes, repeated lower-confidence exploit probes, and high-volume error bursts. Quiet hours and notification limiters do not prevent blocking. The backend uses nftables when available and falls back to iptables/ip6tables. Normal blocks are temporary: nftables uses set timeouts and vps-sentinel also stores block state in SQLite so expired entries can be removed on later scans. If the same public source IP repeatedly becomes a block candidate at least `permanent_block_threshold` times within `permanent_block_window_seconds`, it is escalated to a permanent firewall block with no expiry. Permanent escalation still respects `[allowlist].ips`, `strategy = "observe"`, and `max_blocks_per_scan`, and operators can remove it with `vs blocks unblock <ip>` or `vs blocks unblock-all --yes`. Only public routable source IPs are eligible. When one scan creates at most `notification_detail_limit` new blocks, alerts include the blocked IP and reason; larger block bursts produce one summary alert and operators can inspect details with `vs blocks list --no-verify`.
+Active response is enabled by default for new installs. Existing configs are not overwritten during upgrade, so a host that explicitly has `active_response.enabled = false` stays disabled until the operator changes it. `strategy = "observe"` records block candidates without writing firewall rules, `balanced` is the default policy, and `strict` requires stronger evidence for rejected Web probes and SSH brute-force sources. The scanner applies active response after scan-level coalescing/deduplication but before persisted notification deduplication, so an escalating source can still be blocked even when repeated notifications are suppressed. SSH blocking requires an `SSH-003` finding and defaults to 6 failed logins in the scan window. Web blocking covers successful sensitive responses, high-confidence RCE-style exploit probes, repeated lower-confidence exploit probes, and high-volume error bursts. Quiet hours and notification limiters do not prevent blocking. The backend uses nftables when available and falls back to iptables/ip6tables. Normal blocks are temporary: nftables uses set timeouts and vps-sentinel also stores block state in SQLite so expired entries can be removed on later scans. If the same public source IP repeatedly becomes a block candidate at least `permanent_block_threshold` times within `permanent_block_window_seconds`, it is escalated to a permanent firewall block with no expiry. Permanent escalation still respects `[allowlist].ips`, `strategy = "observe"`, and `max_blocks_per_scan`, and operators can remove it with `vs blocks unblock <ip>` or `vs blocks unblock-all --yes`. Only public routable source IPs are eligible. When one scan creates at most `notification_detail_limit` new blocks, alerts include the blocked IP and reason; larger block bursts produce one summary alert and operators can inspect details with `vs blocks list --no-verify`.
 
 Every scan synchronizes active-response state with the real firewall before deciding whether a source is already blocked. If a rule expired, was removed by firewalld/ufw reload, or was changed manually, the stale state record is removed and a still-escalating source can be blocked again. The iptables backend checks for an existing rule before inserting, so repeated scans do not create duplicate DROP rules, and manual unblock removes duplicate matching rules if they exist. Use `vs blocks list`, `vs blocks cleanup`, `vs blocks unblock <ip>`, and `vs blocks unblock-all --yes` for operational control.
 
@@ -677,42 +677,42 @@ enabled = true
 drift_requires_public_exposure = false
 
 [reports]
-scheduled_enabled = false
+scheduled_enabled = true
 scheduled_hour = 8
 scheduled_period = "today"
 ```
 
-`incidents` controls local attack-chain grouping. `service_profile` controls listener owner drift detection. `reports.scheduled_enabled = true` sends the configured daily report from the daemon through enabled notification channels, with `min_interval_seconds` preventing duplicate sends after restarts.
+`incidents` controls local attack-chain grouping. `service_profile` controls listener owner drift detection. Scheduled reports are enabled by default and send the configured daily report from the daemon through enabled notification channels, with `min_interval_seconds` preventing duplicate sends after restarts. If no notification channel is configured, scheduled reports are skipped without building or sending a report.
 
 Advanced collectors and external rules:
 
 ```toml
 [advanced_collectors]
-auditd_enabled = false
-ebpf_bridge_enabled = false
+auditd_enabled = true
+ebpf_bridge_enabled = true
 ebpf_event_paths = []
 ebpf_command = []
 
 [external_rules]
-enabled = false
+enabled = true
 sigma_paths = []
-yara_enabled = false
+yara_enabled = true
 yara_paths = []
 yara_scan_roots = []
 ```
 
-Auditd reads configured audit logs when available. The eBPF bridge expects JSONL events from files or a configured command, which lets operators integrate their own BPF tooling without making kernel probes a hard dependency. Sigma-like rules are TOML files containing structured event field conditions. YARA support calls the configured `yara` binary, so install and test YARA separately before enabling it.
+Auditd reads configured audit logs when available. The eBPF bridge expects JSONL events from files or a configured command, which lets operators integrate their own BPF tooling without making kernel probes a hard dependency. Sigma-like rules are TOML files containing structured event field conditions. YARA support calls the configured `yara` binary only when rule paths and scan roots are configured, so the default engine is active but does no YARA work until inputs exist.
 
 Threat intelligence, fleet, and maintenance:
 
 ```toml
 [threat_intel]
-enabled = false
+enabled = true
 indicator_paths = []
 url = ""
 
 [fleet]
-enabled = false
+enabled = true
 node_name = ""
 export_path = "/var/lib/vps-sentinel/fleet-node.json"
 

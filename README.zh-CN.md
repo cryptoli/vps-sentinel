@@ -39,14 +39,14 @@
 | Docker 上下文 | 检测 Docker 可用性并给出初始容器攻击面提示，不要求 Docker 写权限。 |
 | 事件关联 | 按来源 IP、路径、进程、分类和时间窗口把相关 finding 聚合为 incident，并提供时间线。 |
 | 服务画像 | 维护监听服务 owner 画像，发现新增服务或已知监听端口背后的可执行文件漂移。 |
-| 高级采集 | 可选读取 auditd 日志和 eBPF JSONL/命令桥接事件，默认关闭。 |
-| 外部规则 | 支持 Sigma-like TOML 事件规则和可选 YARA CLI 扫描，默认关闭。 |
+| 高级采集 | 默认启用 auditd 日志采集和 eBPF JSONL/命令桥接入口；对应日志、文件或命令不存在时安全空跑。 |
+| 外部规则 | 支持 Sigma-like TOML 事件规则和可选 YARA CLI 扫描；规则引擎默认启用，但只有配置了规则路径或扫描根目录后才会实际运行。 |
 | 威胁情报 | 可选用本地或远程 indicator 对 IP、路径、域名、哈希做证据增强；命中只是辅助证据，不会单独触发封禁。 |
 | 多 VPS 视图 | 导出和导入轻量级节点快照，方便在一个本地 SQLite 中查看多台 VPS 摘要。 |
 | 维护模式 | 支持有时限的维护窗口，在计划升级期间压制低/中危基线漂移，不隐藏高危行为。 |
 | 本地存储 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和通知日志；重复 raw fact 使用稳定存储键，并提供可配置数据库容量上限，避免无限增长。 |
 | 噪声控制 | 支持白名单、最低告警级别、finding 去重和保留周期。 |
-| 主动响应 | 可选以 `observe`、`balanced` 或 `strict` 策略处理高置信公网来源 IP；写防火墙时通过 nftables 或 iptables 临时封禁；默认关闭。 |
+| 主动响应 | 默认启用，以 `observe`、`balanced` 或 `strict` 策略处理高置信公网来源 IP；写防火墙时通过 nftables 或 iptables 临时封禁，并带公网 IP 与白名单保护。 |
 | 通知告警 | 支持 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan。 |
 | 运维部署 | 单 CLI 二进制、`vs` 简写、JSON 日志、systemd unit、一键安装脚本、更新脚本、内置重载命令、停止脚本、配置迁移、报告和处置建议命令。 |
 
@@ -287,7 +287,7 @@ sudo TELEGRAM_BOT_TOKEN="<telegram-bot-token>" \
 | `TELEGRAM_MIN_SEVERITY` | `Medium` | Telegram 通知的最低等级。 |
 | `RUN_NOTIFY_TEST` | `auto` | `auto`、`yes` 或 `no`；`auto` 会在提供 Telegram 环境变量时发送测试通知。 |
 | `STORAGE_MAX_DATABASE_SIZE_MB` | 空 | 可选覆盖 `[storage].max_database_size_mb`；已有配置只会在传入该变量时被修改。 |
-| `ACTIVE_RESPONSE_ENABLED` | 空 | 设置为 `yes` 会写入 `active_response.enabled = true`；主动响应默认关闭。 |
+| `ACTIVE_RESPONSE_ENABLED` | 空 | 覆盖 `active_response.enabled`；新默认配置会开启主动响应，升级时保留用户已有配置。需要禁用防火墙写入时设为 `no`。 |
 | `ACTIVE_RESPONSE_FIREWALL_BACKEND` | 空 | 可选 `auto`、`nftables` 或 `iptables`。 |
 | `ACTIVE_RESPONSE_BLOCK_TTL_SECONDS` | 空 | 可选临时封禁 TTL。 |
 | `ACTIVE_RESPONSE_MAX_BLOCKS_PER_SCAN` | 空 | 可选单轮扫描新增封禁数量上限。 |
@@ -626,7 +626,7 @@ error_burst_threshold = 20
 
 ```toml
 [active_response]
-enabled = false
+enabled = true
 strategy = "balanced"
 firewall_backend = "auto"
 block_ttl_seconds = 3600
@@ -637,10 +637,10 @@ permanent_block_threshold = 3
 permanent_block_window_seconds = 86400
 web_probe_block_threshold = 25
 web_exploit_block_threshold = 5
-ssh_failed_login_block_threshold = 10
+ssh_failed_login_block_threshold = 6
 ```
 
-主动响应默认关闭，因为它会修改本机防火墙策略；需要设置 `active_response.enabled = true`，或安装时传入 `ACTIVE_RESPONSE_ENABLED=yes`，才会写入防火墙。`strategy = "observe"` 只记录候选不写防火墙，`balanced` 是默认策略，`strict` 会对被拒绝的 Web 探测和 SSH 爆破要求更强证据。启用后，扫描器会在扫描内合并/去重之后、跨扫描通知去重之前执行封禁，因此同一来源计数升高时，即使重复通知会被压制，也仍能触发封禁。SSH 封禁需要先形成 `SSH-003` finding，默认扫描窗口内 10 次失败触发封禁。Web 封禁覆盖敏感路径成功响应、高置信 RCE 风格探测、重复低置信 exploit 探测和高频错误爆发。安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。普通封禁是临时封禁；如果同一个公网来源 IP 在 `permanent_block_window_seconds` 窗口内至少 `permanent_block_threshold` 次成为封禁候选，则升级为无到期时间的永久封禁。永久升级仍然遵守 `[allowlist].ips`、`strategy = "observe"` 和 `max_blocks_per_scan`，可以通过 `vs blocks unblock <ip>` 或 `vs blocks unblock-all --yes` 解除。只有公网可路由来源 IP 才会被考虑。
+主动响应对新安装默认开启。升级时不会覆盖已有配置，因此已经显式写了 `active_response.enabled = false` 的主机会保持关闭，直到管理员手动修改。`strategy = "observe"` 只记录候选不写防火墙，`balanced` 是默认策略，`strict` 会对被拒绝的 Web 探测和 SSH 爆破要求更强证据。扫描器会在扫描内合并/去重之后、跨扫描通知去重之前执行封禁，因此同一来源计数升高时，即使重复通知会被压制，也仍能触发封禁。SSH 封禁需要先形成 `SSH-003` finding，默认扫描窗口内 6 次失败触发封禁。Web 封禁覆盖敏感路径成功响应、高置信 RCE 风格探测、重复低置信 exploit 探测和高频错误爆发。安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。普通封禁是临时封禁；如果同一个公网来源 IP 在 `permanent_block_window_seconds` 窗口内至少 `permanent_block_threshold` 次成为封禁候选，则升级为无到期时间的永久封禁。永久升级仍然遵守 `[allowlist].ips`、`strategy = "observe"` 和 `max_blocks_per_scan`，可以通过 `vs blocks unblock <ip>` 或 `vs blocks unblock-all --yes` 解除。只有公网可路由来源 IP 才会被考虑。
 
 每次扫描都会先把主动响应状态和真实防火墙规则同步，再判断某个来源是否已经封禁。如果规则已过期、被 firewalld/ufw reload 清掉，或者被人工修改，程序会移除失效状态；如果该来源仍然满足高置信封禁条件，后续可以再次封禁。iptables 后端在插入前会用 `-C` 检查规则是否已存在，避免重复 DROP 规则；手动解除封禁会删除重复匹配规则。日常运维可以使用 `vs blocks list`、`vs blocks cleanup`、`vs blocks unblock <ip>` 和 `vs blocks unblock-all --yes`。
 
@@ -674,42 +674,42 @@ enabled = true
 drift_requires_public_exposure = false
 
 [reports]
-scheduled_enabled = false
+scheduled_enabled = true
 scheduled_hour = 8
 scheduled_period = "today"
 ```
 
-`incidents` 控制本地攻击链聚合；`service_profile` 控制监听服务 owner 漂移检测；`reports.scheduled_enabled = true` 会让 daemon 通过已启用通知渠道发送定时安全报告，并用 `min_interval_seconds` 避免重启后重复发送。
+`incidents` 控制本地攻击链聚合；`service_profile` 控制监听服务 owner 漂移检测。定时报表默认开启，会让 daemon 通过已启用通知渠道发送每日安全报告，并用 `min_interval_seconds` 避免重启后重复发送；如果没有配置任何通知渠道，daemon 会直接跳过定时报表，不构建也不发送。
 
 高级采集和外部规则：
 
 ```toml
 [advanced_collectors]
-auditd_enabled = false
-ebpf_bridge_enabled = false
+auditd_enabled = true
+ebpf_bridge_enabled = true
 ebpf_event_paths = []
 ebpf_command = []
 
 [external_rules]
-enabled = false
+enabled = true
 sigma_paths = []
-yara_enabled = false
+yara_enabled = true
 yara_paths = []
 yara_scan_roots = []
 ```
 
-auditd 会读取配置的 audit 日志；eBPF bridge 接收 JSONL 文件或命令输出，方便接入你自己的 BPF 工具而不把内核探针作为硬依赖。Sigma-like 规则是 TOML 结构化事件字段条件；YARA 会调用配置的 `yara` 命令，启用前应先单独安装并测试。
+auditd 会在日志存在时读取配置的 audit 日志；eBPF bridge 接收 JSONL 文件或命令输出，方便接入你自己的 BPF 工具而不把内核探针作为硬依赖。Sigma-like 规则是 TOML 结构化事件字段条件；YARA 只有在配置了规则路径和扫描根目录时才会调用 `yara` 命令，因此默认启用规则引擎不会带来额外扫描开销。
 
 威胁情报、fleet 和维护模式：
 
 ```toml
 [threat_intel]
-enabled = false
+enabled = true
 indicator_paths = []
 url = ""
 
 [fleet]
-enabled = false
+enabled = true
 node_name = ""
 export_path = "/var/lib/vps-sentinel/fleet-node.json"
 
@@ -828,7 +828,7 @@ systemd unit 使用：
 
 - 默认不上报日志；
 - 默认不启用通知渠道；
-- 默认不杀进程、不封 IP、不删除文件；只有显式设置 `[active_response].enabled = true` 时才会写入防火墙封禁规则；
+- 默认不杀进程、不删除文件；主动响应默认只会对高置信公网来源 IP 写入防火墙封禁规则，并始终遵守 `[allowlist].ips`、公网 IP 校验和每次扫描封禁数量上限；
 - SQLite 本地存储；
 - 文件内容扫描有大小限制，只提取特征；
 - token、密码、密钥应只放在本地配置文件中，不应提交到仓库。

@@ -79,6 +79,9 @@ async fn maybe_send_scheduled_report(config: &SentinelConfig) -> SentinelResult<
     if !config.reports.scheduled_enabled {
         return Ok(());
     }
+    if !any_notification_channel_enabled(config) {
+        return Ok(());
+    }
     if !scheduled_hour_reached(config) {
         return Ok(());
     }
@@ -117,6 +120,16 @@ async fn maybe_send_scheduled_report(config: &SentinelConfig) -> SentinelResult<
         info!(channels = delivery.delivered, "scheduled report sent");
     }
     Ok(())
+}
+
+fn any_notification_channel_enabled(config: &SentinelConfig) -> bool {
+    config.notifications.telegram.enabled
+        || config.notifications.email.enabled
+        || config.notifications.webhook.enabled
+        || config.notifications.ntfy.enabled
+        || config.notifications.gotify.enabled
+        || config.notifications.bark.enabled
+        || config.notifications.serverchan.enabled
 }
 
 fn scheduled_hour_reached(config: &SentinelConfig) -> bool {

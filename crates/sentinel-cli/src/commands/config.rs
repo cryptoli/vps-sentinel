@@ -544,7 +544,7 @@ mod tests {
         assert!(synced.contains("scan_interval_seconds = 120"));
         assert!(synced.contains("language = \"en\""));
         assert!(synced.contains("[active_response]"));
-        assert!(synced.contains("enabled = false"));
+        assert!(synced.contains("enabled = true"));
 
         let config: SentinelConfig = toml::from_str(&synced).unwrap();
         config.validate().unwrap();

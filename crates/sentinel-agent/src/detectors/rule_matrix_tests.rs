@@ -449,7 +449,7 @@ fn negative_cases() -> Vec<NegativeCase> {
         negative(
             "SSH-003",
             "below brute force threshold",
-            (0..9)
+            (0..5)
                 .map(|index| ssh_failure("203.0.113.20", &format!("user{index}")))
                 .collect(),
         ),

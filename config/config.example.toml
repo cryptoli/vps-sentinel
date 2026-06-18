@@ -25,7 +25,7 @@ alert_on_root_login = true
 alert_on_password_login = true
 alert_on_successful_login = true
 auth_log_lookback_seconds = 300
-failed_login_threshold = 10
+failed_login_threshold = 6
 failed_login_window_seconds = 300
 
 [file_integrity]
@@ -185,7 +185,7 @@ quiet_hours_bypass_min_severity = "High"
 quiet_hours = [] # Example: ["22:00-07:00"]
 
 [active_response]
-enabled = false
+enabled = true
 strategy = "balanced" # observe, balanced, or strict
 firewall_backend = "auto" # auto, nftables, or iptables
 block_ttl_seconds = 3600
@@ -199,7 +199,7 @@ web_enabled = true
 web_probe_block_threshold = 25
 web_exploit_block_threshold = 5
 ssh_enabled = true
-ssh_failed_login_block_threshold = 10
+ssh_failed_login_block_threshold = 6
 
 [response_policy]
 enabled = true
@@ -235,24 +235,24 @@ dynamic_udp_enabled = true
 dynamic_udp_min_port = 32768
 
 [reports]
-scheduled_enabled = false
+scheduled_enabled = true
 scheduled_hour = 8
 scheduled_period = "today" # today or last24h
 min_interval_seconds = 82800
 
 [advanced_collectors]
-auditd_enabled = false
+auditd_enabled = true
 audit_log_paths = ["/var/log/audit/audit.log"]
 audit_max_tail_bytes = 1048576
-ebpf_bridge_enabled = false
+ebpf_bridge_enabled = true
 ebpf_event_paths = []
 ebpf_command = []
 command_timeout_seconds = 3
 
 [external_rules]
-enabled = false
+enabled = true
 sigma_paths = []
-yara_enabled = false
+yara_enabled = true
 yara_paths = []
 yara_scan_roots = []
 yara_command = "yara"
@@ -260,7 +260,7 @@ command_timeout_seconds = 10
 max_file_size_mb = 16
 
 [threat_intel]
-enabled = false
+enabled = true
 indicator_paths = []
 url = ""
 api_key_env = ""
@@ -268,7 +268,7 @@ request_timeout_seconds = 5
 cache_ttl_seconds = 3600
 
 [fleet]
-enabled = false
+enabled = true
 node_name = ""
 export_path = "/var/lib/vps-sentinel/fleet-node.json"
 

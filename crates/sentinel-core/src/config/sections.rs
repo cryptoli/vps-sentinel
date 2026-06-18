@@ -14,6 +14,8 @@ impl SentinelPaths {
     pub const AUTH_LOG_RHEL: &'static str = "/var/log/secure";
 }
 
+const DEFAULT_SSH_FAILED_LOGIN_THRESHOLD: usize = 6;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AgentConfig {
@@ -93,7 +95,7 @@ impl Default for SshConfig {
             alert_on_password_login: true,
             alert_on_successful_login: true,
             auth_log_lookback_seconds: 300,
-            failed_login_threshold: 10,
+            failed_login_threshold: DEFAULT_SSH_FAILED_LOGIN_THRESHOLD,
             failed_login_window_seconds: 300,
         }
     }
@@ -429,7 +431,7 @@ pub struct ActiveResponseConfig {
 impl Default for ActiveResponseConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             strategy: "balanced".to_string(),
             firewall_backend: "auto".to_string(),
             block_ttl_seconds: 3600,
@@ -443,7 +445,7 @@ impl Default for ActiveResponseConfig {
             web_probe_block_threshold: 25,
             web_exploit_block_threshold: 5,
             ssh_enabled: true,
-            ssh_failed_login_block_threshold: 10,
+            ssh_failed_login_block_threshold: DEFAULT_SSH_FAILED_LOGIN_THRESHOLD,
         }
     }
 }
@@ -575,7 +577,7 @@ pub struct ReportsConfig {
 impl Default for ReportsConfig {
     fn default() -> Self {
         Self {
-            scheduled_enabled: false,
+            scheduled_enabled: true,
             scheduled_hour: 8,
             scheduled_period: "today".to_string(),
             min_interval_seconds: 82_800,
@@ -598,10 +600,10 @@ pub struct AdvancedCollectorsConfig {
 impl Default for AdvancedCollectorsConfig {
     fn default() -> Self {
         Self {
-            auditd_enabled: false,
+            auditd_enabled: true,
             audit_log_paths: vec![PathBuf::from("/var/log/audit/audit.log")],
             audit_max_tail_bytes: 1024 * 1024,
-            ebpf_bridge_enabled: false,
+            ebpf_bridge_enabled: true,
             ebpf_event_paths: Vec::new(),
             ebpf_command: Vec::new(),
             command_timeout_seconds: 3,
@@ -625,9 +627,9 @@ pub struct ExternalRulesConfig {
 impl Default for ExternalRulesConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             sigma_paths: Vec::new(),
-            yara_enabled: false,
+            yara_enabled: true,
             yara_paths: Vec::new(),
             yara_scan_roots: Vec::new(),
             yara_command: "yara".to_string(),
@@ -651,7 +653,7 @@ pub struct ThreatIntelConfig {
 impl Default for ThreatIntelConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             indicator_paths: Vec::new(),
             url: String::new(),
             api_key_env: String::new(),
@@ -672,7 +674,7 @@ pub struct FleetConfig {
 impl Default for FleetConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             node_name: String::new(),
             export_path: PathBuf::from("/var/lib/vps-sentinel/fleet-node.json"),
         }
