@@ -3,9 +3,14 @@ use crate::baseline::{diff_snapshots, BaselineSnapshot};
 use crate::collectors::{default_collectors, CollectContext};
 use crate::detectors::{default_detectors, DetectContext};
 use crate::findings::coalesce_related_findings;
+use crate::incident::{correlate_findings, prune_incidents, save_incidents};
+use crate::maintenance::apply_maintenance_policy;
 use crate::notify::{NotificationManager, NotifyContext};
+use crate::risk_score;
 use crate::rules::system::ACTIVE_RESPONSE_SUMMARY_RULE_ID;
+use crate::service_profile::evaluate_service_profile;
 use crate::storage::SqliteStore;
+use crate::threat_intel;
 use crate::utils::fs::path_string;
 use crate::utils::redact::{mask_command_args, mask_ip, mask_ips_in_text};
 use chrono::{Duration, Local, Timelike, Utc};
@@ -51,6 +56,7 @@ pub struct ScanReport {
     pub suppressed_duplicate_count: usize,
     pub quiet_suppressed_count: usize,
     pub notification_rate_limited_count: usize,
+    pub maintenance_suppressed_count: usize,
     pub notification_attempt_count: usize,
     pub notification_success_count: usize,
     pub notification_failure_count: usize,
@@ -58,6 +64,7 @@ pub struct ScanReport {
     pub active_response_applied_count: usize,
     pub active_response_failed_count: usize,
     pub active_response_expired_count: usize,
+    pub incident_count: usize,
     pub findings: Vec<Finding>,
     pub collector_errors: Vec<String>,
 }
@@ -124,7 +131,30 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     for detector in default_detectors() {
         findings.extend(detector.detect(&detection_events, &detect_context));
     }
+    if options.persist {
+        if let Some(store) = &store {
+            match evaluate_service_profile(&detection_events, &config, Some(store)) {
+                Ok(mut service_findings) => findings.append(&mut service_findings),
+                Err(err) => warn!(error = %err, "service profile evaluation failed"),
+            }
+        }
+    }
     findings = coalesce_related_findings(findings);
+    let intel = threat_intel::load_threat_intel(&config).await;
+    threat_intel::enrich_findings(&mut findings, &intel);
+    risk_score::enrich_findings(&mut findings);
+    let mut maintenance_suppressed_count = 0;
+    if options.persist {
+        let (retained, decision) = apply_maintenance_policy(findings, &config, store.as_ref())?;
+        findings = retained;
+        maintenance_suppressed_count = decision.suppressed_count;
+        if decision.suppressed_count > 0 {
+            warn!(
+                suppressed_findings = decision.suppressed_count,
+                "maintenance mode suppressed baseline drift findings"
+            );
+        }
+    }
     let detected_finding_count = findings.len();
     let mut suppressed_duplicate_count = 0;
     let suppression = suppress_in_scan_duplicates(findings);
@@ -189,6 +219,9 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         findings = redact_findings(findings, &config);
     }
 
+    let incidents = correlate_findings(&findings, &config);
+    let incident_count = incidents.len();
+
     if options.persist {
         if let Some(store) = &store {
             if privacy_redaction_enabled(&config) {
@@ -200,6 +233,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             save_process_start_state(&detection_events, store)?;
             save_log_integrity_state(&detection_events, store)?;
             store.save_findings(&findings)?;
+            save_incidents(store, &incidents)?;
             store.record_scan_run(detection_events.len(), findings.len(), "ok")?;
         }
     }
@@ -291,6 +325,10 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             if pruned > 0 {
                 debug!(deleted_rows = pruned, "old storage rows pruned");
             }
+            let pruned_incidents = prune_incidents(store, config.storage.retention_days)?;
+            if pruned_incidents > 0 {
+                debug!(deleted_incidents = pruned_incidents, "old incidents pruned");
+            }
             if let Some(report) = store.enforce_size_limit(config.storage.max_database_size_mb)? {
                 if report.size_after_bytes
                     > config
@@ -326,6 +364,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         findings = findings.len(),
         suppressed_duplicates = suppressed_duplicate_count,
         quiet_suppressed = quiet_suppressed_count,
+        maintenance_suppressed = maintenance_suppressed_count,
         notification_rate_limited = notification_rate_limited_count,
         notification_attempts = notification_attempt_count,
         notification_successes = notification_success_count,
@@ -334,6 +373,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         active_response_applied = active_response_report.applied_blocks,
         active_response_failed = active_response_report.failed_blocks,
         active_response_expired = active_response_report.expired_blocks,
+        incidents = incident_count,
         collector_errors = collector_errors.len(),
         "scan completed"
     );
@@ -343,6 +383,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         finding_count: findings.len(),
         suppressed_duplicate_count,
         quiet_suppressed_count,
+        maintenance_suppressed_count,
         notification_rate_limited_count,
         notification_attempt_count,
         notification_success_count,
@@ -351,6 +392,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         active_response_applied_count: active_response_report.applied_blocks,
         active_response_failed_count: active_response_report.failed_blocks,
         active_response_expired_count: active_response_report.expired_blocks,
+        incident_count,
         findings,
         collector_errors,
     })
@@ -441,7 +483,9 @@ fn active_response_summary_finding(
 fn summarize_block_reasons(new_blocks: &[&crate::active_response::BlockAction]) -> String {
     let mut counts = BTreeMap::<&'static str, usize>::new();
     for action in new_blocks {
-        let reason = if action.reason.starts_with("web probe ") {
+        let reason = if action.reason.starts_with("web aggregate ") {
+            "web_aggregate_probe"
+        } else if action.reason.starts_with("web probe ") {
             "web_probe"
         } else if action.reason.starts_with("web error burst ") {
             "web_error_burst"

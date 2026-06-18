@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::severity::Severity;
@@ -443,6 +444,251 @@ impl Default for ActiveResponseConfig {
             web_exploit_block_threshold: 5,
             ssh_enabled: true,
             ssh_failed_login_block_threshold: 10,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResponsePolicyConfig {
+    pub enabled: bool,
+    pub policies: BTreeMap<String, ResponsePolicyRule>,
+}
+
+impl Default for ResponsePolicyConfig {
+    fn default() -> Self {
+        let mut policies = BTreeMap::new();
+        policies.insert(
+            "ssh_bruteforce".to_string(),
+            ResponsePolicyRule {
+                enabled: true,
+                rule_ids: vec!["SSH-003".to_string()],
+                categories: Vec::new(),
+                action: "block".to_string(),
+                min_severity: Severity::High,
+                min_confidence: 70,
+                min_unified_score: 70,
+                ttl_seconds: None,
+                permanent_after: None,
+            },
+        );
+        policies.insert(
+            "web_attack".to_string(),
+            ResponsePolicyRule {
+                enabled: true,
+                rule_ids: vec!["WEB-001".to_string(), "WEB-002".to_string()],
+                categories: Vec::new(),
+                action: "block".to_string(),
+                min_severity: Severity::Low,
+                min_confidence: 35,
+                min_unified_score: 30,
+                ttl_seconds: None,
+                permanent_after: None,
+            },
+        );
+        Self {
+            enabled: true,
+            policies,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResponsePolicyRule {
+    pub enabled: bool,
+    pub rule_ids: Vec<String>,
+    pub categories: Vec<String>,
+    pub action: String,
+    pub min_severity: Severity,
+    pub min_confidence: u16,
+    pub min_unified_score: u16,
+    pub ttl_seconds: Option<u64>,
+    pub permanent_after: Option<usize>,
+}
+
+impl Default for ResponsePolicyRule {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rule_ids: Vec::new(),
+            categories: Vec::new(),
+            action: "observe".to_string(),
+            min_severity: Severity::High,
+            min_confidence: 70,
+            min_unified_score: 70,
+            ttl_seconds: None,
+            permanent_after: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct IncidentConfig {
+    pub enabled: bool,
+    pub correlation_window_seconds: u64,
+    pub max_findings_per_incident: usize,
+}
+
+impl Default for IncidentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            correlation_window_seconds: 900,
+            max_findings_per_incident: 50,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServiceProfileConfig {
+    pub enabled: bool,
+    pub drift_requires_public_exposure: bool,
+    pub baseline_refresh_after_package_activity: bool,
+}
+
+impl Default for ServiceProfileConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            drift_requires_public_exposure: false,
+            baseline_refresh_after_package_activity: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ReportsConfig {
+    pub scheduled_enabled: bool,
+    pub scheduled_hour: u8,
+    pub scheduled_period: String,
+    pub min_interval_seconds: u64,
+}
+
+impl Default for ReportsConfig {
+    fn default() -> Self {
+        Self {
+            scheduled_enabled: false,
+            scheduled_hour: 8,
+            scheduled_period: "today".to_string(),
+            min_interval_seconds: 82_800,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AdvancedCollectorsConfig {
+    pub auditd_enabled: bool,
+    pub audit_log_paths: Vec<PathBuf>,
+    pub audit_max_tail_bytes: u64,
+    pub ebpf_bridge_enabled: bool,
+    pub ebpf_event_paths: Vec<PathBuf>,
+    pub ebpf_command: Vec<String>,
+    pub command_timeout_seconds: u64,
+}
+
+impl Default for AdvancedCollectorsConfig {
+    fn default() -> Self {
+        Self {
+            auditd_enabled: false,
+            audit_log_paths: vec![PathBuf::from("/var/log/audit/audit.log")],
+            audit_max_tail_bytes: 1024 * 1024,
+            ebpf_bridge_enabled: false,
+            ebpf_event_paths: Vec::new(),
+            ebpf_command: Vec::new(),
+            command_timeout_seconds: 3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExternalRulesConfig {
+    pub enabled: bool,
+    pub sigma_paths: Vec<PathBuf>,
+    pub yara_enabled: bool,
+    pub yara_paths: Vec<PathBuf>,
+    pub yara_scan_roots: Vec<PathBuf>,
+    pub yara_command: String,
+    pub command_timeout_seconds: u64,
+    pub max_file_size_mb: u64,
+}
+
+impl Default for ExternalRulesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sigma_paths: Vec::new(),
+            yara_enabled: false,
+            yara_paths: Vec::new(),
+            yara_scan_roots: Vec::new(),
+            yara_command: "yara".to_string(),
+            command_timeout_seconds: 10,
+            max_file_size_mb: 16,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThreatIntelConfig {
+    pub enabled: bool,
+    pub indicator_paths: Vec<PathBuf>,
+    pub url: String,
+    pub api_key_env: String,
+    pub request_timeout_seconds: u64,
+    pub cache_ttl_seconds: u64,
+}
+
+impl Default for ThreatIntelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            indicator_paths: Vec::new(),
+            url: String::new(),
+            api_key_env: String::new(),
+            request_timeout_seconds: 5,
+            cache_ttl_seconds: 3600,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FleetConfig {
+    pub enabled: bool,
+    pub node_name: String,
+    pub export_path: PathBuf,
+}
+
+impl Default for FleetConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            node_name: String::new(),
+            export_path: PathBuf::from("/var/lib/vps-sentinel/fleet-node.json"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MaintenanceConfig {
+    pub enabled: bool,
+    pub suppress_baseline_drift: bool,
+    pub max_duration_seconds: u64,
+}
+
+impl Default for MaintenanceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            suppress_baseline_drift: true,
+            max_duration_seconds: 7200,
         }
     }
 }

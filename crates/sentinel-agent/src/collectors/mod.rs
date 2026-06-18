@@ -3,8 +3,10 @@ use sentinel_core::{RawEvent, SentinelConfig, SentinelResult};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub mod audit;
 pub mod config_risk;
 pub mod docker;
+pub mod ebpf_bridge;
 pub mod file_integrity;
 pub mod firewall;
 pub mod gpu;
@@ -52,20 +54,5 @@ pub trait Collector: Send + Sync {
 }
 
 pub fn default_collectors() -> Vec<Box<dyn Collector>> {
-    vec![
-        Box::new(ssh::SshLogCollector),
-        Box::new(file_integrity::FileIntegrityCollector),
-        Box::new(users::UserCollector),
-        Box::new(package_manager::PackageManagerCollector),
-        Box::new(log_integrity::LogIntegrityCollector),
-        Box::new(persistence::PersistenceCollector),
-        Box::new(process::ProcessCollector),
-        Box::new(gpu::GpuCollector),
-        Box::new(network::NetworkCollector),
-        Box::new(firewall::FirewallCollector),
-        Box::new(web_logs::WebLogCollector),
-        Box::new(config_risk::ConfigRiskCollector),
-        Box::new(docker::DockerCollector),
-        Box::new(rootkit::RootkitSignalCollector),
-    ]
+    crate::registry::CollectorRegistry::with_builtin_collectors().into_collectors()
 }

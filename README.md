@@ -37,11 +37,18 @@ It is not:
 | Web log checks | Parses common access logs, JSON access logs, Nginx-style error log request context, and optional `.1` rotated logs; classifies automated probing into attack families and aggregates similar paths from the same source to avoid path-by-path alert floods. |
 | Rootkit signals | Collects lightweight local indicators for hidden process and suspicious procfs behavior. |
 | Docker context | Detects Docker availability and emits initial container-surface context without requiring Docker-specific write access. |
+| Incident correlation | Correlates findings by source IP, path, process, category, and time window into local incidents with timelines. |
+| Service profile | Maintains a service-owner profile for listening sockets and reports new services or executable drift on known listeners. |
+| Advanced collectors | Optionally reads auditd logs and an eBPF JSONL/command bridge when configured. Both are disabled by default. |
+| External rules | Supports Sigma-like TOML event rules and optional YARA CLI scans for user-supplied defensive rules. Disabled by default. |
+| Threat intelligence | Optionally enriches findings with local or remote indicators for IPs, paths, domains, and hashes. Indicator matches are supporting evidence, not standalone block triggers. |
+| Fleet view | Exports and ingests lightweight node snapshots so several VPS hosts can be reviewed from one local SQLite store. |
+| Maintenance mode | Provides a bounded maintenance window that can suppress low/medium baseline drift during planned upgrades without hiding high-risk activity. |
 | Storage | Stores raw events, findings, baselines, and notification logs in local SQLite; repeated raw facts use stable storage keys and a configurable database size cap to prevent unbounded growth. |
 | Noise control | Uses allowlists, minimum severity, finding deduplication, and configurable retention windows. |
 | Active response | Optionally handles high-confidence public-source web probes and SSH brute-force sources through `observe`, `balanced`, or `strict` strategies; firewall writes use nftables or iptables with TTL-based expiry. Disabled by default. |
 | Notifications | Sends alerts through Telegram, Email SMTP, generic webhook, ntfy, Gotify, Bark, and ServerChan. |
-| Operations | Provides a single CLI binary, `vs` shorthand, JSON logs, systemd unit, one-command installer, update script, built-in reload command, and stop helper. |
+| Operations | Provides a single CLI binary, `vs` shorthand, JSON logs, systemd unit, one-command installer, update script, built-in reload command, stop helper, config migration, reports, and advice commands. |
 
 ## Detection Model
 
@@ -66,6 +73,8 @@ WebShell content detection is risk-scored instead of marker-only. A single marke
 Process and listener findings now include a broader evidence chain when the host exposes it: parent process name, systemd unit, systemd `ExecStart`, executable UID/GID, executable size, bounded BLAKE3 hash, dpkg/rpm/pacman/apk package ownership, cgroup/container context, procfs start-time drift, outbound connection counts, public outbound count, and remote port profile. Package ownership queries and firewall probes are bounded by short command timeouts and per-scan caching, so missing or slow platform tools degrade to absent evidence instead of blocking a scan. These fields are used as supporting evidence or weak signals. For example, a systemd `ExecStart` mismatch does not alert by itself, but it can upgrade an already changed listener owner into a suspicious-listener finding.
 
 Firewall state is auxiliary context, not the source of truth. Socket exposure still comes from `/proc/net/*`; `ufw`, `firewalld`, `nftables`, and `iptables` status are attached so operators can decide whether a public listener is actually reachable through local policy.
+
+Every finding is enriched with a unified 0-100 risk score derived from severity, detector confidence, rule-specific scores, active-response context, and optional threat-intel matches. Incidents are generated after scan-level coalescing by grouping related findings within a configured time window, so operators can inspect an attack chain with `vs incidents timeline <incident_id>` instead of reading isolated alerts.
 
 ## Notification Channels
 
@@ -196,6 +205,11 @@ The Docker containers used in CI are build and compatibility test environments o
 | Notifications | Renders one `Finding` model through channel-specific templates: Telegram HTML, Email HTML/plain text, Markdown-aware channels, or plain text. | Messages include the configured VPS name, normalized time, localized labels, evidence, impact, and recommendations. |
 | Noise control | Applies scan-level deduplication, persisted dedup windows, state reminder intervals, quiet hours, and hourly notification budgets. | Reduces repeat messages while keeping high-value alerts visible. |
 | Active response | Evaluates current findings after scan-level coalescing/deduplication and before persisted notification deduplication; only public IPs outside `[allowlist].ips` can be blocked. Web blocks require successful sensitive responses, high-confidence exploit probes, repeated lower-confidence exploit probes, or high-volume probe/error bursts; SSH blocks default to the same failed-login threshold as the SSH brute-force alert. | Lets operators turn noisy, obvious scanners into temporary firewall drops without making every alert destructive. |
+| Response policy DSL | Applies configurable response policies after detection candidates are created. Policies match rule IDs or categories and choose observe, temporary block, or permanent block with minimum severity, confidence, and unified score thresholds. | Keeps detection logic separate from response decisions and lets operators tune blocking without code changes. |
+| Incidents and timeline | Groups related findings by IP, path, process, category, and time window, stores a bounded incident index, and exposes `incidents list/show/timeline`. | Turns isolated findings into a readable attack-chain view while keeping raw findings available. |
+| Service profile | Stores listener owner profiles with address, port, protocol, process name, executable, command line, and exposure classification. | Detects service drift on common ports and new listeners without blindly trusting or blocking 80/443. |
+| Advanced evidence | Optional auditd, eBPF JSONL bridge, Sigma-like TOML rules, YARA CLI scans, and threat-intel indicators feed the same RawEvent/Finding model. | Adds deeper host signals when the platform supports them while keeping default installs lightweight and compatible. |
+| Maintenance and fleet operations | Stores bounded maintenance state and fleet node snapshots in local rule state. | Suppresses planned low/medium drift during upgrades and lets several VPS node summaries be reviewed locally. |
 
 ## Quick Install
 
@@ -429,8 +443,21 @@ Commands:
 | `vps-sentinel events show <event_id> --config <path>` | Show one stored finding by ID as JSON. |
 | `vps-sentinel findings list --json --config <path>` | List recent stored findings with severity, confidence, rule ID, and subject. |
 | `vps-sentinel findings explain <finding_id> --json --config <path>` | Explain one stored finding with rule metadata, evidence, confidence, impact, and recommendations. |
+| `vps-sentinel incidents list --config <path>` | List correlated incidents built from related findings. Add `--json` for structured output. |
+| `vps-sentinel incidents show <incident_id> --config <path>` | Show one correlated incident with subjects, categories, rules, and summary. |
+| `vps-sentinel incidents timeline <incident_id> --config <path>` | Print the finding timeline for a correlated incident. |
+| `vps-sentinel service-profile list --config <path>` | Show the stored listener service profile. Add `--json` for structured output. |
+| `vps-sentinel service-profile refresh --config <path>` | Rebuild the service profile from current listener state after reviewed service changes. |
 | `vps-sentinel report show --config <path>` | Preview the default today report locally; add `--json` for structured output or `--period last24h` for a rolling 24-hour window. |
 | `vps-sentinel report send --config <path>` | Send the default today report through all enabled notification channels, bypassing per-channel minimum severity because this is an explicit report command. |
+| `vps-sentinel maintenance start --duration-seconds <n> --config <path>` | Start a bounded maintenance window that can suppress low/medium baseline drift during planned work. |
+| `vps-sentinel maintenance status --config <path>` | Show whether maintenance mode is active. |
+| `vps-sentinel maintenance end --config <path>` | End a manually started maintenance window. |
+| `vps-sentinel fleet export --config <path>` | Export this node's lightweight fleet snapshot to stdout or `fleet.export_path`. |
+| `vps-sentinel fleet ingest <path> --config <path>` | Import another node's fleet snapshot into local SQLite. |
+| `vps-sentinel fleet list --config <path>` | List imported fleet node snapshots. |
+| `vps-sentinel advice finding <finding_id> --config <path>` | Generate finding-specific response guidance. |
+| `vps-sentinel advice incident <incident_id> --config <path>` | Generate incident-level response guidance. |
 | `vps-sentinel storage stats --config <path>` | Print SQLite row counts and database footprint. |
 | `vps-sentinel storage prune --config <path>` | Run the same retention and database-size cleanup used after normal persisted scans. |
 | `vps-sentinel storage clear <target> --yes --config <path>` | Manually clear selected history such as `raw-events`, `findings`, `notifications`, `scan-runs`, `baselines`, or `all-history`. |
@@ -620,6 +647,83 @@ Active response is disabled by default because it changes local firewall policy;
 
 Every scan synchronizes active-response state with the real firewall before deciding whether a source is already blocked. If a rule expired, was removed by firewalld/ufw reload, or was changed manually, the stale state record is removed and a still-escalating source can be blocked again. The iptables backend checks for an existing rule before inserting, so repeated scans do not create duplicate DROP rules, and manual unblock removes duplicate matching rules if they exist. Use `vs blocks list`, `vs blocks cleanup`, `vs blocks unblock <ip>`, and `vs blocks unblock-all --yes` for operational control.
 
+Response policy:
+
+```toml
+[response_policy]
+enabled = true
+
+[response_policy.policies.ssh_bruteforce]
+enabled = true
+rule_ids = ["SSH-003"]
+action = "block"
+min_severity = "High"
+min_confidence = 70
+min_unified_score = 70
+```
+
+Response policies are evaluated after detectors create active-response candidates. They do not create findings by themselves. Use `action = "observe"` to audit a policy without writing firewall rules, `action = "block"` for TTL-based blocks, and `action = "permanent_block"` only for evidence you intentionally want to block without expiry.
+
+Incident, report, and service-profile settings:
+
+```toml
+[incidents]
+enabled = true
+correlation_window_seconds = 900
+max_findings_per_incident = 50
+
+[service_profile]
+enabled = true
+drift_requires_public_exposure = false
+
+[reports]
+scheduled_enabled = false
+scheduled_hour = 8
+scheduled_period = "today"
+```
+
+`incidents` controls local attack-chain grouping. `service_profile` controls listener owner drift detection. `reports.scheduled_enabled = true` sends the configured daily report from the daemon through enabled notification channels, with `min_interval_seconds` preventing duplicate sends after restarts.
+
+Advanced collectors and external rules:
+
+```toml
+[advanced_collectors]
+auditd_enabled = false
+ebpf_bridge_enabled = false
+ebpf_event_paths = []
+ebpf_command = []
+
+[external_rules]
+enabled = false
+sigma_paths = []
+yara_enabled = false
+yara_paths = []
+yara_scan_roots = []
+```
+
+Auditd reads configured audit logs when available. The eBPF bridge expects JSONL events from files or a configured command, which lets operators integrate their own BPF tooling without making kernel probes a hard dependency. Sigma-like rules are TOML files containing structured event field conditions. YARA support calls the configured `yara` binary, so install and test YARA separately before enabling it.
+
+Threat intelligence, fleet, and maintenance:
+
+```toml
+[threat_intel]
+enabled = false
+indicator_paths = []
+url = ""
+
+[fleet]
+enabled = false
+node_name = ""
+export_path = "/var/lib/vps-sentinel/fleet-node.json"
+
+[maintenance]
+enabled = false
+suppress_baseline_drift = true
+max_duration_seconds = 7200
+```
+
+Threat-intel indicators can be plain text or JSON lines with `type` and `value`. Matches are added as evidence and can increase the unified risk score, but they do not trigger standalone alerts or blocks. Fleet snapshots are local JSON summaries for multi-VPS review. Maintenance mode is bounded and only suppresses low/medium baseline drift during planned work.
+
 Noise control:
 
 ```toml
@@ -700,9 +804,13 @@ Example rules:
 - `NET-001`: New public listening port detected relative to baseline.
 - `NET-002`: Public listener process changed relative to baseline.
 - `NET-003`: Suspicious process behind a public listener.
+- `SERVICE-001`: New service profile entry detected.
+- `SERVICE-002`: Service executable drift detected.
 - `FILE-002`: WebShell-like file content detected.
 - `CONFIG-003`: High-risk public service port exposed.
 - `REPORT-001`: Daily security report generated from local scan history.
+- `EXT-*`: User-supplied external TOML rule matched.
+- `YARA-*`: User-supplied YARA rule matched.
 
 ## Deployment Notes
 

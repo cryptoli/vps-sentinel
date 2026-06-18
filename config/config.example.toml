@@ -201,6 +201,80 @@ web_exploit_block_threshold = 5
 ssh_enabled = true
 ssh_failed_login_block_threshold = 10
 
+[response_policy]
+enabled = true
+
+[response_policy.policies.ssh_bruteforce]
+enabled = true
+rule_ids = ["SSH-003"]
+categories = []
+action = "block" # observe, block, or permanent_block
+min_severity = "High"
+min_confidence = 70
+min_unified_score = 70
+
+[response_policy.policies.web_attack]
+enabled = true
+rule_ids = ["WEB-001", "WEB-002"]
+categories = []
+action = "block" # observe, block, or permanent_block
+min_severity = "Low"
+min_confidence = 35
+min_unified_score = 30
+
+[incidents]
+enabled = true
+correlation_window_seconds = 900
+max_findings_per_incident = 50
+
+[service_profile]
+enabled = true
+drift_requires_public_exposure = false
+baseline_refresh_after_package_activity = false
+
+[reports]
+scheduled_enabled = false
+scheduled_hour = 8
+scheduled_period = "today" # today or last24h
+min_interval_seconds = 82800
+
+[advanced_collectors]
+auditd_enabled = false
+audit_log_paths = ["/var/log/audit/audit.log"]
+audit_max_tail_bytes = 1048576
+ebpf_bridge_enabled = false
+ebpf_event_paths = []
+ebpf_command = []
+command_timeout_seconds = 3
+
+[external_rules]
+enabled = false
+sigma_paths = []
+yara_enabled = false
+yara_paths = []
+yara_scan_roots = []
+yara_command = "yara"
+command_timeout_seconds = 10
+max_file_size_mb = 16
+
+[threat_intel]
+enabled = false
+indicator_paths = []
+url = ""
+api_key_env = ""
+request_timeout_seconds = 5
+cache_ttl_seconds = 3600
+
+[fleet]
+enabled = false
+node_name = ""
+export_path = "/var/lib/vps-sentinel/fleet-node.json"
+
+[maintenance]
+enabled = false
+suppress_baseline_drift = true
+max_duration_seconds = 7200
+
 [allowlist]
 users = []
 ips = []

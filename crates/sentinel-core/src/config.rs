@@ -13,10 +13,12 @@ pub use notifications::{
     WebhookConfig,
 };
 pub use sections::{
-    ActiveResponseConfig, AgentConfig, AllowlistConfig, DockerConfig, FileIntegrityConfig,
-    GpuConfig, LogIntegrityConfig, NetworkConfig, NoiseControlConfig, PackageManagerConfig,
-    PersistenceConfig, PrivacyConfig, ProcessConfig, SentinelPaths, SshConfig, StorageConfig,
-    WebConfig,
+    ActiveResponseConfig, AdvancedCollectorsConfig, AgentConfig, AllowlistConfig, DockerConfig,
+    ExternalRulesConfig, FileIntegrityConfig, FleetConfig, GpuConfig, IncidentConfig,
+    LogIntegrityConfig, MaintenanceConfig, NetworkConfig, NoiseControlConfig, PackageManagerConfig,
+    PersistenceConfig, PrivacyConfig, ProcessConfig, ReportsConfig, ResponsePolicyConfig,
+    ResponsePolicyRule, SentinelPaths, ServiceProfileConfig, SshConfig, StorageConfig,
+    ThreatIntelConfig, WebConfig,
 };
 
 /// Top-level TOML configuration for the agent and CLI.
@@ -39,6 +41,15 @@ pub struct SentinelConfig {
     pub notifications: NotificationsConfig,
     pub noise_control: NoiseControlConfig,
     pub active_response: ActiveResponseConfig,
+    pub response_policy: ResponsePolicyConfig,
+    pub incidents: IncidentConfig,
+    pub service_profile: ServiceProfileConfig,
+    pub reports: ReportsConfig,
+    pub advanced_collectors: AdvancedCollectorsConfig,
+    pub external_rules: ExternalRulesConfig,
+    pub threat_intel: ThreatIntelConfig,
+    pub fleet: FleetConfig,
+    pub maintenance: MaintenanceConfig,
     pub allowlist: AllowlistConfig,
 }
 
@@ -219,6 +230,15 @@ impl SentinelConfig {
             ));
         }
         validate_active_response(&self.active_response, &self.ssh)?;
+        validate_response_policy(&self.response_policy)?;
+        validate_incidents(&self.incidents)?;
+        validate_service_profile(&self.service_profile)?;
+        validate_reports(&self.reports)?;
+        validate_advanced_collectors(&self.advanced_collectors)?;
+        validate_external_rules(&self.external_rules)?;
+        validate_threat_intel(&self.threat_intel)?;
+        validate_fleet(&self.fleet)?;
+        validate_maintenance(&self.maintenance)?;
         for quiet_hour in &self.noise_control.quiet_hours {
             quiet_hour.parse::<MinuteWindow>().map_err(|err| {
                 SentinelError::Config(format!(
@@ -251,6 +271,151 @@ impl SentinelConfig {
         }
         self.host_id()
     }
+}
+
+fn validate_response_policy(config: &ResponsePolicyConfig) -> SentinelResult<()> {
+    for (name, policy) in &config.policies {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(SentinelError::Config(
+                "response_policy.policies keys must not be empty".to_string(),
+            ));
+        }
+        match policy.action.as_str() {
+            "observe" | "block" | "permanent_block" => {}
+            other => {
+                return Err(SentinelError::Config(format!(
+                    "response_policy.policies.{name}.action '{other}' is invalid; use observe, block, or permanent_block"
+                )));
+            }
+        }
+        if policy.min_confidence > 100 {
+            return Err(SentinelError::Config(format!(
+                "response_policy.policies.{name}.min_confidence must be between 0 and 100"
+            )));
+        }
+        if policy.min_unified_score > 100 {
+            return Err(SentinelError::Config(format!(
+                "response_policy.policies.{name}.min_unified_score must be between 0 and 100"
+            )));
+        }
+        if policy.ttl_seconds == Some(0) {
+            return Err(SentinelError::Config(format!(
+                "response_policy.policies.{name}.ttl_seconds must be greater than 0 when set"
+            )));
+        }
+        if policy.permanent_after == Some(0) {
+            return Err(SentinelError::Config(format!(
+                "response_policy.policies.{name}.permanent_after must be greater than 0 when set"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_incidents(config: &IncidentConfig) -> SentinelResult<()> {
+    if config.correlation_window_seconds == 0 {
+        return Err(SentinelError::Config(
+            "incidents.correlation_window_seconds must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_findings_per_incident == 0 {
+        return Err(SentinelError::Config(
+            "incidents.max_findings_per_incident must be greater than 0".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_service_profile(_config: &ServiceProfileConfig) -> SentinelResult<()> {
+    Ok(())
+}
+
+fn validate_reports(config: &ReportsConfig) -> SentinelResult<()> {
+    if config.scheduled_hour > 23 {
+        return Err(SentinelError::Config(
+            "reports.scheduled_hour must be between 0 and 23".to_string(),
+        ));
+    }
+    match config.scheduled_period.as_str() {
+        "today" | "last24h" => {}
+        other => {
+            return Err(SentinelError::Config(format!(
+                "reports.scheduled_period '{other}' is invalid; use today or last24h"
+            )));
+        }
+    }
+    if config.min_interval_seconds == 0 {
+        return Err(SentinelError::Config(
+            "reports.min_interval_seconds must be greater than 0".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_advanced_collectors(config: &AdvancedCollectorsConfig) -> SentinelResult<()> {
+    if config.audit_max_tail_bytes == 0 {
+        return Err(SentinelError::Config(
+            "advanced_collectors.audit_max_tail_bytes must be greater than 0".to_string(),
+        ));
+    }
+    if config.command_timeout_seconds == 0 {
+        return Err(SentinelError::Config(
+            "advanced_collectors.command_timeout_seconds must be greater than 0".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_external_rules(config: &ExternalRulesConfig) -> SentinelResult<()> {
+    if config.command_timeout_seconds == 0 {
+        return Err(SentinelError::Config(
+            "external_rules.command_timeout_seconds must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_file_size_mb == 0 {
+        return Err(SentinelError::Config(
+            "external_rules.max_file_size_mb must be greater than 0".to_string(),
+        ));
+    }
+    if config.yara_enabled && config.yara_command.trim().is_empty() {
+        return Err(SentinelError::Config(
+            "external_rules.yara_command is required when YARA is enabled".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_threat_intel(config: &ThreatIntelConfig) -> SentinelResult<()> {
+    if config.request_timeout_seconds == 0 {
+        return Err(SentinelError::Config(
+            "threat_intel.request_timeout_seconds must be greater than 0".to_string(),
+        ));
+    }
+    if config.cache_ttl_seconds == 0 {
+        return Err(SentinelError::Config(
+            "threat_intel.cache_ttl_seconds must be greater than 0".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_fleet(config: &FleetConfig) -> SentinelResult<()> {
+    if config.enabled && config.export_path.as_os_str().is_empty() {
+        return Err(SentinelError::Config(
+            "fleet.export_path is required when fleet.enabled is true".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_maintenance(config: &MaintenanceConfig) -> SentinelResult<()> {
+    if config.max_duration_seconds == 0 {
+        return Err(SentinelError::Config(
+            "maintenance.max_duration_seconds must be greater than 0".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_active_response(config: &ActiveResponseConfig, ssh: &SshConfig) -> SentinelResult<()> {
@@ -594,6 +759,32 @@ mod tests {
         let mut config = SentinelConfig::default();
         config.active_response.ssh_failed_login_block_threshold =
             config.ssh.failed_login_threshold - 1;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_advanced_settings_are_rejected() {
+        let mut config = SentinelConfig::default();
+        config.response_policy.policies.insert(
+            "bad".to_string(),
+            super::ResponsePolicyRule {
+                action: "delete".to_string(),
+                ..super::ResponsePolicyRule::default()
+            },
+        );
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.reports.scheduled_hour = 24;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.external_rules.yara_enabled = true;
+        config.external_rules.yara_command.clear();
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.maintenance.max_duration_seconds = 0;
         assert!(config.validate().is_err());
     }
 

@@ -37,11 +37,18 @@
 | Web 日志 | 解析常见 access log、JSON access log、Nginx 风格 error log 请求上下文和可选 `.1` 轮转日志，将自动化探测归类为攻击家族，并按来源聚合同类路径，避免按路径刷屏。 |
 | Rootkit 信号 | 采集轻量级本地指标，用于发现隐藏进程和可疑 procfs 行为。 |
 | Docker 上下文 | 检测 Docker 可用性并给出初始容器攻击面提示，不要求 Docker 写权限。 |
+| 事件关联 | 按来源 IP、路径、进程、分类和时间窗口把相关 finding 聚合为 incident，并提供时间线。 |
+| 服务画像 | 维护监听服务 owner 画像，发现新增服务或已知监听端口背后的可执行文件漂移。 |
+| 高级采集 | 可选读取 auditd 日志和 eBPF JSONL/命令桥接事件，默认关闭。 |
+| 外部规则 | 支持 Sigma-like TOML 事件规则和可选 YARA CLI 扫描，默认关闭。 |
+| 威胁情报 | 可选用本地或远程 indicator 对 IP、路径、域名、哈希做证据增强；命中只是辅助证据，不会单独触发封禁。 |
+| 多 VPS 视图 | 导出和导入轻量级节点快照，方便在一个本地 SQLite 中查看多台 VPS 摘要。 |
+| 维护模式 | 支持有时限的维护窗口，在计划升级期间压制低/中危基线漂移，不隐藏高危行为。 |
 | 本地存储 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和通知日志；重复 raw fact 使用稳定存储键，并提供可配置数据库容量上限，避免无限增长。 |
 | 噪声控制 | 支持白名单、最低告警级别、finding 去重和保留周期。 |
 | 主动响应 | 可选以 `observe`、`balanced` 或 `strict` 策略处理高置信公网来源 IP；写防火墙时通过 nftables 或 iptables 临时封禁；默认关闭。 |
 | 通知告警 | 支持 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan。 |
-| 运维部署 | 单 CLI 二进制、`vs` 简写、JSON 日志、systemd unit、一键安装脚本、更新脚本、内置重载命令和停止脚本。 |
+| 运维部署 | 单 CLI 二进制、`vs` 简写、JSON 日志、systemd unit、一键安装脚本、更新脚本、内置重载命令、停止脚本、配置迁移、报告和处置建议命令。 |
 
 ## 检测模型
 
@@ -66,6 +73,8 @@ WebShell 内容检测也采用评分模型，不再因为单个 marker 直接告
 进程和监听端口告警会尽可能带出完整证据链：父进程、systemd unit、systemd `ExecStart`、可执行文件 UID/GID、文件大小、有限 BLAKE3 hash、dpkg/rpm/pacman/apk 软件包归属、cgroup/container 上下文、procfs 启动时间漂移、出站连接数量、公网出站连接数量和远端端口画像。软件包归属查询与防火墙探测都设置了短超时和单次扫描缓存，因此平台工具缺失或响应慢时只会缺少该证据，不会阻塞扫描。这些字段是辅助证据或弱信号。例如 systemd `ExecStart` 不匹配不会单独告警，但如果监听端口 owner 已经相对基线变化，它可以把普通 owner 变化升级为可疑监听进程。
 
 防火墙状态是辅助判断，不是唯一依据。端口暴露仍以 `/proc/net/*` 的内核 socket 状态为准；`ufw`、`firewalld`、`nftables` 和 `iptables` 状态会作为证据附加，帮助判断公网监听是否真的可能被外部访问。
+
+每个 finding 都会补充统一 0-100 风险评分，评分来自严重等级、检测器置信度、规则自身评分、主动响应上下文和可选威胁情报命中。incident 会在扫描内合并之后按时间窗口聚合相关 finding，用户可以通过 `vs incidents timeline <incident_id>` 查看攻击链，而不是只看孤立告警。
 
 ## 支持的通知渠道
 
@@ -196,6 +205,11 @@ CI 中使用的 Docker 容器只用于构建和兼容性测试，不代表推荐
 | 通知 | 将统一 `Finding` 模型按渠道模板渲染：Telegram HTML、Email HTML+纯文本、Markdown 或纯文本。 | 消息包含 VPS 名称、规范化时间、本地化字段、证据、影响和建议。 |
 | 噪声控制 | 使用扫描内去重、跨扫描去重、状态提醒间隔、安静时段和小时级通知预算。 | 减少重复消息，同时保留高价值告警的可见性。 |
 | 主动响应 | 在扫描内 finding 合并/去重后、跨扫描通知去重前评估封禁候选；只有不在 `[allowlist].ips` 中的公网 IP 才可能被封。Web 需要敏感路径成功响应、高置信 exploit 探测、重复低置信 exploit 探测，或高频探测/错误突发；SSH 默认与 SSH 爆破告警使用相同失败次数阈值。 | 可把明显扫描源临时丢进防火墙，同时避免每条告警都变成破坏性动作。 |
+| 响应策略 DSL | 在检测器产生主动响应候选之后应用配置化策略；策略可匹配规则 ID 或分类，并按最低严重等级、置信度、统一评分决定观察、临时封禁或永久封禁。 | 检测逻辑和响应决策解耦，用户无需改代码即可调节封禁策略。 |
+| Incident 与时间线 | 按 IP、路径、进程、分类和时间窗口聚合相关 finding，并提供 `incidents list/show/timeline`。 | 把孤立 finding 组织成可读攻击链，同时保留原始 finding。 |
+| 服务画像 | 保存监听服务的地址、端口、协议、进程名、可执行文件、命令行和暴露分类。 | 不盲信或盲拦 80/443，也能发现常见端口背后的服务 owner 漂移。 |
+| 高级证据 | 可选 auditd、eBPF JSONL bridge、Sigma-like TOML 规则、YARA CLI 和威胁情报 indicator 都进入同一 RawEvent/Finding 模型。 | 平台支持时可增加更深证据，默认安装仍保持轻量兼容。 |
+| 维护与多 VPS 运维 | 在本地 rule state 中保存有界维护状态和 fleet 节点快照。 | 计划升级时压制低/中危漂移，并可本地汇总多台 VPS 摘要。 |
 
 ## 一键安装
 
@@ -425,8 +439,21 @@ sudo journalctl -u vps-sentinel -f
 | `vps-sentinel events show <event_id> --config <path>` | 按 finding ID 输出单条已保存 finding 的 JSON。 |
 | `vps-sentinel findings list --json --config <path>` | 列出最近保存的 findings，包含等级、置信度、规则 ID 和对象。 |
 | `vps-sentinel findings explain <finding_id> --json --config <path>` | 解释单条 finding，展示规则元数据、证据、置信度、影响和建议。 |
+| `vps-sentinel incidents list --config <path>` | 列出由相关 findings 聚合成的 incident；可加 `--json` 输出结构化结果。 |
+| `vps-sentinel incidents show <incident_id> --config <path>` | 查看单个 incident 的对象、分类、规则和摘要。 |
+| `vps-sentinel incidents timeline <incident_id> --config <path>` | 输出单个 incident 的 finding 时间线。 |
+| `vps-sentinel service-profile list --config <path>` | 查看已保存的监听服务画像；可加 `--json`。 |
+| `vps-sentinel service-profile refresh --config <path>` | 在确认服务变化合法后，用当前监听状态刷新服务画像。 |
 | `vps-sentinel report show --config <path>` | 本地预览默认今日报告；加 `--json` 输出结构化数据，或用 `--period last24h` 查看过去 24 小时。 |
 | `vps-sentinel report send --config <path>` | 通过所有已启用通知渠道发送默认今日报告；这是显式报告命令，不受各渠道最低告警等级过滤。 |
+| `vps-sentinel maintenance start --duration-seconds <n> --config <path>` | 开启有时限维护窗口，用于计划变更期间压制低/中危基线漂移。 |
+| `vps-sentinel maintenance status --config <path>` | 查看维护模式是否启用。 |
+| `vps-sentinel maintenance end --config <path>` | 结束手动开启的维护窗口。 |
+| `vps-sentinel fleet export --config <path>` | 导出本节点轻量级 fleet 快照到 stdout 或 `fleet.export_path`。 |
+| `vps-sentinel fleet ingest <path> --config <path>` | 导入另一台节点的 fleet 快照到本地 SQLite。 |
+| `vps-sentinel fleet list --config <path>` | 列出已导入的 fleet 节点快照。 |
+| `vps-sentinel advice finding <finding_id> --config <path>` | 生成单条 finding 的处置建议。 |
+| `vps-sentinel advice incident <incident_id> --config <path>` | 生成 incident 级处置建议。 |
 | `vps-sentinel storage stats --config <path>` | 输出 SQLite 行数和数据库占用。 |
 | `vps-sentinel storage prune --config <path>` | 手动执行普通扫描结束后同样会执行的保留期清理和数据库容量上限清理。 |
 | `vps-sentinel storage clear <target> --yes --config <path>` | 手动清理指定历史数据，例如 `raw-events`、`findings`、`notifications`、`scan-runs`、`baselines` 或 `all-history`。 |
@@ -617,6 +644,83 @@ ssh_failed_login_block_threshold = 10
 
 每次扫描都会先把主动响应状态和真实防火墙规则同步，再判断某个来源是否已经封禁。如果规则已过期、被 firewalld/ufw reload 清掉，或者被人工修改，程序会移除失效状态；如果该来源仍然满足高置信封禁条件，后续可以再次封禁。iptables 后端在插入前会用 `-C` 检查规则是否已存在，避免重复 DROP 规则；手动解除封禁会删除重复匹配规则。日常运维可以使用 `vs blocks list`、`vs blocks cleanup`、`vs blocks unblock <ip>` 和 `vs blocks unblock-all --yes`。
 
+响应策略：
+
+```toml
+[response_policy]
+enabled = true
+
+[response_policy.policies.ssh_bruteforce]
+enabled = true
+rule_ids = ["SSH-003"]
+action = "block"
+min_severity = "High"
+min_confidence = 70
+min_unified_score = 70
+```
+
+响应策略在检测器产生主动响应候选之后执行，不会自行产生 finding。`action = "observe"` 只观察不写防火墙，`action = "block"` 使用 TTL 临时封禁，`action = "permanent_block"` 只建议用于你明确希望永久封禁的高置信证据。
+
+Incident、报告和服务画像：
+
+```toml
+[incidents]
+enabled = true
+correlation_window_seconds = 900
+max_findings_per_incident = 50
+
+[service_profile]
+enabled = true
+drift_requires_public_exposure = false
+
+[reports]
+scheduled_enabled = false
+scheduled_hour = 8
+scheduled_period = "today"
+```
+
+`incidents` 控制本地攻击链聚合；`service_profile` 控制监听服务 owner 漂移检测；`reports.scheduled_enabled = true` 会让 daemon 通过已启用通知渠道发送定时安全报告，并用 `min_interval_seconds` 避免重启后重复发送。
+
+高级采集和外部规则：
+
+```toml
+[advanced_collectors]
+auditd_enabled = false
+ebpf_bridge_enabled = false
+ebpf_event_paths = []
+ebpf_command = []
+
+[external_rules]
+enabled = false
+sigma_paths = []
+yara_enabled = false
+yara_paths = []
+yara_scan_roots = []
+```
+
+auditd 会读取配置的 audit 日志；eBPF bridge 接收 JSONL 文件或命令输出，方便接入你自己的 BPF 工具而不把内核探针作为硬依赖。Sigma-like 规则是 TOML 结构化事件字段条件；YARA 会调用配置的 `yara` 命令，启用前应先单独安装并测试。
+
+威胁情报、fleet 和维护模式：
+
+```toml
+[threat_intel]
+enabled = false
+indicator_paths = []
+url = ""
+
+[fleet]
+enabled = false
+node_name = ""
+export_path = "/var/lib/vps-sentinel/fleet-node.json"
+
+[maintenance]
+enabled = false
+suppress_baseline_drift = true
+max_duration_seconds = 7200
+```
+
+威胁情报 indicator 可使用纯文本或带 `type`/`value` 的 JSON Lines。命中会作为证据并提升统一风险评分，但不会单独触发告警或封禁。Fleet 快照是用于多 VPS 本地汇总的 JSON 摘要。维护模式有时间上限，只会在计划运维期间压制低/中危基线漂移。
+
 噪声控制：
 
 ```toml
@@ -697,9 +801,13 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 - `NET-001`：相对基线新增的公网监听端口。
 - `NET-002`：公网监听端口背后的进程相对基线发生变化。
 - `NET-003`：公网监听端口背后存在可疑进程。
+- `SERVICE-001`：发现新的服务画像条目。
+- `SERVICE-002`：服务可执行文件相对画像发生漂移。
 - `FILE-002`：WebShell 风格文件内容。
 - `CONFIG-003`：高危服务端口公网暴露。
 - `REPORT-001`：根据本地扫描历史生成的安全日报。
+- `EXT-*`：用户提供的外部 TOML 规则命中。
+- `YARA-*`：用户提供的 YARA 规则命中。
 
 ## 部署说明
 

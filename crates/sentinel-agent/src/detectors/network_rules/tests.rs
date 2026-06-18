@@ -1,5 +1,6 @@
-use super::{is_public_addr, NetworkDetector};
+use super::NetworkDetector;
 use crate::detectors::{DetectContext, Detector};
+use crate::utils::ip::is_public_listener_addr;
 use sentinel_core::{RawEvent, SentinelConfig};
 use std::sync::Arc;
 
@@ -11,17 +12,17 @@ fn suppresses_expected_web_ports() {
 
 #[test]
 fn classifies_public_listener_addresses_without_loopback_noise() {
-    assert!(is_public_addr("0.0.0.0"));
-    assert!(is_public_addr("::"));
-    assert!(is_public_addr("8.8.8.8"));
-    assert!(is_public_addr("2001:4860:4860::8888"));
-    assert!(!is_public_addr("127.0.0.1"));
-    assert!(!is_public_addr("::1"));
-    assert!(!is_public_addr("10.0.0.10"));
-    assert!(!is_public_addr("172.16.1.10"));
-    assert!(!is_public_addr("192.168.1.10"));
-    assert!(!is_public_addr("fd00::1"));
-    assert!(!is_public_addr("fe80::1"));
+    assert!(is_public_listener_addr("0.0.0.0"));
+    assert!(is_public_listener_addr("::"));
+    assert!(is_public_listener_addr("8.8.8.8"));
+    assert!(is_public_listener_addr("2001:4860:4860::8888"));
+    assert!(!is_public_listener_addr("127.0.0.1"));
+    assert!(!is_public_listener_addr("::1"));
+    assert!(!is_public_listener_addr("10.0.0.10"));
+    assert!(!is_public_listener_addr("172.16.1.10"));
+    assert!(!is_public_listener_addr("192.168.1.10"));
+    assert!(!is_public_listener_addr("fd00::1"));
+    assert!(!is_public_listener_addr("fe80::1"));
 }
 
 #[test]

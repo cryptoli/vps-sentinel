@@ -417,6 +417,12 @@ fn direct_value_label(
         ("active_response_status", "already_blocked", NotificationLanguage::ZhCn) => {
             Some("此前已封禁")
         }
+        ("active_response_status", "already_permanently_blocked", NotificationLanguage::En) => {
+            Some("already permanently blocked")
+        }
+        ("active_response_status", "already_permanently_blocked", NotificationLanguage::ZhCn) => {
+            Some("此前已永久封禁")
+        }
         ("active_response_status", "blocked", NotificationLanguage::En) => {
             Some("temporary block applied")
         }

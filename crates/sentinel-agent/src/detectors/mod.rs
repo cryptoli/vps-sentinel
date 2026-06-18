@@ -7,6 +7,7 @@ use std::sync::Arc;
 pub mod command_profile;
 pub mod config_rules;
 pub mod docker_rules;
+pub mod external_rules;
 pub mod file_rules;
 pub mod network_rules;
 pub mod persistence_rules;
@@ -45,19 +46,7 @@ pub trait Detector: Send + Sync {
 }
 
 pub fn default_detectors() -> Vec<Box<dyn Detector>> {
-    vec![
-        Box::new(ssh_rules::SshDetector),
-        Box::new(file_rules::FileDetector),
-        Box::new(user_rules::UserDetector),
-        Box::new(persistence_rules::PersistenceDetector),
-        Box::new(process_rules::ProcessDetector),
-        Box::new(network_rules::NetworkDetector),
-        Box::new(web_rules::WebDetector),
-        Box::new(config_rules::ConfigRiskDetector),
-        Box::new(docker_rules::DockerDetector),
-        Box::new(rootkit_rules::RootkitDetector),
-        Box::new(tamper_rules::TamperDetector),
-    ]
+    crate::registry::DetectorRegistry::with_builtin_detectors().into_detectors()
 }
 
 fn evidence(key: &str, value: impl Into<String>) -> Evidence {

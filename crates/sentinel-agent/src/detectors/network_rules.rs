@@ -4,9 +4,9 @@ use crate::detectors::process_rules::{
 };
 use crate::detectors::{evidence, path_is_allowlisted, string_field, DetectContext, Detector};
 use crate::rules::model::RuleMetadata;
+use crate::utils::ip::is_public_listener_addr;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 pub struct NetworkDetector;
 
@@ -65,7 +65,7 @@ impl Detector for NetworkDetector {
             let Some(port) = port else {
                 continue;
             };
-            if !is_public_addr(event.field("local_addr").unwrap_or("")) {
+            if !is_public_listener_addr(event.field("local_addr").unwrap_or("")) {
                 continue;
             }
             if policy.is_allowlisted(port) {
@@ -384,70 +384,6 @@ fn push_evidence_if_present(items: &mut Vec<sentinel_core::Evidence>, event: &Ra
     if !value.trim().is_empty() {
         items.push(evidence(key, value));
     }
-}
-
-fn is_public_addr(addr: &str) -> bool {
-    match addr.parse::<IpAddr>() {
-        Ok(IpAddr::V4(ip)) => is_public_ipv4_listener(ip),
-        Ok(IpAddr::V6(ip)) => is_public_ipv6_listener(ip),
-        Err(_) => addr == "ipv6",
-    }
-}
-
-fn is_public_ipv4_listener(ip: Ipv4Addr) -> bool {
-    if ip.is_unspecified() {
-        return true;
-    }
-    !(ip.is_loopback()
-        || ip.is_private()
-        || ip.is_link_local()
-        || ip.is_broadcast()
-        || ip.is_multicast()
-        || is_shared_ipv4(ip)
-        || is_documentation_ipv4(ip)
-        || is_benchmarking_ipv4(ip))
-}
-
-fn is_public_ipv6_listener(ip: Ipv6Addr) -> bool {
-    if ip.is_unspecified() {
-        return true;
-    }
-    !(ip.is_loopback()
-        || ip.is_multicast()
-        || is_unique_local_ipv6(ip)
-        || is_unicast_link_local_ipv6(ip)
-        || is_documentation_ipv6(ip))
-}
-
-fn is_shared_ipv4(ip: Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    octets[0] == 100 && (64..=127).contains(&octets[1])
-}
-
-fn is_documentation_ipv4(ip: Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    matches!(
-        (octets[0], octets[1], octets[2]),
-        (192, 0, 2) | (198, 51, 100) | (203, 0, 113)
-    )
-}
-
-fn is_benchmarking_ipv4(ip: Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    octets[0] == 198 && (18..=19).contains(&octets[1])
-}
-
-fn is_unique_local_ipv6(ip: Ipv6Addr) -> bool {
-    ip.segments()[0] & 0xfe00 == 0xfc00
-}
-
-fn is_unicast_link_local_ipv6(ip: Ipv6Addr) -> bool {
-    ip.segments()[0] & 0xffc0 == 0xfe80
-}
-
-fn is_documentation_ipv6(ip: Ipv6Addr) -> bool {
-    let segments = ip.segments();
-    segments[0] == 0x2001 && segments[1] == 0x0db8
 }
 
 fn is_tcp_protocol(event: &RawEvent) -> bool {

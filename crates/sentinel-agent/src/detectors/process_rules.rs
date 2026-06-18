@@ -853,6 +853,31 @@ fn gpu_mining_assessment(event: &RawEvent, ctx: &DetectContext) -> Option<RiskAs
         assessment.add_signal(35, "gpu_sustained_high_cpu", cpu.reason());
     }
 
+    if !string_field(event, "container_runtime").is_empty() {
+        assessment.add_feature("gpu_container_context");
+    }
+    if process_started_by_shell_or_scheduler(event) {
+        assessment.add_signal(
+            45,
+            "gpu_shell_or_scheduler_parent",
+            "GPU compute process was started by an interactive shell or scheduler-like parent",
+        );
+    }
+    if privileged_gpu_process_with_network_and_cpu(event, &assessment) {
+        assessment.add_signal(
+            80,
+            "privileged_gpu_network_cpu_cluster",
+            "GPU compute process is privileged and combines public outbound network activity with sustained CPU use",
+        );
+    }
+    if shell_started_gpu_process_with_public_network(event, &assessment) {
+        assessment.add_signal(
+            80,
+            "shell_started_gpu_public_network_cluster",
+            "GPU compute process was shell-started and has public outbound network activity",
+        );
+    }
+
     let hidden_public_gpu = assessment.has_feature("gpu_hidden_executable_name")
         && assessment.has_feature("gpu_public_outbound_connections");
     if hidden_public_gpu {
@@ -866,6 +891,48 @@ fn gpu_mining_assessment(event: &RawEvent, ctx: &DetectContext) -> Option<RiskAs
     assessment
         .is_suspicious(ctx.config.gpu.mining_min_score)
         .then_some(assessment)
+}
+
+fn process_started_by_shell_or_scheduler(event: &RawEvent) -> bool {
+    let parent = string_field(event, "parent_name").to_ascii_lowercase();
+    matches!(
+        parent.as_str(),
+        "sh" | "bash" | "dash" | "zsh" | "fish" | "cron" | "crond" | "atd"
+    )
+}
+
+fn privileged_gpu_process_with_network_and_cpu(
+    event: &RawEvent,
+    assessment: &RiskAssessment,
+) -> bool {
+    string_field(event, "euid") == ROOT_UID
+        && assessment.has_feature("gpu_public_outbound_connections")
+        && assessment.has_feature("gpu_sustained_high_cpu")
+}
+
+fn shell_started_gpu_process_with_public_network(
+    event: &RawEvent,
+    assessment: &RiskAssessment,
+) -> bool {
+    process_started_by_shell_or_scheduler(event)
+        && assessment.has_feature("gpu_public_outbound_connections")
+        && !looks_like_interactive_ml_workspace(event)
+}
+
+fn looks_like_interactive_ml_workspace(event: &RawEvent) -> bool {
+    let cwd = string_field(event, "cwd").to_ascii_lowercase();
+    let cmdline = string_field(event, "cmdline").to_ascii_lowercase();
+    (cwd.contains("/home/") || cwd.contains("/workspace") || cwd.contains("/project"))
+        && [
+            "train",
+            "torch",
+            "tensorflow",
+            "jupyter",
+            "notebook",
+            "cuda",
+        ]
+        .iter()
+        .any(|marker| cmdline.contains(marker))
 }
 
 fn path_in_runtime_dir(path: &str) -> bool {
@@ -1464,7 +1531,8 @@ mod tests {
             "python train.py --dataset s3://bucket",
         )
         .with_field("cwd", "/home/ml/project")
-        .with_field("euid", "1000");
+        .with_field("euid", "1000")
+        .with_field("parent_name", "bash");
         let gpu = gpu_event("42", "/home/ml/.venv/bin/python", 24576);
         let outbound = RawEvent::new("network", "outbound_connection")
             .with_field("pid", "42")
@@ -1475,6 +1543,34 @@ mod tests {
         let findings = ProcessDetector.detect(&[process, gpu, outbound], &ctx);
 
         assert!(findings.iter().all(|finding| finding.rule_id != "PROC-006"));
+    }
+
+    #[test]
+    fn shell_started_renamed_gpu_process_with_public_network_alerts() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let process = process_event("/usr/local/bin/.nvidia", ".nvidia", ".nvidia --worker")
+            .with_field("cwd", "/usr/local/bin")
+            .with_field("euid", "0")
+            .with_field("parent_name", "bash");
+        let gpu = gpu_event("42", "/usr/local/bin/.nvidia", 12288);
+        let outbound = RawEvent::new("network", "outbound_connection")
+            .with_field("pid", "42")
+            .with_field("remote_addr", "8.8.8.8")
+            .with_field("remote_port", "443")
+            .with_field("remote_public", "true");
+
+        let findings = ProcessDetector.detect(&[process, gpu, outbound], &ctx);
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.rule_id == "PROC-006")
+            .expect("shell-started gpu process finding");
+        assert!(finding.evidence.iter().any(|item| {
+            item.key == "risk_features"
+                && item
+                    .value
+                    .contains("shell_started_gpu_public_network_cluster")
+        }));
     }
 
     #[test]

@@ -1,10 +1,9 @@
 use crate::collectors::{CollectContext, Collector};
-use crate::utils::ip::is_public_remote_ip;
+use crate::utils::ip::is_public_remote_addr;
 use async_trait::async_trait;
 use sentinel_core::{RawEvent, SentinelResult};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::net::IpAddr;
 use std::net::Ipv6Addr;
 use std::path::Path;
 
@@ -87,13 +86,6 @@ fn parse_proc_net_line(line: &str, protocol: &str) -> Option<RawEvent> {
         );
     }
     None
-}
-
-fn is_public_remote_addr(addr: &str) -> bool {
-    match addr.parse::<IpAddr>() {
-        Ok(ip) => is_public_remote_ip(ip),
-        Err(_) => false,
-    }
 }
 
 fn enrich_socket_owners(events: &mut [RawEvent], scan_root: &Path) {

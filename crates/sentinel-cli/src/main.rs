@@ -3,18 +3,23 @@ mod commands;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use commands::{
+    advice::{run_advice, AdviceCommand},
     baseline::{run_baseline, BaselineCommand},
     blocks::{run_blocks, BlocksCommand},
     config::{run_config, ConfigCommand},
     doctor::run_doctor,
     events::{run_events, EventsCommand},
     findings::{run_findings, FindingsCommand},
+    fleet::{run_fleet, FleetCommand},
+    incidents::{run_incidents, IncidentsCommand},
     init::run_init,
+    maintenance::{run_maintenance, MaintenanceCommand},
     notify::{run_notify, NotifyCommand},
     reload::run_reload,
     report::{run_report, ReportCommand},
     rules::{run_rules, RulesCommand},
     scan::{run_check, run_scan_command},
+    service_profile::{run_service_profile, ServiceProfileCommand},
     storage::{run_storage, StorageCommand},
 };
 use sentinel_core::SentinelConfig;
@@ -42,6 +47,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Advice {
+        #[command(subcommand)]
+        command: AdviceCommand,
+    },
     Init {
         #[arg(long)]
         path: Option<PathBuf>,
@@ -71,9 +80,21 @@ enum Command {
         #[command(subcommand)]
         command: EventsCommand,
     },
+    Fleet {
+        #[command(subcommand)]
+        command: FleetCommand,
+    },
     Findings {
         #[command(subcommand)]
         command: FindingsCommand,
+    },
+    Incidents {
+        #[command(subcommand)]
+        command: IncidentsCommand,
+    },
+    Maintenance {
+        #[command(subcommand)]
+        command: MaintenanceCommand,
     },
     Rules {
         #[command(subcommand)]
@@ -86,6 +107,10 @@ enum Command {
     Report {
         #[command(subcommand)]
         command: ReportCommand,
+    },
+    ServiceProfile {
+        #[command(subcommand)]
+        command: ServiceProfileCommand,
     },
     Config {
         #[command(subcommand)]
@@ -109,6 +134,7 @@ async fn main() -> Result<()> {
     init_logging(&cli.log_level)?;
 
     match cli.command {
+        Command::Advice { command } => run_advice(load_config(cli.config.as_deref())?, command),
         Command::Init { path, force } => run_init(path, force),
         Command::Check { json } => run_check(load_config(cli.config.as_deref())?, json).await,
         Command::Scan { no_notify, json } => {
@@ -125,13 +151,23 @@ async fn main() -> Result<()> {
         }
         Command::Blocks { command } => run_blocks(load_config(cli.config.as_deref())?, command),
         Command::Events { command } => run_events(load_config(cli.config.as_deref())?, command),
+        Command::Fleet { command } => run_fleet(load_config(cli.config.as_deref())?, command),
         Command::Findings { command } => run_findings(load_config(cli.config.as_deref())?, command),
+        Command::Incidents { command } => {
+            run_incidents(load_config(cli.config.as_deref())?, command)
+        }
+        Command::Maintenance { command } => {
+            run_maintenance(load_config(cli.config.as_deref())?, command)
+        }
         Command::Rules { command } => run_rules(command),
         Command::Notify { command } => {
             run_notify(load_config(cli.config.as_deref())?, command).await
         }
         Command::Report { command } => {
             run_report(load_config(cli.config.as_deref())?, command).await
+        }
+        Command::ServiceProfile { command } => {
+            run_service_profile(load_config(cli.config.as_deref())?, command).await
         }
         Command::Config { command } => run_config(cli.config.as_deref(), command),
         Command::Storage { command } => run_storage(load_config(cli.config.as_deref())?, command),

@@ -1,10 +1,11 @@
 use anyhow::{bail, Result};
 use clap::{Subcommand, ValueEnum};
-use sentinel_agent::notify::{render_alert_for_config, NotificationManager, NotifyContext};
-use sentinel_agent::report::{build_report_finding, build_security_report, ReportPeriod};
+use sentinel_agent::notify::render_alert_for_config;
+use sentinel_agent::report::{
+    build_report_finding, build_security_report, send_report_finding, ReportPeriod,
+};
 use sentinel_agent::storage::SqliteStore;
 use sentinel_core::SentinelConfig;
-use std::sync::Arc;
 
 #[derive(Debug, Subcommand)]
 pub enum ReportCommand {
@@ -50,36 +51,22 @@ pub async fn run_report(config: SentinelConfig, command: ReportCommand) -> Resul
         }
         ReportCommand::Send { period } => {
             let finding = build_report_finding(&config, &store, period.into())?;
-            let manager = NotificationManager::from_config(&config);
-            if manager.enabled_count() == 0 {
+            let delivery = send_report_finding(&config, &store, &finding).await?;
+            if delivery.enabled_channels == 0 {
                 println!("no notification channels are enabled");
                 return Ok(());
             }
-            let ctx = NotifyContext {
-                config: Arc::new(config),
-            };
-            let results = manager.notify_all_channels(&finding, &ctx).await;
-            let mut failures = 0usize;
-            let mut delivered = 0usize;
-            for (_finding_id, channel, result) in results {
-                match result {
-                    Ok(()) => {
-                        delivered += 1;
-                        store.record_notification_log(&finding.id, &channel, "ok", "")?;
-                        println!("{channel}: ok");
-                    }
-                    Err(err) => {
-                        failures += 1;
-                        let error = err.to_string();
-                        store.record_notification_log(&finding.id, &channel, "error", &error)?;
-                        println!("{channel}: failed: {error}");
-                    }
+            for outcome in &delivery.outcomes {
+                if outcome.status == "ok" {
+                    println!("{}: ok", outcome.channel);
+                } else {
+                    println!("{}: failed: {}", outcome.channel, outcome.error);
                 }
             }
-            if failures > 0 {
-                bail!("{failures} report notification channel(s) failed");
+            if delivery.failed > 0 {
+                bail!("{} report notification channel(s) failed", delivery.failed);
             }
-            println!("report sent to {delivered} channel(s)");
+            println!("report sent to {} channel(s)", delivery.delivered);
         }
     }
     Ok(())

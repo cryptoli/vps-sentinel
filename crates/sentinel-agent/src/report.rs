@@ -1,3 +1,4 @@
+use crate::notify::{NotificationManager, NotifyContext};
 use crate::rules::system::DAILY_REPORT_RULE_ID;
 use crate::storage::{ScanRunSummary, SqliteStore, StorageStats};
 use chrono::{DateTime, Local, TimeZone, Utc};
@@ -6,6 +7,7 @@ use sentinel_core::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 const TOP_RULE_LIMIT: usize = 5;
 const IMPORTANT_EVENT_LIMIT: usize = 5;
@@ -93,6 +95,21 @@ pub struct ReportStorageSummary {
     pub scan_runs: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReportDeliverySummary {
+    pub enabled_channels: usize,
+    pub delivered: usize,
+    pub failed: usize,
+    pub outcomes: Vec<ReportDeliveryOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReportDeliveryOutcome {
+    pub channel: String,
+    pub status: String,
+    pub error: String,
+}
+
 pub fn build_security_report(
     config: &SentinelConfig,
     store: &SqliteStore,
@@ -120,6 +137,45 @@ pub fn build_report_finding(
 ) -> SentinelResult<Finding> {
     let report = build_security_report(config, store, period)?;
     Ok(report_to_finding(config, &report))
+}
+
+pub async fn send_report_finding(
+    config: &SentinelConfig,
+    store: &SqliteStore,
+    finding: &Finding,
+) -> SentinelResult<ReportDeliverySummary> {
+    let manager = NotificationManager::from_config(config);
+    let enabled_channels = manager.enabled_count();
+    if enabled_channels == 0 {
+        return Ok(ReportDeliverySummary::default());
+    }
+    let ctx = NotifyContext {
+        config: Arc::new(config.clone()),
+    };
+    let results = manager.notify_all_channels(finding, &ctx).await;
+    let mut summary = ReportDeliverySummary {
+        enabled_channels,
+        ..ReportDeliverySummary::default()
+    };
+    for (_finding_id, channel, result) in results {
+        let (status, error) = match result {
+            Ok(()) => {
+                summary.delivered += 1;
+                ("ok".to_string(), String::new())
+            }
+            Err(err) => {
+                summary.failed += 1;
+                ("failed".to_string(), err.to_string())
+            }
+        };
+        store.record_notification_log(&finding.id, &channel, &status, &error)?;
+        summary.outcomes.push(ReportDeliveryOutcome {
+            channel,
+            status,
+            error,
+        });
+    }
+    Ok(summary)
 }
 
 fn build_security_report_from_parts(
