@@ -32,7 +32,7 @@
 | 文件完整性 | 监控关键路径和 Web 根目录；对限定大小内文件做哈希和内容扫描；检测关键文件变化、Web 目录可执行脚本、达到风险评分阈值的 WebShell 风格特征组合。 |
 | 日志完整性 | 监控敏感认证/登录日志文件，识别高风险软链和没有近期轮转上下文的大幅截断。 |
 | 持久化检查 | 监控 cron、systemd、shell profile、`ld.so.preload` 等启动相关位置，并对可疑启动命令进行风险评分。 |
-| 进程和 GPU 检查 | 读取 procfs argv、父进程、可执行路径、工作目录、UID 上下文、socket FD 数、CPU 生命周期指标、procfs 启动时间漂移、结构化 cgroup/container 上下文、systemd unit/ExecStart、可执行文件 owner/size/hash、软件包归属、出站连接画像，并通过 `nvidia-smi` 读取 NVIDIA GPU 计算进程、通过 `rocm-smi` 读取 AMD/ROCm GPU 进程事实，识别临时目录执行、达到风险评分阈值的 deleted executable、网络命令执行桥接、可疑行为聚类、已知挖矿/扫描器身份和可疑 GPU 计算负载。 |
+| 进程和 GPU 检查 | 读取 procfs argv、父进程、可执行路径、工作目录、UID 上下文、socket FD 数、CPU 生命周期指标、procfs 启动时间漂移、结构化 cgroup/container 上下文、systemd unit/ExecStart、可执行文件 owner/size/hash、软件包归属、出站连接画像，并通过 `nvidia-smi` 读取 NVIDIA GPU 计算进程、通过 `rocm-smi` 读取 AMD/ROCm GPU 进程事实，识别达到风险评分阈值的可疑可执行路径、deleted executable、网络命令执行桥接、可疑行为聚类、已知挖矿/扫描器身份和可疑 GPU 计算负载。 |
 | 网络检查 | 读取监听 socket 与所属进程；附加进程上下文和防火墙状态；检测高风险公网服务、可疑监听进程、监听 owner 基线漂移和新增公网监听。22/80/443 等预期端口会降低噪音，但不会被无脑信任。 |
 | Web 日志 | 解析常见 access log、JSON access log、Nginx 风格 error log 请求上下文和可选 `.1` 轮转日志，将自动化探测归类为攻击家族，并按来源聚合同类路径，避免按路径刷屏。 |
 | Rootkit 信号 | 采集轻量级本地指标，用于发现隐藏进程和可疑 procfs 行为。 |
@@ -49,7 +49,7 @@
 
 已知挖矿/扫描器检测会更克制：`PROC-004` 只会用可执行文件路径、进程名、结构化 `argv[0]` 等进程身份字段匹配 `xmrig`、`masscan`、`zmap` 等已知工具名，并兼容 `.exe` 后缀。结构化进程身份可用时，普通命令参数里出现这些词不会直接告警。当 procfs CPU 数据可用时，告警会附带生命周期平均 CPU、进程年龄和累计 CPU 秒数；持续高 CPU 会增强判断，但单独高 CPU 不会触发告警。
 
-deleted executable 和启动项告警也采用评分模型。`PROC-002` 需要同时具备临时目录执行、memfd 或匿名文件、隐藏的非标准可执行文件、网络执行桥、已知挖矿/扫描器身份等风险特征；系统升级后遗留的 `systemd`、`dockerd`、`python3` 等标准路径 deleted 进程，如果没有其它风险特征，会被视为维护上下文。`PERSIST-002` 会对启动命令中的下载后管道执行、临时路径自启动、base64 解码后 shell 执行、网络到 shell 执行桥等组合进行评分；单独的 `bash -c` 服务包装不会触发默认阈值。
+可执行路径、deleted executable 和启动项告警也采用评分模型。`PROC-001` 会把常见落地目录作为强证据，但会把 `/run` 这类运行时状态路径作为弱上下文，必须叠加隐藏文件名、root 上下文、socket、公网出站、网络执行桥、持续高 CPU、已知挖矿/扫描器身份等信号才会告警。`PROC-002` 需要同时具备可疑可执行路径、memfd 或匿名文件、隐藏的非标准可执行文件、网络执行桥、已知挖矿/扫描器身份等风险特征；系统升级后遗留的 `systemd`、`dockerd`、`python3` 等标准路径 deleted 进程，如果没有其它风险特征，会被视为维护上下文。`PERSIST-002` 会对启动命令中的下载后管道执行、临时路径自启动、base64 解码后 shell 执行、网络到 shell 执行桥等组合进行评分；单独的 `bash -c` 服务包装不会触发默认阈值。
 
 文件和持久化基线漂移不会因为存在软件包活动就被自动压制。agent 会采集近期 apt/dpkg/yum/dnf/pacman/apk 日志活动，并把该上下文附加到 `FILE-001`、`PERSIST-001` 和 `PERSIST-003` 的证据与建议中。这样既不会隐藏真实漂移，也方便先对照软件包日志确认，再决定是否刷新基线。
 
@@ -191,7 +191,7 @@ CI 中使用的 Docker 容器只用于构建和兼容性测试，不代表推荐
 | 日志篡改信号 | 采集敏感日志文件快照并与本地规则状态对比；高风险软链立即告警，日志截断需要满足配置的比例和字节阈值且没有近期轮转文件；曾经出现过的配置日志消失也会报告。 | 识别把认证日志重定向到 `/dev/null`、清空日志或删除日志等反取证行为，同时避免正常 logrotate 误报。 |
 | WebShell 内容 | 对限定大小内的文件内容提取风险 marker，并结合 Web 路径、脚本类型和 marker 组合评分。 | 单个弱 marker 默认不告警，但能识别经典 Web 命令执行和编码 payload 组合。 |
 | Web 探测 | `WEB-001` 按来源 IP、探测家族和响应画像聚合。404 PHPUnit 目录爆破等未命中探测默认为 Low；敏感路径成功响应或受保护的 exploit 路径会提升等级。 | 扫描器命中大量路径变体时只生成一条可读 finding，而不是几十条 Telegram 消息。 |
-| 进程和 GPU 风险 | 读取 procfs argv、父进程、可执行路径、cwd、UID/EUID、deleted 状态、socket FD 数、生命周期 CPU 指标、启动时间漂移、cgroup/container 上下文、systemd unit/ExecStart、可执行文件元数据/hash、软件包归属、出站连接画像和 NVIDIA GPU 计算进程状态，并按规则评分、白名单、规则状态和同 PID 信号聚合处理。`PROC-005` 必须先出现伪装、隐藏、可疑目录或 Web 路径等主风险信号，socket、出站连接、重启漂移和 root 上下文只能辅助加权；`PROC-006` 需要 GPU 计算活动叠加挖矿或高风险运行证据。 | 识别临时路径执行、可疑 deleted executable、网络 shell 桥接、已知挖矿/扫描器身份、改名行为聚类和可疑 GPU 挖矿负载，同时避免 PID、CPU、GPU、连接计数等波动字段或正常高连接业务服务导致重复/误报消息。 |
+| 进程和 GPU 风险 | 读取 procfs argv、父进程、可执行路径、cwd、UID/EUID、deleted 状态、socket FD 数、生命周期 CPU 指标、启动时间漂移、cgroup/container 上下文、systemd unit/ExecStart、可执行文件元数据/hash、软件包归属、出站连接画像和 NVIDIA GPU 计算进程状态，并按规则评分、白名单、规则状态和同 PID 信号聚合处理。`PROC-001` 对可疑可执行路径做评分，不会只按路径机械放行或告警；`PROC-005` 必须先出现伪装、隐藏、可疑目录或 Web 路径等主风险信号，socket、出站连接、重启漂移和 root 上下文只能辅助加权；`PROC-006` 需要 GPU 计算活动叠加挖矿或高风险运行证据。 | 识别可疑可执行路径、可疑 deleted executable、网络 shell 桥接、已知挖矿/扫描器身份、改名行为聚类和可疑 GPU 挖矿负载，同时避免 PID、CPU、GPU、连接计数等波动字段或正常高连接业务服务导致重复/误报消息。 |
 | 网络监听 | 解析 `/proc/net/tcp*` 和 `/proc/net/udp*`，通过 `/proc/<pid>/fd` 反查进程，与监听 owner 基线对比，附加进程/防火墙上下文，并优先报告可疑 owner 行为而不是普通端口暴露。 | 22/80/443 等预期端口只降低通用噪音；进程变化或可疑进程仍会告警，高风险端口画像和防火墙状态会作为证据保留。 |
 | 通知 | 将统一 `Finding` 模型按渠道模板渲染：Telegram HTML、Email HTML+纯文本、Markdown 或纯文本。 | 消息包含 VPS 名称、规范化时间、本地化字段、证据、影响和建议。 |
 | 噪声控制 | 使用扫描内去重、跨扫描去重、状态提醒间隔、安静时段和小时级通知预算。 | 减少重复消息，同时保留高价值告警的可见性。 |

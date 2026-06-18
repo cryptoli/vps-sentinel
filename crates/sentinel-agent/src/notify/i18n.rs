@@ -811,9 +811,44 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
             "network_execution_bridge" => Some("network execution bridge"),
             "shell_target" => Some("shell target"),
             "socket_api" => Some("socket API"),
+            "suspicious executable path" => Some("suspicious executable path"),
             "system_bridge" => Some("system command bridge"),
             "tty_allocation" => Some("TTY allocation"),
             "temporary_path" => Some("temporary path"),
+            "runtime_executable_path" => Some("runtime-path executable"),
+            "temporary_executable_path" => Some("temporary-path executable"),
+            "configured_suspicious_executable_path" => {
+                Some("configured suspicious-path executable")
+            }
+            "deleted_runtime_executable_path" => Some("deleted runtime-path executable"),
+            "deleted_temporary_executable_path" | "temporary_deleted_executable" => {
+                Some("deleted temporary-path executable")
+            }
+            "deleted_configured_suspicious_executable_path" => {
+                Some("deleted configured suspicious-path executable")
+            }
+            "privileged_runtime_process" => Some("privileged runtime-path process"),
+            "executable is under a runtime state path" => {
+                Some("executable is under a runtime state path")
+            }
+            "executable is under a common temporary staging directory" => {
+                Some("executable is under a common temporary staging directory")
+            }
+            "executable is under a configured suspicious directory" => {
+                Some("executable is under a configured suspicious directory")
+            }
+            "deleted executable is under a runtime state path" => {
+                Some("deleted executable is under a runtime state path")
+            }
+            "deleted executable is under a common temporary staging directory" => {
+                Some("deleted executable is under a common temporary staging directory")
+            }
+            "deleted executable is under a configured suspicious directory" => {
+                Some("deleted executable is under a configured suspicious directory")
+            }
+            "runtime path process is running with effective root privileges" => {
+                Some("runtime-path process is running with effective root privileges")
+            }
             _ => None,
         },
         NotificationLanguage::ZhCn => match value {
@@ -915,6 +950,7 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
             }
             "suspicious markers appear in a hidden file" => Some("可疑特征出现在隐藏文件中"),
             "suspicious_cwd" => Some("可疑工作目录"),
+            "suspicious executable path" => Some("可疑可执行路径"),
             "sustained_high_cpu" => Some("持续高 CPU"),
             "system_bridge" => Some("系统命令桥接"),
             "systemd ExecStart does not appear to match the listener executable" => {
@@ -924,6 +960,34 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
             "temporary executable path" => Some("临时目录可执行文件"),
             "temporary path" | "temporary_path" => Some("临时路径"),
             "temporary_deleted_executable" => Some("临时目录删除态可执行文件"),
+            "runtime_executable_path" => Some("运行时路径可执行文件"),
+            "temporary_executable_path" => Some("临时路径可执行文件"),
+            "configured_suspicious_executable_path" => Some("配置的可疑路径可执行文件"),
+            "deleted_runtime_executable_path" => Some("运行时路径删除态可执行文件"),
+            "deleted_temporary_executable_path" => Some("临时路径删除态可执行文件"),
+            "deleted_configured_suspicious_executable_path" => {
+                Some("配置的可疑路径删除态可执行文件")
+            }
+            "privileged_runtime_process" => Some("高权限运行时路径进程"),
+            "executable is under a runtime state path" => Some("可执行文件位于运行时状态路径"),
+            "executable is under a common temporary staging directory" => {
+                Some("可执行文件位于常见临时落地目录")
+            }
+            "executable is under a configured suspicious directory" => {
+                Some("可执行文件位于配置的可疑目录")
+            }
+            "deleted executable is under a runtime state path" => {
+                Some("删除态可执行文件位于运行时状态路径")
+            }
+            "deleted executable is under a common temporary staging directory" => {
+                Some("删除态可执行文件位于常见临时落地目录")
+            }
+            "deleted executable is under a configured suspicious directory" => {
+                Some("删除态可执行文件位于配置的可疑目录")
+            }
+            "runtime path process is running with effective root privileges" => {
+                Some("运行时路径进程正在以有效 root 权限运行")
+            }
             "tty_allocation" => Some("TTY 分配"),
             "userland process name resembles a kernel thread" => Some("用户态进程名伪装成内核线程"),
             "web_command_execution" => Some("Web 命令执行"),
@@ -974,6 +1038,20 @@ fn gpu_technical_token_label(value: &str, language: NotificationLanguage) -> Opt
             "gpu_deleted_executable" => Some("deleted GPU executable"),
             "gpu_anonymous_executable" => Some("anonymous GPU executable"),
             "gpu_temporary_executable" => Some("temporary-path GPU executable"),
+            "gpu_runtime_executable_path" => Some("runtime-path GPU executable"),
+            "gpu_temporary_executable_path" => Some("temporary-path GPU executable"),
+            "gpu_configured_suspicious_executable_path" => {
+                Some("configured suspicious-path GPU executable")
+            }
+            "GPU compute executable is under a runtime state path" => {
+                Some("GPU compute executable is under a runtime state path")
+            }
+            "GPU compute executable is under a common temporary staging directory" => {
+                Some("GPU compute executable is under a common temporary staging directory")
+            }
+            "GPU compute executable is under a configured suspicious directory" => {
+                Some("GPU compute executable is under a configured suspicious directory")
+            }
             "known_gpu_miner_identity" => Some("known GPU miner identity"),
             "mining_pool_remote_port" => Some("mining-pool remote port"),
             "gpu_network_execution_bridge" => Some("GPU network execution bridge"),
@@ -991,6 +1069,18 @@ fn gpu_technical_token_label(value: &str, language: NotificationLanguage) -> Opt
             "gpu_deleted_executable" => Some("已删除的 GPU 可执行文件"),
             "gpu_anonymous_executable" => Some("匿名 GPU 可执行文件"),
             "gpu_temporary_executable" => Some("临时路径 GPU 可执行文件"),
+            "gpu_runtime_executable_path" => Some("运行时路径 GPU 可执行文件"),
+            "gpu_temporary_executable_path" => Some("临时路径 GPU 可执行文件"),
+            "gpu_configured_suspicious_executable_path" => Some("配置的可疑路径 GPU 可执行文件"),
+            "GPU compute executable is under a runtime state path" => {
+                Some("GPU 计算进程可执行文件位于运行时状态路径")
+            }
+            "GPU compute executable is under a common temporary staging directory" => {
+                Some("GPU 计算进程可执行文件位于常见临时落地目录")
+            }
+            "GPU compute executable is under a configured suspicious directory" => {
+                Some("GPU 计算进程可执行文件位于配置的可疑目录")
+            }
             "known_gpu_miner_identity" => Some("已知 GPU 挖矿器身份"),
             "mining_pool_remote_port" => Some("矿池远端端口"),
             "gpu_network_execution_bridge" => Some("GPU 网络命令执行桥接"),

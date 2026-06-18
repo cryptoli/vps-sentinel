@@ -209,7 +209,7 @@ fn process_signal_names(primary: &Finding, related: &[Finding]) -> Vec<&'static 
     for finding in std::iter::once(primary).chain(related.iter()) {
         match finding.rule_id.as_str() {
             "PROC-001" => {
-                signals.insert("temporary path");
+                signals.insert("suspicious executable path");
             }
             "PROC-002" => {
                 signals.insert("deleted executable");
@@ -364,7 +364,7 @@ mod tests {
         assert_eq!(findings[0].rule_id, "PROC-003");
         assert!(findings[0].evidence.iter().any(|item| item.key == "signals"
             && item.value.contains("network execution bridge")
-            && item.value.contains("temporary path")));
+            && item.value.contains("suspicious executable path")));
         assert!(findings[0]
             .evidence
             .iter()
@@ -391,7 +391,7 @@ mod tests {
 
         assert_eq!(findings.len(), 1);
         assert!(findings[0].evidence.iter().any(|item| item.key == "signals"
-            && item.value.contains("temporary path")
+            && item.value.contains("suspicious executable path")
             && item.value.contains("behavior cluster")));
     }
 

@@ -169,11 +169,11 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
             recommendations: &["查看账号差异，并和计划内运维操作进行关联。"],
         },
         "PROC-001" => RuleMessage {
-            title: "进程从临时目录运行",
-            description: "运行中的进程可执行文件位于常被恶意程序用于落地的临时目录。",
+            title: "进程从可疑路径运行",
+            description: "运行中的进程可执行文件位于可疑落地或运行时路径，并且同时具备足够的行为风险上下文。",
             impact: &[],
             recommendations: &[
-                "检查可执行文件哈希、父进程和文件属主。",
+                "检查可执行文件哈希、父进程、文件属主、软件包归属和网络连接。",
                 "停止或删除进程前先保留证据。",
             ],
         },

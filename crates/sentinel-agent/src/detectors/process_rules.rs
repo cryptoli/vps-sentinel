@@ -24,10 +24,10 @@ impl Detector for ProcessDetector {
         vec![
             RuleMetadata::new(
                 "PROC-001",
-                "Process running from temporary path",
+                "Process running from suspicious executable path",
                 Category::Process,
                 Severity::High,
-                "A process executable path is under a suspicious temporary directory.",
+                "A process executable path is under a suspicious staging or runtime directory with enough supporting risk context.",
             ),
             RuleMetadata::new(
                 "PROC-002",
@@ -121,8 +121,15 @@ impl Detector for ProcessDetector {
                     ));
                 }
             }
-            if process_from_suspicious_dir(&exe_path, ctx) {
-                findings.push(temp_process(event, ctx, &mut package_owner_cache));
+            if let Some(assessment) = executable_path_assessment(event, ctx) {
+                if assessment.is_suspicious(ctx.config.process.behavior_min_score) {
+                    findings.push(temp_process(
+                        event,
+                        ctx,
+                        assessment,
+                        &mut package_owner_cache,
+                    ));
+                }
             }
             if network_execution_assessment_from_event(event).is_suspicious() {
                 findings.push(network_execution_bridge(
@@ -167,23 +174,123 @@ impl Detector for ProcessDetector {
 fn temp_process(
     event: &RawEvent,
     ctx: &DetectContext,
+    assessment: BehaviorAssessment,
     package_cache: &mut PackageOwnerCache,
 ) -> Finding {
     let subject = string_field(event, "exe_path");
     Finding::new(
         &ctx.host_id,
-        "Process executable in temporary path",
-        "A running process executable is located in a path commonly abused for malware staging.",
+        "Process executable in suspicious path",
+        "A running process executable is located in a suspicious staging or runtime path and has enough supporting risk context.",
         Severity::High,
         Category::Process,
         "PROC-001",
         subject,
     )
-    .with_evidence_deduped_by(process_evidence(event, package_cache), &["exe_path"])
+    .with_evidence_deduped_by(
+        {
+            let mut items = process_evidence(event, package_cache);
+            items.push(evidence("risk_score", assessment.score.to_string()));
+            items.push(evidence("risk_reasons", assessment.reason_text()));
+            items.push(evidence("risk_features", assessment.feature_names()));
+            items
+        },
+        &["exe_path"],
+    )
     .with_recommendations(vec![
         "Inspect the executable hash, parent process, and file owner.".to_string(),
         "Preserve evidence before stopping or removing the process.".to_string(),
     ])
+}
+
+fn executable_path_assessment(event: &RawEvent, ctx: &DetectContext) -> Option<BehaviorAssessment> {
+    let exe_path = string_field(event, "exe_path");
+    if !path_in_suspicious_dirs(&exe_path, &ctx.config.process.suspicious_dirs) {
+        return None;
+    }
+
+    let mut assessment = BehaviorAssessment::default();
+    let (path_feature, path_reason) = suspicious_executable_path_signal(&exe_path);
+    let path_score = if path_in_runtime_dir(&exe_path) {
+        45
+    } else if path_in_ephemeral_staging_dir(&exe_path) {
+        75
+    } else {
+        70
+    };
+    assessment.add_signal(path_score, path_feature, path_reason);
+
+    if hidden_basename(&exe_path) {
+        assessment.add_signal(
+            25,
+            "hidden_executable_name",
+            "process executable has a hidden basename",
+        );
+    }
+    if is_deleted_executable_path(&exe_path) {
+        assessment.add_signal(
+            30,
+            "deleted_executable_path",
+            "process executable path is marked deleted",
+        );
+    }
+    let command_assessment = network_execution_assessment_from_event(event);
+    if command_assessment.is_suspicious() {
+        assessment.add_signal(
+            60,
+            "network_execution_bridge",
+            command_assessment.reason_text(),
+        );
+    }
+    if let Some(tool_match) = known_tool_match(event, &ctx.config.process.known_bad_tool_names) {
+        assessment.add_signal(
+            80,
+            "known_bad_tool",
+            format!(
+                "process identity '{}' matches configured tool '{}'",
+                tool_match.value, tool_match.tool
+            ),
+        );
+    }
+    if string_field(event, "public_outbound_count")
+        .parse::<usize>()
+        .unwrap_or(0)
+        > 0
+    {
+        assessment.add_signal(
+            20,
+            "public_outbound_connections",
+            "process has established outbound connections to public addresses",
+        );
+    }
+    let socket_fd_count = string_field(event, "socket_fd_count")
+        .parse::<usize>()
+        .unwrap_or(0);
+    if socket_fd_count >= ctx.config.process.suspicious_socket_fd_threshold {
+        assessment.add_signal(
+            20,
+            "many_socket_fds",
+            "process owns many socket file descriptors",
+        );
+    } else if socket_fd_count > 0 {
+        assessment.add_signal(
+            10,
+            "socket_activity",
+            "process owns socket file descriptors",
+        );
+    }
+    if let Some(cpu) = high_cpu_signal(event, ctx) {
+        assessment.add_signal(25, "sustained_high_cpu", cpu.reason());
+    }
+    if string_field(event, "euid") == ROOT_UID && assessment.score >= 45 {
+        assessment.add_signal(
+            10,
+            "privileged_runtime_process",
+            "runtime path process is running with effective root privileges",
+        );
+    }
+
+    Some(assessment)
 }
 
 fn deleted_executable(
@@ -235,10 +342,11 @@ fn deleted_executable_assessment(event: &RawEvent, ctx: &DetectContext) -> Optio
     }
 
     if path_in_suspicious_dirs(&normalized_path, &ctx.config.process.suspicious_dirs) {
+        let (feature, reason) = suspicious_executable_path_signal(&normalized_path);
         assessment.add_signal(
             80,
-            "temporary_deleted_executable",
-            "deleted executable is running from a suspicious temporary directory",
+            format!("deleted_{feature}"),
+            format!("deleted {reason}"),
         );
     }
 
@@ -694,10 +802,11 @@ fn gpu_mining_assessment(event: &RawEvent, ctx: &DetectContext) -> Option<RiskAs
         );
     }
     if path_in_suspicious_dirs(&normalized_path, &ctx.config.process.suspicious_dirs) {
+        let (feature, reason) = suspicious_executable_path_signal(&normalized_path);
         assessment.add_signal(
             85,
-            "gpu_temporary_executable",
-            "GPU compute process executable is under a suspicious temporary directory",
+            format!("gpu_{feature}"),
+            format!("GPU compute {reason}"),
         );
     }
 
@@ -763,6 +872,31 @@ fn path_in_runtime_dir(path: &str) -> bool {
     path == "/run" || path.starts_with("/run/")
 }
 
+fn path_in_ephemeral_staging_dir(path: &str) -> bool {
+    ["/tmp", "/var/tmp", "/dev/shm"]
+        .iter()
+        .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")))
+}
+
+fn suspicious_executable_path_signal(path: &str) -> (&'static str, &'static str) {
+    if path_in_runtime_dir(path) {
+        (
+            "runtime_executable_path",
+            "executable is under a runtime state path",
+        )
+    } else if path_in_ephemeral_staging_dir(path) {
+        (
+            "temporary_executable_path",
+            "executable is under a common temporary staging directory",
+        )
+    } else {
+        (
+            "configured_suspicious_executable_path",
+            "executable is under a configured suspicious directory",
+        )
+    }
+}
+
 fn path_in_web_roots(path: &str, ctx: &DetectContext) -> bool {
     ctx.config.web.web_roots.iter().any(|root| {
         let root = root.to_string_lossy().replace('\\', "/");
@@ -798,13 +932,12 @@ fn process_evidence_with_assessment(
     items
 }
 
-fn process_from_suspicious_dir(path: &str, ctx: &DetectContext) -> bool {
-    path_in_suspicious_dirs(path, &ctx.config.process.suspicious_dirs)
-}
-
 pub(crate) fn path_in_suspicious_dirs(path: &str, dirs: &[std::path::PathBuf]) -> bool {
     dirs.iter().any(|dir| {
         let prefix = dir.to_string_lossy().replace('\\', "/");
+        if prefix.trim().is_empty() || prefix == "/" {
+            return false;
+        }
         path == prefix || path.starts_with(&format!("{prefix}/"))
     })
 }
@@ -1142,8 +1275,8 @@ fn looks_like_kernel_thread_name(name: &str) -> bool {
 mod tests {
     use super::{
         behavior_cluster_assessment, command_matches_allowlist, contains_miner_or_scanner,
-        deleted_executable_assessment, event_contains_miner_or_scanner, gpu_mining_assessment,
-        ProcessDetector,
+        deleted_executable_assessment, event_contains_miner_or_scanner, executable_path_assessment,
+        gpu_mining_assessment, ProcessDetector,
     };
     use crate::detectors::{
         command_profile::assess_network_execution_command, DetectContext, Detector,
@@ -1660,6 +1793,57 @@ mod tests {
     }
 
     #[test]
+    fn runtime_executable_path_alone_is_context_not_alert() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event(
+            "/run/containerd/io.containerd.runtime.v2.task/moby/abc/shim-helper",
+            "shim-helper",
+            "/run/containerd/io.containerd.runtime.v2.task/moby/abc/shim-helper",
+        )
+        .with_field(
+            "cwd",
+            "/run/containerd/io.containerd.runtime.v2.task/moby/abc",
+        );
+
+        let findings = ProcessDetector.detect(std::slice::from_ref(&event), &ctx);
+        let assessment = executable_path_assessment(&event, &ctx);
+
+        assert!(assessment.is_some_and(|assessment| {
+            assessment.has_feature("runtime_executable_path") && !assessment.is_suspicious(70)
+        }));
+        assert!(findings.iter().all(|finding| finding.rule_id != "PROC-001"));
+    }
+
+    #[test]
+    fn runtime_executable_with_behavior_still_alerts() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event(
+            "/run/containerd/io.containerd.runtime.v2.task/moby/abc/.kworker",
+            "kworker",
+            "/run/containerd/io.containerd.runtime.v2.task/moby/abc/.kworker",
+        )
+        .with_field(
+            "cwd",
+            "/run/containerd/io.containerd.runtime.v2.task/moby/abc",
+        )
+        .with_field("euid", "0")
+        .with_field("socket_fd_count", "2");
+
+        let findings = ProcessDetector.detect(&[event], &ctx);
+        let finding = findings
+            .iter()
+            .find(|finding| finding.rule_id == "PROC-001")
+            .expect("runtime path payload should still trigger PROC-001");
+
+        assert!(finding.evidence.iter().any(|item| {
+            item.key == "risk_features" && item.value.contains("runtime_executable_path")
+        }));
+        assert!(finding.evidence.iter().any(
+            |item| item.key == "risk_features" && item.value.contains("hidden_executable_name")
+        ));
+    }
+
+    #[test]
     fn behavior_cluster_still_detects_temp_cwd_payload() {
         let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
         let event = process_event("/usr/local/bin/worker", "worker", "worker")
@@ -1699,7 +1883,24 @@ mod tests {
         let event = process_event("/dev/shm/.x (deleted)", ".x", "/dev/shm/.x");
         let assessment = deleted_executable_assessment(&event, &ctx);
         assert!(assessment.is_some_and(|assessment| {
-            assessment.is_suspicious(70) && assessment.has_feature("temporary_deleted_executable")
+            assessment.is_suspicious(70)
+                && assessment.has_feature("deleted_temporary_executable_path")
+        }));
+    }
+
+    #[test]
+    fn deleted_runtime_executable_still_alerts() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event(
+            "/run/containerd/io.containerd.runtime.v2.task/moby/abc/.payload (deleted)",
+            ".payload",
+            "/run/containerd/io.containerd.runtime.v2.task/moby/abc/.payload",
+        );
+        let assessment = deleted_executable_assessment(&event, &ctx);
+
+        assert!(assessment.is_some_and(|assessment| {
+            assessment.is_suspicious(70)
+                && assessment.has_feature("deleted_runtime_executable_path")
         }));
     }
 

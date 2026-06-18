@@ -160,6 +160,20 @@ impl SentinelConfig {
                 "process.suspicious_socket_fd_threshold must be greater than 0".to_string(),
             ));
         }
+        for dir in &self.process.suspicious_dirs {
+            let normalized = dir.to_string_lossy().replace('\\', "/");
+            let normalized = normalized.trim_end_matches('/');
+            if normalized.trim().is_empty() || normalized == "/" {
+                return Err(SentinelError::Config(
+                    "process.suspicious_dirs entries must not be empty or root".to_string(),
+                ));
+            }
+            if !normalized.starts_with('/') {
+                return Err(SentinelError::Config(
+                    "process.suspicious_dirs entries must be absolute Linux paths".to_string(),
+                ));
+            }
+        }
         if self.gpu.enabled
             && self.gpu.nvidia_smi_path.trim().is_empty()
             && self.gpu.rocm_smi_path.trim().is_empty()
@@ -518,6 +532,21 @@ mod tests {
 
         let mut config = SentinelConfig::default();
         config.process.suspicious_socket_fd_threshold = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_process_suspicious_dirs_are_rejected() {
+        let mut config = SentinelConfig::default();
+        config.process.suspicious_dirs = vec!["".into()];
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.process.suspicious_dirs = vec!["/".into()];
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.process.suspicious_dirs = vec!["tmp".into()];
         assert!(config.validate().is_err());
     }
 
