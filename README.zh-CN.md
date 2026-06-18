@@ -195,7 +195,7 @@ CI 中使用的 Docker 容器只用于构建和兼容性测试，不代表推荐
 | 网络监听 | 解析 `/proc/net/tcp*` 和 `/proc/net/udp*`，通过 `/proc/<pid>/fd` 反查进程，与监听 owner 基线对比，附加进程/防火墙上下文，并优先报告可疑 owner 行为而不是普通端口暴露。 | 22/80/443 等预期端口只降低通用噪音；进程变化或可疑进程仍会告警，高风险端口画像和防火墙状态会作为证据保留。 |
 | 通知 | 将统一 `Finding` 模型按渠道模板渲染：Telegram HTML、Email HTML+纯文本、Markdown 或纯文本。 | 消息包含 VPS 名称、规范化时间、本地化字段、证据、影响和建议。 |
 | 噪声控制 | 使用扫描内去重、跨扫描去重、状态提醒间隔、安静时段和小时级通知预算。 | 减少重复消息，同时保留高价值告警的可见性。 |
-| 主动响应 | 在扫描内 finding 合并/去重后、跨扫描通知去重前评估封禁候选；只有不在 `[allowlist].ips` 中的公网 IP 才可能被封。Web 需要敏感路径成功响应、单次高置信 RCE 风格 exploit 探测、重复低置信 exploit 探测，或高频探测/错误突发；SSH 需要达到比告警更严格的失败次数阈值。 | 可把明显扫描源临时丢进防火墙，同时避免每条告警都变成破坏性动作。 |
+| 主动响应 | 在扫描内 finding 合并/去重后、跨扫描通知去重前评估封禁候选；只有不在 `[allowlist].ips` 中的公网 IP 才可能被封。Web 需要敏感路径成功响应、高置信 exploit 探测、重复低置信 exploit 探测，或高频探测/错误突发；SSH 默认与 SSH 爆破告警使用相同失败次数阈值。 | 可把明显扫描源临时丢进防火墙，同时避免每条告警都变成破坏性动作。 |
 
 ## 一键安装
 
@@ -425,6 +425,8 @@ sudo journalctl -u vps-sentinel -f
 | `vps-sentinel events show <event_id> --config <path>` | 按 finding ID 输出单条已保存 finding 的 JSON。 |
 | `vps-sentinel findings list --json --config <path>` | 列出最近保存的 findings，包含等级、置信度、规则 ID 和对象。 |
 | `vps-sentinel findings explain <finding_id> --json --config <path>` | 解释单条 finding，展示规则元数据、证据、置信度、影响和建议。 |
+| `vps-sentinel report show --config <path>` | 本地预览默认今日报告；加 `--json` 输出结构化数据，或用 `--period last24h` 查看过去 24 小时。 |
+| `vps-sentinel report send --config <path>` | 通过所有已启用通知渠道发送默认今日报告；这是显式报告命令，不受各渠道最低告警等级过滤。 |
 | `vps-sentinel storage stats --config <path>` | 输出 SQLite 行数和数据库占用。 |
 | `vps-sentinel storage prune --config <path>` | 手动执行普通扫描结束后同样会执行的保留期清理和数据库容量上限清理。 |
 | `vps-sentinel storage clear <target> --yes --config <path>` | 手动清理指定历史数据，例如 `raw-events`、`findings`、`notifications`、`scan-runs`、`baselines` 或 `all-history`。 |
@@ -608,10 +610,10 @@ permanent_block_threshold = 3
 permanent_block_window_seconds = 86400
 web_probe_block_threshold = 25
 web_exploit_block_threshold = 5
-ssh_failed_login_block_threshold = 15
+ssh_failed_login_block_threshold = 10
 ```
 
-主动响应默认关闭，因为它会修改本机防火墙策略；需要设置 `active_response.enabled = true`，或安装时传入 `ACTIVE_RESPONSE_ENABLED=yes`，才会写入防火墙。`strategy = "observe"` 只记录候选不写防火墙，`balanced` 是默认策略，`strict` 会对被拒绝的 Web 探测和 SSH 爆破要求更强证据。启用后，扫描器会在扫描内合并/去重之后、跨扫描通知去重之前执行封禁，因此同一来源计数升高时，即使重复通知会被压制，也仍能触发封禁。SSH 封禁需要先形成 `SSH-003` finding，默认扫描窗口内 15 次失败触发封禁，而 SSH 告警阈值默认是 10。Web 封禁覆盖敏感路径成功响应、高置信 RCE 风格探测、重复低置信 exploit 探测和高频错误爆发。安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。普通封禁是临时封禁；如果同一个公网来源 IP 在 `permanent_block_window_seconds` 窗口内至少 `permanent_block_threshold` 次成为封禁候选，则升级为无到期时间的永久封禁。永久升级仍然遵守 `[allowlist].ips`、`strategy = "observe"` 和 `max_blocks_per_scan`，可以通过 `vs blocks unblock <ip>` 或 `vs blocks unblock-all --yes` 解除。只有公网可路由来源 IP 才会被考虑。
+主动响应默认关闭，因为它会修改本机防火墙策略；需要设置 `active_response.enabled = true`，或安装时传入 `ACTIVE_RESPONSE_ENABLED=yes`，才会写入防火墙。`strategy = "observe"` 只记录候选不写防火墙，`balanced` 是默认策略，`strict` 会对被拒绝的 Web 探测和 SSH 爆破要求更强证据。启用后，扫描器会在扫描内合并/去重之后、跨扫描通知去重之前执行封禁，因此同一来源计数升高时，即使重复通知会被压制，也仍能触发封禁。SSH 封禁需要先形成 `SSH-003` finding，默认扫描窗口内 10 次失败触发封禁。Web 封禁覆盖敏感路径成功响应、高置信 RCE 风格探测、重复低置信 exploit 探测和高频错误爆发。安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。普通封禁是临时封禁；如果同一个公网来源 IP 在 `permanent_block_window_seconds` 窗口内至少 `permanent_block_threshold` 次成为封禁候选，则升级为无到期时间的永久封禁。永久升级仍然遵守 `[allowlist].ips`、`strategy = "observe"` 和 `max_blocks_per_scan`，可以通过 `vs blocks unblock <ip>` 或 `vs blocks unblock-all --yes` 解除。只有公网可路由来源 IP 才会被考虑。
 
 每次扫描都会先把主动响应状态和真实防火墙规则同步，再判断某个来源是否已经封禁。如果规则已过期、被 firewalld/ufw reload 清掉，或者被人工修改，程序会移除失效状态；如果该来源仍然满足高置信封禁条件，后续可以再次封禁。iptables 后端在插入前会用 `-C` 检查规则是否已存在，避免重复 DROP 规则；手动解除封禁会删除重复匹配规则。日常运维可以使用 `vs blocks list`、`vs blocks cleanup`、`vs blocks unblock <ip>` 和 `vs blocks unblock-all --yes`。
 
@@ -697,6 +699,7 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 - `NET-003`：公网监听端口背后存在可疑进程。
 - `FILE-002`：WebShell 风格文件内容。
 - `CONFIG-003`：高危服务端口公网暴露。
+- `REPORT-001`：根据本地扫描历史生成的安全日报。
 
 ## 部署说明
 

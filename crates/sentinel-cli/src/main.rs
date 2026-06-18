@@ -12,6 +12,7 @@ use commands::{
     init::run_init,
     notify::{run_notify, NotifyCommand},
     reload::run_reload,
+    report::{run_report, ReportCommand},
     rules::{run_rules, RulesCommand},
     scan::{run_check, run_scan_command},
     storage::{run_storage, StorageCommand},
@@ -82,6 +83,10 @@ enum Command {
         #[command(subcommand)]
         command: NotifyCommand,
     },
+    Report {
+        #[command(subcommand)]
+        command: ReportCommand,
+    },
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -124,6 +129,9 @@ async fn main() -> Result<()> {
         Command::Rules { command } => run_rules(command),
         Command::Notify { command } => {
             run_notify(load_config(cli.config.as_deref())?, command).await
+        }
+        Command::Report { command } => {
+            run_report(load_config(cli.config.as_deref())?, command).await
         }
         Command::Config { command } => run_config(cli.config.as_deref(), command),
         Command::Storage { command } => run_storage(load_config(cli.config.as_deref())?, command),

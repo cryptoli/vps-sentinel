@@ -166,6 +166,20 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "remote_addr" => "remote address",
             "remote_port" => "remote port",
             "remote_public" => "remote is public",
+            "report_active_response" => "active response summary",
+            "report_category_summary" => "category summary",
+            "report_database_size" => "database size",
+            "report_end" => "report end",
+            "report_failed_scan_runs" => "failed scans",
+            "report_findings_total" => "findings total",
+            "report_important_events" => "important events",
+            "report_last_scan_at" => "last scan at",
+            "report_notification_attempts" => "notification attempts",
+            "report_period" => "report period",
+            "report_scan_runs" => "scan runs",
+            "report_severity_summary" => "severity summary",
+            "report_start" => "report start",
+            "report_top_rules" => "top rules",
             "request_count" => "request count",
             "response_profile" => "response profile",
             "risk_features" => "risk features",
@@ -271,6 +285,20 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "remote_addr" => "远端地址",
             "remote_port" => "远端端口",
             "remote_public" => "远端公网",
+            "report_active_response" => "主动响应摘要",
+            "report_category_summary" => "分类汇总",
+            "report_database_size" => "数据库大小",
+            "report_end" => "报告结束时间",
+            "report_failed_scan_runs" => "失败扫描次数",
+            "report_findings_total" => "告警总数",
+            "report_important_events" => "重点事件",
+            "report_last_scan_at" => "最近扫描时间",
+            "report_notification_attempts" => "通知发送次数",
+            "report_period" => "报告周期",
+            "report_scan_runs" => "扫描次数",
+            "report_severity_summary" => "风险等级汇总",
+            "report_start" => "报告开始时间",
+            "report_top_rules" => "Top 规则",
             "request_count" => "请求次数",
             "response_profile" => "响应画像",
             "risk_features" => "风险特征",
@@ -454,6 +482,10 @@ fn direct_value_label(
         ("active_response_window", "current_scan", NotificationLanguage::ZhCn) => {
             Some("当前扫描窗口")
         }
+        ("report_period", "today", NotificationLanguage::En) => Some("today"),
+        ("report_period", "today", NotificationLanguage::ZhCn) => Some("今日"),
+        ("report_period", "last24h", NotificationLanguage::En) => Some("last 24 hours"),
+        ("report_period", "last24h", NotificationLanguage::ZhCn) => Some("过去 24 小时"),
         (
             "package_activity_recent"
             | "process_start_changed"
@@ -526,6 +558,15 @@ fn localize_list_value(value: &str, language: NotificationLanguage) -> String {
 }
 
 fn dynamic_value_label(key: &str, value: &str, language: NotificationLanguage) -> Option<String> {
+    if key == "report_active_response" {
+        return localize_report_active_response(value, language);
+    }
+    if key == "report_severity_summary" {
+        return localize_report_count_summary(value, language, report_severity_token_label);
+    }
+    if key == "report_category_summary" {
+        return localize_report_count_summary(value, language, report_category_token_label);
+    }
     if key == "active_response_detail" && value.starts_with("permanent_escalation ") {
         let parts = value
             .split_whitespace()
@@ -556,6 +597,103 @@ fn dynamic_value_label(key: &str, value: &str, language: NotificationLanguage) -
         return Some("进程身份匹配配置中的高风险工具".to_string());
     }
     None
+}
+
+fn localize_report_active_response(value: &str, language: NotificationLanguage) -> Option<String> {
+    let parts = value
+        .split(',')
+        .filter_map(|part| {
+            let (key, count) = part.trim().split_once('=')?;
+            let label = match (key, language) {
+                ("temporary_blocks", NotificationLanguage::En) => "temporary blocks",
+                ("temporary_blocks", NotificationLanguage::ZhCn) => "临时封禁",
+                ("permanent_blocks", NotificationLanguage::En) => "permanent blocks",
+                ("permanent_blocks", NotificationLanguage::ZhCn) => "永久封禁",
+                ("failed_blocks", NotificationLanguage::En) => "failed blocks",
+                ("failed_blocks", NotificationLanguage::ZhCn) => "封禁失败",
+                ("source_ips", NotificationLanguage::En) => "source IPs",
+                ("source_ips", NotificationLanguage::ZhCn) => "来源 IP",
+                _ => return None,
+            };
+            let value = if key == "source_ips" {
+                count.replace('|', ", ")
+            } else {
+                count.to_string()
+            };
+            Some(format!("{label}={value}"))
+        })
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(match language {
+            NotificationLanguage::En => parts.join(", "),
+            NotificationLanguage::ZhCn => parts.join("，"),
+        })
+    }
+}
+
+fn localize_report_count_summary<F>(
+    value: &str,
+    language: NotificationLanguage,
+    label_fn: F,
+) -> Option<String>
+where
+    F: Fn(&str, NotificationLanguage) -> Option<&'static str>,
+{
+    let parts = value
+        .split(',')
+        .filter_map(|part| {
+            let (key, count) = part.trim().split_once('=')?;
+            let label = label_fn(key, language)
+                .map(str::to_string)
+                .unwrap_or_else(|| key.to_string());
+            Some(format!("{label}={count}"))
+        })
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(match language {
+            NotificationLanguage::En => parts.join(", "),
+            NotificationLanguage::ZhCn => parts.join("，"),
+        })
+    }
+}
+
+fn report_severity_token_label(
+    value: &str,
+    language: NotificationLanguage,
+) -> Option<&'static str> {
+    match (value, language) {
+        ("Critical", NotificationLanguage::ZhCn) => Some("严重"),
+        ("High", NotificationLanguage::ZhCn) => Some("高危"),
+        ("Medium", NotificationLanguage::ZhCn) => Some("中危"),
+        ("Low", NotificationLanguage::ZhCn) => Some("低危"),
+        ("Info", NotificationLanguage::ZhCn) => Some("信息"),
+        _ => None,
+    }
+}
+
+fn report_category_token_label(
+    value: &str,
+    language: NotificationLanguage,
+) -> Option<&'static str> {
+    match (value, language) {
+        ("ssh", NotificationLanguage::ZhCn) => Some("SSH"),
+        ("user", NotificationLanguage::ZhCn) => Some("用户"),
+        ("privilege", NotificationLanguage::ZhCn) => Some("权限"),
+        ("persistence", NotificationLanguage::ZhCn) => Some("持久化"),
+        ("process", NotificationLanguage::ZhCn) => Some("进程"),
+        ("network", NotificationLanguage::ZhCn) => Some("网络"),
+        ("file_integrity", NotificationLanguage::ZhCn) => Some("文件完整性"),
+        ("web", NotificationLanguage::ZhCn) => Some("Web"),
+        ("docker", NotificationLanguage::ZhCn) => Some("Docker"),
+        ("rootkit", NotificationLanguage::ZhCn) => Some("Rootkit"),
+        ("config_risk", NotificationLanguage::ZhCn) => Some("配置风险"),
+        ("system", NotificationLanguage::ZhCn) => Some("系统"),
+        _ => None,
+    }
 }
 
 fn localize_active_response_reason_summary(value: &str) -> Option<String> {

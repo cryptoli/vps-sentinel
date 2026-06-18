@@ -56,6 +56,10 @@ mod tests {
             find_rule("ACTIVE-001").map(|rule| rule.id),
             Some("ACTIVE-001")
         );
+        assert_eq!(
+            find_rule("REPORT-001").map(|rule| rule.id),
+            Some("REPORT-001")
+        );
     }
 
     fn is_normalized_rule_id(rule_id: &str) -> bool {

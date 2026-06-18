@@ -78,6 +78,16 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
             impact: &[],
             recommendations: &["如果你收到了这条消息，说明该通知渠道可以正常送达。"],
         },
+        "REPORT-001" => RuleMessage {
+            title: "VPS Sentinel 今日报告",
+            description: "这是根据本机扫描历史、告警记录、主动响应结果和存储状态生成的安全摘要。",
+            impact: &[],
+            recommendations: &[
+                "优先查看报告中的高危和严重事件。",
+                "如报告包含封禁动作，请使用 vs blocks list --no-verify 查看封禁详情。",
+                "确认合法变更后再刷新基线。",
+            ],
+        },
         "SSH-001" => RuleMessage {
             title: "检测到 root SSH 登录",
             description: "root 账号刚刚通过 SSH 成功认证。",

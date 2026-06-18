@@ -442,7 +442,7 @@ impl Default for ActiveResponseConfig {
             web_probe_block_threshold: 25,
             web_exploit_block_threshold: 5,
             ssh_enabled: true,
-            ssh_failed_login_block_threshold: 15,
+            ssh_failed_login_block_threshold: 10,
         }
     }
 }

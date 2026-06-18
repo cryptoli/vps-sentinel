@@ -7,6 +7,7 @@ pub mod daemon;
 pub mod detectors;
 pub(crate) mod findings;
 pub mod notify;
+pub mod report;
 pub mod rules;
 pub mod scanner;
 pub mod storage;

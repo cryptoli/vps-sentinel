@@ -87,6 +87,13 @@ pub struct StorageStats {
     pub rule_states: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanRunSummary {
+    pub total: usize,
+    pub failed: usize,
+    pub last_finished_at: Option<DateTime<Utc>>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageClearTarget {
     RawEvents,
@@ -206,6 +213,35 @@ impl SqliteStore {
             .map_err(|err| SentinelError::Storage(err.to_string()))?;
         let rows = stmt
             .query_map([limit as i64], |row| row.get::<_, String>(0))
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+
+        let mut findings = Vec::new();
+        for row in rows {
+            let payload = row.map_err(|err| SentinelError::Storage(err.to_string()))?;
+            let finding = serde_json::from_str(&payload)
+                .map_err(|err| SentinelError::Storage(err.to_string()))?;
+            findings.push(finding);
+        }
+        Ok(findings)
+    }
+
+    pub fn list_findings_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> SentinelResult<Vec<Finding>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT payload_json FROM findings
+                 WHERE timestamp >= ?1 AND timestamp < ?2
+                 ORDER BY timestamp DESC",
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        let rows = stmt
+            .query_map(params![since.to_rfc3339(), until.to_rfc3339()], |row| {
+                row.get::<_, String>(0)
+            })
             .map_err(|err| SentinelError::Storage(err.to_string()))?;
 
         let mut findings = Vec::new();
@@ -361,6 +397,39 @@ impl SqliteStore {
         )
         .map_err(|err| SentinelError::Storage(err.to_string()))?;
         Ok(())
+    }
+
+    pub fn scan_run_summary_between(
+        &self,
+        since: DateTime<Utc>,
+        until: DateTime<Utc>,
+    ) -> SentinelResult<ScanRunSummary> {
+        let conn = self.connection()?;
+        let (total, failed, last_finished_at): (i64, i64, Option<String>) = conn
+            .query_row(
+                "SELECT
+                   COUNT(*),
+                   COALESCE(SUM(CASE WHEN status = 'ok' THEN 0 ELSE 1 END), 0),
+                   MAX(finished_at)
+                 FROM scan_runs
+                 WHERE finished_at >= ?1 AND finished_at < ?2",
+                params![since.to_rfc3339(), until.to_rfc3339()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        let last_finished_at = match last_finished_at {
+            Some(value) => Some(
+                DateTime::parse_from_rfc3339(&value)
+                    .map_err(|err| SentinelError::Storage(err.to_string()))?
+                    .with_timezone(&Utc),
+            ),
+            None => None,
+        };
+        Ok(ScanRunSummary {
+            total: total.max(0) as usize,
+            failed: failed.max(0) as usize,
+            last_finished_at,
+        })
     }
 
     pub fn record_notification_log(
@@ -855,6 +924,56 @@ mod tests {
             store.notification_attempt_count_since(Utc::now() - chrono::Duration::minutes(1))?,
             1
         );
+        Ok(())
+    }
+
+    #[test]
+    fn lists_findings_between_time_bounds() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let now = Utc::now();
+        let mut old = Finding::new(
+            "host",
+            "old",
+            "description",
+            Severity::Low,
+            Category::System,
+            "TEST-001",
+            "old",
+        );
+        old.timestamp = now - Duration::days(2);
+        let mut current = Finding::new(
+            "host",
+            "current",
+            "description",
+            Severity::High,
+            Category::Ssh,
+            "SSH-003",
+            "8.8.8.8",
+        );
+        current.timestamp = now - Duration::minutes(5);
+        store.save_findings(&[old, current.clone()])?;
+
+        let listed = store.list_findings_between(now - Duration::hours(1), now)?;
+
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, current.id);
+        Ok(())
+    }
+
+    #[test]
+    fn summarizes_scan_runs_between_time_bounds() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        store.record_scan_run(10, 2, "ok")?;
+        store.record_scan_run(5, 0, "failed")?;
+
+        let summary =
+            store.scan_run_summary_between(Utc::now() - Duration::minutes(1), Utc::now())?;
+
+        assert_eq!(summary.total, 2);
+        assert_eq!(summary.failed, 1);
+        assert!(summary.last_finished_at.is_some());
         Ok(())
     }
 

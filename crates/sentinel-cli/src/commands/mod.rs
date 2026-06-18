@@ -7,6 +7,7 @@ pub mod findings;
 pub mod init;
 pub mod notify;
 pub mod reload;
+pub mod report;
 pub mod rules;
 pub mod scan;
 pub mod storage;
