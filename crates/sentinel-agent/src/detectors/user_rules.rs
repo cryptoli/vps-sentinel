@@ -1,8 +1,13 @@
-use crate::detectors::{evidence, field_is_allowlisted, string_field, DetectContext, Detector};
+use crate::detectors::{
+    evidence, field_is_allowlisted, package_activity_context, string_field, DetectContext,
+    Detector, PackageActivityContext,
+};
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
 
 pub struct UserDetector;
+
+const LINUX_REGULAR_USER_UID_MIN: u32 = 1000;
 
 impl Detector for UserDetector {
     fn name(&self) -> &'static str {
@@ -37,6 +42,7 @@ impl Detector for UserDetector {
 
     fn detect(&self, events: &[RawEvent], ctx: &DetectContext) -> Vec<Finding> {
         let mut findings = Vec::new();
+        let package_context = package_activity_context(events);
         for event in events {
             let name = string_field(event, "name");
             if name.is_empty() || field_is_allowlisted(&name, &ctx.config.allowlist.users) {
@@ -47,7 +53,7 @@ impl Detector for UserDetector {
                     if event.field("uid") == Some("0") && name != "root" {
                         findings.push(uid_zero_user(event, ctx));
                     } else {
-                        findings.push(new_user(event, ctx));
+                        findings.push(new_user(event, ctx, &package_context));
                     }
                 }
                 "user_uid_changed_to_zero" => findings.push(uid_zero_user(event, ctx)),
@@ -59,22 +65,56 @@ impl Detector for UserDetector {
     }
 }
 
-fn new_user(event: &RawEvent, ctx: &DetectContext) -> Finding {
+fn new_user(
+    event: &RawEvent,
+    ctx: &DetectContext,
+    package_context: &PackageActivityContext,
+) -> Finding {
     let name = string_field(event, "name");
+    let package_managed_system_user = likely_package_managed_system_user(event, package_context);
+    let mut evidence = user_evidence(event);
+    evidence.extend(package_context.evidence());
+    if package_managed_system_user {
+        evidence.push(sentinel_core::Evidence::new(
+            "package_managed_system_user",
+            "true",
+        ));
+    }
+    let mut recommendations = vec![
+        "Confirm the account was created intentionally.".to_string(),
+        "Review shell, home directory, and recent login activity for this user.".to_string(),
+    ];
+    if let Some(recommendation) = package_context.recommendation() {
+        recommendations.push(recommendation);
+    }
     Finding::new(
         &ctx.host_id,
         "New local user account detected",
         "A local user account appeared compared with the stored baseline.",
-        Severity::Medium,
+        if package_managed_system_user {
+            Severity::Low
+        } else {
+            Severity::Medium
+        },
         Category::User,
         "USER-001",
         &name,
     )
-    .with_evidence(user_evidence(event))
-    .with_recommendations(vec![
-        "Confirm the account was created intentionally.".to_string(),
-        "Review shell, home directory, and recent login activity for this user.".to_string(),
-    ])
+    .with_evidence(evidence)
+    .with_recommendations(recommendations)
+}
+
+fn likely_package_managed_system_user(
+    event: &RawEvent,
+    package_context: &PackageActivityContext,
+) -> bool {
+    let Some(uid) = event
+        .field("uid")
+        .and_then(|value| value.parse::<u32>().ok())
+    else {
+        return false;
+    };
+    package_context.is_active() && uid > 0 && uid < LINUX_REGULAR_USER_UID_MIN
 }
 
 fn uid_zero_user(event: &RawEvent, ctx: &DetectContext) -> Finding {
@@ -123,4 +163,57 @@ fn user_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
         evidence("uid", string_field(event, "uid")),
         evidence("previous_uid", string_field(event, "previous_uid")),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UserDetector;
+    use crate::detectors::{DetectContext, Detector};
+    use sentinel_core::{RawEvent, SentinelConfig, Severity};
+    use std::sync::Arc;
+
+    #[test]
+    fn package_created_system_user_is_low_with_package_context() {
+        let detector = UserDetector;
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let events = vec![
+            RawEvent::new("package_manager", "package_manager_activity")
+                .with_field("path", "/var/log/dpkg.log"),
+            RawEvent::new("users", "user_created")
+                .with_field("name", "service-user")
+                .with_field("uid", "988"),
+        ];
+
+        let findings = detector.detect(&events, &ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Low);
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|item| item.key == "package_activity_recent" && item.value == "true"));
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|item| item.key == "package_managed_system_user" && item.value == "true"));
+    }
+
+    #[test]
+    fn uid_zero_user_is_not_downgraded_by_package_context() {
+        let detector = UserDetector;
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let events = vec![
+            RawEvent::new("package_manager", "package_manager_activity")
+                .with_field("path", "/var/log/dpkg.log"),
+            RawEvent::new("users", "user_created")
+                .with_field("name", "backdoor")
+                .with_field("uid", "0"),
+        ];
+
+        let findings = detector.detect(&events, &ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "USER-002");
+        assert_eq!(findings[0].severity, Severity::Critical);
+    }
 }

@@ -327,7 +327,12 @@ fn validate_incidents(config: &IncidentConfig) -> SentinelResult<()> {
     Ok(())
 }
 
-fn validate_service_profile(_config: &ServiceProfileConfig) -> SentinelResult<()> {
+fn validate_service_profile(config: &ServiceProfileConfig) -> SentinelResult<()> {
+    if config.dynamic_udp_enabled && config.dynamic_udp_min_port == 0 {
+        return Err(SentinelError::Config(
+            "service_profile.dynamic_udp_min_port must be greater than 0".to_string(),
+        ));
+    }
     Ok(())
 }
 

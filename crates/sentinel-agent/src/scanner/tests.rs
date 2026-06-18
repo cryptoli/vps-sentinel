@@ -1,8 +1,9 @@
 use super::{
     annotate_active_response, apply_active_response_notification_policy,
     duplicate_suppression_window_seconds, enrich_log_integrity_state, enrich_process_start_drift,
-    quiet_hours_allowed_findings, redact_findings, save_log_integrity_state,
-    save_process_start_state, suppress_in_scan_duplicates, suppress_recent_duplicates,
+    prepare_notification_findings, quiet_hours_allowed_findings, redact_findings,
+    save_log_integrity_state, save_process_start_state, suppress_in_scan_duplicates,
+    suppress_recent_duplicates,
 };
 use crate::active_response::{ActiveResponseReport, BlockAction, BlockActionStatus};
 use crate::storage::SqliteStore;
@@ -183,6 +184,87 @@ fn active_response_keeps_small_block_details() {
 }
 
 #[test]
+fn active_response_annotation_applies_to_related_findings_by_source_ip() {
+    let config = SentinelConfig::default();
+    let mut first = web_finding("8.8.8.8", "env_file");
+    first.id = "finding-1".to_string();
+    let mut second = web_finding("8.8.8.8", "git_exposure");
+    second.id = "finding-2".to_string();
+    let mut findings = vec![first, second];
+    let report = ActiveResponseReport {
+        block_actions: vec![BlockAction {
+            finding_id: "finding-1".to_string(),
+            ip: "8.8.8.8".parse().unwrap(),
+            status: BlockActionStatus::AlreadyPermanentlyBlocked,
+            reason: "web probe already handled".to_string(),
+            backend: Some("nftables".to_string()),
+            expires_at: None,
+            detail: None,
+        }],
+        ..ActiveResponseReport::default()
+    };
+
+    annotate_active_response(&mut findings, &report, &config);
+
+    assert_eq!(
+        evidence_value(&findings[1], "active_response_status"),
+        Some("already_permanently_blocked")
+    );
+    assert_eq!(
+        evidence_value(&findings[1], "active_response_ip"),
+        Some("8.8.8.8")
+    );
+}
+
+#[test]
+fn notification_policy_suppresses_already_handled_active_response_findings() {
+    let mut handled = web_finding("8.8.8.8", "env_file");
+    handled.evidence.push(Evidence::new(
+        "active_response_status",
+        "already_permanently_blocked",
+    ));
+    let fresh = web_finding("1.1.1.1", "git_exposure");
+
+    let (retained, suppressed) = prepare_notification_findings(vec![handled, fresh]);
+
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].subject, "1.1.1.1");
+    assert_eq!(suppressed, 1);
+}
+
+#[test]
+fn notification_policy_groups_same_source_web_findings() {
+    let mut low = web_finding("8.8.8.8", "env_file");
+    low.severity = Severity::Low;
+    let mut blocked = web_finding("8.8.8.8", "git_exposure");
+    blocked
+        .evidence
+        .push(Evidence::new("active_response_status", "blocked"));
+    let other = web_finding("1.1.1.1", "actuator");
+
+    let (retained, suppressed) = prepare_notification_findings(vec![low, blocked, other]);
+
+    assert_eq!(retained.len(), 2);
+    assert_eq!(suppressed, 1);
+    let grouped = retained
+        .iter()
+        .find(|finding| finding.subject == "8.8.8.8")
+        .expect("grouped web finding");
+    assert_eq!(
+        evidence_value(grouped, "notification_grouped_findings"),
+        Some("2")
+    );
+    assert_eq!(
+        evidence_value(grouped, "notification_grouped_probe_families"),
+        Some("env_file, git_exposure")
+    );
+    assert_eq!(
+        evidence_value(grouped, "active_response_status"),
+        Some("blocked")
+    );
+}
+
+#[test]
 fn suppresses_duplicate_findings_within_one_scan() {
     let finding = Finding::new(
         "host",
@@ -347,17 +429,14 @@ fn state_duplicates_are_suppressed_after_event_window() -> Result<(), Box<dyn st
 }
 
 #[test]
-fn new_active_response_block_bypasses_recent_duplicate_suppression(
+fn new_active_response_block_is_retained_when_not_recently_seen(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;
     let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
     let config = SentinelConfig::default();
-    let previous = ssh_bruteforce_finding("47.242.23.111", "10");
-    store.save_findings(std::slice::from_ref(&previous))?;
 
-    let mut blocked = previous.clone();
+    let mut blocked = ssh_bruteforce_finding("47.242.23.111", "16");
     blocked.id = "blocked-finding".to_string();
-    blocked.evidence.push(Evidence::new("failure_count", "16"));
     blocked
         .evidence
         .push(Evidence::new("active_response_status", "blocked"));
@@ -369,7 +448,7 @@ fn new_active_response_block_bypasses_recent_duplicate_suppression(
 }
 
 #[test]
-fn permanent_active_response_block_bypasses_recent_duplicate_suppression(
+fn permanent_active_response_upgrade_uses_recent_duplicate_suppression(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;
     let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
@@ -385,8 +464,8 @@ fn permanent_active_response_block_bypasses_recent_duplicate_suppression(
     ));
     let (retained, suppressed) = suppress_recent_duplicates(&store, vec![permanent], &config)?;
 
-    assert_eq!(retained.len(), 1);
-    assert_eq!(suppressed, 0);
+    assert!(retained.is_empty());
+    assert_eq!(suppressed, 1);
     Ok(())
 }
 
@@ -602,4 +681,22 @@ fn ssh_bruteforce_finding(source_ip: &str, failure_count: &str) -> Finding {
         ],
         &["source_ip"],
     )
+}
+
+fn web_finding(ip: &str, family: &str) -> Finding {
+    Finding::new(
+        "host",
+        "Web vulnerability probing detected",
+        "probe",
+        Severity::Medium,
+        Category::Web,
+        "WEB-001",
+        ip,
+    )
+    .with_evidence(vec![
+        Evidence::new("ip", ip),
+        Evidence::new("probe_family", family),
+        Evidence::new("response_profile", "missing_or_rejected"),
+        Evidence::new("request_count", "1"),
+    ])
 }

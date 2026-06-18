@@ -142,8 +142,12 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "outbound_connection_count" => "outbound connections",
             "outbound_remote_ports" => "outbound remote ports",
             "outcome" => "outcome",
+            "notification_grouped_findings" => "grouped findings",
+            "notification_grouped_probe_families" => "grouped probe families",
+            "notification_grouped_rule_ids" => "grouped rule IDs",
             "package_activity_recent" => "recent package activity",
             "package_activity_sources" => "package logs",
+            "package_managed_system_user" => "package-managed system user",
             "package_owner" => "package owner",
             "parent_name" => "parent process",
             "path" => "path",
@@ -161,6 +165,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "process_start_changed" => "process start changed",
             "process_start_drift" => "process start drift",
             "protocol" => "protocol",
+            "public_exposure" => "public exposure",
             "public_outbound_count" => "public outbound connections",
             "raw" => "raw record",
             "remote_addr" => "remote address",
@@ -187,6 +192,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "risk_score" => "risk score",
             "sample_paths" => "sample paths",
             "service_profile" => "service profile",
+            "service_profile_identity" => "service identity",
             "shell" => "shell",
             "signals" => "signals",
             "size" => "size bytes",
@@ -261,8 +267,12 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "outbound_connection_count" => "出站连接数",
             "outbound_remote_ports" => "出站远端端口",
             "outcome" => "结果",
+            "notification_grouped_findings" => "合并告警数",
+            "notification_grouped_probe_families" => "合并探测类型",
+            "notification_grouped_rule_ids" => "合并规则",
             "package_activity_recent" => "近期软件包活动",
             "package_activity_sources" => "软件包日志",
+            "package_managed_system_user" => "软件包创建的系统用户",
             "package_owner" => "软件包归属",
             "parent_name" => "父进程",
             "path" => "路径",
@@ -280,6 +290,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "process_start_changed" => "进程启动是否变化",
             "process_start_drift" => "进程启动变化",
             "protocol" => "协议",
+            "public_exposure" => "公网暴露",
             "public_outbound_count" => "公网出站连接数",
             "raw" => "原始记录",
             "remote_addr" => "远端地址",
@@ -306,6 +317,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "risk_score" => "风险评分",
             "sample_paths" => "样例路径",
             "service_profile" => "服务画像",
+            "service_profile_identity" => "服务身份",
             "shell" => "Shell",
             "signals" => "关联信号",
             "size" => "字节数",
@@ -501,10 +513,12 @@ fn direct_value_label(
             "package_activity_recent"
             | "process_start_changed"
             | "remote_public"
+            | "public_exposure"
             | "exists"
             | "executable"
             | "hidden"
             | "is_web_path"
+            | "package_managed_system_user"
             | "executable_changed",
             "true",
             NotificationLanguage::ZhCn,
@@ -513,10 +527,12 @@ fn direct_value_label(
             "package_activity_recent"
             | "process_start_changed"
             | "remote_public"
+            | "public_exposure"
             | "exists"
             | "executable"
             | "hidden"
             | "is_web_path"
+            | "package_managed_system_user"
             | "executable_changed",
             "false",
             NotificationLanguage::ZhCn,
@@ -578,6 +594,9 @@ fn dynamic_value_label(key: &str, value: &str, language: NotificationLanguage) -
     if key == "report_category_summary" {
         return localize_report_count_summary(value, language, report_category_token_label);
     }
+    if key == "notification_grouped_probe_families" {
+        return Some(localize_probe_family_list(value, language));
+    }
     if key == "active_response_detail" && value.starts_with("permanent_escalation ") {
         let parts = value
             .split_whitespace()
@@ -608,6 +627,23 @@ fn dynamic_value_label(key: &str, value: &str, language: NotificationLanguage) -
         return Some("进程身份匹配配置中的高风险工具".to_string());
     }
     None
+}
+
+fn localize_probe_family_list(value: &str, language: NotificationLanguage) -> String {
+    let labels = value
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            probe_family_value_label(part, language)
+                .unwrap_or(part)
+                .to_string()
+        })
+        .collect::<Vec<_>>();
+    match language {
+        NotificationLanguage::En => labels.join(", "),
+        NotificationLanguage::ZhCn => labels.join("，"),
+    }
 }
 
 fn localize_report_active_response(value: &str, language: NotificationLanguage) -> Option<String> {

@@ -19,7 +19,9 @@ use sentinel_core::{
     SentinelResult, Severity,
 };
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -198,7 +200,11 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             }
         }
     } else if config.active_response.enabled && (!options.persist || !options.active_response) {
-        warn!("active response skipped because persistence or active_response is disabled for this scan");
+        debug!(
+            persist = options.persist,
+            active_response = options.active_response,
+            "active response skipped because side effects are disabled for this scan"
+        );
     }
 
     if options.persist {
@@ -262,6 +268,14 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         } else {
             findings.clone()
         };
+        let (notification_findings, policy_suppressed_count) =
+            prepare_notification_findings(notification_findings);
+        if policy_suppressed_count > 0 {
+            debug!(
+                suppressed_notifications = policy_suppressed_count,
+                "notification policy suppressed already-handled or grouped findings"
+            );
+        }
         let delivery_limit = notification_delivery_limit(&store, &config)?;
         let plan = manager.delivery_plan(
             &notification_findings,
@@ -513,41 +527,191 @@ fn annotate_active_response(
     }
 
     let mut actions_by_finding = BTreeMap::new();
+    let mut actions_by_ip = BTreeMap::new();
     for action in &report.block_actions {
         actions_by_finding.insert(action.finding_id.as_str(), action);
+        actions_by_ip.entry(action.ip).or_insert(action);
     }
 
     for finding in findings {
-        let Some(action) = actions_by_finding.get(finding.id.as_str()) else {
+        let action = actions_by_finding
+            .get(finding.id.as_str())
+            .copied()
+            .or_else(|| source_ip(finding).and_then(|ip| actions_by_ip.get(&ip).copied()));
+        let Some(action) = action else {
             continue;
         };
-        finding.evidence.push(Evidence::new(
+        upsert_evidence(
+            &mut finding.evidence,
             "active_response_status",
             action.status.as_str(),
-        ));
-        finding
-            .evidence
-            .push(Evidence::new("active_response_ip", action.ip.to_string()));
-        finding
-            .evidence
-            .push(Evidence::new("active_response_reason", &action.reason));
+        );
+        upsert_evidence(
+            &mut finding.evidence,
+            "active_response_ip",
+            action.ip.to_string(),
+        );
+        upsert_evidence(
+            &mut finding.evidence,
+            "active_response_reason",
+            &action.reason,
+        );
         if let Some(backend) = &action.backend {
-            finding
-                .evidence
-                .push(Evidence::new("active_response_backend", backend));
+            upsert_evidence(&mut finding.evidence, "active_response_backend", backend);
         }
         if let Some(expires_at) = action.expires_at {
-            finding.evidence.push(Evidence::new(
+            upsert_evidence(
+                &mut finding.evidence,
                 "active_response_expires_at",
                 format_active_response_timestamp(expires_at, config.notifications.time_zone),
-            ));
+            );
         }
         if let Some(detail) = &action.detail {
-            finding
-                .evidence
-                .push(Evidence::new("active_response_detail", detail));
+            upsert_evidence(&mut finding.evidence, "active_response_detail", detail);
         }
     }
+}
+
+fn prepare_notification_findings(findings: Vec<Finding>) -> (Vec<Finding>, usize) {
+    let before = findings.len();
+    let findings = suppress_already_handled_active_response_findings(findings);
+    let findings = coalesce_web_notification_findings(findings);
+    let suppressed = before.saturating_sub(findings.len());
+    (findings, suppressed)
+}
+
+fn suppress_already_handled_active_response_findings(findings: Vec<Finding>) -> Vec<Finding> {
+    findings
+        .into_iter()
+        .filter(|finding| !active_response_already_handled(finding))
+        .collect()
+}
+
+fn active_response_already_handled(finding: &Finding) -> bool {
+    matches!(
+        evidence_value(finding, "active_response_status").as_deref(),
+        Some("already_blocked" | "already_permanently_blocked")
+    )
+}
+
+fn evidence_value(finding: &Finding, key: &str) -> Option<String> {
+    finding
+        .evidence
+        .iter()
+        .find(|item| item.key == key)
+        .map(|item| item.value.clone())
+}
+
+fn coalesce_web_notification_findings(findings: Vec<Finding>) -> Vec<Finding> {
+    let mut web_groups = BTreeMap::<IpAddr, Vec<Finding>>::new();
+    let mut retained = Vec::new();
+    for finding in findings {
+        if is_web_attack_finding(&finding) {
+            if let Some(ip) = source_ip(&finding) {
+                web_groups.entry(ip).or_default().push(finding);
+                continue;
+            }
+        }
+        retained.push(finding);
+    }
+    retained.extend(web_groups.into_values().map(coalesce_web_group));
+    retained
+}
+
+fn is_web_attack_finding(finding: &Finding) -> bool {
+    matches!(finding.rule_id.as_str(), "WEB-001" | "WEB-002")
+}
+
+fn coalesce_web_group(mut findings: Vec<Finding>) -> Finding {
+    if findings.len() == 1 {
+        return findings.remove(0);
+    }
+    findings.sort_by_key(|finding| {
+        (
+            Reverse(active_response_notification_rank(finding)),
+            Reverse(finding.severity),
+            Reverse(finding.timestamp),
+            finding.rule_id.clone(),
+            finding.subject.clone(),
+        )
+    });
+    let mut primary = findings.remove(0);
+    let grouped_count = findings.len() + 1;
+    let grouped_rule_ids = joined_finding_values(
+        std::iter::once(&primary).chain(findings.iter()),
+        |finding| finding.rule_id.as_str(),
+    );
+    let grouped_probe_families = joined_evidence_values(
+        std::iter::once(&primary).chain(findings.iter()),
+        "probe_family",
+    );
+    upsert_evidence(
+        &mut primary.evidence,
+        "notification_grouped_findings",
+        grouped_count.to_string(),
+    );
+    upsert_evidence(
+        &mut primary.evidence,
+        "notification_grouped_rule_ids",
+        grouped_rule_ids,
+    );
+    upsert_evidence(
+        &mut primary.evidence,
+        "notification_grouped_probe_families",
+        grouped_probe_families,
+    );
+    primary
+}
+
+fn active_response_notification_rank(finding: &Finding) -> u8 {
+    match evidence_value(finding, "active_response_status").as_deref() {
+        Some("permanently_blocked") => 4,
+        Some("blocked") => 3,
+        Some("failed") => 2,
+        Some("skipped_limit") => 1,
+        _ => 0,
+    }
+}
+
+fn joined_finding_values<'a>(
+    findings: impl Iterator<Item = &'a Finding>,
+    value: impl Fn(&'a Finding) -> &'a str,
+) -> String {
+    findings
+        .map(value)
+        .filter(|value| !value.trim().is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn joined_evidence_values<'a>(findings: impl Iterator<Item = &'a Finding>, key: &str) -> String {
+    findings
+        .filter_map(|finding| evidence_value(finding, key))
+        .filter(|value| !value.trim().is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn source_ip(finding: &Finding) -> Option<IpAddr> {
+    for key in ["ip", "source_ip", "active_response_ip", "remote_ip"] {
+        if let Some(ip) = evidence_value(finding, key).and_then(|value| value.parse().ok()) {
+            return Some(ip);
+        }
+    }
+    finding.subject.parse().ok()
+}
+
+fn upsert_evidence(evidence: &mut Vec<Evidence>, key: &str, value: impl Into<String>) {
+    let value = value.into();
+    if let Some(existing) = evidence.iter_mut().find(|item| item.key == key) {
+        existing.value = value;
+        return;
+    }
+    evidence.push(Evidence::new(key, value));
 }
 
 fn format_active_response_timestamp(
@@ -678,12 +842,13 @@ fn suppress_recent_duplicates(
             retained.push(finding);
             continue;
         }
-        if has_new_active_response_block(&finding) {
+        let since = Utc::now() - Duration::seconds(duration_seconds(window_seconds));
+        let recently_seen = store.finding_seen_since(&finding.dedup_key, since)?;
+        if has_new_active_response_block(&finding) && !recently_seen {
             retained.push(finding);
             continue;
         }
-        let since = Utc::now() - Duration::seconds(duration_seconds(window_seconds));
-        if !store.finding_seen_since(&finding.dedup_key, since)? {
+        if !recently_seen {
             retained.push(finding);
         } else {
             suppressed += 1;

@@ -38,7 +38,7 @@ pub fn evaluate_service_profile(
     let Some(store) = store else {
         return Ok(Vec::new());
     };
-    let current = current_profile(events);
+    let current = current_profile_with_config(events, config);
     if current.services.is_empty() {
         return Ok(Vec::new());
     }
@@ -55,19 +55,23 @@ pub fn load_service_profile(store: &SqliteStore) -> SentinelResult<Option<Servic
     store.load_rule_state(STATE_RULE_ID)
 }
 
-pub fn refresh_service_profile(events: &[RawEvent], store: &SqliteStore) -> SentinelResult<usize> {
-    let profile = current_profile(events);
+pub fn refresh_service_profile(
+    events: &[RawEvent],
+    config: &SentinelConfig,
+    store: &SqliteStore,
+) -> SentinelResult<usize> {
+    let profile = current_profile_with_config(events, config);
     let count = profile.services.len();
     store.save_rule_state(STATE_RULE_ID, &profile)?;
     Ok(count)
 }
 
-fn current_profile(events: &[RawEvent]) -> ServiceProfile {
+fn current_profile_with_config(events: &[RawEvent], config: &SentinelConfig) -> ServiceProfile {
     let services = events
         .iter()
         .filter(|event| event.kind == "listening_socket")
         .filter_map(service_record)
-        .map(|record| (service_key(&record), record))
+        .map(|record| (service_key(&record, config), record))
         .collect::<BTreeMap<_, _>>();
     ServiceProfile {
         updated_at: Some(Utc::now()),
@@ -185,11 +189,27 @@ fn service_record(event: &RawEvent) -> Option<ServiceRecord> {
     })
 }
 
-fn service_key(record: &ServiceRecord) -> String {
+fn service_key(record: &ServiceRecord, config: &SentinelConfig) -> String {
+    if is_dynamic_udp_service(record, config) {
+        return format!(
+            "{}:{}:dynamic:{}",
+            record.protocol,
+            record.local_addr,
+            normalized_identity(record)
+        );
+    }
     format!(
         "{}:{}:{}",
         record.protocol, record.local_addr, record.local_port
     )
+}
+
+fn is_dynamic_udp_service(record: &ServiceRecord, config: &SentinelConfig) -> bool {
+    config.service_profile.dynamic_udp_enabled
+        && record.public_exposure
+        && record.protocol.eq_ignore_ascii_case("udp")
+        && record.local_port >= config.service_profile.dynamic_udp_min_port
+        && !normalized_identity(record).trim_matches('|').is_empty()
 }
 
 fn service_identity_changed(previous: &ServiceRecord, current: &ServiceRecord) -> bool {
@@ -214,6 +234,7 @@ fn service_evidence(record: &ServiceRecord) -> Vec<Evidence> {
         Evidence::new("process_name", &record.process_name),
         Evidence::new("executable", &record.executable),
         Evidence::new("cmdline", &record.cmdline),
+        Evidence::new("service_profile_identity", normalized_identity(record)),
     ]
 }
 
@@ -253,9 +274,57 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn dynamic_public_udp_ports_are_profiled_by_process_identity(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let config = SentinelConfig::default();
+        let first = vec![udp_socket("0.0.0.0", 42549, "relay", "/usr/bin/relay")];
+        let second = vec![udp_socket("0.0.0.0", 59737, "relay", "/usr/bin/relay")];
+        let changed_identity = vec![udp_socket("0.0.0.0", 59737, "unknown", "/tmp/unknown")];
+
+        assert!(evaluate_service_profile(&first, &config, Some(&store))?.is_empty());
+        assert!(evaluate_service_profile(&second, &config, Some(&store))?.is_empty());
+        let findings = evaluate_service_profile(&changed_identity, &config, Some(&store))?;
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "SERVICE-001");
+        Ok(())
+    }
+
+    #[test]
+    fn refresh_uses_configured_dynamic_udp_policy() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let mut config = SentinelConfig::default();
+        config.service_profile.dynamic_udp_enabled = false;
+
+        let first = vec![udp_socket("0.0.0.0", 42549, "relay", "/usr/bin/relay")];
+        let second = vec![udp_socket("0.0.0.0", 59737, "relay", "/usr/bin/relay")];
+
+        let count = super::refresh_service_profile(&first, &config, &store)?;
+        let findings = evaluate_service_profile(&second, &config, Some(&store))?;
+
+        assert_eq!(count, 1);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "SERVICE-001");
+        Ok(())
+    }
+
     fn socket(addr: &str, port: u16, name: &str, exe: &str) -> RawEvent {
         RawEvent::new("network", "listening_socket")
             .with_field("protocol", "tcp")
+            .with_field("local_addr", addr)
+            .with_field("local_port", port.to_string())
+            .with_field("process_name", name)
+            .with_field("executable", exe)
+            .with_field("cmdline", exe)
+    }
+
+    fn udp_socket(addr: &str, port: u16, name: &str, exe: &str) -> RawEvent {
+        RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "udp")
             .with_field("local_addr", addr)
             .with_field("local_port", port.to_string())
             .with_field("process_name", name)

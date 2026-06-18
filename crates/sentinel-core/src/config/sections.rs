@@ -547,6 +547,8 @@ pub struct ServiceProfileConfig {
     pub enabled: bool,
     pub drift_requires_public_exposure: bool,
     pub baseline_refresh_after_package_activity: bool,
+    pub dynamic_udp_enabled: bool,
+    pub dynamic_udp_min_port: u16,
 }
 
 impl Default for ServiceProfileConfig {
@@ -555,6 +557,8 @@ impl Default for ServiceProfileConfig {
             enabled: true,
             drift_requires_public_exposure: false,
             baseline_refresh_after_package_activity: false,
+            dynamic_udp_enabled: true,
+            dynamic_udp_min_port: 32768,
         }
     }
 }

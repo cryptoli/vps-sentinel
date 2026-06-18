@@ -55,8 +55,8 @@ pub async fn run_service_profile(
             }
         }
         ServiceProfileCommand::Refresh { scan_root } => {
-            let events = collect_network_events(config, scan_root).await?;
-            let count = refresh_service_profile(&events, &store)?;
+            let events = collect_network_events(config.clone(), scan_root).await?;
+            let count = refresh_service_profile(&events, &config, &store)?;
             println!("service profile refreshed: {count} service(s)");
         }
     }

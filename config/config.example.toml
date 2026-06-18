@@ -231,6 +231,8 @@ max_findings_per_incident = 50
 enabled = true
 drift_requires_public_exposure = false
 baseline_refresh_after_package_activity = false
+dynamic_udp_enabled = true
+dynamic_udp_min_port = 32768
 
 [reports]
 scheduled_enabled = false
