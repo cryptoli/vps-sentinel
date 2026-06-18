@@ -241,7 +241,7 @@ impl NotificationManager {
         results
     }
 
-    pub async fn notify_test(
+    pub async fn notify_all_channels(
         &self,
         finding: &Finding,
         ctx: &NotifyContext,
@@ -255,6 +255,14 @@ impl NotificationManager {
             ));
         }
         results
+    }
+
+    pub async fn notify_test(
+        &self,
+        finding: &Finding,
+        ctx: &NotifyContext,
+    ) -> Vec<(String, String, SentinelResult<()>)> {
+        self.notify_all_channels(finding, ctx).await
     }
 }
 

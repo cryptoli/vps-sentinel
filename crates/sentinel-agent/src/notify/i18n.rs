@@ -487,6 +487,11 @@ fn direct_value_label(
         ("report_period", "last24h", NotificationLanguage::En) => Some("last 24 hours"),
         ("report_period", "last24h", NotificationLanguage::ZhCn) => Some("过去 24 小时"),
         (
+            "report_category_summary" | "report_severity_summary" | "report_top_rules",
+            "none",
+            NotificationLanguage::ZhCn,
+        ) => Some("无"),
+        (
             "package_activity_recent"
             | "process_start_changed"
             | "remote_public"

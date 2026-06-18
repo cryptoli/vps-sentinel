@@ -1,7 +1,9 @@
 use crate::rules::system::DAILY_REPORT_RULE_ID;
 use crate::storage::{ScanRunSummary, SqliteStore, StorageStats};
 use chrono::{DateTime, Local, TimeZone, Utc};
-use sentinel_core::{Category, Evidence, Finding, SentinelConfig, SentinelResult, Severity};
+use sentinel_core::{
+    Category, Evidence, Finding, NotificationTimeZone, SentinelConfig, SentinelResult, Severity,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,11 +18,11 @@ pub enum ReportPeriod {
 }
 
 impl ReportPeriod {
-    pub fn window(self, now: DateTime<Utc>) -> ReportWindow {
+    pub fn window(self, now: DateTime<Utc>, time_zone: NotificationTimeZone) -> ReportWindow {
         match self {
             Self::Today => ReportWindow {
                 label: "today".to_string(),
-                since: local_day_start(now),
+                since: day_start(now, time_zone),
                 until: now,
             },
             Self::Last24h => ReportWindow {
@@ -96,7 +98,7 @@ pub fn build_security_report(
     store: &SqliteStore,
     period: ReportPeriod,
 ) -> SentinelResult<SecurityReport> {
-    let window = period.window(Utc::now());
+    let window = period.window(Utc::now(), config.notifications.time_zone);
     let findings = store.list_findings_between(window.since, window.until)?;
     let scan_runs = store.scan_run_summary_between(window.since, window.until)?;
     let notification_attempts = store.notification_attempt_count_since(window.since)?;
@@ -316,13 +318,14 @@ fn active_response_summary(findings: &[Finding]) -> ActiveResponseReportSummary 
             Some("permanently_blocked") => summary.permanent_blocks += 1,
             Some("failed") => summary.failed_blocks += 1,
             Some("blocked_many") => {
-                summary.temporary_blocks += evidence_value(finding, "active_response_block_count")
+                let total_blocks = evidence_value(finding, "active_response_block_count")
                     .and_then(|value| value.parse::<usize>().ok())
                     .unwrap_or(1);
-                summary.permanent_blocks +=
-                    evidence_value(finding, "active_response_permanent_count")
-                        .and_then(|value| value.parse::<usize>().ok())
-                        .unwrap_or(0);
+                let permanent_blocks = evidence_value(finding, "active_response_permanent_count")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(0);
+                summary.permanent_blocks += permanent_blocks;
+                summary.temporary_blocks += total_blocks.saturating_sub(permanent_blocks);
             }
             _ => {}
         }
@@ -406,6 +409,17 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+fn day_start(now: DateTime<Utc>, time_zone: NotificationTimeZone) -> DateTime<Utc> {
+    match time_zone {
+        NotificationTimeZone::Utc => now
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .map(|naive| Utc.from_utc_datetime(&naive))
+            .unwrap_or_else(|| now - chrono::Duration::hours(24)),
+        NotificationTimeZone::Local => local_day_start(now),
+    }
+}
+
 fn local_day_start(now: DateTime<Utc>) -> DateTime<Utc> {
     let local_now = now.with_timezone(&Local);
     let Some(naive_start) = local_now.date_naive().and_hms_opt(0, 0, 0) else {
@@ -426,15 +440,17 @@ impl ActiveResponseReportSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_security_report_from_parts, local_day_start, ReportPeriod, ReportWindow};
+    use super::{build_security_report_from_parts, day_start, ReportPeriod, ReportWindow};
     use crate::storage::{ScanRunSummary, StorageStats};
     use chrono::{TimeZone, Utc};
-    use sentinel_core::{Category, Evidence, Finding, SentinelConfig, Severity};
+    use sentinel_core::{
+        Category, Evidence, Finding, NotificationTimeZone, SentinelConfig, Severity,
+    };
 
     #[test]
     fn last24h_period_uses_rolling_window() {
         let now = Utc.with_ymd_and_hms(2026, 6, 18, 12, 0, 0).unwrap();
-        let window = ReportPeriod::Last24h.window(now);
+        let window = ReportPeriod::Last24h.window(now, NotificationTimeZone::Local);
         assert_eq!(window.until, now);
         assert_eq!(window.since, now - chrono::Duration::hours(24));
     }
@@ -442,9 +458,21 @@ mod tests {
     #[test]
     fn today_period_starts_before_now() {
         let now = Utc.with_ymd_and_hms(2026, 6, 18, 12, 0, 0).unwrap();
-        let since = local_day_start(now);
+        let since = day_start(now, NotificationTimeZone::Local);
         assert!(since <= now);
         assert!(since >= now - chrono::Duration::hours(24));
+    }
+
+    #[test]
+    fn today_period_respects_utc_report_timezone() {
+        let now = Utc.with_ymd_and_hms(2026, 6, 18, 12, 30, 0).unwrap();
+        let window = ReportPeriod::Today.window(now, NotificationTimeZone::Utc);
+
+        assert_eq!(
+            window.since,
+            Utc.with_ymd_and_hms(2026, 6, 18, 0, 0, 0).unwrap()
+        );
+        assert_eq!(window.until, now);
     }
 
     #[test]
@@ -504,5 +532,53 @@ mod tests {
         assert_eq!(report.active_response.permanent_blocks, 1);
         assert_eq!(report.scan_runs.failed, 1);
         assert_eq!(report.top_rules[0].key, "SSH-003");
+    }
+
+    #[test]
+    fn report_splits_blocked_many_temporary_and_permanent_counts() {
+        let window = ReportWindow {
+            label: "today".to_string(),
+            since: Utc.with_ymd_and_hms(2026, 6, 18, 0, 0, 0).unwrap(),
+            until: Utc.with_ymd_and_hms(2026, 6, 18, 12, 0, 0).unwrap(),
+        };
+        let finding = Finding::new(
+            "host",
+            "Multiple IPs blocked by active response",
+            "desc",
+            Severity::High,
+            Category::System,
+            "ACTIVE-001",
+            "active-response",
+        )
+        .with_evidence(vec![
+            Evidence::new("active_response_status", "blocked_many"),
+            Evidence::new("active_response_block_count", "5"),
+            Evidence::new("active_response_permanent_count", "2"),
+        ]);
+
+        let report = build_security_report_from_parts(
+            &SentinelConfig::default(),
+            window,
+            vec![finding],
+            ScanRunSummary {
+                total: 1,
+                failed: 0,
+                last_finished_at: None,
+            },
+            0,
+            StorageStats {
+                database_bytes: 1024,
+                raw_events: 0,
+                findings: 1,
+                notification_logs: 0,
+                finding_dedup_states: 0,
+                scan_runs: 1,
+                baseline_snapshots: 1,
+                rule_states: 0,
+            },
+        );
+
+        assert_eq!(report.active_response.temporary_blocks, 3);
+        assert_eq!(report.active_response.permanent_blocks, 2);
     }
 }

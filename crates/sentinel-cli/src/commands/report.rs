@@ -58,7 +58,7 @@ pub async fn run_report(config: SentinelConfig, command: ReportCommand) -> Resul
             let ctx = NotifyContext {
                 config: Arc::new(config),
             };
-            let results = manager.notify_test(&finding, &ctx).await;
+            let results = manager.notify_all_channels(&finding, &ctx).await;
             let mut failures = 0usize;
             let mut delivered = 0usize;
             for (_finding_id, channel, result) in results {
