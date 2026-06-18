@@ -490,14 +490,18 @@ fn ssh_bruteforce_candidate(finding: &Finding, config: &SentinelConfig) -> Optio
 fn is_exploit_probe_family(family: &str) -> bool {
     matches!(
         family,
-        "cgi_shell_traversal" | "command_injection" | "sql_injection" | "phpunit_eval_stdin"
+        "cgi_shell_traversal"
+            | "command_injection"
+            | "php_config_injection"
+            | "sql_injection"
+            | "phpunit_eval_stdin"
     )
 }
 
 fn is_single_attempt_web_exploit_family(family: &str) -> bool {
     matches!(
         family,
-        "cgi_shell_traversal" | "command_injection" | "phpunit_eval_stdin"
+        "cgi_shell_traversal" | "command_injection" | "php_config_injection" | "phpunit_eval_stdin"
     )
 }
 
@@ -1056,17 +1060,24 @@ mod tests {
         config.active_response.web_exploit_block_threshold = 5;
         let cgi_shell = web_finding("4.4.4.4", "cgi_shell_traversal", "missing_or_rejected", 1);
         let phpunit = web_finding("4.4.8.8", "phpunit_eval_stdin", "missing_or_rejected", 1);
+        let php_config = web_finding("4.4.9.9", "php_config_injection", "missing_or_rejected", 1);
         let sql_below_threshold = web_finding("8.8.4.4", "sql_injection", "missing_or_rejected", 1);
 
-        let candidates = block_candidates(&[cgi_shell, phpunit, sql_below_threshold], &config);
+        let candidates = block_candidates(
+            &[cgi_shell, phpunit, php_config, sql_below_threshold],
+            &config,
+        );
 
-        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates.len(), 3);
         assert!(candidates
             .iter()
             .any(|item| item.ip.to_string() == "4.4.4.4"));
         assert!(candidates
             .iter()
             .any(|item| item.ip.to_string() == "4.4.8.8"));
+        assert!(candidates
+            .iter()
+            .any(|item| item.ip.to_string() == "4.4.9.9"));
     }
 
     #[test]

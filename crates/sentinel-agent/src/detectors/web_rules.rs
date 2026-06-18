@@ -76,6 +76,7 @@ enum ProbeFamily {
     PhpUnitEvalStdin,
     CgiShellTraversal,
     CommandInjection,
+    PhpConfigInjection,
     SqlInjection,
     PathTraversal,
     PhpMyAdmin,
@@ -94,6 +95,7 @@ impl ProbeFamily {
             Self::PhpUnitEvalStdin => "phpunit_eval_stdin",
             Self::CgiShellTraversal => "cgi_shell_traversal",
             Self::CommandInjection => "command_injection",
+            Self::PhpConfigInjection => "php_config_injection",
             Self::SqlInjection => "sql_injection",
             Self::PathTraversal => "path_traversal",
             Self::PhpMyAdmin => "phpmyadmin",
@@ -107,9 +109,10 @@ impl ProbeFamily {
 
     fn base_severity(self) -> Severity {
         match self {
-            Self::CgiShellTraversal | Self::CommandInjection | Self::SqlInjection => {
-                Severity::Medium
-            }
+            Self::CgiShellTraversal
+            | Self::CommandInjection
+            | Self::PhpConfigInjection
+            | Self::SqlInjection => Severity::Medium,
             _ => Severity::Low,
         }
     }
@@ -121,6 +124,7 @@ impl ProbeFamily {
             | Self::PhpUnitEvalStdin
             | Self::CgiShellTraversal
             | Self::CommandInjection
+            | Self::PhpConfigInjection
             | Self::SqlInjection
             | Self::PathTraversal => Severity::High,
             _ => Severity::Medium,
@@ -134,6 +138,7 @@ impl ProbeFamily {
             | Self::PhpUnitEvalStdin
             | Self::CgiShellTraversal
             | Self::CommandInjection
+            | Self::PhpConfigInjection
             | Self::SqlInjection
             | Self::PathTraversal => Severity::Medium,
             _ => Severity::Low,
@@ -308,6 +313,11 @@ fn classify_probe_path(path: &str) -> Option<ProbeSignature> {
             family: ProbeFamily::CommandInjection,
         });
     }
+    if normalized.contains_php_config_injection_payload() {
+        return Some(ProbeSignature {
+            family: ProbeFamily::PhpConfigInjection,
+        });
+    }
     if normalized.contains_sql_payload() {
         return Some(ProbeSignature {
             family: ProbeFamily::SqlInjection,
@@ -363,9 +373,39 @@ impl NormalizedPath {
         has_shell_expansion(&self.spaced) || has_command_after_shell_operator(&self.spaced)
     }
 
+    fn contains_php_config_injection_payload(&self) -> bool {
+        let value = &self.spaced;
+        let pearcmd_config_create = self.contains("pearcmd") && self.contains("config-create");
+        let traversal_php_write = has_path_traversal(value)
+            && has_php_code_marker(value)
+            && (value.contains("/tmp/") || value.contains("config-create"));
+        pearcmd_config_create || traversal_php_write
+    }
+
     fn contains_sql_payload(&self) -> bool {
         self.spaced.contains(" or 1=1") || self.spaced.contains("union select")
     }
+}
+
+fn has_path_traversal(value: &str) -> bool {
+    value.contains("../") || value.contains("..\\") || value.contains("%2e%2e")
+}
+
+fn has_php_code_marker(value: &str) -> bool {
+    value.contains("<?")
+        && [
+            "echo",
+            "eval",
+            "assert",
+            "system",
+            "shell_exec",
+            "passthru",
+            "md5",
+            "file_put_contents",
+            "base64_decode",
+        ]
+        .iter()
+        .any(|token| value.contains(token))
 }
 
 fn has_shell_expansion(value: &str) -> bool {
@@ -532,6 +572,27 @@ mod tests {
             .evidence
             .iter()
             .any(|item| { item.key == "probe_family" && item.value == "command_injection" }));
+    }
+
+    #[test]
+    fn pearcmd_php_config_injection_is_high_confidence_exploit() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = access_event(
+            "203.0.113.50",
+            "GET",
+            "/index.php?lang=../../../../../../../../usr/local/lib/php/pearcmd&+config-create+/&/<?echo(md5(\\x22hi\\x22));?>+/tmp/index1.php",
+            "404",
+        );
+
+        let findings = WebDetector.detect(&[event], &ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "WEB-001");
+        assert_eq!(findings[0].severity, Severity::Medium);
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|item| { item.key == "probe_family" && item.value == "php_config_injection" }));
     }
 
     #[test]

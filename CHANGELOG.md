@@ -15,6 +15,7 @@
 - Reduced process false positives for standard container/runtime services by downgrading `/run` working-directory context and treating broad `/opt` web-root matches more conservatively.
 - Improved web alert aggregation, stricter active-response block thresholds, and safer process/network risk scoring context.
 - Improved Web active-response decisions so single high-confidence RCE-style exploit probes can be blocked while low-confidence missing-path probes still require volume thresholds.
+- Added PHP pearcmd/config-create Web exploit classification so LFI-to-PHP-write probes are treated as high-confidence active-response candidates.
 - Switched notification language default to Simplified Chinese and completed Chinese/English rendering for built-in rules and evidence fields.
 - Fixed `vps-sentinel-update` to prefer release artifacts and fall back to source builds only when the artifact is unavailable or incompatible.
 - Hardened install and update Rust toolchain checks so a rustup proxy without a default toolchain is repaired instead of failing at `cargo build`.
