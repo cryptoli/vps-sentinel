@@ -206,6 +206,27 @@ fn high_risk_public_port_includes_firewall_context_when_available() {
 }
 
 #[test]
+fn high_risk_public_port_dedup_ignores_firewall_source_churn() {
+    let first = detect_with_default_config(vec![
+        socket_event("network", 6379),
+        RawEvent::new("firewall", "firewall_state")
+            .with_field("status", "active")
+            .with_field("sources", "iptables"),
+    ]);
+    let second = detect_with_default_config(vec![
+        socket_event("network", 6379),
+        RawEvent::new("firewall", "firewall_state")
+            .with_field("status", "active")
+            .with_field("sources", "nftables, iptables"),
+    ]);
+
+    assert_eq!(first.len(), 1);
+    assert_eq!(second.len(), 1);
+    assert_eq!(first[0].rule_id, "CONFIG-003");
+    assert_eq!(first[0].dedup_key, second[0].dedup_key);
+}
+
+#[test]
 fn reports_suspicious_process_on_high_risk_port_as_one_behavior_alert() {
     let findings = detect_with_default_config(vec![RawEvent::new("network", "listening_socket")
         .with_field("protocol", "tcp")

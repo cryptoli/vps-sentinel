@@ -336,6 +336,15 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
             impact: &[],
             recommendations: &["除非和成功请求或主机变化相关联，否则将其作为上下文信息处理。"],
         },
+        "ACTIVE-001" => RuleMessage {
+            title: "主动响应已封禁大量 IP",
+            description: "本轮扫描中主动响应封禁了多个来源 IP；明细请在服务器上查看。",
+            impact: &["这通常表示当前扫描窗口内存在高频爆破、漏洞探测或攻击流量。"],
+            recommendations: &[
+                "在服务器上执行 `vs blocks list --no-verify` 查看被封禁 IP 和原因。",
+                "关联同一时间窗口的 Web、SSH 和系统日志，确认是否需要延长封禁或调整防火墙策略。",
+            ],
+        },
         "DOCKER-001" => RuleMessage {
             title: "检测到 Docker socket",
             description: "发现 Docker socket；当前版本将其作为攻击面上下文提示。",

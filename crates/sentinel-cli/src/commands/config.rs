@@ -10,6 +10,7 @@ const DEPRECATED_KEYS: &[&str] = &[
     "process.scan_interval_seconds",
     "network.scan_interval_seconds",
 ];
+const LEGACY_DEFAULT_LANGUAGE_KEY: &str = "notifications.language";
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
@@ -125,19 +126,26 @@ fn print_key_list(label: &str, keys: &[String]) {
 fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
     let text = fs::read_to_string(path)?;
     let deprecated = deprecated_keys_in_text(&text);
-    if deprecated.is_empty() {
+    let legacy_default_language = contains_legacy_default_language(&text);
+    if deprecated.is_empty() && !legacy_default_language {
         println!(
             "configuration does not contain deprecated keys: {}",
             path.display()
         );
         return Ok(());
     }
-    let migrated = remove_deprecated_keys(&text);
+    let migrated = migrate_legacy_default_language(&remove_deprecated_keys(&text));
     let _: SentinelConfig = toml::from_str(&migrated)?;
     if dry_run {
-        println!("deprecated keys that would be removed:");
+        if !deprecated.is_empty() {
+            println!("deprecated keys that would be removed:");
+        }
         for key in deprecated {
             println!("- {key}");
+        }
+        if legacy_default_language {
+            println!("legacy defaults that would be updated:");
+            println!("- {LEGACY_DEFAULT_LANGUAGE_KEY}: en -> zh_cn");
         }
         return Ok(());
     }
@@ -247,6 +255,50 @@ fn remove_deprecated_keys(text: &str) -> String {
     let mut migrated = output.join("\n");
     migrated.push('\n');
     migrated
+}
+
+fn contains_legacy_default_language(text: &str) -> bool {
+    let mut section = String::new();
+    text.lines().any(|line| {
+        if let Some(next_section) = parse_toml_section_header(line) {
+            section = next_section;
+            return false;
+        }
+        section == "notifications" && is_legacy_default_language_line(line)
+    })
+}
+
+fn migrate_legacy_default_language(text: &str) -> String {
+    let mut section = String::new();
+    let mut output = Vec::new();
+    for line in text.lines() {
+        if let Some(next_section) = parse_toml_section_header(line) {
+            section = next_section;
+            output.push(line.to_string());
+            continue;
+        }
+        if section == "notifications" && is_legacy_default_language_line(line) {
+            output.push("language = \"zh_cn\" # zh_cn or en".to_string());
+            continue;
+        }
+        output.push(line.to_string());
+    }
+    let mut migrated = output.join("\n");
+    migrated.push('\n');
+    migrated
+}
+
+fn is_legacy_default_language_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    let Some((key, tail)) = trimmed.split_once('=') else {
+        return false;
+    };
+    let Some((value, comment)) = tail.split_once('#') else {
+        return false;
+    };
+    key.trim() == "language"
+        && value.trim() == "\"en\""
+        && comment.to_ascii_lowercase().contains("en or zh_cn")
 }
 
 #[derive(Debug, Clone)]
@@ -432,8 +484,9 @@ fn flatten_value(prefix: &str, value: &toml::Value, keys: &mut BTreeSet<String>)
 #[cfg(test)]
 mod tests {
     use super::{
-        deprecated_keys_in_text, flatten_toml_keys, insert_missing_default_keys,
-        missing_default_entries, next_backup_path, remove_deprecated_keys,
+        contains_legacy_default_language, deprecated_keys_in_text, flatten_toml_keys,
+        insert_missing_default_keys, migrate_legacy_default_language, missing_default_entries,
+        next_backup_path, remove_deprecated_keys,
     };
     use sentinel_core::SentinelConfig;
     use std::fs;
@@ -453,6 +506,24 @@ mod tests {
         assert!(!migrated.contains("full_scan_interval_seconds"));
         assert!(!migrated.contains("process]\nscan_interval_seconds"));
         assert!(migrated.contains("scan_interval_seconds = 60"));
+    }
+
+    #[test]
+    fn migrates_legacy_default_notification_language() {
+        let text = "[notifications]\nlanguage = \"en\" # en or zh_cn\n";
+
+        assert!(contains_legacy_default_language(text));
+        let migrated = migrate_legacy_default_language(text);
+
+        assert!(migrated.contains("language = \"zh_cn\" # zh_cn or en"));
+    }
+
+    #[test]
+    fn preserves_explicit_english_notification_language() {
+        let text = "[notifications]\nlanguage = \"en\"\n";
+
+        assert!(!contains_legacy_default_language(text));
+        assert_eq!(migrate_legacy_default_language(text), text);
     }
 
     #[test]

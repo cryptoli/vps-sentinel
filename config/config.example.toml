@@ -187,6 +187,7 @@ firewall_backend = "auto" # auto, nftables, or iptables
 block_ttl_seconds = 3600
 command_timeout_seconds = 3
 max_blocks_per_scan = 20
+notification_detail_limit = 3
 web_enabled = true
 web_probe_block_threshold = 25
 web_exploit_block_threshold = 5

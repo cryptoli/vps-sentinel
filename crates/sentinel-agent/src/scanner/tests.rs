@@ -1,8 +1,8 @@
 use super::{
-    annotate_active_response, duplicate_suppression_window_seconds, enrich_log_integrity_state,
-    enrich_process_start_drift, quiet_hours_allowed_findings, redact_findings,
-    save_log_integrity_state, save_process_start_state, suppress_in_scan_duplicates,
-    suppress_recent_duplicates,
+    annotate_active_response, apply_active_response_notification_policy,
+    duplicate_suppression_window_seconds, enrich_log_integrity_state, enrich_process_start_drift,
+    quiet_hours_allowed_findings, redact_findings, save_log_integrity_state,
+    save_process_start_state, suppress_in_scan_duplicates, suppress_recent_duplicates,
 };
 use crate::active_response::{ActiveResponseReport, BlockAction, BlockActionStatus};
 use crate::storage::SqliteStore;
@@ -81,6 +81,105 @@ fn active_response_annotation_adds_block_status_to_finding() {
     );
     assert!(evidence_value(&findings[0], "active_response_expires_at")
         .is_some_and(|value| value.ends_with("UTC")));
+}
+
+#[test]
+fn active_response_summary_replaces_many_block_details() {
+    let mut config = SentinelConfig::default();
+    config.active_response.notification_detail_limit = 3;
+    let mut findings = (1..=4)
+        .map(|index| {
+            let mut finding = Finding::new(
+                "host",
+                "Web vulnerability probing detected",
+                "probe",
+                Severity::Medium,
+                Category::Web,
+                "WEB-001",
+                format!("8.8.8.{index}"),
+            );
+            finding.id = format!("finding-{index}");
+            finding
+        })
+        .collect::<Vec<_>>();
+    let report = ActiveResponseReport {
+        applied_blocks: 4,
+        block_actions: (1..=4)
+            .map(|index| BlockAction {
+                finding_id: format!("finding-{index}"),
+                ip: format!("8.8.8.{index}").parse().unwrap(),
+                status: BlockActionStatus::Blocked,
+                reason: format!("web probe request_count={index}"),
+                backend: Some("nftables".to_string()),
+                expires_at: Some(Utc::now()),
+                detail: None,
+            })
+            .collect(),
+        ..ActiveResponseReport::default()
+    };
+
+    apply_active_response_notification_policy(&mut findings, &report, &config);
+
+    assert_eq!(findings.len(), 5);
+    assert!(findings[..4]
+        .iter()
+        .all(|finding| evidence_value(finding, "active_response_status").is_none()));
+    let summary = findings.last().unwrap();
+    assert_eq!(summary.rule_id, "ACTIVE-001");
+    assert_eq!(
+        evidence_value(summary, "active_response_status"),
+        Some("blocked_many")
+    );
+    assert_eq!(
+        evidence_value(summary, "active_response_block_count"),
+        Some("4")
+    );
+    assert_eq!(
+        evidence_value(summary, "active_response_reason_summary"),
+        Some("web_probe=4")
+    );
+}
+
+#[test]
+fn active_response_keeps_small_block_details() {
+    let mut config = SentinelConfig::default();
+    config.active_response.notification_detail_limit = 3;
+    let mut finding = Finding::new(
+        "host",
+        "SSH brute force pattern detected",
+        "bruteforce",
+        Severity::High,
+        Category::Ssh,
+        "SSH-003",
+        "8.8.4.4",
+    );
+    finding.id = "finding-1".to_string();
+    let mut findings = vec![finding];
+    let report = ActiveResponseReport {
+        applied_blocks: 1,
+        block_actions: vec![BlockAction {
+            finding_id: "finding-1".to_string(),
+            ip: "8.8.4.4".parse().unwrap(),
+            status: BlockActionStatus::Blocked,
+            reason: "ssh brute force failure_count=16".to_string(),
+            backend: Some("iptables".to_string()),
+            expires_at: Some(Utc::now()),
+            detail: None,
+        }],
+        ..ActiveResponseReport::default()
+    };
+
+    apply_active_response_notification_policy(&mut findings, &report, &config);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(
+        evidence_value(&findings[0], "active_response_status"),
+        Some("blocked")
+    );
+    assert_eq!(
+        evidence_value(&findings[0], "active_response_ip"),
+        Some("8.8.4.4")
+    );
 }
 
 #[test]

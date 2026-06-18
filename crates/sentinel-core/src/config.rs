@@ -254,6 +254,11 @@ fn validate_active_response(config: &ActiveResponseConfig, ssh: &SshConfig) -> S
             "active_response.max_blocks_per_scan must be greater than 0".to_string(),
         ));
     }
+    if config.notification_detail_limit == 0 {
+        return Err(SentinelError::Config(
+            "active_response.notification_detail_limit must be greater than 0".to_string(),
+        ));
+    }
     if config.web_probe_block_threshold == 0 {
         return Err(SentinelError::Config(
             "active_response.web_probe_block_threshold must be greater than 0".to_string(),
@@ -512,6 +517,10 @@ mod tests {
 
         let mut config = SentinelConfig::default();
         config.active_response.web_probe_block_threshold = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.active_response.notification_detail_limit = 0;
         assert!(config.validate().is_err());
 
         let mut config = SentinelConfig::default();

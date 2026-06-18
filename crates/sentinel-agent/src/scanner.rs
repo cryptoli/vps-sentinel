@@ -1,4 +1,4 @@
-use crate::active_response::{apply_active_response, ActiveResponseReport};
+use crate::active_response::{apply_active_response, ActiveResponseReport, BlockActionStatus};
 use crate::baseline::{diff_snapshots, BaselineSnapshot};
 use crate::collectors::{default_collectors, CollectContext};
 use crate::detectors::{default_detectors, DetectContext};
@@ -10,7 +10,7 @@ use crate::utils::redact::{mask_command_args, mask_ip, mask_ips_in_text};
 use chrono::{Duration, Local, Timelike, Utc};
 use sentinel_core::{
     Category, Evidence, Finding, MinuteWindow, NotificationTimeZone, RawEvent, SentinelConfig,
-    SentinelResult,
+    SentinelResult, Severity,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,6 +20,7 @@ use tracing::{debug, warn};
 
 const PROCESS_START_STATE_RULE_ID: &str = "process_start_times";
 const LOG_INTEGRITY_STATE_RULE_ID: &str = "log_integrity_state";
+const ACTIVE_RESPONSE_SUMMARY_RULE_ID: &str = "ACTIVE-001";
 
 /// Controls side effects performed by one scan.
 #[derive(Debug, Clone)]
@@ -151,7 +152,11 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
                             "active response completed"
                         );
                     }
-                    annotate_active_response(&mut findings, &report, config.as_ref());
+                    apply_active_response_notification_policy(
+                        &mut findings,
+                        &report,
+                        config.as_ref(),
+                    );
                     active_response_report = report;
                 }
                 Err(err) => {
@@ -346,6 +351,98 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         findings,
         collector_errors,
     })
+}
+
+fn apply_active_response_notification_policy(
+    findings: &mut Vec<Finding>,
+    report: &ActiveResponseReport,
+    config: &SentinelConfig,
+) {
+    let new_blocks = report
+        .block_actions
+        .iter()
+        .filter(|action| action.status == BlockActionStatus::Blocked)
+        .collect::<Vec<_>>();
+    if new_blocks.len() > config.active_response.notification_detail_limit {
+        findings.push(active_response_summary_finding(&new_blocks, report, config));
+        return;
+    }
+    annotate_active_response(findings, report, config);
+}
+
+fn active_response_summary_finding(
+    new_blocks: &[&crate::active_response::BlockAction],
+    report: &ActiveResponseReport,
+    config: &SentinelConfig,
+) -> Finding {
+    let mut evidence = vec![
+        Evidence::new("active_response_status", "blocked_many"),
+        Evidence::new("active_response_block_count", new_blocks.len().to_string()),
+        Evidence::new(
+            "active_response_reason_summary",
+            summarize_block_reasons(new_blocks),
+        ),
+        Evidence::new(
+            "active_response_detail_limit",
+            config.active_response.notification_detail_limit.to_string(),
+        ),
+        Evidence::new("active_response_window", "current_scan"),
+        Evidence::new("active_response_command", "vs blocks list --no-verify"),
+    ];
+    if report.failed_blocks > 0 {
+        evidence.push(Evidence::new(
+            "active_response_failed_count",
+            report.failed_blocks.to_string(),
+        ));
+    }
+
+    Finding::new(
+        config.host_id(),
+        "Multiple IPs blocked by active response",
+        "Active response blocked many source IPs in one scan window. Details are available on the server.",
+        Severity::High,
+        Category::System,
+        ACTIVE_RESPONSE_SUMMARY_RULE_ID,
+        "active-response",
+    )
+    .with_evidence_deduped_by(
+        evidence,
+        &[
+            "active_response_status",
+            "active_response_block_count",
+            "active_response_reason_summary",
+        ],
+    )
+    .with_impact(vec![
+        "A high-volume attack or scan burst was blocked by the local firewall.".to_string(),
+    ])
+    .with_recommendations(vec![
+        "Run `vs blocks list --no-verify` on the server to review blocked IPs and reasons."
+            .to_string(),
+        "Review web and SSH logs around the same scan window before widening allowlists."
+            .to_string(),
+    ])
+}
+
+fn summarize_block_reasons(new_blocks: &[&crate::active_response::BlockAction]) -> String {
+    let mut counts = BTreeMap::<&'static str, usize>::new();
+    for action in new_blocks {
+        let reason = if action.reason.starts_with("web probe ") {
+            "web_probe"
+        } else if action.reason.starts_with("web error burst ") {
+            "web_error_burst"
+        } else if action.reason.starts_with("ssh brute force ") {
+            "ssh_brute_force"
+        } else {
+            "other"
+        };
+        *counts.entry(reason).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(reason, count)| format!("{reason}={count}"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn annotate_active_response(

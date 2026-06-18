@@ -2,30 +2,12 @@
 
 ## 0.1.1
 
-- Added `vs` as a short command alias and moved reload into the CLI command surface.
-- Added active-response IP block listing, cleanup, single unblock, and unblock-all commands.
-- Added active-response outcome evidence to alerts, so Telegram, Email, webhook, and other channels show whether a block was applied, already existed, failed, or was skipped.
-- Added SQLite storage stats, manual prune, manual clear, and vacuum commands.
-- Added durable finding deduplication state so storage size cleanup cannot make old repeated findings look new and trigger notification bursts.
-- Added active-response firewall state reconciliation to remove stale local block records after firewall reloads or manual rule changes.
-- Added database size limiting and retention cleanup to reduce disk-full risk on small VPS hosts.
-- Added NVIDIA GPU compute-process collection and `PROC-006` risk scoring for suspicious GPU mining workloads when `nvidia-smi` is visible.
-- Added SSH key-file unsafe state detection for group/other-writable `authorized_keys` and risky key-file symlinks.
-- Added sensitive auth/login log tamper detection for risky log symlinks, abrupt truncation without recent rotation context, and previously seen logs that disappear.
-- Reduced process false positives for standard container/runtime services by downgrading `/run` working-directory context and treating broad `/opt` web-root matches more conservatively.
-- Improved web alert aggregation, stricter active-response block thresholds, and safer process/network risk scoring context.
-- Improved Web active-response decisions so single high-confidence RCE-style exploit probes can be blocked while low-confidence missing-path probes still require volume thresholds.
-- Added PHP pearcmd/config-create Web exploit classification so LFI-to-PHP-write probes are treated as high-confidence active-response candidates.
-- Switched notification language default to Simplified Chinese and completed Chinese/English rendering for built-in rules and evidence fields.
-- Fixed `vps-sentinel-update` to prefer release artifacts and fall back to source builds only when the artifact is unavailable or incompatible.
-- Hardened install and update Rust toolchain checks so a rustup proxy without a default toolchain is repaired instead of failing at `cargo build`.
-- Hardened `vps-sentinel-update` restart flow with a post-update `scan --no-notify`, reducing notification bursts caused by historical findings during upgrades.
-- Added a project-level `rust-toolchain.toml` so older source-build updaters can bootstrap on rustup installations without a default toolchain.
-- Added config default synchronization during install and update, preserving user-set values while adding newly introduced default keys before validation.
-- Hardened source-based install/update when an existing source directory is detached or lacks the requested local branch.
-- Adjusted the default SSH active-response block threshold to 15 failed logins, while keeping active response disabled unless explicitly enabled.
-- Tightened active-response public IP classification to avoid blocking IPv4 special-use ranges.
-- Updated installer behavior, Linux compatibility notes, operational documentation, release notes, and release packaging contents.
+- CLI and deployment: added the `vs` shorthand, built-in reload command, release artifact based install/update, config migration/default synchronization, post-update `scan --no-notify`, and multi-architecture release packages.
+- Notifications: changed the default language to Simplified Chinese, completed Chinese/English rendering for built-in rules and common evidence fields, and added concise active-response summaries for large block bursts.
+- Active response: added temporary IP blocking with nftables/iptables, block listing/cleanup/unblock commands, firewall state reconciliation, public-IP safety checks, and stricter SSH/Web block thresholds.
+- Web detection: expanded probe classification and blocking decisions for command injection, CGI shell traversal, PHPUnit eval-stdin, PHP config-write payloads, LFI file reads, PHP stream wrappers, JNDI injection, SSRF cloud metadata probes, template injection, SQL injection, and deserialization probes.
+- Host detection: added suspicious GPU compute-process scoring, unsafe `authorized_keys` state checks, sensitive auth/log tamper detection, and stronger process/network behavior context while reducing common service false positives.
+- Storage and noise control: added SQLite stats, prune/clear/vacuum commands, database size limits, durable deduplication state, and stable dedup keys for state findings such as high-risk public service exposure.
 
 ## 0.1.0
 

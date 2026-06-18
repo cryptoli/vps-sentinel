@@ -226,6 +226,40 @@ fn renders_active_response_status_in_chinese_alert() {
 }
 
 #[test]
+fn renders_active_response_summary_reason_in_chinese_alert() {
+    let finding = Finding::new(
+        "host",
+        "Multiple IPs blocked by active response",
+        "blocked_many",
+        Severity::High,
+        Category::System,
+        "ACTIVE-001",
+        "active-response",
+    )
+    .with_evidence(vec![
+        Evidence::new("active_response_status", "blocked_many"),
+        Evidence::new("active_response_block_count", "5"),
+        Evidence::new(
+            "active_response_reason_summary",
+            "web_probe=4, ssh_brute_force=1",
+        ),
+    ]);
+
+    let body = render_finding_with_language(
+        &finding,
+        NotificationFormat::PlainText,
+        NotificationLanguage::ZhCn,
+    );
+
+    assert!(body.contains("\u{5c01}\u{7981} IP \u{6570}\u{91cf}: 5"));
+    assert!(body.contains(
+        "\u{5c01}\u{7981}\u{539f}\u{56e0}\u{6458}\u{8981}: Web \u{63a2}\u{6d4b}=4\u{ff0c}SSH \u{66b4}\u{529b}\u{5c1d}\u{8bd5}=1"
+    ));
+    assert!(!body.contains("web_probe=4"));
+    assert!(!body.contains("ssh_brute_force=1"));
+}
+
+#[test]
 fn renders_configured_vps_name_in_subject() {
     let mut config = SentinelConfig::default();
     config.agent.display_name = "prod-web-1".to_string();

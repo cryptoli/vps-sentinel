@@ -129,7 +129,10 @@ fn public_listen(
             string_field(event, "local_port")
         ),
     )
-    .with_evidence(socket_evidence_with_context(event, firewall, process))
+    .with_evidence_deduped_by(
+        socket_evidence_with_context(event, firewall, process),
+        &["protocol", "local_addr", "local_port"],
+    )
     .with_recommendations(vec![
         "Confirm the service is intended to be internet-facing.".to_string(),
         "Refresh the baseline after approved service changes.".to_string(),
@@ -156,7 +159,18 @@ fn listener_owner_changed(
             string_field(event, "local_port")
         ),
     )
-    .with_evidence(socket_evidence_with_context(event, firewall, process))
+    .with_evidence_deduped_by(
+        socket_evidence_with_context(event, firewall, process),
+        &[
+            "protocol",
+            "local_addr",
+            "local_port",
+            "process_name",
+            "executable",
+            "previous_process_name",
+            "previous_executable",
+        ],
+    )
     .with_recommendations(vec![
         "Confirm the service replacement was planned.".to_string(),
         "Review the current executable path and service unit.".to_string(),
@@ -185,18 +199,29 @@ fn suspicious_listener(
             string_field(event, "local_port")
         ),
     )
-    .with_evidence({
-        let mut items = socket_evidence_with_context(event, firewall, process);
-        items.push(evidence("risk_score", profile.score.to_string()));
-        items.push(evidence("risk_reasons", profile.reasons.join("; ")));
-        if !profile.features.is_empty() {
-            items.push(evidence("risk_features", profile.features.join(", ")));
-        }
-        if let Some(service_name) = high_risk_service {
-            items.push(evidence("service_profile", service_name));
-        }
-        items
-    })
+    .with_evidence_deduped_by(
+        {
+            let mut items = socket_evidence_with_context(event, firewall, process);
+            items.push(evidence("risk_score", profile.score.to_string()));
+            items.push(evidence("risk_reasons", profile.reasons.join("; ")));
+            if !profile.features.is_empty() {
+                items.push(evidence("risk_features", profile.features.join(", ")));
+            }
+            if let Some(service_name) = high_risk_service {
+                items.push(evidence("service_profile", service_name));
+            }
+            items
+        },
+        &[
+            "protocol",
+            "local_addr",
+            "local_port",
+            "process_name",
+            "executable",
+            "risk_features",
+            "service_profile",
+        ],
+    )
     .with_impact(vec![
         "Attackers often bind backdoors or webshell launchers to normal-looking public ports."
             .to_string(),
@@ -223,11 +248,11 @@ fn risky_port(
         "CONFIG-003",
         format!("{}:{}", string_field(event, "local_addr"), string_field(event, "local_port")),
     )
-    .with_evidence({
+    .with_evidence_deduped_by({
         let mut items = socket_evidence_with_context(event, firewall, process);
         items.push(evidence("service_profile", service_name));
         items
-    })
+    }, &["protocol", "local_addr", "local_port", "service_profile"])
     .with_impact(vec![
         "Public exposure of admin or database services can lead to compromise if authentication or patching is weak.".to_string(),
     ])

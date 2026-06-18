@@ -87,11 +87,17 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
         NotificationLanguage::En => match key {
             "argv_json" => "argv JSON",
             "active_response_backend" => "active response backend",
+            "active_response_block_count" => "active response block count",
+            "active_response_command" => "review command",
             "active_response_detail" => "active response detail",
+            "active_response_detail_limit" => "active response detail limit",
             "active_response_expires_at" => "active response expires at",
+            "active_response_failed_count" => "active response failed count",
             "active_response_ip" => "active response IP",
             "active_response_reason" => "active response reason",
+            "active_response_reason_summary" => "active response reason summary",
             "active_response_status" => "active response status",
+            "active_response_window" => "active response window",
             "change" => "change",
             "cmdline" => "command line",
             "command" => "command",
@@ -185,11 +191,17 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
         NotificationLanguage::ZhCn => match key {
             "argv_json" => "参数 JSON",
             "active_response_backend" => "主动响应后端",
+            "active_response_block_count" => "封禁 IP 数量",
+            "active_response_command" => "查看命令",
             "active_response_detail" => "主动响应详情",
+            "active_response_detail_limit" => "明细展示上限",
             "active_response_expires_at" => "封禁到期时间",
+            "active_response_failed_count" => "封禁失败数量",
             "active_response_ip" => "封禁 IP",
             "active_response_reason" => "封禁原因",
+            "active_response_reason_summary" => "封禁原因摘要",
             "active_response_status" => "主动响应状态",
+            "active_response_window" => "主动响应窗口",
             "change" => "变化类型",
             "cmdline" => "命令行",
             "command" => "命令",
@@ -354,7 +366,7 @@ pub fn evidence_value_label(key: &str, value: &str, language: NotificationLangua
     if let Some(label) = direct_value_label(key, value, language) {
         return label.to_string();
     }
-    if let Some(label) = dynamic_value_label(value, language) {
+    if let Some(label) = dynamic_value_label(key, value, language) {
         return label;
     }
     if is_localized_list_key(key) {
@@ -379,6 +391,12 @@ fn direct_value_label(
             Some("temporary block applied")
         }
         ("active_response_status", "blocked", NotificationLanguage::ZhCn) => Some("已临时封禁"),
+        ("active_response_status", "blocked_many", NotificationLanguage::En) => {
+            Some("multiple temporary blocks applied")
+        }
+        ("active_response_status", "blocked_many", NotificationLanguage::ZhCn) => {
+            Some("已临时封禁多个 IP")
+        }
         ("active_response_status", "failed", NotificationLanguage::En) => Some("block failed"),
         ("active_response_status", "failed", NotificationLanguage::ZhCn) => Some("封禁失败"),
         ("active_response_status", "skipped_limit", NotificationLanguage::En) => {
@@ -422,6 +440,12 @@ fn direct_value_label(
         }
         ("response_profile", "server_error", NotificationLanguage::ZhCn) => Some("服务端错误"),
         ("response_profile", "unknown_response", NotificationLanguage::ZhCn) => Some("未知响应"),
+        ("active_response_window", "current_scan", NotificationLanguage::En) => {
+            Some("current scan")
+        }
+        ("active_response_window", "current_scan", NotificationLanguage::ZhCn) => {
+            Some("当前扫描窗口")
+        }
         (
             "package_activity_recent"
             | "process_start_changed"
@@ -493,13 +517,73 @@ fn localize_list_value(value: &str, language: NotificationLanguage) -> String {
     }
 }
 
-fn dynamic_value_label(value: &str, language: NotificationLanguage) -> Option<String> {
+fn dynamic_value_label(key: &str, value: &str, language: NotificationLanguage) -> Option<String> {
     if language != NotificationLanguage::ZhCn {
         return None;
+    }
+    if key == "active_response_reason" {
+        return localize_active_response_reason(value);
+    }
+    if key == "active_response_reason_summary" {
+        return localize_active_response_reason_summary(value);
     }
     let lowered = value.to_ascii_lowercase();
     if lowered.starts_with("process identity ") && lowered.contains(" matches configured tool ") {
         return Some("进程身份匹配配置中的高风险工具".to_string());
+    }
+    None
+}
+
+fn localize_active_response_reason_summary(value: &str) -> Option<String> {
+    let items = value
+        .split(',')
+        .filter_map(|item| {
+            let (reason, count) = item.trim().split_once('=')?;
+            let label = match reason {
+                "web_probe" => "Web 探测",
+                "web_error_burst" => "Web 错误爆发",
+                "ssh_brute_force" => "SSH 暴力尝试",
+                "other" => "其他",
+                _ => return None,
+            };
+            Some(format!("{label}={count}"))
+        })
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        None
+    } else {
+        Some(items.join("，"))
+    }
+}
+
+fn localize_active_response_reason(value: &str) -> Option<String> {
+    let parts = value
+        .split_whitespace()
+        .filter_map(|part| part.split_once('='))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    if value.starts_with("web probe ") {
+        let family = parts
+            .get("family")
+            .map(|value| evidence_value_label("probe_family", value, NotificationLanguage::ZhCn))
+            .unwrap_or_else(|| "未知".to_string());
+        let response = parts
+            .get("response")
+            .map(|value| {
+                evidence_value_label("response_profile", value, NotificationLanguage::ZhCn)
+            })
+            .unwrap_or_else(|| "未知".to_string());
+        let request_count = parts.get("request_count").copied().unwrap_or("0");
+        return Some(format!(
+            "Web 探测：类型={family}，响应={response}，请求次数={request_count}"
+        ));
+    }
+    if value.starts_with("web error burst ") {
+        let error_count = parts.get("error_count").copied().unwrap_or("0");
+        return Some(format!("Web 错误爆发：错误次数={error_count}"));
+    }
+    if value.starts_with("ssh brute force ") {
+        let failure_count = parts.get("failure_count").copied().unwrap_or("0");
+        return Some(format!("SSH 暴力尝试：失败次数={failure_count}"));
     }
     None
 }
@@ -777,6 +861,12 @@ fn probe_family_value_label(value: &str, language: NotificationLanguage) -> Opti
             "cgi_shell_traversal" => Some("CGI shell traversal attempt"),
             "command_injection" => Some("command-injection payload"),
             "php_config_injection" => Some("PHP config injection payload"),
+            "lfi_file_read" => Some("LFI file-read payload"),
+            "php_stream_wrapper" => Some("PHP stream-wrapper payload"),
+            "java_jndi_injection" => Some("JNDI injection payload"),
+            "ssrf_metadata" => Some("cloud metadata SSRF probe"),
+            "template_injection" => Some("template-injection payload"),
+            "deserialization_probe" => Some("deserialization probe"),
             "sql_injection" => Some("SQL-injection payload"),
             "path_traversal" => Some("path-traversal probe"),
             "phpmyadmin" => Some("phpMyAdmin probe"),
@@ -794,6 +884,12 @@ fn probe_family_value_label(value: &str, language: NotificationLanguage) -> Opti
             "cgi_shell_traversal" => Some("CGI shell 路径穿越尝试"),
             "command_injection" => Some("命令注入 payload"),
             "php_config_injection" => Some("PHP 配置写入 payload"),
+            "lfi_file_read" => Some("LFI 文件读取 payload"),
+            "php_stream_wrapper" => Some("PHP stream wrapper payload"),
+            "java_jndi_injection" => Some("JNDI 注入 payload"),
+            "ssrf_metadata" => Some("云元数据 SSRF 探测"),
+            "template_injection" => Some("模板注入 payload"),
+            "deserialization_probe" => Some("反序列化探测"),
             "sql_injection" => Some("SQL 注入 payload"),
             "path_traversal" => Some("路径穿越探测"),
             "phpmyadmin" => Some("phpMyAdmin 探测"),
