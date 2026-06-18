@@ -2,7 +2,7 @@ use crate::detectors::command_profile::assess_network_execution_command;
 use crate::detectors::risk::RiskAssessment;
 use crate::detectors::{
     evidence, package_activity_context, string_field, DetectContext, Detector,
-    PackageActivityContext,
+    PackageActivityContext, RESOURCE_DRIFT_DEDUP_KEYS,
 };
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
@@ -81,11 +81,14 @@ fn persistence_changed(
         "PERSIST-001",
         &path,
     )
-    .with_evidence({
-        let mut items = diff_evidence(event);
-        items.extend(package_context.evidence());
-        items
-    })
+    .with_evidence_deduped_by(
+        {
+            let mut items = diff_evidence(event);
+            items.extend(package_context.evidence());
+            items
+        },
+        RESOURCE_DRIFT_DEDUP_KEYS,
+    )
     .with_recommendations(vec![
         "Inspect the startup entry and verify it was added by an administrator or package update."
             .to_string(),
@@ -243,11 +246,14 @@ fn ld_preload_changed(
         "PERSIST-003",
         &path,
     )
-    .with_evidence({
-        let mut items = diff_evidence(event);
-        items.extend(package_context.evidence());
-        items
-    })
+    .with_evidence_deduped_by(
+        {
+            let mut items = diff_evidence(event);
+            items.extend(package_context.evidence());
+            items
+        },
+        RESOURCE_DRIFT_DEDUP_KEYS,
+    )
     .with_recommendations(vec![
         "Inspect preload entries and verify every referenced library.".to_string(),
         "Treat unknown entries as a possible rootkit signal, not a confirmed rootkit by itself."
@@ -337,20 +343,24 @@ mod tests {
     #[test]
     fn persistence_drift_includes_package_activity_context() {
         let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
-        let events = vec![
+        let drift = RawEvent::new("baseline", "persistence_modified")
+            .with_field("path", "/lib/systemd/system/nginx.service")
+            .with_field("type", "systemd")
+            .with_field("previous_hash", "old")
+            .with_field("current_hash", "new");
+        let with_package_context = vec![
             RawEvent::new("package_manager", "package_manager_activity")
                 .with_field("path", "/var/log/apt/history.log"),
-            RawEvent::new("baseline", "persistence_modified")
-                .with_field("path", "/lib/systemd/system/nginx.service")
-                .with_field("type", "systemd")
-                .with_field("previous_hash", "old")
-                .with_field("current_hash", "new"),
+            drift.clone(),
         ];
 
-        let findings = PersistenceDetector.detect(&events, &ctx);
+        let with_context = PersistenceDetector.detect(&with_package_context, &ctx);
+        let without_context = PersistenceDetector.detect(&[drift], &ctx);
 
-        assert_eq!(findings.len(), 1);
-        assert!(findings[0]
+        assert_eq!(with_context.len(), 1);
+        assert_eq!(without_context.len(), 1);
+        assert_eq!(with_context[0].dedup_key, without_context[0].dedup_key);
+        assert!(with_context[0]
             .evidence
             .iter()
             .any(|item| item.key == "package_activity_recent" && item.value == "true"));

@@ -22,6 +22,8 @@ pub mod web_rules;
 #[cfg(test)]
 mod rule_matrix_tests;
 
+pub(crate) const RESOURCE_DRIFT_DEDUP_KEYS: &[&str] = &["path", "change", "current_hash"];
+
 /// Immutable detection context.
 #[derive(Clone)]
 pub struct DetectContext {

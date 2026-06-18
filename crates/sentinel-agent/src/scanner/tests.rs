@@ -429,6 +429,57 @@ fn state_duplicates_are_suppressed_after_event_window() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn state_duplicate_suppression_uses_identity_when_dedup_key_changes(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+    let config = SentinelConfig::default();
+
+    let previous = Finding::new(
+        "host",
+        "Critical system file changed",
+        "critical file changed",
+        Severity::High,
+        Category::FileIntegrity,
+        "FILE-001",
+        "/etc/passwd",
+    )
+    .with_evidence(vec![
+        Evidence::new("path", "/etc/passwd"),
+        Evidence::new("change", "file_modified"),
+        Evidence::new("previous_hash", "old"),
+        Evidence::new("current_hash", "new"),
+        Evidence::new("package_activity_recent", "true"),
+    ]);
+    store.save_findings(std::slice::from_ref(&previous))?;
+
+    let next = Finding::new(
+        "host",
+        "Critical system file changed",
+        "critical file changed",
+        Severity::High,
+        Category::FileIntegrity,
+        "FILE-001",
+        "/etc/passwd",
+    )
+    .with_evidence_deduped_by(
+        vec![
+            Evidence::new("path", "/etc/passwd"),
+            Evidence::new("change", "file_modified"),
+            Evidence::new("current_hash", "new"),
+        ],
+        &["path", "change", "current_hash"],
+    );
+
+    assert_ne!(previous.dedup_key, next.dedup_key);
+    let (retained, suppressed) = suppress_recent_duplicates(&store, vec![next], &config)?;
+
+    assert!(retained.is_empty());
+    assert_eq!(suppressed, 1);
+    Ok(())
+}
+
+#[test]
 fn new_active_response_block_is_retained_when_not_recently_seen(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;

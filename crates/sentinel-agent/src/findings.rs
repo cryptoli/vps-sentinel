@@ -1,7 +1,6 @@
 use sentinel_core::{Evidence, Finding};
 use std::collections::{BTreeMap, BTreeSet};
 
-const RESOURCE_MERGE_DEDUP_KEYS: &[&str] = &["path", "change", "current_hash"];
 const PROCESS_MERGE_DEDUP_KEYS: &[&str] = &["exe_path", "cmdline", "name"];
 
 /// Coalesce findings that describe the same underlying resource or runtime entity.
@@ -72,7 +71,8 @@ fn merge_resource_findings(mut findings: Vec<Finding>) -> Finding {
     findings.sort_by_key(|finding| rule_priority(&finding.rule_id));
     let mut primary = findings.remove(0);
     let evidence = merge_evidence(&primary, &findings);
-    primary = primary.with_evidence_deduped_by(evidence, RESOURCE_MERGE_DEDUP_KEYS);
+    primary =
+        primary.with_evidence_deduped_by(evidence, crate::detectors::RESOURCE_DRIFT_DEDUP_KEYS);
     primary.impact = merge_text_lists(std::iter::once(&primary).chain(findings.iter()), |item| {
         &item.impact
     });

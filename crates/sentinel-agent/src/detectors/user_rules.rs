@@ -8,6 +8,7 @@ use sentinel_core::{Category, Finding, RawEvent, Severity};
 pub struct UserDetector;
 
 const LINUX_REGULAR_USER_UID_MIN: u32 = 1000;
+const USER_ACCOUNT_DEDUP_KEYS: &[&str] = &["change", "name", "uid", "previous_uid"];
 
 impl Detector for UserDetector {
     fn name(&self) -> &'static str {
@@ -100,7 +101,7 @@ fn new_user(
         "USER-001",
         &name,
     )
-    .with_evidence(evidence)
+    .with_evidence_deduped_by(evidence, USER_ACCOUNT_DEDUP_KEYS)
     .with_recommendations(recommendations)
 }
 
@@ -176,17 +177,21 @@ mod tests {
     fn package_created_system_user_is_low_with_package_context() {
         let detector = UserDetector;
         let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let user = RawEvent::new("users", "user_created")
+            .with_field("name", "service-user")
+            .with_field("uid", "988");
         let events = vec![
             RawEvent::new("package_manager", "package_manager_activity")
                 .with_field("path", "/var/log/dpkg.log"),
-            RawEvent::new("users", "user_created")
-                .with_field("name", "service-user")
-                .with_field("uid", "988"),
+            user.clone(),
         ];
 
         let findings = detector.detect(&events, &ctx);
+        let without_package_context = detector.detect(&[user], &ctx);
 
         assert_eq!(findings.len(), 1);
+        assert_eq!(without_package_context.len(), 1);
+        assert_eq!(findings[0].dedup_key, without_package_context[0].dedup_key);
         assert_eq!(findings[0].severity, Severity::Low);
         assert!(findings[0]
             .evidence

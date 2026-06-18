@@ -297,6 +297,28 @@ impl SqliteStore {
             .map_err(|err| SentinelError::Storage(err.to_string()))
     }
 
+    pub fn finding_identity_seen_since(
+        &self,
+        rule_id: &str,
+        subject: &str,
+        since: DateTime<Utc>,
+    ) -> SentinelResult<bool> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT 1 FROM findings
+                 WHERE rule_id = ?1 AND subject = ?2 AND timestamp >= ?3
+                 LIMIT 1",
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        let mut rows = stmt
+            .query(params![rule_id, subject, since.to_rfc3339()])
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        rows.next()
+            .map(|row| row.is_some())
+            .map_err(|err| SentinelError::Storage(err.to_string()))
+    }
+
     pub fn save_baseline_snapshot(&self, snapshot: &BaselineSnapshot) -> SentinelResult<()> {
         let conn = self.connection()?;
         let payload = serde_json::to_string(snapshot)
@@ -891,6 +913,11 @@ mod tests {
             Some(finding.id)
         );
         assert!(store.finding_seen_since(&finding.dedup_key, Utc::now() - Duration::minutes(1))?);
+        assert!(store.finding_identity_seen_since(
+            &finding.rule_id,
+            &finding.subject,
+            Utc::now() - Duration::minutes(1)
+        )?);
         Ok(())
     }
 

@@ -843,7 +843,7 @@ fn suppress_recent_duplicates(
             continue;
         }
         let since = Utc::now() - Duration::seconds(duration_seconds(window_seconds));
-        let recently_seen = store.finding_seen_since(&finding.dedup_key, since)?;
+        let recently_seen = finding_recently_seen(store, &finding, since)?;
         if has_new_active_response_block(&finding) && !recently_seen {
             retained.push(finding);
             continue;
@@ -855,6 +855,20 @@ fn suppress_recent_duplicates(
         }
     }
     Ok((retained, suppressed))
+}
+
+fn finding_recently_seen(
+    store: &SqliteStore,
+    finding: &Finding,
+    since: chrono::DateTime<Utc>,
+) -> SentinelResult<bool> {
+    if store.finding_seen_since(&finding.dedup_key, since)? {
+        return Ok(true);
+    }
+    if !is_state_finding(finding) {
+        return Ok(false);
+    }
+    store.finding_identity_seen_since(&finding.rule_id, &finding.subject, since)
 }
 
 fn has_new_active_response_block(finding: &Finding) -> bool {
