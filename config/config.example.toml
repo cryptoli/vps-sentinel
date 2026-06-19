@@ -240,7 +240,7 @@ enabled = true
 
 [response_policy.policies.ssh_bruteforce]
 enabled = true
-rule_ids = ["SSH-003"]
+rule_ids = ["SSH-003", "SSH-007"]
 categories = []
 action = "block" # observe, block, or permanent_block
 min_severity = "High"

@@ -698,7 +698,7 @@ web_exploit_block_threshold = 5
 ssh_failed_login_block_threshold = 6
 ```
 
-主动响应对新安装默认开启。升级时不会覆盖已有配置，因此已经显式写了 `active_response.enabled = false` 的主机会保持关闭，直到管理员手动修改。`strategy = "observe"` 只记录候选不写防火墙，`balanced` 是默认策略，`strict` 会对被拒绝的 Web 探测和 SSH 爆破要求更强证据。扫描器会在扫描内合并/去重之后、跨扫描通知去重之前执行封禁，因此同一来源计数升高时，即使重复通知会被压制，也仍能触发封禁。SSH 封禁需要先形成 `SSH-003` finding，默认扫描窗口内 6 次失败触发封禁。Web 封禁覆盖敏感路径成功响应、高置信 RCE 风格探测、重复低置信 exploit 探测和高频错误爆发，但标记为 `proxy_source_unresolved` 的 Web finding 不会进入封禁候选。安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。普通封禁是临时封禁；如果同一个公网来源 IP 在 `permanent_block_window_seconds` 窗口内至少 `permanent_block_threshold` 次成为封禁候选，则升级为无到期时间的永久封禁。永久升级仍然遵守 `[allowlist].ips`、可信代理归因安全、`strategy = "observe"` 和 `max_blocks_per_scan`，可以通过 `vs blocks unblock <ip>` 或 `vs blocks unblock-all --yes` 解除。只有公网可路由来源 IP 才会被考虑。
+主动响应对新安装默认开启。升级时不会覆盖已有配置，因此已经显式写了 `active_response.enabled = false` 的主机会保持关闭，直到管理员手动修改。`strategy = "observe"` 只记录候选不写防火墙，`balanced` 是默认策略，`strict` 会对被拒绝的 Web 探测和 SSH 爆破要求更强证据。扫描器会在扫描内合并/去重之后、跨扫描通知去重之前执行封禁，因此同一来源计数升高时，即使重复通知会被压制，也仍能触发封禁。SSH 封禁覆盖 `SSH-003` 爆破 finding 和 `SSH-007` 爆破后成功登录 finding，默认扫描窗口内 6 次失败触发封禁。Web 封禁覆盖敏感路径成功响应、高置信 RCE 风格探测、重复低置信 exploit 探测和高频错误爆发，但标记为 `proxy_source_unresolved` 的 Web finding 不会进入封禁候选。安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。普通封禁是临时封禁；如果同一个公网来源 IP 在 `permanent_block_window_seconds` 窗口内至少 `permanent_block_threshold` 次成为封禁候选，则升级为无到期时间的永久封禁。永久升级仍然遵守 `[allowlist].ips`、可信代理归因安全、`strategy = "observe"` 和 `max_blocks_per_scan`，可以通过 `vs blocks unblock <ip>` 或 `vs blocks unblock-all --yes` 解除。只有公网可路由来源 IP 才会被考虑。
 
 每次扫描都会先把主动响应状态和真实防火墙规则同步，再判断某个来源是否已经封禁。如果规则已过期、被 firewalld/ufw reload 清掉，或者被人工修改，程序会移除失效状态；如果该来源仍然满足高置信封禁条件，后续可以再次封禁。iptables 后端在插入前会用 `-C` 检查规则是否已存在，避免重复 DROP 规则；手动解除封禁会删除重复匹配规则。日常运维可以使用 `vs blocks list`、`vs blocks cleanup`、`vs blocks unblock <ip>` 和 `vs blocks unblock-all --yes`。
 
@@ -729,7 +729,7 @@ enabled = true
 
 [response_policy.policies.ssh_bruteforce]
 enabled = true
-rule_ids = ["SSH-003"]
+rule_ids = ["SSH-003", "SSH-007"]
 action = "block"
 min_severity = "High"
 min_confidence = 70

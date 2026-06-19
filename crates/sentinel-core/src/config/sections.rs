@@ -606,7 +606,7 @@ impl Default for ResponsePolicyConfig {
             "ssh_bruteforce".to_string(),
             ResponsePolicyRule {
                 enabled: true,
-                rule_ids: vec!["SSH-003".to_string()],
+                rule_ids: vec!["SSH-003".to_string(), "SSH-007".to_string()],
                 categories: Vec::new(),
                 action: "block".to_string(),
                 min_severity: Severity::High,

@@ -663,7 +663,7 @@ fn block_candidate(finding: &Finding, config: &SentinelConfig) -> Option<BlockCa
     let candidate = match finding.rule_id.as_str() {
         "WEB-001" if config.active_response.web_enabled => web_probe_candidate(finding, config),
         "WEB-002" if config.active_response.web_enabled => web_error_candidate(finding, config),
-        "SSH-003" if config.active_response.ssh_enabled => {
+        "SSH-003" | "SSH-007" if config.active_response.ssh_enabled => {
             ssh_bruteforce_candidate(finding, config)
         }
         _ => None,
@@ -1575,6 +1575,23 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].ip.to_string(), "1.1.1.1");
+    }
+
+    #[test]
+    fn ssh_success_after_bruteforce_uses_same_response_policy() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.ssh_failed_login_block_threshold = 6;
+        let mut finding = ssh_finding("8.8.4.4", 6);
+        finding.rule_id = "SSH-007".to_string();
+        finding.title = "SSH brute force followed by success".to_string();
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].ip.to_string(), "8.8.4.4");
+        assert_eq!(candidates[0].rule_id, "SSH-007");
+        assert!(candidates[0].reason.contains("policy=ssh_bruteforce"));
     }
 
     #[test]
