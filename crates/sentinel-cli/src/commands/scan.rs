@@ -55,6 +55,23 @@ fn print_report(report: &sentinel_agent::ScanReport, json: bool) -> Result<()> {
             report.notification_failure_count
         );
     }
+    if let (Some(before), Some(after)) = (report.memory_rss_before_kb, report.memory_rss_after_kb) {
+        println!(
+            "memory rss: before={} KiB, after={} KiB, delta={} KiB",
+            before,
+            after,
+            report.memory_rss_delta_kb.unwrap_or(0)
+        );
+    }
+    if !report.event_count_by_source.is_empty() {
+        let source_summary = report
+            .event_count_by_source
+            .iter()
+            .map(|(source, count)| format!("{source}={count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("events by source: {source_summary}");
+    }
     if report.quiet_suppressed_count > 0 {
         println!(
             "quiet-hours suppressed findings: {}",

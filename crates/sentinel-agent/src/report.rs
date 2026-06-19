@@ -168,7 +168,7 @@ pub async fn send_report_finding(
                 ("failed".to_string(), err.to_string())
             }
         };
-        store.record_notification_log(&finding.id, &channel, &status, &error)?;
+        store.record_notification_log(finding, &channel, &status, &error)?;
         summary.outcomes.push(ReportDeliveryOutcome {
             channel,
             status,

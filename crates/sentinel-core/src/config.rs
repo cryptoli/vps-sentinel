@@ -16,9 +16,9 @@ pub use sections::{
     ActiveResponseConfig, AdvancedCollectorsConfig, AgentConfig, AllowlistConfig, DockerConfig,
     ExternalRulesConfig, FileIntegrityConfig, FleetConfig, GpuConfig, IncidentConfig,
     LogIntegrityConfig, MaintenanceConfig, NetworkConfig, NoiseControlConfig, PackageManagerConfig,
-    PersistenceConfig, PrivacyConfig, ProcessConfig, ReportsConfig, ResponsePolicyConfig,
-    ResponsePolicyRule, SentinelPaths, ServiceProfileConfig, SshConfig, StorageConfig,
-    ThreatIntelConfig, WebConfig,
+    PerformanceConfig, PersistenceConfig, PrivacyConfig, ProcessConfig, ReportsConfig,
+    ResponsePolicyConfig, ResponsePolicyRule, SentinelPaths, ServiceProfileConfig, SshConfig,
+    StorageConfig, ThreatIntelConfig, WebConfig,
 };
 
 /// Top-level TOML configuration for the agent and CLI.
@@ -27,6 +27,7 @@ pub use sections::{
 pub struct SentinelConfig {
     pub agent: AgentConfig,
     pub privacy: PrivacyConfig,
+    pub performance: PerformanceConfig,
     pub storage: StorageConfig,
     pub ssh: SshConfig,
     pub file_integrity: FileIntegrityConfig,
@@ -92,6 +93,12 @@ impl SentinelConfig {
                 "storage.max_database_size_mb must be at least 16".to_string(),
             ));
         }
+        if self.performance.max_stored_field_bytes == 0 {
+            return Err(SentinelError::Config(
+                "performance.max_stored_field_bytes must be greater than 0".to_string(),
+            ));
+        }
+        validate_ip_patterns("ssh.trusted_admin_ips", &self.ssh.trusted_admin_ips)?;
         if self.ssh.failed_login_threshold == 0 {
             return Err(SentinelError::Config(
                 "ssh.failed_login_threshold must be greater than 0".to_string(),
@@ -105,6 +112,11 @@ impl SentinelConfig {
         if self.ssh.failed_login_window_seconds == 0 {
             return Err(SentinelError::Config(
                 "ssh.failed_login_window_seconds must be greater than 0".to_string(),
+            ));
+        }
+        if self.ssh.max_events_per_scan == 0 {
+            return Err(SentinelError::Config(
+                "ssh.max_events_per_scan must be greater than 0".to_string(),
             ));
         }
         if self.file_integrity.max_file_size_mb == 0 {
@@ -149,6 +161,17 @@ impl SentinelConfig {
                 "web.max_log_tail_bytes must be greater than 0".to_string(),
             ));
         }
+        if self.web.max_events_per_scan == 0 {
+            return Err(SentinelError::Config(
+                "web.max_events_per_scan must be greater than 0".to_string(),
+            ));
+        }
+        if self.web.log_lookback_seconds == 0 {
+            return Err(SentinelError::Config(
+                "web.log_lookback_seconds must be greater than 0".to_string(),
+            ));
+        }
+        validate_ip_patterns("web.trusted_proxy_cidrs", &self.web.trusted_proxy_cidrs)?;
         if self.process.behavior_min_score == 0 {
             return Err(SentinelError::Config(
                 "process.behavior_min_score must be greater than 0".to_string(),
@@ -313,6 +336,39 @@ fn validate_response_policy(config: &ResponsePolicyConfig) -> SentinelResult<()>
     Ok(())
 }
 
+fn validate_ip_patterns(name: &str, patterns: &[String]) -> SentinelResult<()> {
+    for pattern in patterns {
+        let value = pattern.trim();
+        if value.is_empty() {
+            return Err(SentinelError::Config(format!(
+                "{name} entries must not be empty"
+            )));
+        }
+        if let Some((ip, prefix)) = value.split_once('/') {
+            let parsed_ip = ip.parse::<std::net::IpAddr>().map_err(|_| {
+                SentinelError::Config(format!("{name} entry '{value}' has an invalid IP address"))
+            })?;
+            let prefix = prefix.parse::<u8>().map_err(|_| {
+                SentinelError::Config(format!("{name} entry '{value}' has an invalid prefix"))
+            })?;
+            let max_prefix = match parsed_ip {
+                std::net::IpAddr::V4(_) => 32,
+                std::net::IpAddr::V6(_) => 128,
+            };
+            if prefix > max_prefix {
+                return Err(SentinelError::Config(format!(
+                    "{name} entry '{value}' has a prefix larger than {max_prefix}"
+                )));
+            }
+        } else if value.parse::<std::net::IpAddr>().is_err() {
+            return Err(SentinelError::Config(format!(
+                "{name} entry '{value}' must be an IP address or CIDR"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_incidents(config: &IncidentConfig) -> SentinelResult<()> {
     if config.correlation_window_seconds == 0 {
         return Err(SentinelError::Config(
@@ -331,6 +387,16 @@ fn validate_service_profile(config: &ServiceProfileConfig) -> SentinelResult<()>
     if config.dynamic_udp_enabled && config.dynamic_udp_min_port == 0 {
         return Err(SentinelError::Config(
             "service_profile.dynamic_udp_min_port must be greater than 0".to_string(),
+        ));
+    }
+    if config
+        .ignored_dynamic_udp_process_names
+        .iter()
+        .any(|name| name.trim().is_empty())
+    {
+        return Err(SentinelError::Config(
+            "service_profile.ignored_dynamic_udp_process_names entries must not be empty"
+                .to_string(),
         ));
     }
     Ok(())

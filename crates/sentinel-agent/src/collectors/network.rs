@@ -116,9 +116,6 @@ fn enrich_socket_owners(events: &mut [RawEvent], scan_root: &Path) {
         event
             .fields
             .insert("cmdline".to_string(), owner.cmdline.clone());
-        event
-            .fields
-            .insert("argv_json".to_string(), owner.argv_json.clone());
     }
 }
 
@@ -175,7 +172,6 @@ struct ProcessOwner {
     name: String,
     executable: String,
     cmdline: String,
-    argv_json: String,
 }
 
 impl ProcessOwner {
@@ -188,7 +184,6 @@ impl ProcessOwner {
                 .map(|path| path.to_string_lossy().to_string())
                 .unwrap_or_default(),
             cmdline: argv.join(" "),
-            argv_json: serde_json::to_string(&argv).unwrap_or_else(|_| "[]".to_string()),
         }
     }
 }

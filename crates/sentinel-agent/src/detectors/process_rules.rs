@@ -3,7 +3,8 @@ use crate::detectors::command_profile::{
 };
 use crate::detectors::risk::RiskAssessment;
 use crate::detectors::{
-    evidence, package_activity_context, path_is_allowlisted, string_field, DetectContext, Detector,
+    evidence, package_activity_context, package_activity_context_from_events, path_is_allowlisted,
+    string_field, DetectContext, Detector, EventIndex,
 };
 use crate::rules::model::RuleMetadata;
 use crate::utils::package::PackageOwnerCache;
@@ -68,107 +69,167 @@ impl Detector for ProcessDetector {
     }
 
     fn detect(&self, events: &[RawEvent], ctx: &DetectContext) -> Vec<Finding> {
-        let mut findings = Vec::new();
-        let outbound_by_pid = outbound_context_by_pid(events);
-        let gpu_by_pid = gpu_context_by_pid(events);
-        let package_activity = package_activity_context(events);
-        let mut package_owner_cache = PackageOwnerCache::default();
-        for event in events
-            .iter()
-            .filter(|event| event.kind == "process_snapshot")
+        let index = EventIndex::new(events);
+        detect_process_events(&index, ctx, package_activity_context(events))
+    }
+
+    fn detect_indexed(
+        &self,
+        _events: &[RawEvent],
+        index: &EventIndex<'_>,
+        ctx: &DetectContext,
+    ) -> Vec<Finding> {
+        detect_process_events(
+            index,
+            ctx,
+            package_activity_context_from_events(index.kind("package_manager_activity")),
+        )
+    }
+}
+
+fn detect_process_events(
+    index: &EventIndex<'_>,
+    ctx: &DetectContext,
+    package_activity: crate::detectors::PackageActivityContext,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let outbound_by_pid = outbound_context_by_pid(index.kind("outbound_connection"));
+    let gpu_by_pid = gpu_context_by_pid(index.kind("gpu_compute_process"));
+    let mut package_owner_cache = PackageOwnerCache::default();
+    for event in index.kind("process_snapshot") {
+        let mut enriched = event.clone();
+        if let Some(pid) = event.field("pid") {
+            if let Some(outbound) = outbound_by_pid.get(pid) {
+                enriched = enriched
+                    .with_field("outbound_connection_count", outbound.total.to_string())
+                    .with_field("public_outbound_count", outbound.public.to_string())
+                    .with_field("outbound_remote_ports", outbound.remote_ports.join(", "));
+            }
+            if let Some(gpu) = gpu_by_pid.get(pid) {
+                enriched = enriched
+                    .with_field("gpu_memory_mb", gpu.memory_mb.to_string())
+                    .with_field("gpu_process_names", gpu.process_names.join(", "));
+                if !gpu.vendors.is_empty() {
+                    enriched = enriched.with_field("gpu_vendors", gpu.vendors.join(", "));
+                }
+                if !gpu.gpu_uuids.is_empty() {
+                    enriched = enriched.with_field("gpu_uuids", gpu.gpu_uuids.join(", "));
+                }
+            }
+        }
+        if package_activity.is_active() {
+            enriched = enriched.with_field("package_activity_recent", "true");
+        }
+        let event = &enriched;
+        let exe_path = string_field(event, "exe_path");
+        let cmdline = string_field(event, "cmdline");
+        if path_is_allowlisted(&exe_path, &ctx.config.allowlist.process_paths)
+            || command_matches_allowlist(&cmdline, &ctx.config.allowlist.process_command_contains)
         {
-            let mut enriched = event.clone();
-            if let Some(pid) = event.field("pid") {
-                if let Some(outbound) = outbound_by_pid.get(pid) {
-                    enriched = enriched
-                        .with_field("outbound_connection_count", outbound.total.to_string())
-                        .with_field("public_outbound_count", outbound.public.to_string())
-                        .with_field("outbound_remote_ports", outbound.remote_ports.join(", "));
-                }
-                if let Some(gpu) = gpu_by_pid.get(pid) {
-                    enriched = enriched
-                        .with_field("gpu_memory_mb", gpu.memory_mb.to_string())
-                        .with_field("gpu_process_names", gpu.process_names.join(", "));
-                    if !gpu.vendors.is_empty() {
-                        enriched = enriched.with_field("gpu_vendors", gpu.vendors.join(", "));
-                    }
-                    if !gpu.gpu_uuids.is_empty() {
-                        enriched = enriched.with_field("gpu_uuids", gpu.gpu_uuids.join(", "));
-                    }
-                }
-            }
-            if package_activity.is_active() {
-                enriched = enriched.with_field("package_activity_recent", "true");
-            }
-            let event = &enriched;
-            let exe_path = string_field(event, "exe_path");
-            let cmdline = string_field(event, "cmdline");
-            if path_is_allowlisted(&exe_path, &ctx.config.allowlist.process_paths)
-                || command_matches_allowlist(
-                    &cmdline,
-                    &ctx.config.allowlist.process_command_contains,
-                )
-            {
-                continue;
-            }
-            if let Some(assessment) = deleted_executable_assessment(event, ctx) {
-                if assessment.is_suspicious(ctx.config.process.deleted_executable_min_score) {
-                    findings.push(deleted_executable(
-                        event,
-                        ctx,
-                        assessment,
-                        &mut package_owner_cache,
-                    ));
-                }
-            }
-            if let Some(assessment) = executable_path_assessment(event, ctx) {
-                if assessment.is_suspicious(ctx.config.process.behavior_min_score) {
-                    findings.push(temp_process(
-                        event,
-                        ctx,
-                        assessment,
-                        &mut package_owner_cache,
-                    ));
-                }
-            }
-            if network_execution_assessment_from_event(event).is_suspicious() {
-                findings.push(network_execution_bridge(
-                    event,
-                    ctx,
-                    &mut package_owner_cache,
-                ));
-            }
-            if let Some(tool_match) =
-                known_tool_match(event, &ctx.config.process.known_bad_tool_names)
-            {
-                findings.push(miner_or_scanner(
-                    event,
-                    ctx,
-                    tool_match,
-                    &mut package_owner_cache,
-                ));
-            }
-            if let Some(assessment) = gpu_mining_assessment(event, ctx) {
-                findings.push(gpu_compute_process(
+            continue;
+        }
+        let source_build_context = source_build_context(event);
+        if let Some(assessment) = deleted_executable_assessment(event, ctx) {
+            if assessment.is_suspicious(ctx.config.process.deleted_executable_min_score) {
+                findings.push(deleted_executable(
                     event,
                     ctx,
                     assessment,
                     &mut package_owner_cache,
                 ));
             }
-            if let Some(assessment) = behavior_cluster_assessment(event, ctx) {
-                if assessment.is_suspicious(ctx.config.process.behavior_min_score) {
-                    findings.push(process_behavior_cluster(
-                        event,
-                        ctx,
-                        assessment,
-                        &mut package_owner_cache,
-                    ));
-                }
+        }
+        if let Some(assessment) = executable_path_assessment(event, ctx) {
+            if !source_build_context
+                && assessment.is_suspicious(ctx.config.process.behavior_min_score)
+            {
+                findings.push(temp_process(
+                    event,
+                    ctx,
+                    assessment,
+                    &mut package_owner_cache,
+                ));
             }
         }
-        findings
+        if network_execution_assessment_from_event(event).is_suspicious() {
+            findings.push(network_execution_bridge(
+                event,
+                ctx,
+                &mut package_owner_cache,
+            ));
+        }
+        if let Some(tool_match) = known_tool_match(event, &ctx.config.process.known_bad_tool_names)
+        {
+            findings.push(miner_or_scanner(
+                event,
+                ctx,
+                tool_match,
+                &mut package_owner_cache,
+            ));
+        }
+        if let Some(assessment) = gpu_mining_assessment(event, ctx) {
+            findings.push(gpu_compute_process(
+                event,
+                ctx,
+                assessment,
+                &mut package_owner_cache,
+            ));
+        }
+        if let Some(assessment) = behavior_cluster_assessment(event, ctx) {
+            if !source_build_context
+                && assessment.is_suspicious(ctx.config.process.behavior_min_score)
+            {
+                findings.push(process_behavior_cluster(
+                    event,
+                    ctx,
+                    assessment,
+                    &mut package_owner_cache,
+                ));
+            }
+        }
     }
+    findings
+}
+
+fn source_build_context(event: &RawEvent) -> bool {
+    let exe_path = normalize_path(&string_field(event, "exe_path"));
+    let cmdline = normalize_path(&string_field(event, "cmdline"));
+    let cwd = normalize_path(&string_field(event, "cwd"));
+    let name = string_field(event, "name").to_ascii_lowercase();
+    let parent_name = string_field(event, "parent_name").to_ascii_lowercase();
+
+    let rust_tool = matches!(name.as_str(), "cargo" | "rustc")
+        || exe_path.ends_with("/bin/cargo")
+        || exe_path.ends_with("/bin/rustc")
+        || exe_path.contains("/.cargo/bin/cargo")
+        || exe_path.contains("/.rustup/toolchains/");
+    let cargo_parent = matches!(parent_name.as_str(), "cargo" | "rustc")
+        || cmdline_contains_rust_build_command(&cmdline);
+    let rust_build_artifact = exe_path.contains("/target/")
+        && (exe_path.contains("/build/")
+            || exe_path.contains("/deps/")
+            || exe_path.ends_with("/build-script-build"));
+    let build_workdir = cwd.contains("/target/")
+        || cmdline.contains("/target/")
+        || cmdline.contains("build-script-build");
+
+    (rust_tool || rust_build_artifact) && (cargo_parent || build_workdir)
+}
+
+fn cmdline_contains_rust_build_command(cmdline: &str) -> bool {
+    let command = cmdline.trim();
+    command.contains(" cargo build")
+        || command.contains(" cargo test")
+        || command.contains(" cargo install")
+        || command.starts_with("cargo build")
+        || command.starts_with("cargo test")
+        || command.starts_with("cargo install")
+        || command.contains(" rustc ")
+        || command.starts_with("rustc ")
+}
+
+fn normalize_path(value: &str) -> String {
+    value.replace('\\', "/").to_ascii_lowercase()
 }
 
 fn temp_process(
@@ -1172,12 +1233,11 @@ struct OutboundContext {
     remote_ports: Vec<String>,
 }
 
-fn outbound_context_by_pid(events: &[RawEvent]) -> BTreeMap<String, OutboundContext> {
+fn outbound_context_by_pid<'a>(
+    events: impl IntoIterator<Item = &'a RawEvent>,
+) -> BTreeMap<String, OutboundContext> {
     let mut by_pid = BTreeMap::<String, OutboundContext>::new();
-    for event in events
-        .iter()
-        .filter(|event| event.kind == "outbound_connection")
-    {
+    for event in events {
         let Some(pid) = event.field("pid").filter(|pid| !pid.trim().is_empty()) else {
             continue;
         };
@@ -1206,12 +1266,11 @@ struct GpuContext {
     gpu_uuids: Vec<String>,
 }
 
-fn gpu_context_by_pid(events: &[RawEvent]) -> BTreeMap<String, GpuContext> {
+fn gpu_context_by_pid<'a>(
+    events: impl IntoIterator<Item = &'a RawEvent>,
+) -> BTreeMap<String, GpuContext> {
     let mut by_pid = BTreeMap::<String, GpuContext>::new();
-    for event in events
-        .iter()
-        .filter(|event| event.kind == "gpu_compute_process")
-    {
+    for event in events {
         let Some(pid) = event.field("pid").filter(|pid| !pid.trim().is_empty()) else {
             continue;
         };
@@ -1859,6 +1918,59 @@ mod tests {
         let findings = ProcessDetector.detect(&[event], &ctx);
 
         assert!(findings.iter().all(|finding| finding.rule_id != "PROC-005"));
+    }
+
+    #[test]
+    fn rust_source_build_context_suppresses_cargo_behavior_noise() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let cargo = process_event("/root/.cargo/bin/cargo", "cargo", "cargo build --release")
+            .with_field("cwd", "/tmp/vps-sentinel-build")
+            .with_field("euid", "0")
+            .with_field("cpu_percent", "95.0")
+            .with_field("process_age_seconds", "240.0")
+            .with_field("socket_fd_count", "1")
+            .with_field("parent_name", "bash");
+
+        let findings = ProcessDetector.detect(&[cargo], &ctx);
+
+        assert!(findings.iter().all(|finding| finding.rule_id != "PROC-005"));
+    }
+
+    #[test]
+    fn rust_build_script_under_target_suppresses_temp_path_noise() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let build_script = process_event(
+            "/tmp/vps-sentinel-build/target/release/build/ring-abc/build-script-build",
+            "build-script-build",
+            "/tmp/vps-sentinel-build/target/release/build/ring-abc/build-script-build",
+        )
+        .with_field(
+            "cwd",
+            "/tmp/vps-sentinel-build/target/release/build/ring-abc",
+        )
+        .with_field("euid", "0")
+        .with_field("parent_name", "cargo");
+
+        let findings = ProcessDetector.detect(&[build_script], &ctx);
+
+        assert!(findings.iter().all(|finding| finding.rule_id != "PROC-001"));
+    }
+
+    #[test]
+    fn temp_payload_named_like_build_script_still_alerts_without_build_context() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let payload = process_event(
+            "/tmp/.cache/build-script-build",
+            "build-script-build",
+            "/tmp/.cache/build-script-build --serve",
+        )
+        .with_field("cwd", "/tmp/.cache")
+        .with_field("euid", "0")
+        .with_field("socket_fd_count", "2");
+
+        let findings = ProcessDetector.detect(&[payload], &ctx);
+
+        assert!(findings.iter().any(|finding| finding.rule_id == "PROC-001"));
     }
 
     #[test]

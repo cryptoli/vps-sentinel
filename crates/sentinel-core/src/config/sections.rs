@@ -70,6 +70,26 @@ impl Default for StorageConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct PerformanceConfig {
+    pub collect_memory_metrics: bool,
+    pub store_raw_log_lines: bool,
+    pub store_all_web_access_events: bool,
+    pub max_stored_field_bytes: usize,
+}
+
+impl Default for PerformanceConfig {
+    fn default() -> Self {
+        Self {
+            collect_memory_metrics: true,
+            store_raw_log_lines: false,
+            store_all_web_access_events: false,
+            max_stored_field_bytes: 4096,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SshConfig {
     pub enabled: bool,
     pub auth_log_paths: Vec<PathBuf>,
@@ -80,6 +100,9 @@ pub struct SshConfig {
     pub auth_log_lookback_seconds: u64,
     pub failed_login_threshold: usize,
     pub failed_login_window_seconds: u64,
+    pub max_events_per_scan: usize,
+    pub trusted_admin_ips: Vec<String>,
+    pub alert_on_trusted_admin_login: bool,
 }
 
 impl Default for SshConfig {
@@ -97,6 +120,9 @@ impl Default for SshConfig {
             auth_log_lookback_seconds: 300,
             failed_login_threshold: DEFAULT_SSH_FAILED_LOGIN_THRESHOLD,
             failed_login_window_seconds: 300,
+            max_events_per_scan: 2000,
+            trusted_admin_ips: Vec::new(),
+            alert_on_trusted_admin_login: false,
         }
     }
 }
@@ -108,6 +134,7 @@ pub struct FileIntegrityConfig {
     pub max_file_size_mb: u64,
     pub max_depth: usize,
     pub webshell_min_score: u16,
+    pub incremental: bool,
     pub paths: Vec<PathBuf>,
 }
 
@@ -118,6 +145,7 @@ impl Default for FileIntegrityConfig {
             max_file_size_mb: 5,
             max_depth: 8,
             webshell_min_score: 70,
+            incremental: true,
             paths: default_file_integrity_paths(),
         }
     }
@@ -158,8 +186,13 @@ pub struct WebConfig {
     pub web_roots: Vec<PathBuf>,
     pub log_paths: Vec<PathBuf>,
     pub max_log_tail_bytes: u64,
+    pub max_events_per_scan: usize,
     pub include_rotated: bool,
+    pub log_lookback_seconds: u64,
     pub error_burst_threshold: usize,
+    pub trusted_proxy_cidrs: Vec<String>,
+    pub real_client_ip_fields: Vec<String>,
+    pub suppress_unresolved_trusted_proxy: bool,
 }
 
 impl Default for WebConfig {
@@ -179,10 +212,65 @@ impl Default for WebConfig {
                 PathBuf::from("/var/log/apache2/access.log"),
             ],
             max_log_tail_bytes: 1024 * 1024,
+            max_events_per_scan: 5000,
             include_rotated: true,
+            log_lookback_seconds: 900,
             error_burst_threshold: 20,
+            trusted_proxy_cidrs: default_trusted_proxy_cidrs(),
+            real_client_ip_fields: default_real_client_ip_fields(),
+            suppress_unresolved_trusted_proxy: true,
         }
     }
+}
+
+fn default_trusted_proxy_cidrs() -> Vec<String> {
+    [
+        "173.245.48.0/20",
+        "103.21.244.0/22",
+        "103.22.200.0/22",
+        "103.31.4.0/22",
+        "141.101.64.0/18",
+        "108.162.192.0/18",
+        "190.93.240.0/20",
+        "188.114.96.0/20",
+        "197.234.240.0/22",
+        "198.41.128.0/17",
+        "162.158.0.0/15",
+        "104.16.0.0/13",
+        "104.24.0.0/14",
+        "172.64.0.0/13",
+        "131.0.72.0/22",
+        "2400:cb00::/32",
+        "2606:4700::/32",
+        "2803:f800::/32",
+        "2405:b500::/32",
+        "2405:8100::/32",
+        "2a06:98c0::/29",
+        "2c0f:f248::/32",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn default_real_client_ip_fields() -> Vec<String> {
+    [
+        "cf_connecting_ip",
+        "http_cf_connecting_ip",
+        "x_forwarded_for",
+        "http_x_forwarded_for",
+        "x_real_ip",
+        "http_x_real_ip",
+        "request.headers.cf-connecting-ip",
+        "request.headers.x-forwarded-for",
+        "request.headers.x-real-ip",
+        "headers.cf-connecting-ip",
+        "headers.x-forwarded-for",
+        "headers.x-real-ip",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -551,6 +639,8 @@ pub struct ServiceProfileConfig {
     pub baseline_refresh_after_package_activity: bool,
     pub dynamic_udp_enabled: bool,
     pub dynamic_udp_min_port: u16,
+    pub ignored_dynamic_udp_process_names: Vec<String>,
+    pub ignore_loopback_ssh_forwarding: bool,
 }
 
 impl Default for ServiceProfileConfig {
@@ -561,8 +651,17 @@ impl Default for ServiceProfileConfig {
             baseline_refresh_after_package_activity: false,
             dynamic_udp_enabled: true,
             dynamic_udp_min_port: 32768,
+            ignored_dynamic_udp_process_names: default_ignored_dynamic_udp_process_names(),
+            ignore_loopback_ssh_forwarding: true,
         }
     }
+}
+
+fn default_ignored_dynamic_udp_process_names() -> Vec<String> {
+    ["systemd-timesyncd", "chronyd", "ntpd"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

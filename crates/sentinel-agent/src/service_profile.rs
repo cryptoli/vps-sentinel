@@ -71,6 +71,7 @@ fn current_profile_with_config(events: &[RawEvent], config: &SentinelConfig) -> 
         .iter()
         .filter(|event| event.kind == "listening_socket")
         .filter_map(service_record)
+        .filter(|record| !ignored_service_profile_record(record, config))
         .map(|record| (service_key(&record, config), record))
         .collect::<BTreeMap<_, _>>();
     ServiceProfile {
@@ -207,9 +208,44 @@ fn service_key(record: &ServiceRecord, config: &SentinelConfig) -> String {
 fn is_dynamic_udp_service(record: &ServiceRecord, config: &SentinelConfig) -> bool {
     config.service_profile.dynamic_udp_enabled
         && record.public_exposure
-        && record.protocol.eq_ignore_ascii_case("udp")
+        && is_udp_protocol(&record.protocol)
         && record.local_port >= config.service_profile.dynamic_udp_min_port
         && !normalized_identity(record).trim_matches('|').is_empty()
+}
+
+fn ignored_service_profile_record(record: &ServiceRecord, config: &SentinelConfig) -> bool {
+    ignored_dynamic_udp_process(record, config) || ignored_loopback_ssh_forwarding(record, config)
+}
+
+fn ignored_dynamic_udp_process(record: &ServiceRecord, config: &SentinelConfig) -> bool {
+    if !is_udp_protocol(&record.protocol)
+        || record.local_port < config.service_profile.dynamic_udp_min_port
+    {
+        return false;
+    }
+    let process_name = record.process_name.trim();
+    !process_name.is_empty()
+        && config
+            .service_profile
+            .ignored_dynamic_udp_process_names
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(process_name))
+}
+
+fn ignored_loopback_ssh_forwarding(record: &ServiceRecord, config: &SentinelConfig) -> bool {
+    config.service_profile.ignore_loopback_ssh_forwarding
+        && !record.public_exposure
+        && record.process_name.eq_ignore_ascii_case("sshd")
+        && (6000..=6099).contains(&record.local_port)
+        && is_loopback_listener(&record.local_addr)
+}
+
+fn is_udp_protocol(protocol: &str) -> bool {
+    protocol.eq_ignore_ascii_case("udp") || protocol.eq_ignore_ascii_case("udp6")
+}
+
+fn is_loopback_listener(addr: &str) -> bool {
+    matches!(addr.trim(), "127.0.0.1" | "::1" | "[::1]" | "localhost")
 }
 
 fn service_identity_changed(previous: &ServiceRecord, current: &ServiceRecord) -> bool {
@@ -294,6 +330,76 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_public_udp6_ports_are_profiled_by_process_identity(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let config = SentinelConfig::default();
+        let first = vec![socket_with_protocol(
+            "udp6",
+            "::",
+            42549,
+            "relay",
+            "/usr/bin/relay",
+        )];
+        let second = vec![socket_with_protocol(
+            "udp6",
+            "::",
+            59737,
+            "relay",
+            "/usr/bin/relay",
+        )];
+
+        assert!(evaluate_service_profile(&first, &config, Some(&store))?.is_empty());
+        assert!(evaluate_service_profile(&second, &config, Some(&store))?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn ignores_configured_dynamic_udp_client_processes() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let config = SentinelConfig::default();
+        let first = vec![socket("0.0.0.0", 22, "sshd", "/usr/sbin/sshd")];
+        let second = vec![
+            socket("0.0.0.0", 22, "sshd", "/usr/sbin/sshd"),
+            socket_with_protocol(
+                "udp6",
+                "::",
+                48446,
+                "systemd-timesyncd",
+                "/usr/lib/systemd/systemd-timesyncd",
+            ),
+        ];
+
+        assert!(evaluate_service_profile(&first, &config, Some(&store))?.is_empty());
+        let findings = evaluate_service_profile(&second, &config, Some(&store))?;
+
+        assert!(findings.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn ignores_loopback_ssh_forwarding_listeners() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let config = SentinelConfig::default();
+        let first = vec![socket("0.0.0.0", 22, "sshd", "/usr/sbin/sshd")];
+        let second = vec![
+            socket("0.0.0.0", 22, "sshd", "/usr/sbin/sshd"),
+            socket("127.0.0.1", 6010, "sshd", "/usr/sbin/sshd")
+                .with_field("cmdline", "sshd: root@pts/0"),
+            socket("::1", 6010, "sshd", "/usr/sbin/sshd").with_field("cmdline", "sshd: root@pts/0"),
+        ];
+
+        assert!(evaluate_service_profile(&first, &config, Some(&store))?.is_empty());
+        let findings = evaluate_service_profile(&second, &config, Some(&store))?;
+
+        assert!(findings.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn refresh_uses_configured_dynamic_udp_policy() -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
@@ -323,8 +429,18 @@ mod tests {
     }
 
     fn udp_socket(addr: &str, port: u16, name: &str, exe: &str) -> RawEvent {
+        socket_with_protocol("udp", addr, port, name, exe)
+    }
+
+    fn socket_with_protocol(
+        protocol: &str,
+        addr: &str,
+        port: u16,
+        name: &str,
+        exe: &str,
+    ) -> RawEvent {
         RawEvent::new("network", "listening_socket")
-            .with_field("protocol", "udp")
+            .with_field("protocol", protocol)
             .with_field("local_addr", addr)
             .with_field("local_port", port.to_string())
             .with_field("process_name", name)

@@ -1,7 +1,7 @@
 use crate::active_response::{apply_active_response, ActiveResponseReport, BlockActionStatus};
 use crate::baseline::{diff_snapshots, BaselineSnapshot};
 use crate::collectors::{default_collectors, CollectContext};
-use crate::detectors::{default_detectors, DetectContext};
+use crate::detectors::{default_detectors, DetectContext, EventIndex};
 use crate::findings::coalesce_related_findings;
 use crate::incident::{correlate_findings, prune_incidents, save_incidents};
 use crate::maintenance::apply_maintenance_policy;
@@ -12,6 +12,7 @@ use crate::service_profile::evaluate_service_profile;
 use crate::storage::SqliteStore;
 use crate::threat_intel;
 use crate::utils::fs::path_string;
+use crate::utils::memory::current_rss_kb;
 use crate::utils::redact::{mask_command_args, mask_ip, mask_ips_in_text};
 use chrono::{Duration, Local, Timelike, Utc};
 use sentinel_core::{
@@ -54,6 +55,11 @@ impl Default for ScanOptions {
 pub struct ScanReport {
     pub raw_event_count: usize,
     pub diff_event_count: usize,
+    pub event_count_by_source: BTreeMap<String, usize>,
+    pub event_count_by_kind: BTreeMap<String, usize>,
+    pub memory_rss_before_kb: Option<u64>,
+    pub memory_rss_after_kb: Option<u64>,
+    pub memory_rss_delta_kb: Option<i64>,
     pub finding_count: usize,
     pub suppressed_duplicate_count: usize,
     pub quiet_suppressed_count: usize,
@@ -81,6 +87,11 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         "scan started"
     );
     let config = Arc::new(config);
+    let memory_rss_before_kb = config
+        .performance
+        .collect_memory_metrics
+        .then(current_rss_kb)
+        .flatten();
     let store = if options.persist {
         Some(SqliteStore::open(config.storage.path.clone())?)
     } else {
@@ -117,10 +128,16 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         },
         None => Vec::new(),
     };
+    let changed_file_paths = changed_file_paths(&diff_events);
     let diff_event_count = diff_events.len();
     let raw_event_count = raw_events.len();
     let mut detection_events = raw_events;
     detection_events.extend(diff_events);
+    if config.file_integrity.incremental {
+        detection_events = retain_incremental_file_events(detection_events, &changed_file_paths);
+    }
+    let event_count_by_source = count_events_by(&detection_events, |event| event.source.as_str());
+    let event_count_by_kind = count_events_by(&detection_events, |event| event.kind.as_str());
     if options.persist {
         if let Some(store) = &store {
             enrich_process_start_drift(&mut detection_events, store)?;
@@ -129,9 +146,10 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     }
 
     let detect_context = DetectContext::new(Arc::clone(&config));
+    let event_index = EventIndex::new(&detection_events);
     let mut findings = Vec::new();
     for detector in default_detectors() {
-        findings.extend(detector.detect(&detection_events, &detect_context));
+        findings.extend(detector.detect_indexed(&detection_events, &event_index, &detect_context));
     }
     if options.persist {
         if let Some(store) = &store {
@@ -230,11 +248,12 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
 
     if options.persist {
         if let Some(store) = &store {
+            let storage_events = prepare_raw_events_for_storage(&detection_events, &config);
             if privacy_redaction_enabled(&config) {
-                let redacted_events = redact_raw_events(&detection_events, &config);
+                let redacted_events = redact_raw_events(&storage_events, &config);
                 store.save_raw_events(&redacted_events)?;
             } else {
-                store.save_raw_events(&detection_events)?;
+                store.save_raw_events(&storage_events)?;
             }
             save_process_start_state(&detection_events, store)?;
             save_log_integrity_state(&detection_events, store)?;
@@ -301,6 +320,10 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             )
             .await;
         notification_attempt_count = notification_results.len();
+        let notification_findings_by_id = notification_findings
+            .iter()
+            .map(|finding| (finding.id.as_str(), finding))
+            .collect::<BTreeMap<_, _>>();
         for (finding_id, channel, result) in notification_results {
             match &result {
                 Ok(()) => {
@@ -324,9 +347,15 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
                     Ok(()) => ("ok", String::new()),
                     Err(err) => ("failed", err.to_string()),
                 };
-                if let Err(err) =
-                    store.record_notification_log(&finding_id, &channel, status, &error)
-                {
+                let Some(finding) = notification_findings_by_id.get(finding_id.as_str()) else {
+                    warn!(
+                        finding_id = finding_id,
+                        channel = channel,
+                        "notification finding snapshot missing"
+                    );
+                    continue;
+                };
+                if let Err(err) = store.record_notification_log(finding, &channel, status, &error) {
                     warn!(channel = channel, error = %err, "failed to record notification log");
                 }
             }
@@ -371,9 +400,21 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         }
     }
 
+    let memory_rss_after_kb = config
+        .performance
+        .collect_memory_metrics
+        .then(current_rss_kb)
+        .flatten();
+    let memory_rss_delta_kb = memory_rss_before_kb
+        .zip(memory_rss_after_kb)
+        .map(|(before, after)| after as i64 - before as i64);
+
     debug!(
         raw_events = raw_event_count,
         diff_events = diff_event_count,
+        memory_rss_before_kb,
+        memory_rss_after_kb,
+        memory_rss_delta_kb,
         detected_findings = detected_finding_count,
         findings = findings.len(),
         suppressed_duplicates = suppressed_duplicate_count,
@@ -394,6 +435,11 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     Ok(ScanReport {
         raw_event_count,
         diff_event_count,
+        event_count_by_source,
+        event_count_by_kind,
+        memory_rss_before_kb,
+        memory_rss_after_kb,
+        memory_rss_delta_kb,
         finding_count: findings.len(),
         suppressed_duplicate_count,
         quiet_suppressed_count,
@@ -410,6 +456,129 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         findings,
         collector_errors,
     })
+}
+
+fn count_events_by<'a>(
+    events: &'a [RawEvent],
+    key_fn: impl Fn(&'a RawEvent) -> &'a str,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for event in events {
+        *counts.entry(key_fn(event).to_string()).or_default() += 1;
+    }
+    counts
+}
+
+fn changed_file_paths(events: &[RawEvent]) -> BTreeSet<String> {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind.as_str(),
+                "file_created" | "file_modified" | "file_deleted"
+            )
+        })
+        .filter_map(|event| event.field("path").map(str::to_string))
+        .collect()
+}
+
+fn retain_incremental_file_events(
+    events: Vec<RawEvent>,
+    changed_file_paths: &BTreeSet<String>,
+) -> Vec<RawEvent> {
+    events
+        .into_iter()
+        .filter(|event| {
+            event.kind != "file_snapshot"
+                || file_snapshot_needed_for_detection(event, changed_file_paths)
+        })
+        .collect()
+}
+
+fn file_snapshot_needed_for_detection(
+    event: &RawEvent,
+    changed_file_paths: &BTreeSet<String>,
+) -> bool {
+    let path = event.field("path").unwrap_or_default();
+    if path.is_empty() {
+        return false;
+    }
+    changed_file_paths.contains(path)
+        || is_authorized_keys_path(path)
+        || event.field("content_markers").is_some()
+        || (event.field("is_web_path") == Some("true")
+            && (event.field("executable") == Some("true") || is_web_script_path(path)))
+}
+
+fn is_authorized_keys_path(path: &str) -> bool {
+    path.ends_with("/authorized_keys")
+        || path.ends_with("/authorized_keys2")
+        || path.ends_with("\\authorized_keys")
+        || path.ends_with("\\authorized_keys2")
+}
+
+fn is_web_script_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    [
+        ".php", ".phtml", ".jsp", ".jspx", ".asp", ".aspx", ".cgi", ".pl", ".py", ".sh",
+    ]
+    .iter()
+    .any(|suffix| lower.ends_with(suffix))
+}
+
+fn prepare_raw_events_for_storage(events: &[RawEvent], config: &SentinelConfig) -> Vec<RawEvent> {
+    events
+        .iter()
+        .filter(|event| raw_event_storage_enabled(event, config))
+        .map(|event| compact_raw_event_for_storage(event, config))
+        .collect()
+}
+
+fn raw_event_storage_enabled(event: &RawEvent, config: &SentinelConfig) -> bool {
+    event.kind != "web_access"
+        || config.performance.store_all_web_access_events
+        || crate::detectors::web_rules::storage_relevant_web_event(event)
+}
+
+fn compact_raw_event_for_storage(event: &RawEvent, config: &SentinelConfig) -> RawEvent {
+    let mut compact = event.clone();
+    if !config.performance.store_raw_log_lines {
+        compact.fields.remove("raw");
+    }
+    if compact.kind == "process_snapshot" && compact.fields.contains_key("cmdline") {
+        compact.fields.remove("argv_json");
+    }
+    let max_bytes = config.performance.max_stored_field_bytes;
+    for value in compact.fields.values_mut() {
+        if value.len() > max_bytes {
+            *value = truncate_utf8(value, max_bytes);
+        }
+    }
+    compact
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    const TRUNCATION_MARKER: &str = "...[truncated]";
+    if max_bytes <= TRUNCATION_MARKER.len() {
+        return utf8_prefix(value, max_bytes).to_string();
+    }
+    let prefix_budget = max_bytes - TRUNCATION_MARKER.len();
+    format!("{}{}", utf8_prefix(value, prefix_budget), TRUNCATION_MARKER)
+}
+
+fn utf8_prefix(value: &str, max_bytes: usize) -> &str {
+    let mut end = 0;
+    for (index, ch) in value.char_indices() {
+        let next = index + ch.len_utf8();
+        if next > max_bytes {
+            break;
+        }
+        end = next;
+    }
+    &value[..end]
 }
 
 fn apply_active_response_notification_policy(

@@ -43,7 +43,31 @@ fn is_file_persistence_drift(finding: &Finding) -> bool {
 }
 
 fn resource_group_key(finding: &Finding) -> String {
-    format!("{}\n{}", finding.host_id, finding.subject)
+    format!(
+        "{}\n{}",
+        finding.host_id,
+        normalized_resource_subject(finding)
+    )
+}
+
+fn normalized_resource_subject(finding: &Finding) -> String {
+    let path = finding
+        .evidence
+        .iter()
+        .find(|item| item.key == "path" && !item.value.trim().is_empty())
+        .map(|item| item.value.as_str())
+        .unwrap_or(&finding.subject);
+    canonical_systemd_unit_path(path)
+}
+
+fn canonical_systemd_unit_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    for prefix in ["/lib/systemd/system/", "/usr/lib/systemd/system/"] {
+        if let Some(rest) = normalized.strip_prefix(prefix) {
+            return format!("/usr/lib/systemd/system/{rest}");
+        }
+    }
+    normalized
 }
 
 fn process_group_key(finding: &Finding) -> String {
@@ -399,9 +423,38 @@ mod tests {
     fn keeps_unrelated_file_findings_separate() {
         let mut other = finding("PERSIST-001", Category::Persistence);
         other.subject = "/etc/systemd/system/other.service".to_string();
+        other.evidence = vec![
+            Evidence::new("path", "/etc/systemd/system/other.service"),
+            Evidence::new("change", "file_created"),
+            Evidence::new("previous_hash", ""),
+            Evidence::new("current_hash", "abc"),
+        ];
         let findings =
             coalesce_related_findings(vec![finding("FILE-001", Category::FileIntegrity), other]);
         assert_eq!(findings.len(), 2);
+    }
+
+    #[test]
+    fn coalesces_equivalent_systemd_unit_paths() {
+        let mut lib = finding("FILE-001", Category::FileIntegrity);
+        lib.subject = "/lib/systemd/system/sing-box.service".to_string();
+        lib.evidence = vec![
+            Evidence::new("path", "/lib/systemd/system/sing-box.service"),
+            Evidence::new("change", "file_modified"),
+            Evidence::new("current_hash", "abc"),
+        ];
+        let mut usr = finding("PERSIST-001", Category::Persistence);
+        usr.subject = "/usr/lib/systemd/system/sing-box.service".to_string();
+        usr.evidence = vec![
+            Evidence::new("path", "/usr/lib/systemd/system/sing-box.service"),
+            Evidence::new("change", "persistence_modified"),
+            Evidence::new("current_hash", "abc"),
+        ];
+
+        let findings = coalesce_related_findings(vec![lib, usr]);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "PERSIST-001");
     }
 
     fn finding(rule_id: &str, category: Category) -> Finding {

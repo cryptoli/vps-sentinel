@@ -67,6 +67,17 @@ pub struct SqliteStore {
     path: PathBuf,
 }
 
+struct NotificationLogSnapshot<'a> {
+    finding_id: &'a str,
+    rule_id: &'a str,
+    severity: &'a str,
+    subject: &'a str,
+    title: &'a str,
+    channel: &'a str,
+    status: &'a str,
+    error: &'a str,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StorageLimitReport {
     pub size_before_bytes: u64,
@@ -456,22 +467,44 @@ impl SqliteStore {
 
     pub fn record_notification_log(
         &self,
-        finding_id: &str,
+        finding: &Finding,
         channel: &str,
         status: &str,
         error: &str,
     ) -> SentinelResult<()> {
+        let severity = finding.severity.to_string();
+        self.record_notification_log_snapshot(NotificationLogSnapshot {
+            finding_id: &finding.id,
+            rule_id: &finding.rule_id,
+            severity: &severity,
+            subject: &finding.subject,
+            title: &finding.title,
+            channel,
+            status,
+            error,
+        })
+    }
+
+    fn record_notification_log_snapshot(
+        &self,
+        snapshot: NotificationLogSnapshot<'_>,
+    ) -> SentinelResult<()> {
         let conn = self.connection()?;
         conn.execute(
-            "INSERT INTO notification_logs (id, finding_id, channel, status, attempted_at, error)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO notification_logs
+             (id, finding_id, rule_id, severity, subject, title, channel, status, attempted_at, error)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 uuid::Uuid::new_v4().to_string(),
-                finding_id,
-                channel,
-                status,
+                snapshot.finding_id,
+                snapshot.rule_id,
+                snapshot.severity,
+                snapshot.subject,
+                snapshot.title,
+                snapshot.channel,
+                snapshot.status,
                 Utc::now().to_rfc3339(),
-                error
+                snapshot.error
             ],
         )
         .map_err(|err| SentinelError::Storage(err.to_string()))?;
@@ -618,6 +651,10 @@ impl SqliteStore {
             CREATE TABLE IF NOT EXISTS notification_logs (
                 id TEXT PRIMARY KEY,
                 finding_id TEXT NOT NULL,
+                rule_id TEXT NOT NULL DEFAULT '',
+                severity TEXT NOT NULL DEFAULT '',
+                subject TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
                 channel TEXT NOT NULL,
                 status TEXT NOT NULL,
                 attempted_at TEXT NOT NULL,
@@ -646,6 +683,30 @@ impl SqliteStore {
             "#,
         )
         .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        ensure_column(
+            &conn,
+            "notification_logs",
+            "rule_id",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        ensure_column(
+            &conn,
+            "notification_logs",
+            "severity",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        ensure_column(
+            &conn,
+            "notification_logs",
+            "subject",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
+        ensure_column(
+            &conn,
+            "notification_logs",
+            "title",
+            "TEXT NOT NULL DEFAULT ''",
+        )?;
         conn.execute(
             "INSERT OR REPLACE INTO finding_dedup_state (dedup_key, last_seen_at)
              SELECT dedup_key, MAX(timestamp)
@@ -737,6 +798,30 @@ fn table_row_count(conn: &Connection, table: &str) -> SentinelResult<usize> {
         .query_row(&sql, [], |row| row.get::<_, i64>(0))
         .map_err(|err| SentinelError::Storage(err.to_string()))?;
     Ok(count.max(0) as usize)
+}
+
+fn ensure_column(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    definition: &str,
+) -> SentinelResult<()> {
+    let pragma = format!("PRAGMA table_info({table})");
+    let mut stmt = conn
+        .prepare(&pragma)
+        .map_err(|err| SentinelError::Storage(err.to_string()))?;
+    let columns = stmt
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(|err| SentinelError::Storage(err.to_string()))?;
+    for existing in columns {
+        if existing.map_err(|err| SentinelError::Storage(err.to_string()))? == column {
+            return Ok(());
+        }
+    }
+    let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {definition}");
+    conn.execute(&sql, [])
+        .map_err(|err| SentinelError::Storage(err.to_string()))?;
+    Ok(())
 }
 
 fn delete_oldest_rows(
@@ -946,11 +1031,21 @@ mod tests {
     fn counts_notification_attempts() -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
-        store.record_notification_log("finding", "telegram", "ok", "")?;
+        let finding = test_finding("finding", "SSH-003");
+        store.record_notification_log(&finding, "telegram", "ok", "")?;
         assert_eq!(
             store.notification_attempt_count_since(Utc::now() - chrono::Duration::minutes(1))?,
             1
         );
+        let snapshot: (String, String, String, String) = store.connection()?.query_row(
+            "SELECT rule_id, severity, subject, title FROM notification_logs LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(snapshot.0, "SSH-003");
+        assert_eq!(snapshot.1, "High");
+        assert_eq!(snapshot.2, "subject");
+        assert_eq!(snapshot.3, "title");
         Ok(())
     }
 
@@ -1132,7 +1227,8 @@ mod tests {
         };
         store.save_raw_events(&[raw])?;
         store.save_findings(&[finding])?;
-        store.record_notification_log("finding", "telegram", "ok", "")?;
+        let notification_finding = test_finding("finding", "WEB-001");
+        store.record_notification_log(&notification_finding, "telegram", "ok", "")?;
         store.record_scan_run(1, 1, "ok")?;
         store.save_baseline_snapshot(&snapshot)?;
         store.save_rule_state("active_response_blocks", &state)?;
@@ -1155,6 +1251,20 @@ mod tests {
     struct TestRuleState {
         value: String,
         count: usize,
+    }
+
+    fn test_finding(id: &str, rule_id: &str) -> Finding {
+        let mut finding = Finding::new(
+            "host",
+            "title",
+            "description",
+            Severity::High,
+            Category::Ssh,
+            rule_id,
+            "subject",
+        );
+        finding.id = id.to_string();
+        finding
     }
 
     #[test]

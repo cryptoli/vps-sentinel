@@ -34,7 +34,7 @@ It is not:
 | Persistence checks | Monitors cron, systemd, shell profile, and preload-related locations for new or risk-scored suspicious startup entries. |
 | Process and GPU checks | Reads procfs argv, parent process, executable path, cwd, UID context, socket-FD count, CPU lifetime metrics, procfs start-time drift, structured cgroup/container context, systemd unit/ExecStart, executable owner/size/hash, package ownership, outbound connection profile, NVIDIA GPU compute-process facts via `nvidia-smi`, and AMD/ROCm GPU process facts via `rocm-smi`. It flags risk-scored suspicious executable paths, deleted executables, network command-execution bridges, suspicious behavior clusters, known miner/scanner identities, and suspicious GPU compute workloads. |
 | Network checks | Reads listening sockets and owning process details; attaches process context and firewall state; flags high-risk public services, suspicious listener processes, baseline owner drift, and ordinary new public listeners. Expected web/SSH ports such as 22, 80, and 443 reduce noise but are not blindly trusted. |
-| Web log checks | Parses common access logs, JSON access logs, Nginx-style error log request context, and optional `.1` rotated logs; classifies automated probing into attack families and aggregates similar paths from the same source to avoid path-by-path alert floods. |
+| Web log checks | Parses common access logs, JSON access logs, Nginx-style error log request context, and recent `.1` rotated logs; restores real client IPs from trusted proxy/CDN JSON fields when available, avoids blocking unresolved proxy sources, classifies automated probing into attack families, and aggregates probes by source to avoid path-by-path alert floods. |
 | Rootkit signals | Collects lightweight local indicators for hidden process and suspicious procfs behavior. |
 | Docker context | Detects Docker availability and emits initial container-surface context without requiring Docker-specific write access. |
 | Incident correlation | Correlates findings by source IP, path, process, category, and time window into local incidents with timelines. |
@@ -44,7 +44,7 @@ It is not:
 | Threat intelligence | Optionally enriches findings with local or remote indicators for IPs, paths, domains, and hashes. Indicator matches are supporting evidence, not standalone block triggers. |
 | Fleet view | Exports and ingests lightweight node snapshots so several VPS hosts can be reviewed from one local SQLite store. |
 | Maintenance mode | Provides a bounded maintenance window that can suppress low/medium baseline drift during planned upgrades without hiding high-risk activity. |
-| Storage | Stores raw events, findings, baselines, and notification logs in local SQLite; repeated raw facts use stable storage keys and a configurable database size cap to prevent unbounded growth. |
+| Storage and footprint control | Stores raw events, findings, baselines, scan runs, and self-contained notification logs in local SQLite; repeated raw facts use stable storage keys, raw log lines are omitted by default, ordinary Web access rows are not persisted unless enabled, and retention/database caps prevent unbounded growth. |
 | Noise control | Uses allowlists, minimum severity, finding deduplication, and configurable retention windows. |
 | Active response | Handles high-confidence public-source web probes and SSH brute-force sources through `observe`, `balanced`, or `strict` strategies; firewall writes use nftables or iptables with TTL-based expiry and public-IP safety checks. Enabled by default for new installs. |
 | Notifications | Sends alerts through Telegram, Email SMTP, generic webhook, ntfy, Gotify, Bark, and ServerChan. |
@@ -75,6 +75,8 @@ Process and listener findings now include a broader evidence chain when the host
 Firewall state is auxiliary context, not the source of truth. Socket exposure still comes from `/proc/net/*`; `ufw`, `firewalld`, `nftables`, and `iptables` status are attached so operators can decide whether a public listener is actually reachable through local policy.
 
 Every finding is enriched with a unified 0-100 risk score derived from severity, detector confidence, rule-specific scores, active-response context, and optional threat-intel matches. Incidents are generated after scan-level coalescing by grouping related findings within a configured time window, so operators can inspect an attack chain with `vs incidents timeline <incident_id>` instead of reading isolated alerts.
+
+The scan pipeline keeps memory bounded by indexing events by kind/source before detection, aggregating SSH failure logs by source IP, applying time windows and per-scan caps to Web/SSH log events, and dropping stable file snapshots from the detector/storage path after they have been used for baseline comparison. Changes, unsafe SSH key-file state, WebShell markers, and executable web files are still retained for detection.
 
 ## Notification Channels
 
@@ -199,15 +201,15 @@ The Docker containers used in CI are build and compatibility test environments o
 | File and persistence drift | Builds a local SQLite baseline, diffs later snapshots, coalesces related file/persistence findings for the same path, and attaches package-manager context. | Finds real drift while reducing confusion during legitimate package updates; baseline is refreshed only by explicit command. |
 | Log tamper signals | Collects sensitive log file snapshots and compares them with stored rule state; risky symlink targets are immediate findings, truncation requires a large configured size drop and no recent rotation sibling, and previously seen configured logs that disappear are reported. | Detects anti-forensics such as redirecting auth logs to `/dev/null`, clearing log files, or removing auth logs, while avoiding normal logrotate noise. |
 | WebShell content | Scans bounded file content for risk markers and scores marker combinations plus web-path context. | Avoids alerting on one weak marker, while catching classic web command execution and encoded payload patterns. |
-| Web probing | Groups `WEB-001` by source IP, probe family, and response profile. Missing/rejected probes such as 404 PHPUnit directory sweeps are Low context; successful sensitive-file responses or protected exploit paths are raised. | A scanner hitting many path variants creates one readable finding instead of dozens of Telegram messages. |
+| Web probing | Groups `WEB-001` by source IP while preserving all probe families, response profiles, sample paths, methods, statuses, and trusted-proxy context. Missing/rejected probes such as 404 PHPUnit directory sweeps are Low context; successful sensitive-file responses or protected exploit paths are raised. | A scanner hitting many path variants creates one readable finding instead of dozens of Telegram messages, and CDN/proxy addresses are not treated as attacker IPs unless a real client IP is available. |
 | Process and GPU risk | Reads procfs argv, parent, executable, cwd, UID/EUID, deleted state, socket-FD count, lifetime CPU metrics, start-time drift, cgroup/container hints, systemd unit/ExecStart, executable metadata/hash, package owner, outbound connection profile, and NVIDIA compute-process state; uses rule-specific scoring, allowlists, rule-state storage, and same-PID signal coalescing. `PROC-001` scores suspicious executable paths instead of trusting or blocking paths blindly; `PROC-005` requires a primary evasion/location signal before socket, outbound, restart, or root-context signals can alert; `PROC-006` requires GPU compute activity plus mining or high-risk runtime evidence. | Detects suspicious executable paths, suspicious deleted executables, network shell bridges, known miner/scanner identities, renamed behavior clusters, and suspicious GPU mining workloads while avoiding duplicate messages caused by volatile PID/CPU/GPU/connection counters or normal high-connection services. |
 | Network listeners | Parses `/proc/net/tcp*` and `/proc/net/udp*`, resolves owning processes through `/proc/<pid>/fd`, compares listener owners with baseline, attaches process/firewall context, and prioritizes suspicious owner behavior over generic port exposure. | Expected 22/80/443 ports reduce generic noise but still produce findings when the owning process changes or looks suspicious; high-risk ports keep their service and firewall profile as evidence. |
 | Notifications | Renders one `Finding` model through channel-specific templates: Telegram HTML, Email HTML/plain text, Markdown-aware channels, or plain text. | Messages include the configured VPS name, normalized time, localized labels, evidence, impact, and recommendations. |
 | Noise control | Applies scan-level deduplication, persisted dedup windows, state reminder intervals, quiet hours, and hourly notification budgets. | Reduces repeat messages while keeping high-value alerts visible. |
-| Active response | Evaluates current findings after scan-level coalescing/deduplication and before persisted notification deduplication; only public IPs outside `[allowlist].ips` can be blocked. Web blocks require successful sensitive responses, high-confidence exploit probes, repeated lower-confidence exploit probes, or high-volume probe/error bursts; SSH blocks default to the same failed-login threshold as the SSH brute-force alert. | Lets operators turn noisy, obvious scanners into temporary firewall drops without making every alert destructive. |
+| Active response | Evaluates current findings after scan-level coalescing/deduplication and before persisted notification deduplication; only public IPs outside `[allowlist].ips` can be blocked, and unresolved trusted proxy/CDN sources are never block candidates. Web blocks require successful sensitive responses, high-confidence exploit probes, repeated lower-confidence exploit probes, or high-volume probe/error bursts; SSH blocks default to the same failed-login threshold as the SSH brute-force alert. | Lets operators turn noisy, obvious scanners into temporary firewall drops without making every alert destructive or blocking CDN edges by mistake. |
 | Response policy DSL | Applies configurable response policies after detection candidates are created. Policies match rule IDs or categories and choose observe, temporary block, or permanent block with minimum severity, confidence, and unified score thresholds. | Keeps detection logic separate from response decisions and lets operators tune blocking without code changes. |
 | Incidents and timeline | Groups related findings by IP, path, process, category, and time window, stores a bounded incident index, and exposes `incidents list/show/timeline`. | Turns isolated findings into a readable attack-chain view while keeping raw findings available. |
-| Service profile | Stores listener owner profiles with address, port, protocol, process name, executable, command line, and exposure classification. | Detects service drift on common ports and new listeners without blindly trusting or blocking 80/443. |
+| Service profile | Stores listener owner profiles with address, port, protocol, process name, executable, command line, and exposure classification; dynamic UDP/UDP6 high ports can be keyed by process identity, and configurable transient clients plus loopback SSH forwarding listeners are ignored. | Detects service drift on common ports and new listeners without blindly trusting 80/443 or alerting every time a legitimate dynamic UDP port changes. |
 | Advanced evidence | Optional auditd, eBPF JSONL bridge, Sigma-like TOML rules, YARA CLI scans, and threat-intel indicators feed the same RawEvent/Finding model. | Adds deeper host signals when the platform supports them while keeping default installs lightweight and compatible. |
 | Maintenance and fleet operations | Stores bounded maintenance state and fleet node snapshots in local rule state. | Suppresses planned low/medium drift during upgrades and lets several VPS node summaries be reviewed locally. |
 
@@ -426,7 +428,7 @@ Commands:
 | `vps-sentinel reload --config <path>` | Validate the config and reload the running systemd service. Use `vs reload` after installing the shorthand. |
 | `vps-sentinel doctor --config <path>` | Check runtime readiness: root visibility, Unix target support, storage directory writability, and configured auth log visibility. |
 | `vps-sentinel check --json --config <path>` | Run collectors and detectors once without persisting results, sending notifications, or applying active response. Omit `--json` for a human-readable summary. |
-| `vps-sentinel scan --config <path>` | Run one full scan, persist raw events/findings, update notification logs, apply deduplication, and send enabled notifications. |
+| `vps-sentinel scan --config <path>` | Run one full scan, persist compact raw events/findings, update notification logs, apply deduplication, send enabled notifications, and print RSS/event-source diagnostics. |
 | `vps-sentinel scan --no-notify --json --config <path>` | Persist scan results but suppress notification delivery and active response. Useful before enabling channels. Omit `--json` for text output. |
 | `vps-sentinel daemon --config <path>` | Run continuous scans using `agent.scan_interval_seconds`; intended for systemd. |
 | `vps-sentinel baseline create --config <path>` | Capture the current known-good local state into SQLite. Run after installation and after approved system changes. |
@@ -497,6 +499,18 @@ max_database_size_mb = 256
 
 Automatic cleanup runs after each persisted scan. Manual cleanup uses the same storage layer: `vs storage prune` applies retention plus the configured size cap, `vs storage stats` shows row counts and footprint, `vs storage clear notifications --yes` clears notification delivery history, and `vs storage clear all-history --yes` clears raw events/findings/notification logs/scan runs without deleting baselines or rule state. Clearing `baselines` is intentionally separate because it changes future drift detection.
 
+Performance controls:
+
+```toml
+[performance]
+collect_memory_metrics = true
+store_raw_log_lines = false
+store_all_web_access_events = false
+max_stored_field_bytes = 4096
+```
+
+`collect_memory_metrics` adds best-effort process RSS before/after values to scan reports and JSON output. `store_raw_log_lines = false` keeps structured fields such as IP, user, path, status, and method while omitting full raw log lines from stored raw events. `store_all_web_access_events = false` stores only Web access rows that are relevant to Web probing evidence, which keeps busy public websites from filling SQLite with ordinary 404/static traffic. `max_stored_field_bytes` truncates unusually large stored field values without changing the in-memory detection input.
+
 SSH alert policy:
 
 ```toml
@@ -505,18 +519,22 @@ alert_on_root_login = true
 alert_on_password_login = true
 alert_on_successful_login = true
 auth_log_lookback_seconds = 300
+max_events_per_scan = 2000
+trusted_admin_ips = []
+alert_on_trusted_admin_login = false
 ```
 
-`alert_on_successful_login` covers ordinary successful SSH logins that are not already reported by the root-login or password-login rules. It is not limited to unfamiliar IP addresses. Ordinary successful-login findings are `Info`; root login remains `High`, and password login remains `Medium`. SSH login deduplication uses user plus source IP, while the session port is kept as evidence only. SSH brute-force deduplication uses the source IP, so a rising failure count does not create a new notification key every scan. `auth_log_lookback_seconds` limits how far back auth logs are considered on each scan so old login lines do not keep generating notifications. When configured auth log files such as `/var/log/auth.log` and `/var/log/secure` are absent, vps-sentinel falls back to `journalctl` for `ssh.service` and `sshd.service`.
+`alert_on_successful_login` covers ordinary successful SSH logins that are not already reported by the root-login or password-login rules. It is not limited to unfamiliar IP addresses. Ordinary successful-login findings are `Info`; root login remains `High`, and password login remains `Medium`. `trusted_admin_ips` accepts exact IPs or CIDRs for known management sources; root `publickey` login from those sources is suppressed by default, or reported as `SSH-004` when `alert_on_trusted_admin_login = true`. Root password login and SSH brute-force detection are not suppressed by this setting. SSH login deduplication uses user plus source IP, while the session port is kept as evidence only. SSH brute-force deduplication uses the source IP, so a rising failure count does not create a new notification key every scan. `auth_log_lookback_seconds` limits how far back auth logs are considered on each scan so old login lines do not keep generating notifications. Failed SSH lines are aggregated by source IP before detection; `max_events_per_scan` bounds extreme log volume while preserving aggregate failure counts. When configured auth log files such as `/var/log/auth.log` and `/var/log/secure` are absent, vps-sentinel falls back to `journalctl` for `ssh.service` and `sshd.service`.
 
 File-integrity scoring:
 
 ```toml
 [file_integrity]
 webshell_min_score = 70
+incremental = true
 ```
 
-`webshell_min_score` controls when `FILE-002` is emitted. The detector scores marker combinations and web-script context instead of alerting on one isolated marker, which reduces false positives in legitimate admin scripts while still catching classic web command execution and encoded command-execution patterns.
+`webshell_min_score` controls when `FILE-002` is emitted. The detector scores marker combinations and web-script context instead of alerting on one isolated marker, which reduces false positives in legitimate admin scripts while still catching classic web command execution and encoded command-execution patterns. With `incremental = true`, unchanged file snapshots are used for baseline comparison and then dropped from detection/storage unless they are still needed for current-state security checks such as unsafe `authorized_keys`, WebShell markers, or executable/script files under web roots.
 
 Sensitive log integrity:
 
@@ -619,11 +637,16 @@ Web log policy:
 ```toml
 [web]
 max_log_tail_bytes = 1048576
+max_events_per_scan = 5000
 include_rotated = true
+log_lookback_seconds = 900
 error_burst_threshold = 20
+trusted_proxy_cidrs = ["172.64.0.0/13", "2606:4700::/32"]
+real_client_ip_fields = ["cf_connecting_ip", "x_forwarded_for", "headers.cf-connecting-ip"]
+suppress_unresolved_trusted_proxy = true
 ```
 
-`WEB-001` is emitted for known probe families such as `.env`, `.git`, PHPUnit `eval-stdin.php`, CGI shell traversal, command injection, PHP config-write payloads, LFI file reads, PHP stream wrappers, JNDI injection, SSRF cloud metadata probes, template injection, SQL injection, deserialization probes, phpMyAdmin, WordPress admin, actuator, and server-status probes. Similar path variants are aggregated by source IP, probe family, and response profile. The collector supports common access logs, JSON access logs, and Nginx-style error logs; `max_log_tail_bytes` bounds per-file reads and `include_rotated` includes `.1` siblings. A pure 404/400/301 directory sweep is Low by default; successful responses for sensitive paths are High, while rejected active exploit payloads remain Medium context. `error_burst_threshold` controls when `WEB-002` is emitted for repeated 403/404 responses from one source IP that did not already produce a probe-family finding.
+`WEB-001` is emitted for known probe families such as `.env`, `.git`, PHPUnit `eval-stdin.php`, CGI shell traversal, command injection, PHP config-write payloads, LFI file reads, PHP stream wrappers, JNDI injection, SSRF cloud metadata probes, template injection, SQL injection, deserialization probes, phpMyAdmin, WordPress admin, actuator, and server-status probes. Similar path variants are aggregated by source IP while preserving all probe families and response profiles in evidence. The collector supports common access logs, JSON access logs, and Nginx-style error logs; `max_log_tail_bytes` bounds per-file reads, `max_events_per_scan` bounds parsed events from extreme traffic, `include_rotated` includes `.1` siblings, and `log_lookback_seconds` keeps old rotated lines from repeatedly re-entering detection. `trusted_proxy_cidrs` defaults to Cloudflare ranges and can be replaced or extended for other trusted reverse proxies. JSON log fields listed in `real_client_ip_fields` are used to recover the real client IP; if a log source is a trusted proxy but no real client IP is available, `suppress_unresolved_trusted_proxy = true` suppresses the finding and active-response candidate instead of blaming the proxy edge. A pure 404/400/301 directory sweep is Low by default; successful responses for sensitive paths are High, while rejected active exploit payloads remain Medium context. `error_burst_threshold` controls when `WEB-002` is emitted for repeated 403/404 responses from one source IP that did not already produce a probe-family finding.
 
 Active response:
 
@@ -643,7 +666,7 @@ web_exploit_block_threshold = 5
 ssh_failed_login_block_threshold = 6
 ```
 
-Active response is enabled by default for new installs. Existing configs are not overwritten during upgrade, so a host that explicitly has `active_response.enabled = false` stays disabled until the operator changes it. `strategy = "observe"` records block candidates without writing firewall rules, `balanced` is the default policy, and `strict` requires stronger evidence for rejected Web probes and SSH brute-force sources. The scanner applies active response after scan-level coalescing/deduplication but before persisted notification deduplication, so an escalating source can still be blocked even when repeated notifications are suppressed. SSH blocking requires an `SSH-003` finding and defaults to 6 failed logins in the scan window. Web blocking covers successful sensitive responses, high-confidence RCE-style exploit probes, repeated lower-confidence exploit probes, and high-volume error bursts. Quiet hours and notification limiters do not prevent blocking. The backend uses nftables when available and falls back to iptables/ip6tables. Normal blocks are temporary: nftables uses set timeouts and vps-sentinel also stores block state in SQLite so expired entries can be removed on later scans. If the same public source IP repeatedly becomes a block candidate at least `permanent_block_threshold` times within `permanent_block_window_seconds`, it is escalated to a permanent firewall block with no expiry. Permanent escalation still respects `[allowlist].ips`, `strategy = "observe"`, and `max_blocks_per_scan`, and operators can remove it with `vs blocks unblock <ip>` or `vs blocks unblock-all --yes`. Only public routable source IPs are eligible. When one scan creates at most `notification_detail_limit` new blocks, alerts include the blocked IP and reason; larger block bursts produce one summary alert and operators can inspect details with `vs blocks list --no-verify`.
+Active response is enabled by default for new installs. Existing configs are not overwritten during upgrade, so a host that explicitly has `active_response.enabled = false` stays disabled until the operator changes it. `strategy = "observe"` records block candidates without writing firewall rules, `balanced` is the default policy, and `strict` requires stronger evidence for rejected Web probes and SSH brute-force sources. The scanner applies active response after scan-level coalescing/deduplication but before persisted notification deduplication, so an escalating source can still be blocked even when repeated notifications are suppressed. SSH blocking requires an `SSH-003` finding and defaults to 6 failed logins in the scan window. Web blocking covers successful sensitive responses, high-confidence RCE-style exploit probes, repeated lower-confidence exploit probes, and high-volume error bursts, but Web findings marked `proxy_source_unresolved` are never block candidates. Quiet hours and notification limiters do not prevent blocking. The backend uses nftables when available and falls back to iptables/ip6tables. Normal blocks are temporary: nftables uses set timeouts and vps-sentinel also stores block state in SQLite so expired entries can be removed on later scans. If the same public source IP repeatedly becomes a block candidate at least `permanent_block_threshold` times within `permanent_block_window_seconds`, it is escalated to a permanent firewall block with no expiry. Permanent escalation still respects `[allowlist].ips`, trusted proxy attribution safety, `strategy = "observe"`, and `max_blocks_per_scan`, and operators can remove it with `vs blocks unblock <ip>` or `vs blocks unblock-all --yes`. Only public routable source IPs are eligible. When one scan creates at most `notification_detail_limit` new blocks, alerts include the blocked IP and reason; larger block bursts produce one summary alert and operators can inspect details with `vs blocks list --no-verify`.
 
 Every scan synchronizes active-response state with the real firewall before deciding whether a source is already blocked. If a rule expired, was removed by firewalld/ufw reload, or was changed manually, the stale state record is removed and a still-escalating source can be blocked again. The iptables backend checks for an existing rule before inserting, so repeated scans do not create duplicate DROP rules, and manual unblock removes duplicate matching rules if they exist. Use `vs blocks list`, `vs blocks cleanup`, `vs blocks unblock <ip>`, and `vs blocks unblock-all --yes` for operational control.
 
@@ -675,6 +698,10 @@ max_findings_per_incident = 50
 [service_profile]
 enabled = true
 drift_requires_public_exposure = false
+dynamic_udp_enabled = true
+dynamic_udp_min_port = 32768
+ignored_dynamic_udp_process_names = ["systemd-timesyncd", "chronyd", "ntpd"]
+ignore_loopback_ssh_forwarding = true
 
 [reports]
 scheduled_enabled = true
@@ -682,7 +709,7 @@ scheduled_hour = 8
 scheduled_period = "today"
 ```
 
-`incidents` controls local attack-chain grouping. `service_profile` controls listener owner drift detection. Scheduled reports are enabled by default and send the configured daily report from the daemon through enabled notification channels, with `min_interval_seconds` preventing duplicate sends after restarts. If no notification channel is configured, scheduled reports are skipped without building or sending a report.
+`incidents` controls local attack-chain grouping. `service_profile` controls listener owner drift detection. Dynamic UDP/UDP6 services above `dynamic_udp_min_port` are keyed by process identity when enabled, so VPN/relay-style software that changes high UDP ports does not alert every scan. `ignored_dynamic_udp_process_names` covers known client-style UDP processes such as time sync daemons, and `ignore_loopback_ssh_forwarding` suppresses local SSH X11/forwarding listeners such as `127.0.0.1:6010`. Scheduled reports are enabled by default and send the configured daily report from the daemon through enabled notification channels, with `min_interval_seconds` preventing duplicate sends after restarts. If no notification channel is configured, scheduled reports are skipped without building or sending a report.
 
 Advanced collectors and external rules:
 
@@ -816,7 +843,7 @@ Example rules:
 
 Some collectors need root-level visibility. If the agent runs without root permissions, `doctor` reports reduced visibility and affected modules degrade instead of crashing.
 
-Runtime footprint is intentionally small for a continuously running agent. On the current validation VPS, the daemon process reports about 10-13 MiB RSS during the normal 60-second scan loop. systemd cgroup `MemoryCurrent` can be much higher, from tens of MiB to a few hundred MiB, because Linux may charge recently touched file cache and cgroup memory accounting to the service. Actual memory pressure depends on log tail size, file-integrity path scope, kernel accounting, and enabled notification channels; process RSS is the best steady-state indicator for the daemon itself. Raw event storage uses stable keys for repeated facts, so rescanning the same log tail or unchanged host state replaces rows instead of appending identical data every minute. SQLite storage is additionally bounded by `storage.max_database_size_mb`; when the cap is exceeded, old high-volume rows are pruned and SQLite is vacuumed to reclaim disk space.
+Runtime footprint is intentionally small for a continuously running agent. On the current validation VPS set, the daemon process reports about 13-21 MiB RSS during the normal 60-second scan loop. systemd cgroup `MemoryCurrent` can be much higher, from tens of MiB to a few hundred MiB, because Linux may charge recently touched file cache and cgroup memory accounting to the service. Actual memory pressure depends on log tail size, file-integrity path scope, kernel accounting, and enabled notification channels; process RSS is the best steady-state indicator for the daemon itself. `vs scan` reports best-effort RSS before/after values and event counts by source. Raw event storage uses stable keys and compact stored fields, ordinary Web access rows are skipped by default unless they support Web-probe evidence, and rescanning the same log tail or unchanged host state replaces rows instead of appending identical data every minute. Notification logs also keep rule/severity/subject/title snapshots so they remain auditable after old findings are pruned. SQLite storage is additionally bounded by `storage.max_database_size_mb`; when the cap is exceeded, old high-volume rows are pruned and SQLite is vacuumed to reclaim disk space.
 
 The systemd unit uses:
 

@@ -1,4 +1,6 @@
-use crate::detectors::{evidence, field_is_allowlisted, string_field, DetectContext, Detector};
+use crate::detectors::{
+    evidence, field_is_allowlisted, string_field, DetectContext, Detector, EventIndex,
+};
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
 use std::collections::{BTreeMap, BTreeSet};
@@ -30,43 +32,63 @@ impl Detector for WebDetector {
     }
 
     fn detect(&self, events: &[RawEvent], ctx: &DetectContext) -> Vec<Finding> {
-        let mut findings = Vec::new();
-        let mut errors_by_ip: BTreeMap<String, usize> = BTreeMap::new();
-        let mut probes = BTreeMap::<ProbeGroupKey, ProbeGroup>::new();
-        let mut probe_ips = BTreeSet::<String>::new();
-
-        for event in events.iter().filter(|event| event.kind == "web_access") {
-            let ip = string_field(event, "ip");
-            if field_is_allowlisted(&ip, &ctx.config.allowlist.ips) {
-                continue;
-            }
-            let path = string_field(event, "path");
-            if let Some(signature) = classify_probe_path(&path) {
-                probe_ips.insert(ip.clone());
-                let key = ProbeGroupKey {
-                    ip,
-                    family: signature.family,
-                    response: ResponseProfile::from_status(event.field("status").unwrap_or("")),
-                };
-                probes.entry(key).or_default().push(event, signature);
-            }
-            if matches!(event.field("status"), Some("403") | Some("404")) {
-                *errors_by_ip.entry(string_field(event, "ip")).or_insert(0) += 1;
-            }
-        }
-
-        findings.extend(
-            probes
-                .into_iter()
-                .map(|(key, group)| web_probe_group(key, group, ctx)),
-        );
-        for (ip, count) in errors_by_ip {
-            if !probe_ips.contains(&ip) && count >= ctx.config.web.error_burst_threshold {
-                findings.push(web_error_burst(&ip, count, ctx));
-            }
-        }
-        findings
+        detect_web_events(
+            events.iter().filter(|event| event.kind == "web_access"),
+            ctx,
+        )
     }
+
+    fn detect_indexed(
+        &self,
+        _events: &[RawEvent],
+        index: &EventIndex<'_>,
+        ctx: &DetectContext,
+    ) -> Vec<Finding> {
+        detect_web_events(index.kind("web_access"), ctx)
+    }
+}
+
+fn detect_web_events<'a>(
+    events: impl IntoIterator<Item = &'a RawEvent>,
+    ctx: &DetectContext,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let mut errors_by_ip: BTreeMap<String, usize> = BTreeMap::new();
+    let mut probes = BTreeMap::<ProbeGroupKey, ProbeGroup>::new();
+    let mut probe_ips = BTreeSet::<String>::new();
+
+    for event in events {
+        let ip = string_field(event, "ip");
+        if field_is_allowlisted(&ip, &ctx.config.allowlist.ips) {
+            continue;
+        }
+        if event.field("proxy_source_unresolved") == Some("true")
+            && ctx.config.web.suppress_unresolved_trusted_proxy
+        {
+            continue;
+        }
+        let path = string_field(event, "path");
+        if let Some(signature) = classify_probe_path(&path) {
+            probe_ips.insert(ip.clone());
+            let key = ProbeGroupKey { ip };
+            probes.entry(key).or_default().push(event, signature);
+        }
+        if matches!(event.field("status"), Some("403") | Some("404")) {
+            *errors_by_ip.entry(string_field(event, "ip")).or_insert(0) += 1;
+        }
+    }
+
+    findings.extend(
+        probes
+            .into_iter()
+            .map(|(key, group)| web_probe_group(key, group, ctx)),
+    );
+    for (ip, count) in errors_by_ip {
+        if !probe_ips.contains(&ip) && count >= ctx.config.web.error_burst_threshold {
+            findings.push(web_error_burst(&ip, count, ctx));
+        }
+    }
+    findings
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -241,6 +263,12 @@ pub(crate) fn probe_family_blocks_on_single_attempt(family: &str) -> bool {
     ProbeFamily::from_id(family).is_some_and(ProbeFamily::blocks_on_single_attempt)
 }
 
+pub(crate) fn storage_relevant_web_event(event: &RawEvent) -> bool {
+    event
+        .field("path")
+        .is_some_and(|path| classify_probe_path(path).is_some())
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ProbeSignature {
     family: ProbeFamily,
@@ -287,30 +315,70 @@ impl ResponseProfile {
             Self::Redirected | Self::MissingOrRejected | Self::Unknown => family.base_severity(),
         }
     }
+
+    fn risk_rank(self) -> u8 {
+        match self {
+            Self::Successful => 5,
+            Self::Protected => 4,
+            Self::ServerError => 3,
+            Self::MissingOrRejected => 2,
+            Self::Redirected => 1,
+            Self::Unknown => 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ProbeGroupKey {
     ip: String,
-    family: ProbeFamily,
-    response: ResponseProfile,
 }
 
 #[derive(Debug, Default)]
 struct ProbeGroup {
     count: usize,
+    strongest_family: Option<ProbeFamily>,
+    strongest_response: Option<ResponseProfile>,
+    severity: Option<Severity>,
+    families: BTreeSet<String>,
+    responses: BTreeSet<String>,
     methods: BTreeSet<String>,
     statuses: BTreeSet<String>,
     log_sources: BTreeSet<String>,
     sample_paths: Vec<String>,
+    source_is_trusted_proxy: bool,
+    proxy_source_unresolved: bool,
+    proxy_ips: BTreeSet<String>,
 }
 
 impl ProbeGroup {
-    fn push(&mut self, event: &RawEvent, _signature: ProbeSignature) {
+    fn push(&mut self, event: &RawEvent, signature: ProbeSignature) {
         self.count += 1;
+        let response = ResponseProfile::from_status(event.field("status").unwrap_or(""));
+        let severity = response.severity_for(signature.family);
+        self.severity = Some(max_severity(self.severity, severity));
+        self.families.insert(signature.family.id().to_string());
+        self.responses.insert(response.id().to_string());
+        let candidate_rank = probe_pair_rank(signature.family, response, severity);
+        let current_rank =
+            self.strongest_family
+                .zip(self.strongest_response)
+                .map(|(family, response)| {
+                    probe_pair_rank(family, response, response.severity_for(family))
+                });
+        if current_rank.map_or(true, |current| candidate_rank > current) {
+            self.strongest_family = Some(signature.family);
+            self.strongest_response = Some(response);
+        }
         insert_nonempty(&mut self.methods, event.field("method"));
         insert_nonempty(&mut self.statuses, event.field("status"));
         insert_nonempty(&mut self.log_sources, event.field("log_source"));
+        if event.field("source_is_trusted_proxy") == Some("true") {
+            self.source_is_trusted_proxy = true;
+            insert_nonempty(&mut self.proxy_ips, event.field("proxy_ip"));
+        }
+        if event.field("proxy_source_unresolved") == Some("true") {
+            self.proxy_source_unresolved = true;
+        }
         let path = string_field(event, "path");
         if !path.trim().is_empty()
             && !self.sample_paths.contains(&path)
@@ -321,6 +389,35 @@ impl ProbeGroup {
     }
 }
 
+fn max_severity(current: Option<Severity>, candidate: Severity) -> Severity {
+    match current {
+        Some(current) if severity_rank(current) >= severity_rank(candidate) => current,
+        _ => candidate,
+    }
+}
+
+fn severity_rank(severity: Severity) -> u8 {
+    match severity {
+        Severity::Info => 0,
+        Severity::Low => 1,
+        Severity::Medium => 2,
+        Severity::High => 3,
+        Severity::Critical => 4,
+    }
+}
+
+fn probe_family_rank(family: ProbeFamily) -> u8 {
+    let severity_rank = severity_rank(family.success_severity());
+    let exploit_rank = u8::from(family.is_exploit());
+    severity_rank.saturating_mul(2).saturating_add(exploit_rank)
+}
+
+fn probe_pair_rank(family: ProbeFamily, response: ResponseProfile, severity: Severity) -> u16 {
+    u16::from(severity_rank(severity)) * 100
+        + u16::from(response.risk_rank()) * 10
+        + u16::from(probe_family_rank(family))
+}
+
 fn insert_nonempty(values: &mut BTreeSet<String>, value: Option<&str>) {
     if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
         values.insert(value.to_string());
@@ -328,10 +425,29 @@ fn insert_nonempty(values: &mut BTreeSet<String>, value: Option<&str>) {
 }
 
 fn web_probe_group(key: ProbeGroupKey, group: ProbeGroup, ctx: &DetectContext) -> Finding {
-    let family = key.family;
-    let response = key.response;
+    let family = group.strongest_family.unwrap_or(ProbeFamily::GenericCgi);
+    let response = group.strongest_response.unwrap_or(ResponseProfile::Unknown);
     let subject = key.ip.clone();
-    let severity = response.severity_for(family);
+    let severity = group.severity.unwrap_or(Severity::Low);
+    let mut evidence_items = vec![
+        evidence("ip", key.ip),
+        evidence("probe_family", family.id()),
+        evidence("probe_families", join_set(&group.families)),
+        evidence("response_profile", response.id()),
+        evidence("response_profiles", join_set(&group.responses)),
+        evidence("request_count", group.count.to_string()),
+        evidence("methods", join_set(&group.methods)),
+        evidence("statuses", join_set(&group.statuses)),
+        evidence("sample_paths", group.sample_paths.join(", ")),
+        evidence("log_sources", join_set(&group.log_sources)),
+    ];
+    if group.source_is_trusted_proxy {
+        evidence_items.push(evidence("source_is_trusted_proxy", "true"));
+        evidence_items.push(evidence("proxy_ips", join_set(&group.proxy_ips)));
+    }
+    if group.proxy_source_unresolved {
+        evidence_items.push(evidence("proxy_source_unresolved", "true"));
+    }
 
     Finding::new(
         &ctx.host_id,
@@ -342,19 +458,7 @@ fn web_probe_group(key: ProbeGroupKey, group: ProbeGroup, ctx: &DetectContext) -
         "WEB-001",
         subject,
     )
-    .with_evidence_deduped_by(
-        vec![
-            evidence("ip", key.ip),
-            evidence("probe_family", family.id()),
-            evidence("response_profile", response.id()),
-            evidence("request_count", group.count.to_string()),
-            evidence("methods", join_set(&group.methods)),
-            evidence("statuses", join_set(&group.statuses)),
-            evidence("sample_paths", group.sample_paths.join(", ")),
-            evidence("log_sources", join_set(&group.log_sources)),
-        ],
-        &["ip", "probe_family", "response_profile"],
-    )
+    .with_evidence_deduped_by(evidence_items, &["ip"])
     .with_recommendations(vec![
         "Review whether any probe path returned a successful or protected response.".to_string(),
         "Correlate with file changes and process anomalies around the same time.".to_string(),
@@ -717,7 +821,7 @@ mod tests {
     }
 
     #[test]
-    fn web_probe_paths_are_aggregated_by_source_family_and_response() {
+    fn web_probe_paths_are_aggregated_by_source_ip() {
         let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
         let events = vec![
             access_error(
@@ -732,25 +836,45 @@ mod tests {
                 "198.51.100.7",
                 "/workspace/vendor/phpunit/phpunit/src/Util/PHP/eval-stdin.php",
             ),
+            access_event("198.51.100.7", "GET", "/.env", "200"),
         ];
 
         let findings = WebDetector.detect(&events, &ctx);
 
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, "WEB-001");
-        assert_eq!(findings[0].severity, Severity::Low);
+        assert_eq!(findings[0].severity, Severity::High);
         assert!(findings[0]
             .evidence
             .iter()
-            .any(|item| item.key == "request_count" && item.value == "3"));
+            .any(|item| item.key == "request_count" && item.value == "4"));
         assert!(findings[0]
             .evidence
             .iter()
-            .any(|item| { item.key == "probe_family" && item.value == "phpunit_eval_stdin" }));
-        assert!(findings[0]
-            .evidence
-            .iter()
-            .any(|item| { item.key == "response_profile" && item.value == "missing_or_rejected" }));
+            .any(|item| { item.key == "probe_families" && item.value.contains("env_file") }));
+        assert!(findings[0].evidence.iter().any(|item| {
+            item.key == "response_profiles" && item.value.contains("successful_response")
+        }));
+        assert_eq!(
+            findings[0]
+                .evidence
+                .iter()
+                .find(|item| item.key == "probe_family")
+                .map(|item| item.value.as_str()),
+            Some("env_file")
+        );
+    }
+
+    #[test]
+    fn unresolved_trusted_proxy_sources_are_suppressed_by_default() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = access_event("172.70.12.9", "GET", "/.env", "404")
+            .with_field("source_is_trusted_proxy", "true")
+            .with_field("proxy_source_unresolved", "true");
+
+        let findings = WebDetector.detect(&[event], &ctx);
+
+        assert!(findings.is_empty());
     }
 
     #[test]

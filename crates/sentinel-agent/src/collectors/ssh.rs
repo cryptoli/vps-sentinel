@@ -4,6 +4,7 @@ use crate::utils::fs::{path_string, read_tail};
 use async_trait::async_trait;
 use chrono::{DateTime, Datelike, Duration, Local, TimeZone};
 use sentinel_core::{RawEvent, SentinelResult};
+use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_AUTH_LOG_BYTES: u64 = 1024 * 1024;
 const JOURNALCTL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -22,6 +23,7 @@ impl Collector for SshLogCollector {
         }
 
         let mut events = Vec::new();
+        let mut failure_aggregates = BTreeMap::new();
         let now = Local::now();
         let lookback = Duration::seconds(ctx.config.ssh.auth_log_lookback_seconds as i64);
         let mut existing_auth_logs = 0usize;
@@ -33,18 +35,138 @@ impl Collector for SshLogCollector {
             existing_auth_logs += 1;
             let source = path_string(configured_path);
             let content = read_tail(&path, MAX_AUTH_LOG_BYTES)?;
-            events.extend(
-                content
-                    .lines()
-                    .filter(|line| auth_line_is_recent(line, now, lookback))
-                    .filter_map(|line| parse_ssh_line(line, &source)),
-            );
+            for line in content
+                .lines()
+                .filter(|line| auth_line_is_recent(line, now, lookback))
+            {
+                let Some(mut event) = parse_ssh_line(line, &source) else {
+                    continue;
+                };
+                strip_raw_log_line_if_disabled(
+                    &mut event,
+                    ctx.config.performance.store_raw_log_lines,
+                );
+                push_or_aggregate_ssh_event(event, &mut events, &mut failure_aggregates);
+                if events.len() >= ctx.config.ssh.max_events_per_scan {
+                    break;
+                }
+            }
         }
         if existing_auth_logs == 0 {
-            events.extend(collect_journalctl_ssh(now, lookback));
+            for mut event in collect_journalctl_ssh(now, lookback) {
+                strip_raw_log_line_if_disabled(
+                    &mut event,
+                    ctx.config.performance.store_raw_log_lines,
+                );
+                push_or_aggregate_ssh_event(event, &mut events, &mut failure_aggregates);
+                if events.len() >= ctx.config.ssh.max_events_per_scan {
+                    break;
+                }
+            }
         }
+        append_failure_aggregates(
+            &mut events,
+            failure_aggregates,
+            ctx.config.ssh.max_events_per_scan,
+        );
         Ok(events)
     }
+}
+
+fn strip_raw_log_line_if_disabled(event: &mut RawEvent, keep_raw: bool) {
+    if !keep_raw {
+        event.fields.remove("raw");
+    }
+}
+
+#[derive(Debug, Default)]
+struct SshFailureAggregate {
+    count: usize,
+    users: BTreeSet<String>,
+    methods: BTreeSet<String>,
+    ports: BTreeSet<String>,
+    log_sources: BTreeSet<String>,
+}
+
+fn push_or_aggregate_ssh_event(
+    event: RawEvent,
+    events: &mut Vec<RawEvent>,
+    aggregates: &mut BTreeMap<String, SshFailureAggregate>,
+) {
+    if event.field("outcome") != Some("failure") {
+        events.push(event);
+        return;
+    }
+    let Some(source_ip) = event
+        .field("source_ip")
+        .filter(|value| !value.trim().is_empty())
+    else {
+        events.push(event);
+        return;
+    };
+    let aggregate = aggregates.entry(source_ip.to_string()).or_default();
+    aggregate.count += 1;
+    push_aggregate_field(&mut aggregate.users, &event, "user");
+    push_aggregate_field(&mut aggregate.methods, &event, "method");
+    push_aggregate_field(&mut aggregate.ports, &event, "port");
+    push_aggregate_field(&mut aggregate.log_sources, &event, "log_source");
+}
+
+fn push_aggregate_field(values: &mut BTreeSet<String>, event: &RawEvent, key: &str) {
+    if let Some(value) = event.field(key).filter(|value| !value.trim().is_empty()) {
+        values.insert(value.to_string());
+    }
+}
+
+fn append_failure_aggregates(
+    events: &mut Vec<RawEvent>,
+    aggregates: BTreeMap<String, SshFailureAggregate>,
+    max_events: usize,
+) {
+    for (source_ip, aggregate) in aggregates {
+        if events.len() >= max_events && !drop_lower_priority_ssh_event(events) {
+            break;
+        }
+        events.push(ssh_failure_aggregate_event(source_ip, aggregate));
+    }
+}
+
+fn drop_lower_priority_ssh_event(events: &mut Vec<RawEvent>) -> bool {
+    let Some(index) = events
+        .iter()
+        .rposition(|event| event.kind != "ssh_auth_aggregate")
+    else {
+        return false;
+    };
+    events.remove(index);
+    true
+}
+
+fn ssh_failure_aggregate_event(source_ip: String, aggregate: SshFailureAggregate) -> RawEvent {
+    RawEvent::new("ssh", "ssh_auth_aggregate")
+        .with_field("outcome", "failure")
+        .with_field("source_ip", source_ip)
+        .with_field("failure_count", aggregate.count.to_string())
+        .with_field(
+            "users",
+            aggregate.users.into_iter().collect::<Vec<_>>().join(","),
+        )
+        .with_field(
+            "methods",
+            aggregate.methods.into_iter().collect::<Vec<_>>().join(","),
+        )
+        .with_field(
+            "ports",
+            aggregate.ports.into_iter().collect::<Vec<_>>().join(","),
+        )
+        .with_field(
+            "log_sources",
+            aggregate
+                .log_sources
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(","),
+        )
 }
 
 fn collect_journalctl_ssh(now: DateTime<Local>, lookback: Duration) -> Vec<RawEvent> {
@@ -172,8 +294,12 @@ fn parse_failed(rest: &str, raw: &str, source: &str) -> Option<RawEvent> {
 
 #[cfg(test)]
 mod tests {
-    use super::{auth_line_is_recent, parse_ssh_line};
+    use super::{
+        append_failure_aggregates, auth_line_is_recent, parse_ssh_line,
+        push_or_aggregate_ssh_event, SshFailureAggregate,
+    };
     use chrono::{Duration, Local, TimeZone};
+    use std::collections::BTreeMap;
 
     #[test]
     fn parses_successful_password_login() -> Result<(), Box<dyn std::error::Error>> {
@@ -228,6 +354,62 @@ mod tests {
             now,
             Duration::seconds(300),
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn aggregates_failed_ssh_attempts_without_losing_counts(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let first = parse_ssh_line(
+            "Jun 16 10:00:01 host sshd[123]: Failed password for invalid user admin from 198.51.100.8 port 52100 ssh2",
+            "/var/log/auth.log",
+        )
+        .ok_or("first")?;
+        let second = parse_ssh_line(
+            "Jun 16 10:00:02 host sshd[123]: Failed password for root from 198.51.100.8 port 52101 ssh2",
+            "/var/log/auth.log",
+        )
+        .ok_or("second")?;
+        let mut events = Vec::new();
+        let mut aggregates = BTreeMap::<String, SshFailureAggregate>::new();
+
+        push_or_aggregate_ssh_event(first, &mut events, &mut aggregates);
+        push_or_aggregate_ssh_event(second, &mut events, &mut aggregates);
+        append_failure_aggregates(&mut events, aggregates, 10);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "ssh_auth_aggregate");
+        assert_eq!(events[0].field("source_ip"), Some("198.51.100.8"));
+        assert_eq!(events[0].field("failure_count"), Some("2"));
+        assert!(events[0]
+            .field("users")
+            .is_some_and(|users| users.contains("admin") && users.contains("root")));
+        Ok(())
+    }
+
+    #[test]
+    fn failure_aggregate_takes_priority_when_event_cap_is_reached(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let success = parse_ssh_line(
+            "Jun 16 10:00:01 host sshd[123]: Accepted publickey for deploy from 203.0.113.10 port 54122 ssh2",
+            "/var/log/auth.log",
+        )
+        .ok_or("success")?;
+        let failure = parse_ssh_line(
+            "Jun 16 10:00:02 host sshd[123]: Failed password for root from 198.51.100.8 port 52101 ssh2",
+            "/var/log/auth.log",
+        )
+        .ok_or("failure")?;
+        let mut events = Vec::new();
+        let mut aggregates = BTreeMap::<String, SshFailureAggregate>::new();
+
+        push_or_aggregate_ssh_event(success, &mut events, &mut aggregates);
+        push_or_aggregate_ssh_event(failure, &mut events, &mut aggregates);
+        append_failure_aggregates(&mut events, aggregates, 1);
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "ssh_auth_aggregate");
+        assert_eq!(events[0].field("source_ip"), Some("198.51.100.8"));
         Ok(())
     }
 }

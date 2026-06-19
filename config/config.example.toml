@@ -11,6 +11,12 @@ upload_logs = false
 mask_ip = false
 mask_command_args = false
 
+[performance]
+collect_memory_metrics = true
+store_raw_log_lines = false
+store_all_web_access_events = false
+max_stored_field_bytes = 4096
+
 [storage]
 type = "sqlite"
 path = "/var/lib/vps-sentinel/sentinel.db"
@@ -27,12 +33,16 @@ alert_on_successful_login = true
 auth_log_lookback_seconds = 300
 failed_login_threshold = 6
 failed_login_window_seconds = 300
+max_events_per_scan = 2000
+trusted_admin_ips = []
+alert_on_trusted_admin_login = false
 
 [file_integrity]
 enabled = true
 max_file_size_mb = 5
 max_depth = 8
 webshell_min_score = 70
+incremental = true
 paths = [
   "/etc/passwd",
   "/etc/shadow",
@@ -60,8 +70,13 @@ rotation_grace_seconds = 900
 enabled = true
 web_roots = ["/var/www", "/srv", "/usr/share/nginx/html", "/usr/share/httpd/noindex"]
 max_log_tail_bytes = 1048576
+max_events_per_scan = 5000
 include_rotated = true
+log_lookback_seconds = 900
 error_burst_threshold = 20
+trusted_proxy_cidrs = ["173.245.48.0/20", "103.21.244.0/22", "103.22.200.0/22", "103.31.4.0/22", "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20", "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13", "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22", "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32", "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32"]
+real_client_ip_fields = ["cf_connecting_ip", "http_cf_connecting_ip", "x_forwarded_for", "http_x_forwarded_for", "x_real_ip", "http_x_real_ip", "request.headers.cf-connecting-ip", "request.headers.x-forwarded-for", "request.headers.x-real-ip", "headers.cf-connecting-ip", "headers.x-forwarded-for", "headers.x-real-ip"]
+suppress_unresolved_trusted_proxy = true
 log_paths = [
   "/var/log/nginx/access.log",
   "/var/log/nginx/error.log",
@@ -233,6 +248,8 @@ drift_requires_public_exposure = false
 baseline_refresh_after_package_activity = false
 dynamic_udp_enabled = true
 dynamic_udp_min_port = 32768
+ignored_dynamic_udp_process_names = ["systemd-timesyncd", "chronyd", "ntpd"]
+ignore_loopback_ssh_forwarding = true
 
 [reports]
 scheduled_enabled = true

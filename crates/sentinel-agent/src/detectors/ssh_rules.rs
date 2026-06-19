@@ -1,5 +1,8 @@
-use crate::detectors::{evidence, field_is_allowlisted, string_field, DetectContext, Detector};
+use crate::detectors::{
+    evidence, field_is_allowlisted, string_field, DetectContext, Detector, EventIndex,
+};
 use crate::rules::model::RuleMetadata;
+use crate::utils::ip::ip_matches_patterns;
 use sentinel_core::{Category, Confidence, Finding, RawEvent, Severity};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -51,61 +54,131 @@ impl Detector for SshDetector {
     }
 
     fn detect(&self, events: &[RawEvent], ctx: &DetectContext) -> Vec<Finding> {
-        let mut findings = Vec::new();
-        let mut failures: BTreeMap<String, (usize, BTreeSet<String>)> = BTreeMap::new();
-        let mut successes: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        detect_ssh_events(
+            events
+                .iter()
+                .filter(|event| matches!(event.kind.as_str(), "ssh_auth" | "ssh_auth_aggregate")),
+            ctx,
+        )
+    }
 
-        for event in events.iter().filter(|event| event.kind == "ssh_auth") {
-            let ip = string_field(event, "source_ip");
-            let user = string_field(event, "user");
-            if field_is_allowlisted(&ip, &ctx.config.allowlist.ips)
-                || field_is_allowlisted(&user, &ctx.config.allowlist.users)
-            {
-                continue;
-            }
+    fn detect_indexed(
+        &self,
+        _events: &[RawEvent],
+        index: &EventIndex<'_>,
+        ctx: &DetectContext,
+    ) -> Vec<Finding> {
+        detect_ssh_events(
+            index
+                .kind("ssh_auth")
+                .chain(index.kind("ssh_auth_aggregate")),
+            ctx,
+        )
+    }
+}
 
-            match event.field("outcome") {
-                Some("success") => {
-                    successes
-                        .entry(ip.clone())
-                        .or_default()
-                        .insert(user.clone());
-                    let root_alerted = ctx.config.ssh.alert_on_root_login && user == "root";
-                    let password_alerted = ctx.config.ssh.alert_on_password_login
-                        && event.field("method") == Some("password");
-                    if root_alerted {
-                        findings.push(root_login_finding(event, ctx));
-                    } else if password_alerted {
-                        findings.push(password_login_finding(event, ctx));
-                    } else if ctx.config.ssh.alert_on_successful_login {
+fn detect_ssh_events<'a>(
+    events: impl IntoIterator<Item = &'a RawEvent>,
+    ctx: &DetectContext,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let mut failures: BTreeMap<String, (usize, BTreeSet<String>)> = BTreeMap::new();
+    let mut successes: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+
+    for event in events {
+        let ip = string_field(event, "source_ip");
+        let user = string_field(event, "user");
+        if field_is_allowlisted(&ip, &ctx.config.allowlist.ips)
+            || field_is_allowlisted(&user, &ctx.config.allowlist.users)
+        {
+            continue;
+        }
+
+        match event.field("outcome") {
+            Some("success") => {
+                successes
+                    .entry(ip.clone())
+                    .or_default()
+                    .insert(user.clone());
+                if trusted_admin_publickey_login(event, ctx) {
+                    if ctx.config.ssh.alert_on_trusted_admin_login {
                         findings.push(successful_login_finding(event, ctx));
                     }
+                    continue;
                 }
-                Some("failure") => {
-                    let entry = failures.entry(ip).or_insert_with(|| (0, BTreeSet::new()));
-                    entry.0 += 1;
+                let root_alerted = ctx.config.ssh.alert_on_root_login && user == "root";
+                let password_alerted = ctx.config.ssh.alert_on_password_login
+                    && event.field("method") == Some("password");
+                if root_alerted {
+                    findings.push(root_login_finding(event, ctx));
+                } else if password_alerted {
+                    findings.push(password_login_finding(event, ctx));
+                } else if ctx.config.ssh.alert_on_successful_login {
+                    findings.push(successful_login_finding(event, ctx));
+                }
+            }
+            Some("failure") if event.kind == "ssh_auth_aggregate" => {
+                let count = event
+                    .field("failure_count")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .unwrap_or(1);
+                let users = aggregate_users(event)
+                    .into_iter()
+                    .filter(|user| !field_is_allowlisted(user, &ctx.config.allowlist.users))
+                    .collect::<Vec<_>>();
+                if event.field("users").is_some() && users.is_empty() {
+                    continue;
+                }
+                let entry = failures.entry(ip).or_insert_with(|| (0, BTreeSet::new()));
+                entry.0 += count;
+                for user in users {
                     entry.1.insert(user);
                 }
-                _ => {}
             }
-        }
-
-        for (ip, (count, users)) in failures {
-            if count >= ctx.config.ssh.failed_login_threshold {
-                if let Some(success_users) = successes.get(&ip) {
-                    findings.push(bruteforce_success_correlation(
-                        &ip,
-                        count,
-                        users.clone(),
-                        success_users.clone(),
-                        ctx,
-                    ));
-                }
-                findings.push(bruteforce_finding(&ip, count, users, ctx));
+            Some("failure") => {
+                let entry = failures.entry(ip).or_insert_with(|| (0, BTreeSet::new()));
+                entry.0 += 1;
+                entry.1.insert(user);
             }
+            _ => {}
         }
-        findings
     }
+
+    for (ip, (count, users)) in failures {
+        if count >= ctx.config.ssh.failed_login_threshold {
+            if let Some(success_users) = successes.get(&ip) {
+                findings.push(bruteforce_success_correlation(
+                    &ip,
+                    count,
+                    users.clone(),
+                    success_users.clone(),
+                    ctx,
+                ));
+            }
+            findings.push(bruteforce_finding(&ip, count, users, ctx));
+        }
+    }
+    findings
+}
+
+fn trusted_admin_publickey_login(event: &RawEvent, ctx: &DetectContext) -> bool {
+    string_field(event, "user") == "root"
+        && event.field("method") == Some("publickey")
+        && ip_matches_patterns(
+            &string_field(event, "source_ip"),
+            &ctx.config.ssh.trusted_admin_ips,
+        )
+}
+
+fn aggregate_users(event: &RawEvent) -> Vec<String> {
+    event
+        .field("users")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn bruteforce_success_correlation(
@@ -334,6 +407,41 @@ mod tests {
         let password_findings = detector.detect(&[success_event("deploy", "password")], &ctx);
         assert_eq!(password_findings.len(), 1);
         assert_eq!(password_findings[0].rule_id, "SSH-002");
+    }
+
+    #[test]
+    fn trusted_admin_root_publickey_login_is_suppressed_without_hiding_password_logins() {
+        let detector = SshDetector;
+        let mut config = SentinelConfig::default();
+        config
+            .ssh
+            .trusted_admin_ips
+            .push("203.0.113.0/24".to_string());
+        let ctx = DetectContext::new(Arc::new(config));
+
+        let key_findings = detector.detect(&[success_event("root", "publickey")], &ctx);
+        let password_findings = detector.detect(&[success_event("root", "password")], &ctx);
+
+        assert!(key_findings.is_empty());
+        assert_eq!(password_findings.len(), 1);
+        assert_eq!(password_findings[0].rule_id, "SSH-001");
+    }
+
+    #[test]
+    fn trusted_admin_root_publickey_login_can_be_reported_as_info() {
+        let detector = SshDetector;
+        let mut config = SentinelConfig::default();
+        config
+            .ssh
+            .trusted_admin_ips
+            .push("203.0.113.10".to_string());
+        config.ssh.alert_on_trusted_admin_login = true;
+        let ctx = DetectContext::new(Arc::new(config));
+
+        let findings = detector.detect(&[success_event("root", "publickey")], &ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].rule_id, "SSH-004");
     }
 
     #[test]

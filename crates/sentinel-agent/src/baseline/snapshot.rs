@@ -71,8 +71,12 @@ impl BaselineSnapshot {
                 }
                 "persistence_entry" => {
                     if let Some(path) = event.field("path") {
+                        let key = canonical_persistence_path(
+                            path,
+                            event.field("type").unwrap_or_default(),
+                        );
                         snapshot.persistence.insert(
-                            path.to_string(),
+                            key,
                             PersistenceBaseline {
                                 hash: event.field("hash").unwrap_or_default().to_string(),
                                 persistence_type: event
@@ -95,6 +99,23 @@ impl BaselineSnapshot {
         }
         snapshot
     }
+}
+
+fn canonical_persistence_path(path: &str, persistence_type: &str) -> String {
+    if !persistence_type.eq_ignore_ascii_case("systemd") {
+        return path.to_string();
+    }
+    canonical_systemd_unit_path(path)
+}
+
+fn canonical_systemd_unit_path(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    for prefix in ["/lib/systemd/system/", "/usr/lib/systemd/system/"] {
+        if let Some(rest) = normalized.strip_prefix(prefix) {
+            return format!("/usr/lib/systemd/system/{rest}");
+        }
+    }
+    normalized
 }
 
 pub fn listener_key(event: &RawEvent) -> String {
@@ -195,5 +216,24 @@ mod tests {
             service.map(|item| item.process_name.as_str()),
             Some("nginx")
         );
+    }
+
+    #[test]
+    fn canonicalizes_equivalent_systemd_unit_paths() {
+        let snapshot = BaselineSnapshot::from_events(&[
+            RawEvent::new("persistence", "persistence_entry")
+                .with_field("path", "/lib/systemd/system/sing-box.service")
+                .with_field("type", "systemd")
+                .with_field("hash", "abc"),
+            RawEvent::new("persistence", "persistence_entry")
+                .with_field("path", "/usr/lib/systemd/system/sing-box.service")
+                .with_field("type", "systemd")
+                .with_field("hash", "abc"),
+        ]);
+
+        assert_eq!(snapshot.persistence.len(), 1);
+        assert!(snapshot
+            .persistence
+            .contains_key("/usr/lib/systemd/system/sing-box.service"));
     }
 }

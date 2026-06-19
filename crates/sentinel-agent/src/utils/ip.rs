@@ -11,6 +11,55 @@ pub(crate) fn is_public_remote_addr(addr: &str) -> bool {
     addr.trim().parse::<IpAddr>().is_ok_and(is_public_remote_ip)
 }
 
+pub(crate) fn ip_matches_patterns(value: &str, patterns: &[String]) -> bool {
+    let Ok(ip) = value.trim().parse::<IpAddr>() else {
+        return false;
+    };
+    patterns
+        .iter()
+        .any(|pattern| ip_matches_pattern(ip, pattern))
+}
+
+fn ip_matches_pattern(ip: IpAddr, pattern: &str) -> bool {
+    let pattern = pattern.trim();
+    if pattern.is_empty() {
+        return false;
+    }
+    if let Some((network, prefix)) = pattern.split_once('/') {
+        let Ok(network) = network.parse::<IpAddr>() else {
+            return false;
+        };
+        let Ok(prefix) = prefix.parse::<u8>() else {
+            return false;
+        };
+        return ip_in_cidr(ip, network, prefix);
+    }
+    pattern
+        .parse::<IpAddr>()
+        .is_ok_and(|candidate| candidate == ip)
+}
+
+fn ip_in_cidr(ip: IpAddr, network: IpAddr, prefix: u8) -> bool {
+    match (ip, network) {
+        (IpAddr::V4(ip), IpAddr::V4(network)) if prefix <= 32 => {
+            let mask = prefix_mask(prefix, 32);
+            u32::from(ip) as u128 & mask == u32::from(network) as u128 & mask
+        }
+        (IpAddr::V6(ip), IpAddr::V6(network)) if prefix <= 128 => {
+            let mask = prefix_mask(prefix, 128);
+            u128::from(ip) & mask == u128::from(network) & mask
+        }
+        _ => false,
+    }
+}
+
+fn prefix_mask(prefix: u8, bits: u8) -> u128 {
+    if prefix == 0 {
+        return 0;
+    }
+    u128::MAX << (bits - prefix)
+}
+
 pub(crate) fn is_public_listener_addr(addr: &str) -> bool {
     let addr = addr.trim();
     if addr.eq_ignore_ascii_case("ipv6") {
@@ -158,7 +207,9 @@ fn is_private_translation_ipv6(segments: [u16; 8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_public_listener_addr, is_public_remote_addr, is_public_remote_ip};
+    use super::{
+        ip_matches_patterns, is_public_listener_addr, is_public_remote_addr, is_public_remote_ip,
+    };
 
     #[test]
     fn public_ip_classifier_rejects_special_use_ranges() {
@@ -205,5 +256,20 @@ mod tests {
         assert!(!is_public_listener_addr("fe80::1"));
         assert!(!is_public_listener_addr("2001:db8::1"));
         assert!(!is_public_listener_addr("::ffff:10.0.0.1"));
+    }
+
+    #[test]
+    fn cidr_pattern_matcher_supports_ipv4_ipv6_and_exact_ips() {
+        let patterns = vec![
+            "172.64.0.0/13".to_string(),
+            "2606:4700::/32".to_string(),
+            "8.8.8.8".to_string(),
+        ];
+
+        assert!(ip_matches_patterns("172.70.12.9", &patterns));
+        assert!(ip_matches_patterns("2606:4700:10::1", &patterns));
+        assert!(ip_matches_patterns("8.8.8.8", &patterns));
+        assert!(!ip_matches_patterns("172.80.12.9", &patterns));
+        assert!(!ip_matches_patterns("not-an-ip", &patterns));
     }
 }

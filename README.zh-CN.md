@@ -34,19 +34,19 @@
 | 持久化检查 | 监控 cron、systemd、shell profile、`ld.so.preload` 等启动相关位置，并对可疑启动命令进行风险评分。 |
 | 进程和 GPU 检查 | 读取 procfs argv、父进程、可执行路径、工作目录、UID 上下文、socket FD 数、CPU 生命周期指标、procfs 启动时间漂移、结构化 cgroup/container 上下文、systemd unit/ExecStart、可执行文件 owner/size/hash、软件包归属、出站连接画像，并通过 `nvidia-smi` 读取 NVIDIA GPU 计算进程、通过 `rocm-smi` 读取 AMD/ROCm GPU 进程事实，识别达到风险评分阈值的可疑可执行路径、deleted executable、网络命令执行桥接、可疑行为聚类、已知挖矿/扫描器身份和可疑 GPU 计算负载。 |
 | 网络检查 | 读取监听 socket 与所属进程；附加进程上下文和防火墙状态；检测高风险公网服务、可疑监听进程、监听 owner 基线漂移和新增公网监听。22/80/443 等预期端口会降低噪音，但不会被无脑信任。 |
-| Web 日志 | 解析常见 access log、JSON access log、Nginx 风格 error log 请求上下文和可选 `.1` 轮转日志，将自动化探测归类为攻击家族，并按来源聚合同类路径，避免按路径刷屏。 |
+| Web 日志 | 解析常见 access log、JSON access log、Nginx 风格 error log 请求上下文和近期 `.1` 轮转日志；可从可信代理/CDN 的 JSON 字段还原真实客户端 IP，无法还原时不会把代理边缘当攻击者封禁；将自动化探测归类为攻击家族，并按来源聚合同类路径，避免按路径刷屏。 |
 | Rootkit 信号 | 采集轻量级本地指标，用于发现隐藏进程和可疑 procfs 行为。 |
 | Docker 上下文 | 检测 Docker 可用性并给出初始容器攻击面提示，不要求 Docker 写权限。 |
 | 事件关联 | 按来源 IP、路径、进程、分类和时间窗口把相关 finding 聚合为 incident，并提供时间线。 |
-| 服务画像 | 维护监听服务 owner 画像，发现新增服务或已知监听端口背后的可执行文件漂移。 |
+| 服务画像 | 维护监听服务 owner 画像，发现新增服务或已知监听端口背后的可执行文件漂移；支持按进程身份建模动态 UDP/UDP6 高位端口，并忽略可配置的客户端临时 UDP 与本地 SSH 转发监听。 |
 | 高级采集 | 默认启用 auditd 日志采集和 eBPF JSONL/命令桥接入口；对应日志、文件或命令不存在时安全空跑。 |
 | 外部规则 | 支持 Sigma-like TOML 事件规则和可选 YARA CLI 扫描；规则引擎默认启用，但只有配置了规则路径或扫描根目录后才会实际运行。 |
 | 威胁情报 | 可选用本地或远程 indicator 对 IP、路径、域名、哈希做证据增强；命中只是辅助证据，不会单独触发封禁。 |
 | 多 VPS 视图 | 导出和导入轻量级节点快照，方便在一个本地 SQLite 中查看多台 VPS 摘要。 |
 | 维护模式 | 支持有时限的维护窗口，在计划升级期间压制低/中危基线漂移，不隐藏高危行为。 |
-| 本地存储 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和通知日志；重复 raw fact 使用稳定存储键，并提供可配置数据库容量上限，避免无限增长。 |
+| 本地存储与资源控制 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和自包含通知日志；重复 raw fact 使用稳定存储键，默认不持久化完整原始日志行，普通 Web 访问事件默认不入库，并提供保留期与数据库容量上限，避免无限增长。 |
 | 噪声控制 | 支持白名单、最低告警级别、finding 去重和保留周期。 |
-| 主动响应 | 默认启用，以 `observe`、`balanced` 或 `strict` 策略处理高置信公网来源 IP；写防火墙时通过 nftables 或 iptables 临时封禁，并带公网 IP 与白名单保护。 |
+| 主动响应 | 默认启用，以 `observe`、`balanced` 或 `strict` 策略处理高置信公网来源 IP；写防火墙时通过 nftables 或 iptables 临时封禁，并带公网 IP、白名单和可信代理归因保护。 |
 | 通知告警 | 支持 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan。 |
 | 运维部署 | 单 CLI 二进制、`vs` 简写、JSON 日志、systemd unit、一键安装脚本、更新脚本、内置重载命令、停止脚本、配置迁移、报告和处置建议命令。 |
 
@@ -75,6 +75,8 @@ WebShell 内容检测也采用评分模型，不再因为单个 marker 直接告
 防火墙状态是辅助判断，不是唯一依据。端口暴露仍以 `/proc/net/*` 的内核 socket 状态为准；`ufw`、`firewalld`、`nftables` 和 `iptables` 状态会作为证据附加，帮助判断公网监听是否真的可能被外部访问。
 
 每个 finding 都会补充统一 0-100 风险评分，评分来自严重等级、检测器置信度、规则自身评分、主动响应上下文和可选威胁情报命中。incident 会在扫描内合并之后按时间窗口聚合相关 finding，用户可以通过 `vs incidents timeline <incident_id>` 查看攻击链，而不是只看孤立告警。
+
+扫描管线会通过事件 kind/source 索引、SSH 失败日志按来源 IP 聚合、Web/SSH 日志时间窗口和每轮事件上限、以及基线对比后丢弃稳定普通文件快照来控制内存。文件变化、SSH key 文件不安全状态、WebShell marker 和 Web 目录可执行/脚本文件仍会保留并进入检测。
 
 ## 支持的通知渠道
 
@@ -199,15 +201,15 @@ CI 中使用的 Docker 容器只用于构建和兼容性测试，不代表推荐
 | 文件和持久化漂移 | 使用 SQLite 保存本地基线，后续扫描做快照 diff；同一路径的文件/持久化 finding 会合并，并附带软件包活动上下文。 | 能发现真实漂移，同时减少合法软件更新时的判断成本；基线只会在用户明确执行命令时刷新。 |
 | 日志篡改信号 | 采集敏感日志文件快照并与本地规则状态对比；高风险软链立即告警，日志截断需要满足配置的比例和字节阈值且没有近期轮转文件；曾经出现过的配置日志消失也会报告。 | 识别把认证日志重定向到 `/dev/null`、清空日志或删除日志等反取证行为，同时避免正常 logrotate 误报。 |
 | WebShell 内容 | 对限定大小内的文件内容提取风险 marker，并结合 Web 路径、脚本类型和 marker 组合评分。 | 单个弱 marker 默认不告警，但能识别经典 Web 命令执行和编码 payload 组合。 |
-| Web 探测 | `WEB-001` 按来源 IP、探测家族和响应画像聚合。404 PHPUnit 目录爆破等未命中探测默认为 Low；敏感路径成功响应或受保护的 exploit 路径会提升等级。 | 扫描器命中大量路径变体时只生成一条可读 finding，而不是几十条 Telegram 消息。 |
+| Web 探测 | `WEB-001` 按来源 IP 聚合，并在证据中保留全部探测家族、响应画像、样例路径、方法、状态码和可信代理上下文。404 PHPUnit 目录爆破等未命中探测默认为 Low；敏感路径成功响应或受保护的 exploit 路径会提升等级。 | 扫描器命中大量路径变体时只生成一条可读 finding，而不是几十条 Telegram 消息；CDN/反代地址不会在缺少真实客户端 IP 时被当作攻击源。 |
 | 进程和 GPU 风险 | 读取 procfs argv、父进程、可执行路径、cwd、UID/EUID、deleted 状态、socket FD 数、生命周期 CPU 指标、启动时间漂移、cgroup/container 上下文、systemd unit/ExecStart、可执行文件元数据/hash、软件包归属、出站连接画像和 NVIDIA GPU 计算进程状态，并按规则评分、白名单、规则状态和同 PID 信号聚合处理。`PROC-001` 对可疑可执行路径做评分，不会只按路径机械放行或告警；`PROC-005` 必须先出现伪装、隐藏、可疑目录或 Web 路径等主风险信号，socket、出站连接、重启漂移和 root 上下文只能辅助加权；`PROC-006` 需要 GPU 计算活动叠加挖矿或高风险运行证据。 | 识别可疑可执行路径、可疑 deleted executable、网络 shell 桥接、已知挖矿/扫描器身份、改名行为聚类和可疑 GPU 挖矿负载，同时避免 PID、CPU、GPU、连接计数等波动字段或正常高连接业务服务导致重复/误报消息。 |
 | 网络监听 | 解析 `/proc/net/tcp*` 和 `/proc/net/udp*`，通过 `/proc/<pid>/fd` 反查进程，与监听 owner 基线对比，附加进程/防火墙上下文，并优先报告可疑 owner 行为而不是普通端口暴露。 | 22/80/443 等预期端口只降低通用噪音；进程变化或可疑进程仍会告警，高风险端口画像和防火墙状态会作为证据保留。 |
 | 通知 | 将统一 `Finding` 模型按渠道模板渲染：Telegram HTML、Email HTML+纯文本、Markdown 或纯文本。 | 消息包含 VPS 名称、规范化时间、本地化字段、证据、影响和建议。 |
 | 噪声控制 | 使用扫描内去重、跨扫描去重、状态提醒间隔、安静时段和小时级通知预算。 | 减少重复消息，同时保留高价值告警的可见性。 |
-| 主动响应 | 在扫描内 finding 合并/去重后、跨扫描通知去重前评估封禁候选；只有不在 `[allowlist].ips` 中的公网 IP 才可能被封。Web 需要敏感路径成功响应、高置信 exploit 探测、重复低置信 exploit 探测，或高频探测/错误突发；SSH 默认与 SSH 爆破告警使用相同失败次数阈值。 | 可把明显扫描源临时丢进防火墙，同时避免每条告警都变成破坏性动作。 |
+| 主动响应 | 在扫描内 finding 合并/去重后、跨扫描通知去重前评估封禁候选；只有不在 `[allowlist].ips` 中的公网 IP 才可能被封，且无法还原真实客户端 IP 的可信代理/CDN 来源不会成为封禁候选。Web 需要敏感路径成功响应、高置信 exploit 探测、重复低置信 exploit 探测，或高频探测/错误突发；SSH 默认与 SSH 爆破告警使用相同失败次数阈值。 | 可把明显扫描源临时丢进防火墙，同时避免每条告警都变成破坏性动作或误封 CDN 边缘。 |
 | 响应策略 DSL | 在检测器产生主动响应候选之后应用配置化策略；策略可匹配规则 ID 或分类，并按最低严重等级、置信度、统一评分决定观察、临时封禁或永久封禁。 | 检测逻辑和响应决策解耦，用户无需改代码即可调节封禁策略。 |
 | Incident 与时间线 | 按 IP、路径、进程、分类和时间窗口聚合相关 finding，并提供 `incidents list/show/timeline`。 | 把孤立 finding 组织成可读攻击链，同时保留原始 finding。 |
-| 服务画像 | 保存监听服务的地址、端口、协议、进程名、可执行文件、命令行和暴露分类。 | 不盲信或盲拦 80/443，也能发现常见端口背后的服务 owner 漂移。 |
+| 服务画像 | 保存监听服务的地址、端口、协议、进程名、可执行文件、命令行和暴露分类；动态 UDP/UDP6 高位端口可按进程身份建模，并忽略可配置的客户端临时 UDP 与本地 SSH 转发监听。 | 不盲信 80/443，也能发现常见端口背后的服务 owner 漂移，同时避免合法动态 UDP 端口每次变化都告警。 |
 | 高级证据 | 可选 auditd、eBPF JSONL bridge、Sigma-like TOML 规则、YARA CLI 和威胁情报 indicator 都进入同一 RawEvent/Finding 模型。 | 平台支持时可增加更深证据，默认安装仍保持轻量兼容。 |
 | 维护与多 VPS 运维 | 在本地 rule state 中保存有界维护状态和 fleet 节点快照。 | 计划升级时压制低/中危漂移，并可本地汇总多台 VPS 摘要。 |
 
@@ -422,7 +424,7 @@ sudo journalctl -u vps-sentinel -f
 | `vps-sentinel config sync-defaults --dry-run --config <path>` | 只显示将被追加的默认配置项，不修改文件。 |
 | `vps-sentinel doctor --config <path>` | 检查运行环境：root 可见性、Unix 目标支持、存储目录可写性、认证日志可见性。 |
 | `vps-sentinel check --json --config <path>` | 执行一次采集和检测，但不持久化结果、不发送通知、不执行主动响应；省略 `--json` 输出文本摘要。 |
-| `vps-sentinel scan --config <path>` | 执行一次完整扫描，持久化 raw events/findings，记录通知日志，应用去重，并发送已启用通知。 |
+| `vps-sentinel scan --config <path>` | 执行一次完整扫描，持久化精简 raw events/findings，记录通知日志，应用去重，发送已启用通知，并输出 RSS 与事件来源诊断。 |
 | `vps-sentinel scan --no-notify --json --config <path>` | 持久化扫描结果但不发送通知、不执行主动响应；适合启用通知前试运行。省略 `--json` 输出文本摘要。 |
 | `vps-sentinel daemon --config <path>` | 按 `agent.scan_interval_seconds` 持续扫描，适合交给 systemd 运行。 |
 | `vps-sentinel baseline create --config <path>` | 将当前可信状态写入 SQLite 基线。建议安装后和确认合法变更后执行。 |
@@ -494,6 +496,18 @@ max_database_size_mb = 256
 
 自动清理会在每次持久化扫描结束后执行。手动清理复用同一套存储逻辑：`vs storage prune` 会执行保留期清理和容量上限清理，`vs storage stats` 会显示行数和数据库占用，`vs storage clear notifications --yes` 可以清理通知发送历史，`vs storage clear all-history --yes` 会清理 raw events、findings、通知日志和扫描记录，但不会删除基线或规则状态。`baselines` 必须单独清理，因为这会影响后续漂移检测。
 
+性能控制：
+
+```toml
+[performance]
+collect_memory_metrics = true
+store_raw_log_lines = false
+store_all_web_access_events = false
+max_stored_field_bytes = 4096
+```
+
+`collect_memory_metrics` 会在扫描报告和 JSON 输出中记录进程 RSS 的 before/after 值。`store_raw_log_lines = false` 会保留 IP、用户、路径、状态码、方法等结构化字段，但不把完整原始日志行写入 raw event 存储。`store_all_web_access_events = false` 默认只保存能支撑 Web 探测证据的 Web access 事件，避免公网网站把普通 404/静态资源访问写满 SQLite。`max_stored_field_bytes` 会截断异常大的落库字段，不影响本轮内存中的检测输入。
+
 SSH 告警策略：
 
 ```toml
@@ -502,18 +516,22 @@ alert_on_root_login = true
 alert_on_password_login = true
 alert_on_successful_login = true
 auth_log_lookback_seconds = 300
+max_events_per_scan = 2000
+trusted_admin_ips = []
+alert_on_trusted_admin_login = false
 ```
 
-`alert_on_successful_login` 覆盖未被 root 登录或密码登录规则覆盖的普通成功 SSH 登录，并不只针对陌生 IP。普通成功登录为 `Info`，root 登录仍为 `High`，密码登录仍为 `Medium`。SSH 登录按“用户 + 来源 IP”去重，端口只作为证据展示；SSH 暴力破解按来源 IP 去重，失败次数上涨不会在每次扫描时生成新的去重 Key。`auth_log_lookback_seconds` 限制每次扫描读取认证日志时向前回看的时间窗口，避免旧登录日志反复产生通知。当 `/var/log/auth.log` 和 `/var/log/secure` 等配置的认证日志文件不存在时，vps-sentinel 会回退读取 `ssh.service` 和 `sshd.service` 的 `journalctl` 日志。
+`alert_on_successful_login` 覆盖未被 root 登录或密码登录规则覆盖的普通成功 SSH 登录，并不只针对陌生 IP。普通成功登录为 `Info`，root 登录仍为 `High`，密码登录仍为 `Medium`。`trusted_admin_ips` 支持精确 IP 或 CIDR；来自这些来源的 root `publickey` 登录默认不发高危告警，如果设置 `alert_on_trusted_admin_login = true` 则按 `SSH-004` 发送普通成功登录。root 密码登录和 SSH 爆破检测不会被这个设置压制。SSH 登录按“用户 + 来源 IP”去重，端口只作为证据展示；SSH 暴力破解按来源 IP 去重，失败次数上涨不会在每次扫描时生成新的去重 Key。`auth_log_lookback_seconds` 限制每次扫描读取认证日志时向前回看的时间窗口，避免旧登录日志反复产生通知。SSH 失败日志会先按来源 IP 聚合再进入检测；`max_events_per_scan` 用于限制极端日志量，同时保留聚合后的失败次数。当 `/var/log/auth.log` 和 `/var/log/secure` 等配置的认证日志文件不存在时，vps-sentinel 会回退读取 `ssh.service` 和 `sshd.service` 的 `journalctl` 日志。
 
 文件完整性评分：
 
 ```toml
 [file_integrity]
 webshell_min_score = 70
+incremental = true
 ```
 
-`webshell_min_score` 控制何时产生 `FILE-002`。检测器会对 marker 组合和 Web 脚本上下文评分，而不是单独命中一个 marker 就告警，从而减少合法管理脚本误报，同时保留对经典 Web 命令执行和编码命令执行组合的识别能力。
+`webshell_min_score` 控制何时产生 `FILE-002`。检测器会对 marker 组合和 Web 脚本上下文评分，而不是单独命中一个 marker 就告警，从而减少合法管理脚本误报，同时保留对经典 Web 命令执行和编码命令执行组合的识别能力。`incremental = true` 时，普通未变化文件快照会先参与基线对比，然后从检测和存储路径中移除；变化文件、`authorized_keys` 当前状态、WebShell marker、Web 根目录下可执行/脚本文件仍会保留。
 
 敏感日志完整性：
 
@@ -616,11 +634,16 @@ Web 日志策略：
 ```toml
 [web]
 max_log_tail_bytes = 1048576
+max_events_per_scan = 5000
 include_rotated = true
+log_lookback_seconds = 900
 error_burst_threshold = 20
+trusted_proxy_cidrs = ["172.64.0.0/13", "2606:4700::/32"]
+real_client_ip_fields = ["cf_connecting_ip", "x_forwarded_for", "headers.cf-connecting-ip"]
+suppress_unresolved_trusted_proxy = true
 ```
 
-`WEB-001` 会识别 `.env`、`.git`、PHPUnit `eval-stdin.php`、CGI shell traversal、命令注入、PHP 配置写入 payload、LFI 文件读取、PHP stream wrapper、JNDI 注入、云元数据 SSRF、模板注入、SQL 注入、反序列化探测、phpMyAdmin、WordPress admin、actuator、server-status 等探测家族。同一来源 IP 的相似路径会按探测家族和响应画像聚合。采集器支持常见 access log、JSON access log 和 Nginx 风格 error log；`max_log_tail_bytes` 限制单文件读取尾部大小，`include_rotated` 会包含 `.1` 轮转文件。纯 404/400/301 目录爆破默认是 Low；敏感路径成功响应会升为 High；被拒绝的主动 exploit payload 保持 Medium 上下文。
+`WEB-001` 会识别 `.env`、`.git`、PHPUnit `eval-stdin.php`、CGI shell traversal、命令注入、PHP 配置写入 payload、LFI 文件读取、PHP stream wrapper、JNDI 注入、云元数据 SSRF、模板注入、SQL 注入、反序列化探测、phpMyAdmin、WordPress admin、actuator、server-status 等探测家族。同一来源 IP 的相似路径会聚合为一条 finding，并在证据中保留全部探测家族和响应画像。采集器支持常见 access log、JSON access log 和 Nginx 风格 error log；`max_log_tail_bytes` 限制单文件读取尾部大小，`max_events_per_scan` 限制极端流量下的解析事件数量，`include_rotated` 会包含 `.1` 轮转文件，`log_lookback_seconds` 会避免旧轮转日志反复进入检测。`trusted_proxy_cidrs` 默认包含 Cloudflare 网段，也可以替换或扩展为用户自己的反代/CDN 网段；JSON 日志中的 `real_client_ip_fields` 用于还原真实客户端 IP。如果日志来源是可信代理但没有真实客户端 IP，`suppress_unresolved_trusted_proxy = true` 会压制该 finding 和封禁候选，避免把代理边缘误认为攻击源。纯 404/400/301 目录爆破默认是 Low；敏感路径成功响应会升为 High；被拒绝的主动 exploit payload 保持 Medium 上下文。
 
 主动响应策略：
 
@@ -640,7 +663,7 @@ web_exploit_block_threshold = 5
 ssh_failed_login_block_threshold = 6
 ```
 
-主动响应对新安装默认开启。升级时不会覆盖已有配置，因此已经显式写了 `active_response.enabled = false` 的主机会保持关闭，直到管理员手动修改。`strategy = "observe"` 只记录候选不写防火墙，`balanced` 是默认策略，`strict` 会对被拒绝的 Web 探测和 SSH 爆破要求更强证据。扫描器会在扫描内合并/去重之后、跨扫描通知去重之前执行封禁，因此同一来源计数升高时，即使重复通知会被压制，也仍能触发封禁。SSH 封禁需要先形成 `SSH-003` finding，默认扫描窗口内 6 次失败触发封禁。Web 封禁覆盖敏感路径成功响应、高置信 RCE 风格探测、重复低置信 exploit 探测和高频错误爆发。安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。普通封禁是临时封禁；如果同一个公网来源 IP 在 `permanent_block_window_seconds` 窗口内至少 `permanent_block_threshold` 次成为封禁候选，则升级为无到期时间的永久封禁。永久升级仍然遵守 `[allowlist].ips`、`strategy = "observe"` 和 `max_blocks_per_scan`，可以通过 `vs blocks unblock <ip>` 或 `vs blocks unblock-all --yes` 解除。只有公网可路由来源 IP 才会被考虑。
+主动响应对新安装默认开启。升级时不会覆盖已有配置，因此已经显式写了 `active_response.enabled = false` 的主机会保持关闭，直到管理员手动修改。`strategy = "observe"` 只记录候选不写防火墙，`balanced` 是默认策略，`strict` 会对被拒绝的 Web 探测和 SSH 爆破要求更强证据。扫描器会在扫描内合并/去重之后、跨扫描通知去重之前执行封禁，因此同一来源计数升高时，即使重复通知会被压制，也仍能触发封禁。SSH 封禁需要先形成 `SSH-003` finding，默认扫描窗口内 6 次失败触发封禁。Web 封禁覆盖敏感路径成功响应、高置信 RCE 风格探测、重复低置信 exploit 探测和高频错误爆发，但标记为 `proxy_source_unresolved` 的 Web finding 不会进入封禁候选。安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。普通封禁是临时封禁；如果同一个公网来源 IP 在 `permanent_block_window_seconds` 窗口内至少 `permanent_block_threshold` 次成为封禁候选，则升级为无到期时间的永久封禁。永久升级仍然遵守 `[allowlist].ips`、可信代理归因安全、`strategy = "observe"` 和 `max_blocks_per_scan`，可以通过 `vs blocks unblock <ip>` 或 `vs blocks unblock-all --yes` 解除。只有公网可路由来源 IP 才会被考虑。
 
 每次扫描都会先把主动响应状态和真实防火墙规则同步，再判断某个来源是否已经封禁。如果规则已过期、被 firewalld/ufw reload 清掉，或者被人工修改，程序会移除失效状态；如果该来源仍然满足高置信封禁条件，后续可以再次封禁。iptables 后端在插入前会用 `-C` 检查规则是否已存在，避免重复 DROP 规则；手动解除封禁会删除重复匹配规则。日常运维可以使用 `vs blocks list`、`vs blocks cleanup`、`vs blocks unblock <ip>` 和 `vs blocks unblock-all --yes`。
 
@@ -672,6 +695,10 @@ max_findings_per_incident = 50
 [service_profile]
 enabled = true
 drift_requires_public_exposure = false
+dynamic_udp_enabled = true
+dynamic_udp_min_port = 32768
+ignored_dynamic_udp_process_names = ["systemd-timesyncd", "chronyd", "ntpd"]
+ignore_loopback_ssh_forwarding = true
 
 [reports]
 scheduled_enabled = true
@@ -679,7 +706,7 @@ scheduled_hour = 8
 scheduled_period = "today"
 ```
 
-`incidents` 控制本地攻击链聚合；`service_profile` 控制监听服务 owner 漂移检测。定时报表默认开启，会让 daemon 通过已启用通知渠道发送每日安全报告，并用 `min_interval_seconds` 避免重启后重复发送；如果没有配置任何通知渠道，daemon 会直接跳过定时报表，不构建也不发送。
+`incidents` 控制本地攻击链聚合；`service_profile` 控制监听服务 owner 漂移检测。启用动态 UDP/UDP6 建模后，高于 `dynamic_udp_min_port` 的公网 UDP 监听会按进程身份建模，因此 VPN/转发类软件更换高位 UDP 端口不会每次都告警。`ignored_dynamic_udp_process_names` 用于时间同步这类客户端式 UDP 进程，`ignore_loopback_ssh_forwarding` 会压制 `127.0.0.1:6010` 这类本地 SSH X11/转发监听。定时报表默认开启，会让 daemon 通过已启用通知渠道发送每日安全报告，并用 `min_interval_seconds` 避免重启后重复发送；如果没有配置任何通知渠道，daemon 会直接跳过定时报表，不构建也不发送。
 
 高级采集和外部规则：
 
@@ -813,7 +840,7 @@ file_paths = ["/etc/systemd/system/my-service.service"]
 
 部分采集器需要 root 级别可见性。如果不是 root 运行，`doctor` 会报告可见性降低，相关模块会降级而不是崩溃。
 
-作为常驻 agent，运行时资源占用较小。在当前验证 VPS 上，默认 60 秒扫描循环下 daemon 进程 RSS 约为 10-13 MiB。systemd cgroup 的 `MemoryCurrent` 可能明显更高，从几十 MiB 到几百 MiB 都可能出现，因为 Linux 可能把近期触达的文件缓存和 cgroup 内存统计计入服务。实际内存压力会受日志尾部大小、文件完整性路径范围、内核统计方式和已启用通知渠道影响；判断 daemon 自身稳定占用时应优先看进程 RSS。raw event 存储会对重复事实使用稳定键，因此重复扫描同一段日志尾部或未变化主机状态时会覆盖旧行，而不是每分钟追加相同数据。SQLite 存储还会受 `storage.max_database_size_mb` 约束；超过上限时会裁剪旧的高容量数据并执行 `VACUUM` 回收磁盘空间。
+作为常驻 agent，运行时资源占用较小。在当前验证 VPS 集合上，默认 60 秒扫描循环下 daemon 进程 RSS 约为 13-21 MiB。systemd cgroup 的 `MemoryCurrent` 可能明显更高，从几十 MiB 到几百 MiB 都可能出现，因为 Linux 可能把近期触达的文件缓存和 cgroup 内存统计计入服务。实际内存压力会受日志尾部大小、文件完整性路径范围、内核统计方式和已启用通知渠道影响；判断 daemon 自身稳定占用时应优先看进程 RSS。`vs scan` 会输出 best-effort RSS before/after 和按来源统计的事件数量。raw event 存储会对重复事实使用稳定键和精简字段，普通 Web access 事件默认不入库，除非它支撑 Web 探测证据或用户显式打开完整保存；因此重复扫描同一段日志尾部或未变化主机状态时会覆盖旧行，而不是每分钟追加相同数据。通知日志会保存 rule、severity、subject、title 快照，因此旧 finding 被清理后仍可审计发送记录。SQLite 存储还会受 `storage.max_database_size_mb` 约束；超过上限时会裁剪旧的高容量数据并执行 `VACUUM` 回收磁盘空间。
 
 systemd unit 使用：
 

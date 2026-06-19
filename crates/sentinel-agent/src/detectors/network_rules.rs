@@ -2,7 +2,9 @@ use crate::detectors::command_profile::network_execution_assessment_from_event;
 use crate::detectors::process_rules::{
     command_matches_allowlist, event_contains_miner_or_scanner, path_in_suspicious_dirs,
 };
-use crate::detectors::{evidence, path_is_allowlisted, string_field, DetectContext, Detector};
+use crate::detectors::{
+    evidence, path_is_allowlisted, string_field, DetectContext, Detector, EventIndex,
+};
 use crate::rules::model::RuleMetadata;
 use crate::utils::ip::is_public_listener_addr;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
@@ -49,65 +51,77 @@ impl Detector for NetworkDetector {
     }
 
     fn detect(&self, events: &[RawEvent], ctx: &DetectContext) -> Vec<Finding> {
-        let mut findings = Vec::new();
-        let policy = PortPolicy::from_context(ctx);
-        let firewall = firewall_context(events);
-        let process_context = process_context_by_pid(events);
-        for event in events.iter().filter(|event| {
-            matches!(
-                event.kind.as_str(),
-                "listening_socket" | "listening_socket_owner_changed"
-            )
-        }) {
-            let port = event
-                .field("local_port")
-                .and_then(|value| value.parse::<u16>().ok());
-            let Some(port) = port else {
-                continue;
-            };
-            if !is_public_listener_addr(event.field("local_addr").unwrap_or("")) {
-                continue;
-            }
-            if policy.is_allowlisted(port) {
-                continue;
-            }
-            let owner_context = event.field("pid").and_then(|pid| process_context.get(pid));
-            let high_risk_service = policy.high_risk_service_name(port);
-            if let Some(profile) = ListenerRiskProfile::from_event(event, ctx, owner_context) {
-                findings.push(suspicious_listener(
-                    event,
-                    ctx,
-                    profile,
-                    high_risk_service,
-                    firewall.as_ref(),
-                    owner_context,
-                ));
-            } else if let Some(service_name) = high_risk_service {
-                findings.push(risky_port(
-                    event,
-                    ctx,
-                    service_name,
-                    firewall.as_ref(),
-                    owner_context,
-                ));
-            } else if event.kind == "listening_socket_owner_changed" {
-                findings.push(listener_owner_changed(
-                    event,
-                    ctx,
-                    firewall.as_ref(),
-                    owner_context,
-                ));
-            } else if policy.is_expected_public(port) {
-                continue;
-            } else if event.source == "baseline"
-                && ctx.config.network.alert_on_new_listening_port
-                && is_tcp_protocol(event)
-            {
-                findings.push(public_listen(event, ctx, firewall.as_ref(), owner_context));
-            }
-        }
-        findings
+        let index = EventIndex::new(events);
+        detect_network_events(&index, ctx)
     }
+
+    fn detect_indexed(
+        &self,
+        _events: &[RawEvent],
+        index: &EventIndex<'_>,
+        ctx: &DetectContext,
+    ) -> Vec<Finding> {
+        detect_network_events(index, ctx)
+    }
+}
+
+fn detect_network_events(index: &EventIndex<'_>, ctx: &DetectContext) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let policy = PortPolicy::from_context(ctx);
+    let firewall = firewall_context(index.kind("firewall_state"));
+    let process_context = process_context_by_pid(index.kind("process_snapshot"));
+    for event in index
+        .kind("listening_socket")
+        .chain(index.kind("listening_socket_owner_changed"))
+    {
+        let port = event
+            .field("local_port")
+            .and_then(|value| value.parse::<u16>().ok());
+        let Some(port) = port else {
+            continue;
+        };
+        if !is_public_listener_addr(event.field("local_addr").unwrap_or("")) {
+            continue;
+        }
+        if policy.is_allowlisted(port) {
+            continue;
+        }
+        let owner_context = event.field("pid").and_then(|pid| process_context.get(pid));
+        let high_risk_service = policy.high_risk_service_name(port);
+        if let Some(profile) = ListenerRiskProfile::from_event(event, ctx, owner_context) {
+            findings.push(suspicious_listener(
+                event,
+                ctx,
+                profile,
+                high_risk_service,
+                firewall.as_ref(),
+                owner_context,
+            ));
+        } else if let Some(service_name) = high_risk_service {
+            findings.push(risky_port(
+                event,
+                ctx,
+                service_name,
+                firewall.as_ref(),
+                owner_context,
+            ));
+        } else if event.kind == "listening_socket_owner_changed" {
+            findings.push(listener_owner_changed(
+                event,
+                ctx,
+                firewall.as_ref(),
+                owner_context,
+            ));
+        } else if policy.is_expected_public(port) {
+            continue;
+        } else if event.source == "baseline"
+            && ctx.config.network.alert_on_new_listening_port
+            && is_tcp_protocol(event)
+        {
+            findings.push(public_listen(event, ctx, firewall.as_ref(), owner_context));
+        }
+    }
+    findings
 }
 
 fn public_listen(
@@ -312,8 +326,8 @@ struct FirewallContext {
     sources: Vec<String>,
 }
 
-fn firewall_context(events: &[RawEvent]) -> Option<FirewallContext> {
-    let event = events.iter().find(|event| event.kind == "firewall_state")?;
+fn firewall_context<'a>(events: impl IntoIterator<Item = &'a RawEvent>) -> Option<FirewallContext> {
+    let event = events.into_iter().next()?;
     Some(FirewallContext {
         status: string_field(event, "status"),
         sources: string_field(event, "sources")
@@ -336,12 +350,11 @@ impl ProcessContext {
     }
 }
 
-fn process_context_by_pid(events: &[RawEvent]) -> BTreeMap<String, ProcessContext> {
+fn process_context_by_pid<'a>(
+    events: impl IntoIterator<Item = &'a RawEvent>,
+) -> BTreeMap<String, ProcessContext> {
     let mut contexts = BTreeMap::new();
-    for event in events
-        .iter()
-        .filter(|event| event.kind == "process_snapshot")
-    {
+    for event in events {
         let Some(pid) = event.field("pid").filter(|pid| !pid.trim().is_empty()) else {
             continue;
         };

@@ -682,6 +682,9 @@ fn filter_block_candidate(
 }
 
 fn web_probe_candidate(finding: &Finding, config: &SentinelConfig) -> Option<BlockCandidate> {
+    if proxy_source_unresolved(finding) {
+        return None;
+    }
     let ip = evidence_ip(finding, "ip")?;
     let family = evidence_value(finding, "probe_family")?;
     let response = evidence_value(finding, "response_profile")?;
@@ -704,6 +707,9 @@ fn web_probe_candidate(finding: &Finding, config: &SentinelConfig) -> Option<Blo
 }
 
 fn web_error_candidate(finding: &Finding, config: &SentinelConfig) -> Option<BlockCandidate> {
+    if proxy_source_unresolved(finding) {
+        return None;
+    }
     let ip = evidence_ip(finding, "ip")?;
     let error_count = evidence_usize(finding, "error_count")?;
     let threshold = match active_response_strategy(config) {
@@ -768,8 +774,16 @@ fn aggregate_web_probe_candidates(
             responses: BTreeSet::new(),
         });
         group.total_requests = group.total_requests.saturating_add(request_count);
-        group.families.insert(family.to_string());
-        group.responses.insert(response.to_string());
+        for family in
+            split_evidence_list(evidence_value(finding, "probe_families").unwrap_or(family))
+        {
+            group.families.insert(family);
+        }
+        for response in
+            split_evidence_list(evidence_value(finding, "response_profiles").unwrap_or(response))
+        {
+            group.responses.insert(response);
+        }
     }
     groups
         .into_iter()
@@ -778,6 +792,19 @@ fn aggregate_web_probe_candidates(
             let candidate = apply_response_policy(candidate, group.finding, config)?;
             filter_block_candidate(candidate, config)
         })
+        .collect()
+}
+
+fn proxy_source_unresolved(finding: &Finding) -> bool {
+    evidence_value(finding, "proxy_source_unresolved") == Some("true")
+}
+
+fn split_evidence_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
         .collect()
 }
 
@@ -1430,6 +1457,44 @@ mod tests {
         assert_eq!(candidates[0].ip.to_string(), "54.197.205.159");
         assert!(candidates[0].reason.contains("web aggregate"));
         assert!(candidates[0].reason.contains("request_count=20"));
+    }
+
+    #[test]
+    fn grouped_web_probe_family_list_can_trigger_aggregate_block() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.web_probe_block_threshold = 25;
+        let mut finding = web_finding("54.197.205.160", "env_file", "missing_or_rejected", 20);
+        finding.evidence.push(Evidence::new(
+            "probe_families",
+            "actuator, env_file, git_exposure",
+        ));
+        finding
+            .evidence
+            .push(Evidence::new("response_profiles", "missing_or_rejected"));
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].ip.to_string(), "54.197.205.160");
+        assert!(candidates[0].reason.contains("web aggregate"));
+    }
+
+    #[test]
+    fn unresolved_trusted_proxy_web_findings_are_not_block_candidates() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        let mut finding = web_finding("172.70.12.9", "env_file", "successful_response", 1);
+        finding
+            .evidence
+            .push(Evidence::new("source_is_trusted_proxy", "true"));
+        finding
+            .evidence
+            .push(Evidence::new("proxy_source_unresolved", "true"));
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert!(candidates.is_empty());
     }
 
     #[test]
