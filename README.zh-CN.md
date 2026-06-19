@@ -44,7 +44,7 @@
 | 高级采集 | 默认启用 auditd 日志采集和 eBPF JSONL/命令桥接入口；auditd 事件可识别 procfs 快照可能错过的短生命周期网络命令执行和非交互式提权 shell 执行。 |
 | 外部规则 | 支持 Sigma-like TOML 事件规则、外部规则校验和可选 YARA CLI 扫描；规则引擎默认启用，但只有配置了规则路径或扫描根目录后才会实际运行。 |
 | 威胁情报 | 可选用本地或远程 indicator 对 IP、路径、域名、哈希做证据增强；命中只是辅助证据，不会单独触发封禁。 |
-| 多 VPS 视图 | 导出和导入轻量级节点快照，方便在一个本地 SQLite 中查看多台 VPS 摘要。 |
+| 多 VPS 面板 | 将有签名、有大小上限的遥测推送到 Rust 自建面板或 Cloudflare Worker/D1 接收端；面板保存节点、finding、incident、基线漂移和主动封禁记录，静态 UI 支持第三方主题和自定义页面。 |
 | 维护模式 | 支持有时限的维护窗口，在计划升级期间压制低/中危基线漂移和交互式 SSH 登录噪声，但不隐藏爆破或其它攻击信号。 |
 | 本地存储与资源控制 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和自包含通知日志；重复 raw fact 使用稳定存储键，默认不持久化完整原始日志行，普通 Web 访问事件默认不入库，并提供保留期、数据库容量和运行时预算上限，避免无限增长。 |
 | 噪声控制 | 支持白名单、最低告警级别、finding 去重和保留周期。 |
@@ -167,6 +167,24 @@ secret = ""
 min_severity = "Medium"
 ```
 
+## 多 VPS 面板
+
+agent 可以把签名后的遥测主动推送到中心面板，被监控 VPS 不需要开放入站管理端口。自建部署使用 Rust 二进制 `vps-sentinel-panel`，支持 SQLite、PostgreSQL 和 MySQL；Cloudflare 部署可使用 `panel/cloudflare` 中的 Worker/D1 接收端，并把 `panel/web` 作为静态 UI。
+
+agent 侧配置示例：
+
+```toml
+[panel]
+enabled = true
+url = "https://panel.example.com/api/v1/ingest"
+node_name = "prod-web-1"
+secret = "replace-with-a-long-random-secret"
+min_severity = "Medium"
+privacy_mode = "normal"
+```
+
+常用命令是 `vs panel push`、`vs panel flush` 和 `vs panel outbox`。Rust 面板服务、Cloudflare Worker/D1、MySQL/PostgreSQL 注意事项和第三方主题/页面开发见 [docs/panel.md](docs/panel.md)。
+
 ## 架构
 
 ```text
@@ -175,7 +193,9 @@ vps-sentinel/
     sentinel-core/   # config, errors, severity, RawEvent, Finding
     sentinel-agent/  # collectors, detectors, baseline, SQLite, notifiers, daemon
     sentinel-cli/    # vps-sentinel command line
+    sentinel-panel/  # Rust 自建多 VPS 面板 API 和 Web 服务
   config/            # 示例配置
+  panel/             # Cloudflare Worker、SQL schema 和可换主题的静态面板 UI
   packaging/         # systemd 模板和安装辅助脚本
   docs/              # 部署、隐私、规则和通知扩展文档
 ```
@@ -227,7 +247,7 @@ CI 中使用的 Docker 容器只用于构建和兼容性测试，不代表推荐
 | Incident 与时间线 | 按 IP、路径、进程、可执行文件 hash、systemd unit、分类和时间窗口聚合相关 finding，提供 `incidents list/show/timeline`，并为多阶段链路生成按攻击阶段排序的扫描窗口时间线 finding。 | 把孤立 finding 组织成可读攻击链，同时保留原始 finding。 |
 | 服务画像 | 保存监听服务的地址、端口、协议、进程名、可执行文件、命令行和暴露分类；动态 UDP/UDP6 高位端口可按进程身份建模，并忽略可配置的客户端临时 UDP 与本地 SSH 转发监听。 | 不盲信 80/443，也能发现常见端口背后的服务 owner 漂移，同时避免合法动态 UDP 端口每次变化都告警。 |
 | 高级证据 | 可选 auditd、eBPF JSONL bridge、Sigma-like TOML 规则、外部规则校验、YARA CLI 和威胁情报 indicator 都进入同一 RawEvent/Finding 模型。 | 平台支持时可增加更深证据，默认安装仍保持轻量兼容。 |
-| 维护与多 VPS 运维 | 在本地 rule state 中保存有界维护状态和 fleet 节点快照。 | 计划升级时压制低/中危漂移和预期的交互式 SSH 登录噪声，同时保留 SSH 爆破和攻击链信号，并可本地汇总多台 VPS 摘要。 |
+| 维护与多 VPS 运维 | 在本地 rule state 中保存有界维护状态和 fleet 节点快照；也可推送带签名的 panel envelope，内容包含有上限的 finding、incident、基线漂移、主动封禁、存储统计和启用功能元数据。 | 计划升级时压制低/中危漂移和预期的交互式 SSH 登录噪声，同时保留 SSH 爆破和攻击链信号；多台 VPS 可集中到自建或 Cloudflare 托管面板里查看。 |
 
 ## 一键安装
 
@@ -479,6 +499,9 @@ sudo journalctl -u vps-sentinel -f
 | `vps-sentinel fleet export --config <path>` | 导出本节点轻量级 fleet 快照到 stdout 或 `fleet.export_path`。 |
 | `vps-sentinel fleet ingest <path> --config <path>` | 导入另一台节点的 fleet 快照到本地 SQLite。 |
 | `vps-sentinel fleet list --config <path>` | 列出已导入的 fleet 节点快照。 |
+| `vps-sentinel panel push --config <path>` | 向配置的多 VPS 面板推送当前有界快照；失败时会写入本地 outbox。 |
+| `vps-sentinel panel flush --config <path>` | 不执行扫描，只重试本地 panel outbox 中待发送的载荷。 |
+| `vps-sentinel panel outbox --config <path>` | 查看 panel outbox 数量和最近推送时间。 |
 | `vps-sentinel advice finding <finding_id> --config <path>` | 生成单条 finding 的处置建议。 |
 | `vps-sentinel advice incident <incident_id> --config <path>` | 生成 incident 级处置建议。 |
 | `vps-sentinel storage stats --config <path>` | 输出 SQLite 行数和数据库占用。 |

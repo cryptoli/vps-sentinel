@@ -4,7 +4,7 @@ use blake3::Hasher;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, Row};
 use sentinel_core::{Finding, RawEvent, SentinelError, SentinelResult};
-use serde::{de::DeserializeOwned, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -105,7 +105,7 @@ pub struct StorageLimitReport {
     pub vacuumed: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageStats {
     pub database_bytes: u64,
     pub raw_events: usize,

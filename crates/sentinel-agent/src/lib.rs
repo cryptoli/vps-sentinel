@@ -13,6 +13,7 @@ pub mod fleet;
 pub mod incident;
 pub mod maintenance;
 pub mod notify;
+pub mod panel;
 pub mod registry;
 pub mod report;
 pub mod resource_budget;

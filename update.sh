@@ -5,6 +5,7 @@ REPO_URL="${REPO_URL:-https://github.com/cryptoli/vps-sentinel.git}"
 BRANCH="${BRANCH:-main}"
 WORK_DIR="${WORK_DIR:-/opt/vps-sentinel-src}"
 PREFIX="${PREFIX:-/usr/local}"
+SHARE_DIR="${SHARE_DIR:-$PREFIX/share/vps-sentinel}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/vps-sentinel}"
 DATA_DIR="${DATA_DIR:-/var/lib/vps-sentinel}"
 LOG_DIR="${LOG_DIR:-/var/log/vps-sentinel}"
@@ -442,6 +443,26 @@ release_binary_works() {
   "$binary" --version >/dev/null 2>&1
 }
 
+install_optional_panel() {
+  source_dir="$1"
+  panel_bin=""
+  if [ -f "$source_dir/vps-sentinel-panel" ]; then
+    panel_bin="$source_dir/vps-sentinel-panel"
+  elif [ -f "$source_dir/target/release/vps-sentinel-panel" ]; then
+    panel_bin="$source_dir/target/release/vps-sentinel-panel"
+  fi
+  if [ -n "$panel_bin" ]; then
+    install -m 0755 "$panel_bin" "$PREFIX/bin/vps-sentinel-panel"
+    echo "installed optional Rust panel binary to $PREFIX/bin/vps-sentinel-panel"
+  fi
+  if [ -d "$source_dir/panel" ]; then
+    install -d "$SHARE_DIR"
+    rm -rf "$SHARE_DIR/panel"
+    cp -R "$source_dir/panel" "$SHARE_DIR/panel"
+    echo "installed optional panel assets to $SHARE_DIR/panel"
+  fi
+}
+
 install_helper_scripts() {
   source_dir="$1"
   for script in stop update install; do
@@ -521,6 +542,7 @@ install_from_release() {
   start_update_maintenance
   stop_service_before_update
   install -m 0755 "$tmp_dir/vps-sentinel" "$PREFIX/bin/vps-sentinel"
+  install_optional_panel "$tmp_dir"
   install_binary_aliases
   install_helper_scripts "$tmp_dir"
   ensure_config_exists "$tmp_dir/config.example.toml"
@@ -544,6 +566,7 @@ build_and_install_from_source() {
   cd "$WORK_DIR"
   cargo build --release --locked
   install -m 0755 target/release/vps-sentinel "$PREFIX/bin/vps-sentinel"
+  install_optional_panel "$WORK_DIR"
   install_binary_aliases
   install_helper_scripts "$WORK_DIR"
   ensure_config_exists "$WORK_DIR/config/config.example.toml"

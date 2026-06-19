@@ -8,6 +8,7 @@ use crate::findings::coalesce_related_findings;
 use crate::incident::{correlate_findings, prune_incidents, save_incidents};
 use crate::maintenance::apply_maintenance_policy;
 use crate::notify::{NotificationManager, NotifyContext};
+use crate::panel;
 use crate::resource_budget::apply_resource_budget;
 use crate::risk_score;
 use crate::rules::system::ACTIVE_RESPONSE_SUMMARY_RULE_ID;
@@ -508,7 +509,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         collector_errors = collector_errors.len(),
         "scan completed"
     );
-    Ok(ScanReport {
+    let report = ScanReport {
         raw_event_count,
         diff_event_count,
         event_count_by_source,
@@ -536,7 +537,22 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         incident_count,
         findings,
         collector_errors,
-    })
+    };
+    if options.persist {
+        if let Some(store) = &store {
+            match panel::publish_scan(config.as_ref(), store, &report, &incidents).await {
+                Ok(summary) if summary.pending > 0 => {
+                    warn!(
+                        pending = summary.pending,
+                        "panel outbox has pending payloads"
+                    );
+                }
+                Ok(_) => {}
+                Err(err) => warn!(error = %err, "panel publish failed"),
+            }
+        }
+    }
+    Ok(report)
 }
 
 fn count_events_by<'a>(

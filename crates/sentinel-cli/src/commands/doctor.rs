@@ -342,25 +342,6 @@ fn command_available(program: &str) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{format_capability_line, CapabilityCheck, CapabilityStatus};
-
-    #[test]
-    fn formats_capability_line_without_raw_quotes() {
-        let line = format_capability_line(&CapabilityCheck {
-            name: "gpu",
-            status: CapabilityStatus::Degraded,
-            detail: "nvidia=\"false\"".to_string(),
-            affects: "gpu detection",
-        });
-
-        assert!(line.contains("gpu"));
-        assert!(line.contains("status=degraded"));
-        assert!(line.contains("nvidia='false'"));
-    }
-}
-
 fn running_as_root() -> bool {
     #[cfg(unix)]
     {
@@ -381,5 +362,24 @@ fn running_as_root() -> bool {
     #[cfg(not(unix))]
     {
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{format_capability_line, CapabilityCheck, CapabilityStatus};
+
+    #[test]
+    fn formats_capability_line_without_raw_quotes() {
+        let line = format_capability_line(&CapabilityCheck {
+            name: "gpu",
+            status: CapabilityStatus::Degraded,
+            detail: "nvidia=\"false\"".to_string(),
+            affects: "gpu detection",
+        });
+
+        assert!(line.contains("gpu"));
+        assert!(line.contains("status=degraded"));
+        assert!(line.contains("nvidia='false'"));
     }
 }

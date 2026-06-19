@@ -1,0 +1,7 @@
+{
+  "name": "default",
+  "description": "Built-in operational theme for vps-sentinel panel.",
+  "styles": ["theme.css"],
+  "pages": [],
+  "available_themes": ["default"]
+}

@@ -1,0 +1,94 @@
+CREATE TABLE IF NOT EXISTS nodes (
+  node_id VARCHAR(191) PRIMARY KEY,
+  node_name VARCHAR(255) NOT NULL,
+  host_id VARCHAR(255) NOT NULL,
+  hostname VARCHAR(255) NOT NULL,
+  agent_version VARCHAR(64) NOT NULL,
+  privacy_mode VARCHAR(32) NOT NULL,
+  enabled_features_json TEXT NOT NULL,
+  storage_json TEXT NOT NULL,
+  last_seen_at VARCHAR(64) NOT NULL,
+  updated_at VARCHAR(64) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS heartbeats (
+  message_id VARCHAR(191) PRIMARY KEY,
+  node_id VARCHAR(191) NOT NULL,
+  sent_at VARCHAR(64) NOT NULL,
+  received_at VARCHAR(64) NOT NULL,
+  scan_json TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS findings (
+  id VARCHAR(191) PRIMARY KEY,
+  node_id VARCHAR(191) NOT NULL,
+  rule_id VARCHAR(64) NOT NULL,
+  title VARCHAR(512) NOT NULL,
+  severity VARCHAR(32) NOT NULL,
+  confidence VARCHAR(32) NOT NULL,
+  category VARCHAR(64) NOT NULL,
+  subject VARCHAR(512) NOT NULL,
+  timestamp VARCHAR(64) NOT NULL,
+  dedup_key VARCHAR(191) NOT NULL,
+  evidence_json TEXT NOT NULL,
+  impact_json TEXT NOT NULL,
+  recommendations_json TEXT NOT NULL,
+  received_at VARCHAR(64) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS incidents (
+  id VARCHAR(191) PRIMARY KEY,
+  node_id VARCHAR(191) NOT NULL,
+  title VARCHAR(512) NOT NULL,
+  severity VARCHAR(32) NOT NULL,
+  score INTEGER NOT NULL,
+  first_seen VARCHAR(64) NOT NULL,
+  last_seen VARCHAR(64) NOT NULL,
+  summary TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  received_at VARCHAR(64) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS baseline_drifts (
+  id VARCHAR(191) PRIMARY KEY,
+  node_id VARCHAR(191) NOT NULL,
+  finding_id VARCHAR(191) NOT NULL,
+  rule_id VARCHAR(64) NOT NULL,
+  severity VARCHAR(32) NOT NULL,
+  subject VARCHAR(512) NOT NULL,
+  timestamp VARCHAR(64) NOT NULL,
+  tier VARCHAR(32) NOT NULL,
+  score INTEGER,
+  review_action VARCHAR(128) NOT NULL,
+  reasons_json TEXT NOT NULL,
+  received_at VARCHAR(64) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS active_blocks (
+  id VARCHAR(191) PRIMARY KEY,
+  node_id VARCHAR(191) NOT NULL,
+  ip VARCHAR(64) NOT NULL,
+  rule_id VARCHAR(64) NOT NULL,
+  finding_id VARCHAR(191) NOT NULL,
+  reason VARCHAR(512) NOT NULL,
+  backend VARCHAR(64) NOT NULL,
+  blocked_at VARCHAR(64) NOT NULL,
+  expires_at VARCHAR(64),
+  expired INTEGER NOT NULL,
+  firewall_present INTEGER,
+  received_at VARCHAR(64) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ingest_nonces (
+  nonce VARCHAR(255) PRIMARY KEY,
+  node_id VARCHAR(191) NOT NULL,
+  expires_at BIGINT NOT NULL
+);
+
+CREATE INDEX idx_nodes_last_seen ON nodes(last_seen_at);
+CREATE INDEX idx_findings_node_time ON findings(node_id, timestamp);
+CREATE INDEX idx_findings_severity_time ON findings(severity, timestamp);
+CREATE INDEX idx_incidents_node_time ON incidents(node_id, last_seen);
+CREATE INDEX idx_baseline_node_time ON baseline_drifts(node_id, timestamp);
+CREATE INDEX idx_blocks_node ON active_blocks(node_id);
+CREATE INDEX idx_nonces_expires ON ingest_nonces(expires_at);

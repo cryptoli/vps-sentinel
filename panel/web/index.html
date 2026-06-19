@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>vps-sentinel panel</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">VS</span>
+        <div>
+          <h1>vps-sentinel</h1>
+          <p>Fleet security signal panel</p>
+        </div>
+      </div>
+      <div class="toolbar">
+        <select id="theme-select" aria-label="Theme"></select>
+        <button id="refresh-button" type="button">Refresh</button>
+      </div>
+    </header>
+    <main class="layout">
+      <nav id="nav" class="sidebar" aria-label="Panel navigation"></nav>
+      <section id="app" class="content" aria-live="polite"></section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

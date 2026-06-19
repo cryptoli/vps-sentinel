@@ -16,6 +16,7 @@ use commands::{
     init::run_init,
     maintenance::{run_maintenance, MaintenanceCommand},
     notify::{run_notify, NotifyCommand},
+    panel::{run_panel, PanelCommand},
     reload::run_reload,
     report::{run_report, ReportCommand},
     rules::{run_rules, RulesCommand},
@@ -110,6 +111,10 @@ enum Command {
         #[command(subcommand)]
         command: NotifyCommand,
     },
+    Panel {
+        #[command(subcommand)]
+        command: PanelCommand,
+    },
     Report {
         #[command(subcommand)]
         command: ReportCommand,
@@ -176,6 +181,7 @@ async fn main() -> Result<()> {
         Command::Notify { command } => {
             run_notify(load_config(cli.config.as_deref())?, command).await
         }
+        Command::Panel { command } => run_panel(load_config(cli.config.as_deref())?, command).await,
         Command::Report { command } => {
             run_report(load_config(cli.config.as_deref())?, command).await
         }

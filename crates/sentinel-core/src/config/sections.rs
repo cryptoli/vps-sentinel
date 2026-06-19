@@ -846,6 +846,42 @@ impl Default for FleetConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct PanelConfig {
+    pub enabled: bool,
+    pub url: String,
+    pub node_id: String,
+    pub node_name: String,
+    pub secret: String,
+    pub min_severity: Severity,
+    pub batch_size: usize,
+    pub push_interval_seconds: u64,
+    pub request_timeout_seconds: u64,
+    pub outbox_max_items: usize,
+    pub max_payload_bytes: usize,
+    pub privacy_mode: String,
+}
+
+impl Default for PanelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: String::new(),
+            node_id: String::new(),
+            node_name: String::new(),
+            secret: String::new(),
+            min_severity: Severity::Medium,
+            batch_size: 100,
+            push_interval_seconds: 60,
+            request_timeout_seconds: 10,
+            outbox_max_items: 128,
+            max_payload_bytes: 512 * 1024,
+            privacy_mode: "normal".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MaintenanceConfig {
     pub enabled: bool,
     pub suppress_baseline_drift: bool,

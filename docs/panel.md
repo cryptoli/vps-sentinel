@@ -1,0 +1,180 @@
+# Fleet Panel
+
+The fleet panel is an optional push-mode dashboard for multiple VPS nodes. Agents keep their normal local-first behavior and only push a bounded, signed summary to the configured receiver.
+
+## What Gets Pushed
+
+Each panel payload contains:
+
+- node identity, display name, agent version, privacy mode, enabled features, and storage stats;
+- scan summary counters;
+- recent findings at or above `panel.min_severity`;
+- recent incidents;
+- baseline-drift review items;
+- active-response block records.
+
+Payload size is bounded by `panel.max_payload_bytes`. If the panel is unavailable, the agent stores a small local outbox in the existing SQLite rule-state store and retries later. The outbox is capped by `panel.outbox_max_items`.
+
+## Agent Configuration
+
+```toml
+[panel]
+enabled = true
+url = "https://panel.example.com/api/v1/ingest"
+node_id = ""       # empty falls back to agent.host_id
+node_name = ""     # empty falls back to agent.display_name
+secret = "replace-with-a-long-random-secret"
+min_severity = "Medium"
+batch_size = 100
+push_interval_seconds = 60
+request_timeout_seconds = 10
+outbox_max_items = 128
+max_payload_bytes = 524288
+privacy_mode = "normal" # normal or strict
+```
+
+Use HTTPS for remote panel URLs. Plain HTTP is accepted only for `localhost` or `127.0.0.1` because panel payloads can contain sensitive security context even though they are HMAC signed.
+
+Useful commands:
+
+```bash
+vs panel push --config /etc/vps-sentinel/config.toml
+vs panel flush --config /etc/vps-sentinel/config.toml
+vs panel outbox --config /etc/vps-sentinel/config.toml
+```
+
+## Self-Hosted Rust Panel
+
+The self-hosted service is Rust, not Python. Build it with:
+
+```bash
+cargo build --release -p sentinel-panel
+```
+
+SQLite example:
+
+```bash
+PANEL_SHARED_SECRET='replace-with-a-long-random-secret' \
+PANEL_DATABASE_URL='sqlite://panel.db' \
+PANEL_DB_BACKEND='sqlite' \
+PANEL_WEB_DIR='/usr/local/share/vps-sentinel/panel/web' \
+target/release/vps-sentinel-panel --bind 0.0.0.0:8080
+```
+
+PostgreSQL example:
+
+```bash
+PANEL_SHARED_SECRET='replace-with-a-long-random-secret' \
+PANEL_DATABASE_URL='postgres://vps_sentinel:password@127.0.0.1:5432/vps_sentinel' \
+PANEL_DB_BACKEND='postgres' \
+PANEL_WEB_DIR='/usr/local/share/vps-sentinel/panel/web' \
+target/release/vps-sentinel-panel --bind 0.0.0.0:8080
+```
+
+MySQL example:
+
+```bash
+PANEL_SHARED_SECRET='replace-with-a-long-random-secret' \
+PANEL_DATABASE_URL='mysql://vps_sentinel:password@127.0.0.1:3306/vps_sentinel' \
+PANEL_DB_BACKEND='mysql' \
+PANEL_WEB_DIR='/usr/local/share/vps-sentinel/panel/web' \
+target/release/vps-sentinel-panel --bind 0.0.0.0:8080
+```
+
+The service initializes the selected database schema on startup. SQLite uses the existing `rusqlite` stack from the agent; PostgreSQL and MySQL use async pools. This avoids linking two different SQLite native libraries into the same workspace.
+
+The installer and updater copy `panel/` to `/usr/local/share/vps-sentinel/panel` by default. Override `SHARE_DIR` if your package layout uses another directory.
+
+For production, place the panel behind a reverse proxy with HTTPS and keep `PANEL_SHARED_SECRET` or `PANEL_NODE_SECRETS` out of shell history. `PANEL_NODE_SECRETS` accepts JSON such as:
+
+```json
+{"prod-web-1":"node-specific-secret","prod-db-1":"another-node-secret"}
+```
+
+Node-specific secrets override the shared secret.
+
+## Cloudflare Worker/D1
+
+The Worker receiver is in `panel/cloudflare/worker.js`; the D1 schema is in `panel/cloudflare/schema.sql`.
+
+High-level setup:
+
+1. Create a D1 database.
+2. Apply `panel/cloudflare/schema.sql`.
+3. Deploy `panel/cloudflare/worker.js` with binding `DB`.
+4. Set `PANEL_SHARED_SECRET` or `PANEL_NODE_SECRETS` as Worker secrets.
+5. Serve `panel/web` as static assets through Cloudflare Pages or another static host.
+
+The Worker exposes the same API shape as the Rust panel:
+
+- `POST /api/v1/ingest`
+- `GET /api/v1/summary`
+- `GET /api/v1/nodes`
+- `GET /api/v1/findings`
+- `GET /api/v1/incidents`
+- `GET /api/v1/baseline-drifts`
+- `GET /api/v1/active-blocks`
+
+## Security Model
+
+Panel ingest requests include:
+
+- `x-vps-sentinel-node`
+- `x-vps-sentinel-timestamp`
+- `x-vps-sentinel-nonce`
+- `x-vps-sentinel-body-sha256`
+- `x-vps-sentinel-signature`
+
+The signature is HMAC-SHA256 over:
+
+```text
+POST
+/api/v1/ingest
+<timestamp>
+<nonce>
+<body_sha256_hex>
+```
+
+Receivers reject stale timestamps, nonce replay, node mismatches, body-hash mismatches, and invalid signatures.
+
+## Theme And Page Extensions
+
+The panel UI is static and themeable. A theme lives under:
+
+```text
+panel/web/themes/<theme-name>/
+```
+
+Minimum theme:
+
+```json
+{
+  "name": "my-theme",
+  "styles": ["theme.css"],
+  "pages": []
+}
+```
+
+CSS files are loaded relative to the theme directory. Themes can override the CSS variables declared in `panel/web/styles.css`.
+
+Custom pages can be added through the theme manifest:
+
+```json
+{
+  "name": "ops-theme",
+  "styles": ["theme.css"],
+  "pages": [
+    { "id": "ops", "label": "Ops", "module": "ops-page.js" }
+  ]
+}
+```
+
+The page module must export `render(context)`. The context includes:
+
+- `context.api(path)` for `/api/v1` calls;
+- `context.app`, the current page container;
+- `context.datasets`, preloaded built-in datasets;
+- `context.renderTable(rows, columns)`;
+- `context.state` and the loaded theme manifest.
+
+This keeps visual customization separate from the Rust API and avoids hardcoding dashboard pages in the backend.

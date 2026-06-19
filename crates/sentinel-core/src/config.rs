@@ -16,10 +16,10 @@ pub use sections::{
     ActiveResponseConfig, AdvancedCollectorsConfig, AgentConfig, AllowlistConfig,
     AttackFingerprintConfig, DockerConfig, ExternalRulesConfig, FileIntegrityConfig, FleetConfig,
     GpuConfig, IncidentConfig, LogIntegrityConfig, MaintenanceConfig, NetworkConfig,
-    NoiseControlConfig, PackageManagerConfig, PerformanceConfig, PersistenceConfig, PrivacyConfig,
-    ProcessConfig, ReportsConfig, ResourceBudgetConfig, ResponsePolicyConfig, ResponsePolicyRule,
-    SentinelPaths, ServiceProfileConfig, SshConfig, StorageConfig, ThreatIntelConfig, WebConfig,
-    DEFAULT_DYNAMIC_UDP_MIN_PORT,
+    NoiseControlConfig, PackageManagerConfig, PanelConfig, PerformanceConfig, PersistenceConfig,
+    PrivacyConfig, ProcessConfig, ReportsConfig, ResourceBudgetConfig, ResponsePolicyConfig,
+    ResponsePolicyRule, SentinelPaths, ServiceProfileConfig, SshConfig, StorageConfig,
+    ThreatIntelConfig, WebConfig, DEFAULT_DYNAMIC_UDP_MIN_PORT,
 };
 
 const MIN_RESOURCE_EVIDENCE_ITEMS_PER_FINDING: usize = 16;
@@ -55,6 +55,7 @@ pub struct SentinelConfig {
     pub external_rules: ExternalRulesConfig,
     pub threat_intel: ThreatIntelConfig,
     pub fleet: FleetConfig,
+    pub panel: PanelConfig,
     pub maintenance: MaintenanceConfig,
     pub allowlist: AllowlistConfig,
 }
@@ -288,6 +289,7 @@ impl SentinelConfig {
         validate_external_rules(&self.external_rules)?;
         validate_threat_intel(&self.threat_intel)?;
         validate_fleet(&self.fleet)?;
+        validate_panel(&self.panel)?;
         validate_maintenance(&self.maintenance)?;
         for quiet_hour in &self.noise_control.quiet_hours {
             quiet_hour.parse::<MinuteWindow>().map_err(|err| {
@@ -571,6 +573,68 @@ fn validate_fleet(config: &FleetConfig) -> SentinelResult<()> {
         ));
     }
     Ok(())
+}
+
+fn validate_panel(config: &PanelConfig) -> SentinelResult<()> {
+    if !config.enabled {
+        return Ok(());
+    }
+    let url = config.url.trim();
+    if url.is_empty() {
+        return Err(SentinelError::Config(
+            "panel.url is required when panel.enabled is true".to_string(),
+        ));
+    }
+    if !(url.starts_with("https://")
+        || url.starts_with("http://127.0.0.1")
+        || url.starts_with("http://localhost"))
+    {
+        return Err(SentinelError::Config(
+            "panel.url must use https://, except local self-host URLs may use http://localhost or http://127.0.0.1".to_string(),
+        ));
+    }
+    if !url.trim_end_matches('/').ends_with("/api/v1/ingest") {
+        return Err(SentinelError::Config(
+            "panel.url must point to /api/v1/ingest because this path is part of the request signature".to_string(),
+        ));
+    }
+    if config.secret.trim().len() < 16 {
+        return Err(SentinelError::Config(
+            "panel.secret must contain at least 16 characters when panel.enabled is true"
+                .to_string(),
+        ));
+    }
+    if config.batch_size == 0 {
+        return Err(SentinelError::Config(
+            "panel.batch_size must be greater than 0".to_string(),
+        ));
+    }
+    if config.push_interval_seconds == 0 {
+        return Err(SentinelError::Config(
+            "panel.push_interval_seconds must be greater than 0".to_string(),
+        ));
+    }
+    if config.request_timeout_seconds == 0 {
+        return Err(SentinelError::Config(
+            "panel.request_timeout_seconds must be greater than 0".to_string(),
+        ));
+    }
+    if config.outbox_max_items == 0 {
+        return Err(SentinelError::Config(
+            "panel.outbox_max_items must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_payload_bytes < 16 * 1024 {
+        return Err(SentinelError::Config(
+            "panel.max_payload_bytes must be at least 16384".to_string(),
+        ));
+    }
+    match config.privacy_mode.as_str() {
+        "normal" | "strict" => Ok(()),
+        other => Err(SentinelError::Config(format!(
+            "panel.privacy_mode '{other}' is invalid; use normal or strict"
+        ))),
+    }
 }
 
 fn validate_maintenance(config: &MaintenanceConfig) -> SentinelResult<()> {

@@ -1,0 +1,15 @@
+name = "vps-sentinel-panel"
+main = "worker.js"
+compatibility_date = "2026-06-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "vps-sentinel-panel"
+database_id = "replace-with-d1-database-id"
+
+# Set secrets with:
+# wrangler secret put PANEL_SHARED_SECRET
+# or:
+# wrangler secret put PANEL_NODE_SECRETS
+[vars]
+PANEL_MAX_BODY_BYTES = "1048576"
