@@ -137,7 +137,7 @@ pub async fn publish_scan(
     }
 
     let mut state = load_outbox(store)?;
-    retry_outbox(config, &mut state).await;
+    retry_outbox(config, &mut state, Some(MAX_RETRY_PER_SCAN)).await;
 
     if should_send_scan_payload(config, &state, report) {
         let payload = build_scan_payload(config, store, report, incidents)?;
@@ -167,7 +167,7 @@ pub async fn push_snapshot(
         ));
     }
     let mut state = load_outbox(store)?;
-    retry_outbox(config, &mut state).await;
+    retry_outbox(config, &mut state, None).await;
     let payload = build_snapshot_payload(config, store)?;
     match send_envelope(config, &payload).await {
         Ok(()) => state.last_success_at = Some(Utc::now()),
@@ -188,7 +188,7 @@ pub async fn flush_outbox(
         ));
     }
     let mut state = load_outbox(store)?;
-    retry_outbox(config, &mut state).await;
+    retry_outbox(config, &mut state, None).await;
     save_outbox(store, &state)?;
     Ok(summary_from_state(&state))
 }
@@ -349,11 +349,15 @@ fn should_send_scan_payload(
     elapsed >= ChronoDuration::seconds(duration_seconds(config.panel.push_interval_seconds))
 }
 
-async fn retry_outbox(config: &SentinelConfig, state: &mut PanelOutboxState) {
+async fn retry_outbox(
+    config: &SentinelConfig,
+    state: &mut PanelOutboxState,
+    max_successful_retries: Option<usize>,
+) {
     let mut retained = Vec::new();
     let mut sent = 0usize;
     for mut item in state.items.drain(..) {
-        if sent < MAX_RETRY_PER_SCAN {
+        if max_successful_retries.map_or(true, |limit| sent < limit) {
             match serde_json::from_str::<PanelEnvelope>(&item.payload_json)
                 .map_err(|err| SentinelError::Notify(err.to_string()))
                 .and_then(|payload| validate_payload_size(config, &payload).map(|_| payload))
