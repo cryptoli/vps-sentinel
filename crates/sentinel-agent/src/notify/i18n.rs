@@ -85,6 +85,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
     }
     let text = match language {
         NotificationLanguage::En => match key {
+            "account_subjects" => "account subjects",
             "argv_json" => "argv JSON",
             "active_response_backend" => "active response backend",
             "active_response_block_count" => "active response block count",
@@ -133,6 +134,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "gid" => "GID",
             "hidden" => "hidden",
             "home" => "home directory",
+            "identity_files" => "identity files",
             "ip" | "source_ip" => "source IP",
             "is_web_path" => "web path",
             "key" => "key",
@@ -217,6 +219,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             other => other,
         },
         NotificationLanguage::ZhCn => match key {
+            "account_subjects" => "账号对象",
             "argv_json" => "参数 JSON",
             "active_response_backend" => "主动响应后端",
             "active_response_block_count" => "封禁 IP 数量",
@@ -265,6 +268,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "gid" => "GID",
             "hidden" => "隐藏文件",
             "home" => "Home 目录",
+            "identity_files" => "身份文件",
             "ip" | "source_ip" => "来源 IP",
             "is_web_path" => "Web 路径",
             "key" => "键",
@@ -900,6 +904,7 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
     }
     match language {
         NotificationLanguage::En => match value {
+            "account file drift" => Some("account file drift"),
             "dev_tcp" => Some("/dev/tcp"),
             "exec_bridge" => Some("exec bridge"),
             "fd_bridge" | "fd_duplication" => Some("file descriptor bridge"),
@@ -907,6 +912,8 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
             "interactive_shell" => Some("interactive shell"),
             "network_channel" => Some("network channel"),
             "network_execution_bridge" => Some("network execution bridge"),
+            "local user account" => Some("local user account"),
+            "privilege account change" => Some("privilege account change"),
             "shell_target" => Some("shell target"),
             "socket_api" => Some("socket API"),
             "suspicious executable path" => Some("suspicious executable path"),
@@ -950,6 +957,7 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
             _ => None,
         },
         NotificationLanguage::ZhCn => match value {
+            "account file drift" => Some("账号文件漂移"),
             "anonymous_deleted_executable" => Some("匿名或 memfd 删除态可执行文件"),
             "command_execution_marker" => Some("命令执行特征"),
             "configured miner/scanner identity matched" => Some("命中配置中的挖矿或扫描工具身份"),
@@ -972,6 +980,8 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
             "encoded_payload_marker" => Some("编码载荷特征"),
             "encoded_shell_payload" => Some("编码 Shell 载荷"),
             "exec_bridge" => Some("exec 桥接"),
+            "local user account" => Some("本地用户账号"),
+            "privilege account change" => Some("权限账号变更"),
             "executable appears deleted while still running" => {
                 Some("可执行文件已删除但进程仍在运行")
             }
