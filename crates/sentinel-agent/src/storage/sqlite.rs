@@ -1604,6 +1604,10 @@ mod tests {
                     size: "700000".to_string(),
                     executable: "false".to_string(),
                     is_web_path: "false".to_string(),
+                    semantic_kind: String::new(),
+                    semantic_hash: String::new(),
+                    semantic_summary: String::new(),
+                    semantic_features: String::new(),
                 },
             );
             store.save_baseline_snapshot(&snapshot)?;

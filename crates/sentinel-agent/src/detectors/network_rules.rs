@@ -3,10 +3,12 @@ use crate::detectors::process_rules::{
     command_matches_allowlist, event_contains_miner_or_scanner, path_in_suspicious_dirs,
 };
 use crate::detectors::{
-    evidence, path_is_allowlisted, string_field, DetectContext, Detector, EventIndex,
+    behavior_profile, evidence, path_is_allowlisted, string_field, DetectContext, Detector,
+    EventIndex,
 };
 use crate::rules::model::RuleMetadata;
 use crate::utils::ip::is_public_listener_addr;
+use crate::utils::package::PackageOwnerCache;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -70,7 +72,12 @@ fn detect_network_events(index: &EventIndex<'_>, ctx: &DetectContext) -> Vec<Fin
     let mut reported_listener_alerts = BTreeSet::new();
     let policy = PortPolicy::from_context(ctx);
     let firewall = firewall_context(index.kind("firewall_state"));
-    let process_context = process_context_by_pid(index.kind("process_snapshot"));
+    let outbound_context = behavior_profile::outbound_profiles_by_pid(
+        index.kind("outbound_connection"),
+        ctx.config.process.outbound_remote_addr_sample_size,
+    );
+    let process_context =
+        process_context_by_pid(index.kind("process_snapshot"), &outbound_context, ctx);
     for event in index
         .kind("listening_socket")
         .chain(index.kind("listening_socket_owner_changed"))
@@ -334,10 +341,21 @@ fn socket_evidence_with_context(
             "systemd_unit",
             "systemd_execstart",
             "container_context",
+            "container_id",
+            "container_cgroup",
+            "euid",
             "exe_uid",
             "exe_gid",
             "exe_size",
             "exe_hash_blake3",
+            "package_owner",
+            "package_owner_state",
+            "socket_fd_count",
+            "outbound_connection_count",
+            "public_outbound_count",
+            "outbound_remote_ports",
+            "public_outbound_remote_addrs",
+            "outbound_remote_addr_sample_truncated",
         ] {
             push_context_evidence(&mut items, process, key);
         }
@@ -392,21 +410,31 @@ impl ProcessContext {
 
 fn process_context_by_pid<'a>(
     events: impl IntoIterator<Item = &'a RawEvent>,
+    outbound_context: &BTreeMap<String, behavior_profile::OutboundProfile>,
+    ctx: &DetectContext,
 ) -> BTreeMap<String, ProcessContext> {
     let mut contexts = BTreeMap::new();
+    let mut package_cache = PackageOwnerCache::default();
     for event in events {
         let Some(pid) = event.field("pid").filter(|pid| !pid.trim().is_empty()) else {
             continue;
         };
-        let fields = [
+        let mut fields = [
+            "exe_path",
+            "cmdline",
+            "name",
             "parent_name",
             "systemd_unit",
             "systemd_execstart",
             "container_context",
+            "container_id",
+            "container_cgroup",
+            "euid",
             "exe_uid",
             "exe_gid",
             "exe_size",
             "exe_hash_blake3",
+            "socket_fd_count",
         ]
         .into_iter()
         .filter_map(|key| {
@@ -415,10 +443,84 @@ fn process_context_by_pid<'a>(
                 .filter(|value| !value.trim().is_empty())
                 .map(|value| (key.to_string(), value.to_string()))
         })
-        .collect();
+        .collect::<BTreeMap<_, _>>();
+        if let Some(outbound) = outbound_context.get(pid) {
+            fields.insert(
+                "outbound_connection_count".to_string(),
+                outbound.total.to_string(),
+            );
+            fields.insert(
+                "public_outbound_count".to_string(),
+                outbound.public.to_string(),
+            );
+            fields.insert(
+                "outbound_remote_ports".to_string(),
+                outbound.remote_ports.join(", "),
+            );
+            if !outbound.public_remote_addrs.is_empty() {
+                fields.insert(
+                    "public_outbound_remote_addrs".to_string(),
+                    outbound.public_remote_addrs.join(", "),
+                );
+            }
+            if outbound.remote_addr_sample_truncated {
+                fields.insert(
+                    "outbound_remote_addr_sample_truncated".to_string(),
+                    "true".to_string(),
+                );
+            }
+        }
+        enrich_listener_package_identity(&mut fields, ctx, &mut package_cache);
         contexts.insert(pid.to_string(), ProcessContext { fields });
     }
     contexts
+}
+
+fn enrich_listener_package_identity(
+    fields: &mut BTreeMap<String, String>,
+    ctx: &DetectContext,
+    package_cache: &mut PackageOwnerCache,
+) {
+    if !should_query_listener_package_identity(fields, ctx) {
+        return;
+    }
+    let Some(path) = fields.get("exe_path").filter(|path| path.starts_with('/')) else {
+        return;
+    };
+    if let Some(owner) = package_cache.owner_for_path(path) {
+        fields.insert("package_owner".to_string(), owner);
+    } else {
+        fields.insert("package_owner_state".to_string(), "unowned".to_string());
+    }
+}
+
+fn should_query_listener_package_identity(
+    fields: &BTreeMap<String, String>,
+    ctx: &DetectContext,
+) -> bool {
+    let exe_path = fields.get("exe_path").map(String::as_str).unwrap_or("");
+    if exe_path.trim().is_empty() || !exe_path.trim().starts_with('/') {
+        return false;
+    }
+    path_in_suspicious_dirs(exe_path, &ctx.config.process.suspicious_dirs)
+        || behavior_profile::hidden_basename(exe_path)
+        || behavior_profile::is_shell_or_scheduler_parent(
+            fields.get("parent_name").map(String::as_str).unwrap_or(""),
+        )
+        || !fields
+            .get("systemd_execstart")
+            .map(String::as_str)
+            .unwrap_or("")
+            .trim()
+            .is_empty()
+        || fields
+            .get("public_outbound_count")
+            .and_then(|value| value.parse::<usize>().ok())
+            .is_some_and(|count| count > 0)
+        || fields
+            .get("socket_fd_count")
+            .and_then(|value| value.parse::<usize>().ok())
+            .is_some_and(|count| count >= ctx.config.process.suspicious_socket_fd_threshold)
 }
 
 fn push_context_evidence(
@@ -603,39 +705,102 @@ impl ListenerRiskProfile {
         let mut reasons = Vec::new();
         let mut features = Vec::new();
 
-        if path_in_suspicious_dirs(&executable, &ctx.config.process.suspicious_dirs) {
+        let suspicious_path =
+            path_in_suspicious_dirs(&executable, &ctx.config.process.suspicious_dirs);
+        let deleted_executable =
+            executable.contains(" (deleted)") || executable.ends_with("deleted");
+        let command_assessment = network_execution_assessment_from_event(event);
+        let known_bad_identity =
+            event_contains_miner_or_scanner(event, &ctx.config.process.known_bad_tool_names);
+        let shell_process_name = is_shell_process_name(&process_name);
+
+        if suspicious_path {
             score += 50;
             reasons.push("executable is under a suspicious temporary directory".to_string());
+            features.push("suspicious_executable_path".to_string());
         }
-        if executable.contains(" (deleted)") || executable.ends_with("deleted") {
+        if deleted_executable {
             score += 40;
             reasons.push("executable appears deleted while still running".to_string());
+            features.push("deleted_listener_executable".to_string());
         }
-        let command_assessment = network_execution_assessment_from_event(event);
         if command_assessment.is_suspicious() {
             score += 70;
             reasons.push(command_assessment.reason_text());
             features.push(command_assessment.feature_names());
         }
-        if event_contains_miner_or_scanner(event, &ctx.config.process.known_bad_tool_names) {
+        if known_bad_identity {
             score += 70;
             reasons.push("process identity matches a configured miner or scanner tool".to_string());
             features.push("known_bad_tool".to_string());
         }
-        if is_shell_process_name(&process_name) {
+        if shell_process_name {
             score += 35;
             reasons.push("listener process name is an interactive shell".to_string());
+            features.push("interactive_shell_listener".to_string());
         }
-        if process.is_some_and(|process| {
-            let execstart = process.field("systemd_execstart");
-            !execstart.trim().is_empty()
-                && !execstart_matches_process(execstart, &executable, &process_name)
-        }) {
+        let execstart_mismatch = process.is_some_and(process_execstart_mismatch);
+        if execstart_mismatch {
             score += 30;
             reasons.push(
                 "systemd ExecStart does not appear to match the listener executable".to_string(),
             );
             features.push("systemd_execstart_mismatch".to_string());
+        }
+        if let Some(process) = process {
+            let public_outbound = process
+                .field("public_outbound_count")
+                .parse::<usize>()
+                .unwrap_or(0);
+            if public_outbound >= ctx.config.process.public_outbound_fanout_threshold {
+                score += 30;
+                reasons.push(format!(
+                    "listener process has {} public outbound connections in one scan window",
+                    public_outbound
+                ));
+                features.push("public_outbound_fanout".to_string());
+            } else if public_outbound > 0 && score > 0 {
+                score += 15;
+                reasons.push("listener process has public outbound connections".to_string());
+                features.push("public_outbound_connections".to_string());
+            }
+            if process.field("package_owner_state") == "unowned"
+                && (suspicious_path
+                    || deleted_executable
+                    || command_assessment.is_suspicious()
+                    || known_bad_identity
+                    || shell_process_name
+                    || execstart_mismatch
+                    || behavior_profile::hidden_basename(&executable)
+                    || behavior_profile::is_shell_or_scheduler_parent(process.field("parent_name")))
+            {
+                score += 35;
+                reasons.push(
+                    "listener executable has no package owner and suspicious context".to_string(),
+                );
+                features.push("unpackaged_listener_process".to_string());
+            }
+            if behavior_profile::is_shell_or_scheduler_parent(process.field("parent_name"))
+                && (score > 0 || public_outbound > 0)
+            {
+                score += 20;
+                reasons.push(
+                    "listener process was started by an interactive shell or scheduler-like parent"
+                        .to_string(),
+                );
+                features.push("shell_or_scheduler_parent".to_string());
+            }
+            if process.field("container_context").is_empty()
+                && process.field("euid") == "0"
+                && score >= 45
+            {
+                score += 15;
+                reasons.push(
+                    "suspicious listener process is running with effective root privileges"
+                        .to_string(),
+                );
+                features.push("privileged_listener_process".to_string());
+            }
         }
         if event.kind == "listening_socket_owner_changed" && score > 0 {
             score += 20;
@@ -654,31 +819,16 @@ impl ListenerRiskProfile {
     }
 }
 
-fn execstart_matches_process(execstart: &str, executable: &str, process_name: &str) -> bool {
-    if executable.trim().is_empty() && process_name.trim().is_empty() {
-        return true;
+fn process_execstart_mismatch(process: &ProcessContext) -> bool {
+    let execstart = process.field("systemd_execstart");
+    if execstart.trim().is_empty() {
+        return false;
     }
-    let executable = executable.trim();
-    if !executable.is_empty() && execstart.contains(executable) {
-        return true;
-    }
-    let executable_name = executable_basename(executable);
-    execstart.split_whitespace().any(|token| {
-        let token = token.trim_matches(|ch: char| {
-            ch.is_ascii_whitespace()
-                || matches!(
-                    ch,
-                    '"' | '\'' | '`' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}'
-                )
-        });
-        let token_name = executable_basename(token);
-        (!executable_name.is_empty() && token_name == executable_name)
-            || (!process_name.trim().is_empty() && token_name == process_name)
-    })
-}
-
-fn executable_basename(path: &str) -> &str {
-    path.rsplit(['/', '\\']).next().unwrap_or(path)
+    !behavior_profile::execstart_matches_process(
+        execstart,
+        process.field("exe_path"),
+        process.field("name"),
+    )
 }
 
 fn is_shell_process_name(name: &str) -> bool {

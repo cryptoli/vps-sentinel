@@ -210,12 +210,12 @@ CI 中使用的 Docker 容器只用于构建和兼容性测试，不代表推荐
 | --- | --- | --- |
 | SSH 登录监控 | 读取配置的 auth log；日志文件不存在时回退读取 `ssh.service`/`sshd.service` 的 `journalctl`。 | 识别 root 登录、密码登录、普通成功登录，以及按来源 IP 聚合的爆破行为。 |
 | SSH key 完整性 | 独立哈希监控 `authorized_keys` 和 `authorized_keys2`，不依赖总的文件完整性开关；同时记录文件类型、可用时的 Unix 权限和软链目标。 | 即使关闭通用文件完整性，也能发现 SSH 持久化 key 变化；无需历史基线也能识别可写权限或高风险软链状态。 |
-| 文件和持久化漂移 | 使用 SQLite 保存本地基线，后续扫描做快照 diff；同一路径的文件/持久化 finding 会合并，并按敏感度、暴露面、变更幅度和运维上下文生成漂移评分与复核层级。 | 能发现真实漂移，同时减少合法软件更新时的判断成本；SSH 密钥、UID 0、preload 等敏感漂移在确认前仍保持高风险。 |
+| 文件和持久化漂移 | 使用 SQLite 保存本地基线，后续扫描做快照 diff；同一路径的文件/持久化 finding 会合并；对 SSH key、systemd unit、cron、sudoers 保存语义画像，并按敏感度、暴露面、变更幅度、语义变化和运维上下文生成漂移评分与复核层级。 | 能发现真实漂移，同时减少合法软件更新时的判断成本；SSH 密钥、UID 0、preload、高风险启动命令和 sudo 权限变化在确认前仍保持高风险。 |
 | 日志篡改信号 | 采集敏感日志文件快照并与本地规则状态对比；高风险软链立即告警，日志截断需要满足配置的比例和字节阈值且没有近期轮转文件；曾经出现过的配置日志消失也会报告。 | 识别把认证日志重定向到 `/dev/null`、清空日志或删除日志等反取证行为，同时避免正常 logrotate 误报。 |
 | WebShell 内容 | 对限定大小内的文件内容提取风险 marker，并结合 Web 路径、脚本类型和 marker 组合评分。 | 单个弱 marker 默认不告警，但能识别经典 Web 命令执行和编码 payload 组合。 |
 | Web 探测 | `WEB-001` 按来源 IP 聚合，并在证据中保留全部探测家族、响应画像、样例路径、方法、状态码和可信代理上下文。404 PHPUnit 目录爆破等未命中探测默认为 Low；敏感路径成功响应或受保护的 exploit 路径会提升等级。 | 扫描器命中大量路径变体时只生成一条可读 finding，而不是几十条 Telegram 消息；CDN/反代地址不会在缺少真实客户端 IP 时被当作攻击源。 |
-| 进程和 GPU 风险 | 读取 procfs argv、父进程、可执行路径、cwd、UID/EUID、deleted 状态、socket FD 数、生命周期 CPU 指标、启动时间漂移、cgroup/container 上下文、systemd unit/ExecStart、可执行文件元数据/hash、软件包归属、出站连接画像和 NVIDIA GPU 计算进程状态，并按规则评分、白名单、规则状态和同 PID 信号聚合处理。`PROC-001` 对可疑可执行路径做评分，不会只按路径机械放行或告警；`PROC-005` 必须先出现伪装、隐藏、可疑目录或 Web 路径等主风险信号，socket、出站连接、重启漂移和 root 上下文只能辅助加权；`PROC-006` 需要 GPU 计算活动叠加挖矿或高风险运行证据。 | 识别可疑可执行路径、可疑 deleted executable、网络 shell 桥接、已知挖矿/扫描器身份、改名行为聚类和可疑 GPU 挖矿负载，同时避免 PID、CPU、GPU、连接计数等波动字段或正常高连接业务服务导致重复/误报消息。 |
-| 网络监听 | 解析 `/proc/net/tcp*` 和 `/proc/net/udp*`，通过 `/proc/<pid>/fd` 反查进程，与监听 owner 基线对比，附加进程/防火墙上下文，并优先报告可疑 owner 行为而不是普通端口暴露。 | 22/80/443 等预期端口只降低通用噪音；进程变化或可疑进程仍会告警，高风险端口画像和防火墙状态会作为证据保留。 |
+| 进程和 GPU 风险 | 读取 procfs argv、父进程、可执行路径、cwd、UID/EUID、deleted 状态、socket FD 数、生命周期 CPU 指标、启动时间漂移、cgroup/container 上下文、systemd unit/ExecStart、可执行文件元数据/hash、软件包归属、出站连接画像和 NVIDIA GPU 计算进程状态，并按规则评分、白名单、规则状态和同 PID 信号聚合处理。`PROC-001` 对可疑可执行路径做评分，不会只按路径机械放行或告警；`PROC-005` 必须先出现伪装、隐藏、可疑目录或 Web 路径等主风险信号，socket、出站连接、重启漂移和 root 上下文只能辅助加权；`PROC-006` 需要 GPU 计算活动叠加挖矿或高风险运行证据。 | 识别可疑可执行路径、可疑 deleted executable、网络 shell 桥接、已知挖矿/扫描器身份、改名行为聚类和可疑 GPU 挖矿负载，同时避免 PID、CPU、GPU、连接计数等波动字段、正常高连接业务服务或普通公网出站 fanout 导致重复/误报消息。 |
+| 网络监听 | 解析 `/proc/net/tcp*` 和 `/proc/net/udp*`，通过 `/proc/<pid>/fd` 反查进程，与监听 owner 基线对比，附加进程/防火墙/出站连接上下文，并优先报告可疑 owner 行为而不是普通端口暴露。 | 22/80/443 等预期端口只降低通用噪音；进程变化或可疑进程仍会告警，高风险端口画像和防火墙状态会作为证据保留。 |
 | 通知 | 将统一 `Finding` 模型按渠道模板渲染：Telegram HTML、Email HTML+纯文本、Markdown 或纯文本。 | 消息包含 VPS 名称、规范化时间、本地化字段、证据、影响和建议。 |
 | 噪声控制 | 使用扫描内去重、跨扫描去重、状态提醒间隔、安静时段和小时级通知预算。 | 减少重复消息，同时保留高价值告警的可见性。 |
 | 主动响应 | 在扫描内 finding 合并/去重后、跨扫描通知去重前评估封禁候选；只有不在 `[allowlist].ips` 中的公网 IP 才可能被封，且无法还原真实客户端 IP 的可信代理/CDN 来源不会成为封禁候选。Web/SSH/攻击指纹响应分层会按证据强度调整临时 TTL 和永久升级阈值。 | 可把明显扫描源丢进防火墙，同时避免每条告警都变成破坏性动作或误封 CDN 边缘。 |
@@ -224,7 +224,7 @@ CI 中使用的 Docker 容器只用于构建和兼容性测试，不代表推荐
 | 证据字段模型 | 对常见 evidence 别名做 canonical 归一化，规范列表、布尔值和计数字段，并让扫描、攻击指纹、主动响应和测试复用同一套 evidence 访问入口。 | 避免 `ip`、`remote_addr`、`source_ip` 在不同模块里含义不一致，后续新增规则更容易保持一致。 |
 | 规则所有权矩阵 | 每条内置规则声明 owner、分类、响应范围和预期 evidence 字段，并通过测试校验 owner/category 和 canonical 字段。 | 让规则按模块清晰归属，避免重复、混乱或作用范围不明的规则进入代码。 |
 | 资源预算 | 按严重等级、统一评分、置信度和时间排序保留高价值 finding，并限制 finding 数量、evidence 数量和 evidence 值大小。 | 控制内存、通知量和存储体积，同时优先保留关键安全证据。 |
-| Incident 与时间线 | 按 IP、路径、进程、分类和时间窗口聚合相关 finding，提供 `incidents list/show/timeline`，并为多阶段链路生成扫描窗口时间线 finding。 | 把孤立 finding 组织成可读攻击链，同时保留原始 finding。 |
+| Incident 与时间线 | 按 IP、路径、进程、可执行文件 hash、systemd unit、分类和时间窗口聚合相关 finding，提供 `incidents list/show/timeline`，并为多阶段链路生成按攻击阶段排序的扫描窗口时间线 finding。 | 把孤立 finding 组织成可读攻击链，同时保留原始 finding。 |
 | 服务画像 | 保存监听服务的地址、端口、协议、进程名、可执行文件、命令行和暴露分类；动态 UDP/UDP6 高位端口可按进程身份建模，并忽略可配置的客户端临时 UDP 与本地 SSH 转发监听。 | 不盲信 80/443，也能发现常见端口背后的服务 owner 漂移，同时避免合法动态 UDP 端口每次变化都告警。 |
 | 高级证据 | 可选 auditd、eBPF JSONL bridge、Sigma-like TOML 规则、外部规则校验、YARA CLI 和威胁情报 indicator 都进入同一 RawEvent/Finding 模型。 | 平台支持时可增加更深证据，默认安装仍保持轻量兼容。 |
 | 维护与多 VPS 运维 | 在本地 rule state 中保存有界维护状态和 fleet 节点快照。 | 计划升级时压制低/中危漂移和预期的交互式 SSH 登录噪声，同时保留 SSH 爆破和攻击链信号，并可本地汇总多台 VPS 摘要。 |
@@ -438,7 +438,8 @@ sudo journalctl -u vps-sentinel -f
 | `vps-sentinel config migrate --dry-run --config <path>` | 只显示将被删除的废弃字段，不修改文件。 |
 | `vps-sentinel config sync-defaults --config <path>` | 追加当前版本缺失的默认配置项，保留已有值，写入 `.bak` 备份，并验证结果。 |
 | `vps-sentinel config sync-defaults --dry-run --config <path>` | 只显示将被追加的默认配置项，不修改文件。 |
-| `vps-sentinel doctor --config <path>` | 检查运行环境：root 可见性、Unix 目标支持、存储目录可写性、认证日志可见性。 |
+| `vps-sentinel status --config <path>` | 查看启用功能、存储占用、最近 24 小时扫描健康度、通知渠道和主动响应封禁数量；加 `--json` 可用于自动化。 |
+| `vps-sentinel doctor --config <path>` | 检查运行环境，并输出 root 可见性、procfs、SSH 日志、auditd、eBPF bridge、包归属、systemd、防火墙后端、GPU 工具和 YARA 的能力矩阵。 |
 | `vps-sentinel check --json --config <path>` | 执行一次采集和检测，但不持久化结果、不发送通知、不执行主动响应；省略 `--json` 输出文本摘要。 |
 | `vps-sentinel scan --config <path>` | 执行一次完整扫描，持久化精简 raw events/findings，记录通知日志，应用去重，发送已启用通知，并输出 RSS 与事件来源诊断。 |
 | `vps-sentinel scan --no-notify --json --config <path>` | 持久化扫描结果但不发送通知、不执行主动响应；适合启用通知前试运行。省略 `--json` 输出文本摘要。 |
@@ -450,6 +451,7 @@ sudo journalctl -u vps-sentinel -f
 | `vps-sentinel baseline refresh --config <path>` | 只把已审批漂移项应用到新的基线快照；只有确认当前主机状态全部可信时才使用 `--all`。 |
 | `vps-sentinel baseline reset --config <path>` | 清空已保存基线。清空后需要重新执行 `baseline create`。 |
 | `vps-sentinel blocks list --config <path>` | 列出当前记录的主动响应封禁 IP；默认会校验防火墙规则是否仍然存在。 |
+| `vps-sentinel blocks why <ip> --config <path>` | 解释某个 IP 为什么被封禁：后端、TTL/永久状态、防火墙校验、来源规则、finding ID、封禁原因和已保存证据；加 `--json` 可用于自动化。 |
 | `vps-sentinel blocks cleanup --config <path>` | 清理已过期封禁记录，以及 firewalld/ufw reload 或人工改动后防火墙规则已消失的失效记录。 |
 | `vps-sentinel blocks unblock <ip> --config <path>` | 从可用防火墙后端和本地主动响应状态中解除单个 IP。 |
 | `vps-sentinel blocks unblock-all --yes --config <path>` | 解除所有已记录的主动响应封禁；必须显式加 `--yes`，避免误操作。 |
@@ -637,10 +639,12 @@ behavior_min_score = 70
 high_cpu_threshold_percent = 80.0
 high_cpu_duration_seconds = 120
 suspicious_socket_fd_threshold = 20
+public_outbound_fanout_threshold = 12
+outbound_remote_addr_sample_size = 16
 known_bad_tool_names = ["xmrig", "xmr-stak", "kinsing", "masscan", "zmap", "lolminer", "nbminer", "gminer", "t-rex", "trex", "teamredminer", "phoenixminer", "ethminer", "ccminer", "cpuminer", "bminer", "nanominer", "wildrig", "rigel", "bzminer"]
 ```
 
-`deleted_executable_min_score` 控制何时产生 `PROC-002`。deleted executable 状态会结合路径、进程身份和命令行为评分；标准系统二进制在软件包升级后仍短暂运行，不会单独触发高危告警。`behavior_min_score` 控制 `PROC-005`，它会组合内核线程伪装、Web 根目录执行、隐藏可执行文件名、可疑工作目录、socket FD 活动、持续高 CPU、同一进程身份的 procfs 启动时间漂移和有效 root 权限等弱信号。启动时间漂移保存在本地规则状态中，只会增强已经可疑的进程；正常服务重启不会单独告警。`high_cpu_threshold_percent` 和 `high_cpu_duration_seconds` 基于 procfs 的生命周期 CPU 时间与进程年龄定义持续高 CPU；高 CPU 是辅助信号，不是单独告警条件。`suspicious_socket_fd_threshold` 控制 socket 持有数量达到多少时成为更强的行为信号。`known_bad_tool_names` 控制 `PROC-004` 的已知挖矿/扫描器指标词表。它会匹配 `exe_path`、`executable`、进程名和结构化 `argv[0]` 等进程身份字段，并兼容 `.exe` 后缀；缺少结构化身份的旧事件才回退到命令 token basename 匹配。同一个 PID 同时命中多个进程规则时，扫描器会保留一条最高价值 finding，并合并进程信号、风险原因、影响和处置建议。
+`deleted_executable_min_score` 控制何时产生 `PROC-002`。deleted executable 状态会结合路径、进程身份和命令行为评分；标准系统二进制在软件包升级后仍短暂运行，不会单独触发高危告警。`behavior_min_score` 控制 `PROC-005`，它会组合内核线程伪装、Web 根目录执行、隐藏可执行文件名、可疑工作目录、socket FD 活动、持续高 CPU、同一进程身份的 procfs 启动时间漂移、软件包归属、systemd `ExecStart` 不匹配、有界公网出站 fanout 和有效 root 权限等信号。启动时间漂移和公网出站 fanout 只会增强已经可疑的身份或位置证据；正常服务重启或繁忙业务服务不会单独告警。`high_cpu_threshold_percent` 和 `high_cpu_duration_seconds` 基于 procfs 的生命周期 CPU 时间与进程年龄定义持续高 CPU；高 CPU 是辅助信号，不是单独告警条件。`suspicious_socket_fd_threshold` 控制 socket 持有数量达到多少时成为更强的行为信号。`public_outbound_fanout_threshold` 控制公网出站连接数达到多少时成为 fanout 证据，`outbound_remote_addr_sample_size` 限制证据中保留的远端地址样本数量。`known_bad_tool_names` 控制 `PROC-004` 的已知挖矿/扫描器指标词表。它会匹配 `exe_path`、`executable`、进程名和结构化 `argv[0]` 等进程身份字段，并兼容 `.exe` 后缀；缺少结构化身份的旧事件才回退到命令 token basename 匹配。同一个 PID 同时命中多个进程规则时，扫描器会保留一条最高价值 finding，并合并进程信号、风险原因、影响和处置建议。
 
 GPU 指标策略：
 
@@ -651,11 +655,13 @@ nvidia_smi_path = "nvidia-smi"
 rocm_smi_path = "rocm-smi"
 command_timeout_seconds = 2
 min_memory_mb = 256
+high_utilization_percent = 85
+high_power_watts = 120.0
 mining_min_score = 80
 mining_pool_ports = [3333, 3334, 3335, 4444, 5555, 7777, 8888, 9999, 14444, 16000, 18081, 18082]
 ```
 
-`PROC-006` 只有在服务能运行 `nvidia-smi` 或 `rocm-smi` 且能看到宿主机 GPU compute process 表时可用。单独 GPU 显存占用只作为正常工作负载上下文，不会告警。触发告警需要叠加配置中的 GPU 挖矿器身份、临时/deleted/匿名可执行文件、配置中的矿池端口、网络命令执行桥接，或隐藏 GPU 可执行文件伴随公网出站连接等证据。如果把 vps-sentinel 放在容器里运行，需要具备宿主机 PID/procfs 和 GPU runtime 可见性，否则无法准确检查宿主机 GPU 挖矿进程。
+`PROC-006` 只有在服务能运行 `nvidia-smi` 或 `rocm-smi` 且能看到宿主机 GPU compute process 表时可用。单独 GPU 显存占用只作为正常工作负载上下文，不会告警。NVIDIA 主机在可用时还会补充 GPU 利用率和功耗证据；高利用率或高功耗仍然只是辅助信号。触发告警需要叠加配置中的 GPU 挖矿器身份、临时/deleted/匿名可执行文件、配置中的矿池端口、网络命令执行桥接、高利用率伴随矿池风格出站行为，或隐藏 GPU 可执行文件伴随公网出站连接等证据。如果把 vps-sentinel 放在容器里运行，需要具备宿主机 PID/procfs 和 GPU runtime 可见性，否则无法准确检查宿主机 GPU 挖矿进程。
 
 持久化命令评分：
 
@@ -781,7 +787,7 @@ yara_paths = []
 yara_scan_roots = []
 ```
 
-auditd 会在日志存在时读取配置的 audit 日志；audit EXECVE 事件会转换成统一 RawEvent，并复用命令画像逻辑识别网络到 shell 的执行桥接、非交互式 sudo/su/pkexec shell 执行。eBPF bridge 接收 JSONL 文件或命令输出，方便接入你自己的 BPF 工具而不把内核探针作为硬依赖。Sigma-like 规则是 TOML 结构化事件字段条件，部署前可用 `vs rules validate-external <path...>` 校验解析错误、缺失条件、重复 ID 和未知分类。YARA 只有在配置了规则路径和扫描根目录时才会调用 `yara` 命令，因此默认启用规则引擎不会带来额外扫描开销。
+auditd 会在日志存在时读取配置的 audit 日志；audit EXECVE 事件会转换成标准化 RawEvent，并复用命令画像逻辑识别网络到 shell 的执行桥接、非交互式 sudo/su/pkexec shell 执行。eBPF bridge 接收 JSONL 文件或命令输出，方便接入你自己的 BPF 工具而不把内核探针作为硬依赖；常见 exec/connect/file 事件会归一化为内置规则使用的进程、出站连接和文件活动字段。Sigma-like 规则是 TOML 结构化事件字段条件，部署前可用 `vs rules validate-external <path...>` 校验解析错误、缺失条件、重复 ID 和未知分类。YARA 只有在配置了规则路径和扫描根目录时才会调用 `yara` 命令，因此默认启用规则引擎不会带来额外扫描开销。
 
 威胁情报、fleet 和维护模式：
 

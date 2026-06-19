@@ -101,6 +101,72 @@ fn reports_suspicious_process_on_expected_web_port() {
 }
 
 #[test]
+fn reports_hidden_listener_process_on_expected_port_with_outbound_profile() {
+    let socket = RawEvent::new("network", "listening_socket")
+        .with_field("protocol", "tcp")
+        .with_field("local_addr", "0.0.0.0")
+        .with_field("local_port", "443")
+        .with_field("pid", "42")
+        .with_field("process_name", ".nginx")
+        .with_field("executable", "/usr/local/bin/.nginx")
+        .with_field("cmdline", "/usr/local/bin/.nginx --serve");
+    let process = RawEvent::new("process", "process_snapshot")
+        .with_field("pid", "42")
+        .with_field("name", ".nginx")
+        .with_field("exe_path", "/usr/local/bin/.nginx")
+        .with_field("parent_name", "bash")
+        .with_field("euid", "0");
+    let outbound = RawEvent::new("network", "outbound_connection")
+        .with_field("pid", "42")
+        .with_field("remote_addr", "8.8.8.8")
+        .with_field("remote_port", "443")
+        .with_field("remote_public", "true");
+
+    let findings = detect_with_default_config(vec![socket, process, outbound]);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-003");
+    assert!(findings[0]
+        .evidence
+        .iter()
+        .any(|item| item.key == "public_outbound_count" && item.value == "1"));
+}
+
+#[test]
+fn ignores_plain_business_listener_with_public_outbound_fanout() {
+    let mut events = vec![
+        RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "0.0.0.0")
+            .with_field("local_port", "443")
+            .with_field("pid", "42")
+            .with_field("process_name", "api")
+            .with_field("executable", "/usr/local/bin/api")
+            .with_field("cmdline", "/usr/local/bin/api"),
+        RawEvent::new("process", "process_snapshot")
+            .with_field("pid", "42")
+            .with_field("name", "api")
+            .with_field("exe_path", "/usr/local/bin/api")
+            .with_field("parent_name", "systemd")
+            .with_field("euid", "0")
+            .with_field("socket_fd_count", "64"),
+    ];
+    for index in 0..14 {
+        events.push(
+            RawEvent::new("network", "outbound_connection")
+                .with_field("pid", "42")
+                .with_field("remote_addr", format!("8.8.8.{index}"))
+                .with_field("remote_port", "443")
+                .with_field("remote_public", "true"),
+        );
+    }
+
+    let findings = detect_with_default_config(events);
+
+    assert!(findings.iter().all(|finding| finding.rule_id != "NET-003"));
+}
+
+#[test]
 fn ignores_plain_forwarding_command_on_expected_port() {
     let findings = detect_with_default_config(vec![RawEvent::new("network", "listening_socket")
         .with_field("protocol", "tcp")
@@ -162,6 +228,8 @@ fn owner_change_with_systemd_execstart_mismatch_is_suspicious_listener() {
         .with_field("previous_executable", "/usr/sbin/nginx");
     let process = RawEvent::new("process", "process_snapshot")
         .with_field("pid", "42")
+        .with_field("name", "kworker")
+        .with_field("exe_path", "/tmp/.x/kworker")
         .with_field("systemd_unit", "nginx.service")
         .with_field("systemd_execstart", "/usr/sbin/nginx -g 'daemon off;'")
         .with_field("exe_hash_blake3", "abc123");

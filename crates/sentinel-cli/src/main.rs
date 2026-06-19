@@ -21,6 +21,7 @@ use commands::{
     rules::{run_rules, RulesCommand},
     scan::{run_check, run_scan_command},
     service_profile::{run_service_profile, ServiceProfileCommand},
+    status::run_status,
     storage::{run_storage, StorageCommand},
 };
 use sentinel_core::SentinelConfig;
@@ -125,6 +126,10 @@ enum Command {
         #[command(subcommand)]
         command: StorageCommand,
     },
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     Reload {
         #[arg(long, default_value = "vps-sentinel")]
         service_name: String,
@@ -179,6 +184,7 @@ async fn main() -> Result<()> {
         }
         Command::Config { command } => run_config(cli.config.as_deref(), command),
         Command::Storage { command } => run_storage(load_config(cli.config.as_deref())?, command),
+        Command::Status { json } => run_status(load_config(cli.config.as_deref())?, json),
         Command::Reload { service_name } => {
             let (_, path) = load_config_with_path(cli.config.as_deref())?;
             run_reload(path, &service_name)

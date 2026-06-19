@@ -1,7 +1,7 @@
 use crate::detectors::risk::RiskAssessment;
 use crate::detectors::{
-    evidence, package_activity_context, path_is_allowlisted, string_field, DetectContext, Detector,
-    PackageActivityContext, RESOURCE_DRIFT_DEDUP_KEYS,
+    evidence, package_activity_context, path_is_allowlisted, push_event_evidence_if_present,
+    string_field, DetectContext, Detector, PackageActivityContext, RESOURCE_DRIFT_DEDUP_KEYS,
 };
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
@@ -50,6 +50,13 @@ impl Detector for FileDetector {
                 Severity::Medium,
                 "A file in a configured web root is executable or has a script extension.",
             ),
+            RuleMetadata::new(
+                "FILE-004",
+                "Sensitive file activity observed",
+                Category::FileIntegrity,
+                Severity::High,
+                "A short-lived collector observed write, delete, rename, permission, or ownership activity on a sensitive file path.",
+            ),
         ]
     }
 
@@ -87,11 +94,80 @@ impl Detector for FileDetector {
                         findings.push(executable_web_file(event, ctx));
                     }
                 }
+                "file_activity" => {
+                    if let Some(finding) = sensitive_file_activity(event, ctx) {
+                        findings.push(finding);
+                    }
+                }
                 _ => {}
             }
         }
         findings
     }
+}
+
+fn sensitive_file_activity(event: &RawEvent, ctx: &DetectContext) -> Option<Finding> {
+    let path = string_field(event, "path");
+    if !sensitive_file_activity_operation(&string_field(event, "operation"))
+        || !sensitive_file_activity_path(&path, ctx)
+    {
+        return None;
+    }
+    Some(
+        Finding::new(
+            &ctx.host_id,
+            "Sensitive file activity observed",
+            "A short-lived collector observed write, delete, rename, permission, or ownership activity on a sensitive file path.",
+            Severity::High,
+            Category::FileIntegrity,
+            "FILE-004",
+            &path,
+        )
+        .with_evidence(file_activity_evidence(event))
+        .with_impact(vec![
+            "Sensitive file activity can indicate persistence, credential changes, privilege changes, or web payload deployment.".to_string(),
+        ])
+        .with_recommendations(vec![
+            "Correlate this activity with package updates, deployment actions, SSH sessions, and process ancestry.".to_string(),
+            "If unauthorized, preserve the file, process, and audit/eBPF evidence before cleanup.".to_string(),
+        ]),
+    )
+}
+
+fn sensitive_file_activity_operation(operation: &str) -> bool {
+    matches!(
+        operation.trim().to_ascii_lowercase().as_str(),
+        "write" | "create" | "truncate" | "unlink" | "delete" | "rename" | "chmod" | "chown"
+    )
+}
+
+fn sensitive_file_activity_path(path: &str, ctx: &DetectContext) -> bool {
+    is_authorized_keys_path(path)
+        || is_critical_path(path)
+        || (path_in_configured_roots(path, &ctx.config.web.web_roots) && is_web_script_path(path))
+}
+
+fn file_activity_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
+    let mut items = vec![
+        evidence("path", string_field(event, "path")),
+        evidence("operation", string_field(event, "operation")),
+    ];
+    for key in [
+        "pid",
+        "ppid",
+        "process_name",
+        "name",
+        "exe_path",
+        "cmdline",
+        "uid",
+        "euid",
+        "event_source_detail",
+        "ephemeral_event",
+        "origin",
+    ] {
+        push_event_evidence_if_present(&mut items, event, key);
+    }
+    items
 }
 
 fn authorized_keys_changed(event: &RawEvent, ctx: &DetectContext) -> Finding {
@@ -387,12 +463,22 @@ fn executable_web_file(event: &RawEvent, ctx: &DetectContext) -> Finding {
 }
 
 fn diff_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
-    vec![
+    let mut items = vec![
         evidence("change", &event.kind),
         evidence("path", string_field(event, "path")),
         evidence("previous_hash", string_field(event, "previous_hash")),
         evidence("current_hash", string_field(event, "current_hash")),
-    ]
+    ];
+    for key in [
+        "semantic_kind",
+        "semantic_delta",
+        "previous_semantic_summary",
+        "current_semantic_summary",
+        "current_semantic_features",
+    ] {
+        push_event_evidence_if_present(&mut items, event, key);
+    }
+    items
 }
 
 fn is_critical_path(path: &str) -> bool {
@@ -415,6 +501,15 @@ fn is_critical_path(path: &str) -> bool {
     ]
     .iter()
     .any(|prefix| path == *prefix || path.starts_with(prefix))
+}
+
+fn path_in_configured_roots(path: &str, roots: &[std::path::PathBuf]) -> bool {
+    let path = path.replace('\\', "/");
+    roots.iter().any(|root| {
+        let root = root.to_string_lossy().replace('\\', "/");
+        let root = root.trim_end_matches('/');
+        !root.is_empty() && (path == root || path.starts_with(&format!("{root}/")))
+    })
 }
 
 fn is_authorized_keys_path(path: &str) -> bool {
@@ -481,6 +576,44 @@ mod tests {
 
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, "SSH-005");
+    }
+
+    #[test]
+    fn short_lived_sensitive_file_activity_alerts() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = RawEvent::new("ebpf", "file_activity")
+            .with_field("path", "/root/.ssh/authorized_keys")
+            .with_field("operation", "write")
+            .with_field("pid", "42")
+            .with_field("process_name", "bash")
+            .with_field("event_source_detail", "file_write")
+            .with_field("ephemeral_event", "true");
+
+        let findings = FileDetector.detect(&[event], &ctx);
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.rule_id == "FILE-004")
+            .expect("sensitive file activity finding");
+        assert!(finding
+            .evidence
+            .iter()
+            .any(|item| { item.key == "event_source_detail" && item.value == "file_write" }));
+    }
+
+    #[test]
+    fn short_lived_file_activity_ignores_plain_reads_and_non_sensitive_paths() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let read_sensitive = RawEvent::new("ebpf", "file_activity")
+            .with_field("path", "/etc/passwd")
+            .with_field("operation", "open");
+        let write_non_sensitive = RawEvent::new("ebpf", "file_activity")
+            .with_field("path", "/opt/app/config.yml")
+            .with_field("operation", "write");
+
+        let findings = FileDetector.detect(&[read_sensitive, write_non_sensitive], &ctx);
+
+        assert!(findings.iter().all(|finding| finding.rule_id != "FILE-004"));
     }
 
     #[test]
@@ -580,5 +713,25 @@ mod tests {
             .evidence
             .iter()
             .any(|item| item.key == "package_activity_recent" && item.value == "true"));
+    }
+
+    #[test]
+    fn authorized_keys_drift_includes_semantic_delta() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = RawEvent::new("baseline", "file_modified")
+            .with_field("path", "/root/.ssh/authorized_keys")
+            .with_field("previous_hash", "old")
+            .with_field("current_hash", "new")
+            .with_field("semantic_kind", "authorized_keys")
+            .with_field("semantic_delta", "authorized_keys: keys=1 -> keys=2")
+            .with_field("current_semantic_summary", "keys=2");
+
+        let findings = FileDetector.detect(&[event], &ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|item| item.key == "semantic_delta"));
     }
 }

@@ -1,3 +1,4 @@
+use crate::baseline::semantic;
 use crate::collectors::{CollectContext, Collector};
 use crate::utils::fs::{hash_file_limited, path_string};
 use async_trait::async_trait;
@@ -73,6 +74,7 @@ fn collect_file(path: &Path, persistence_type: &str, events: &mut Vec<RawEvent>)
         .ok()
         .flatten()
         .unwrap_or_else(|| "too_large".to_string());
+    let path_text = path_string(path);
     let content = fs::read_to_string(path).unwrap_or_default();
     let suspicious_lines = content
         .lines()
@@ -81,13 +83,21 @@ fn collect_file(path: &Path, persistence_type: &str, events: &mut Vec<RawEvent>)
         .take(5)
         .collect::<Vec<_>>()
         .join("\n");
-    events.push(
-        RawEvent::new("persistence", "persistence_entry")
-            .with_field("type", persistence_type)
-            .with_field("path", path_string(path))
-            .with_field("hash", hash)
-            .with_field("suspicious_lines", suspicious_lines),
-    );
+    let mut event = RawEvent::new("persistence", "persistence_entry")
+        .with_field("type", persistence_type)
+        .with_field("path", path_text.clone())
+        .with_field("hash", hash)
+        .with_field("suspicious_lines", suspicious_lines);
+    if let Some(profile) = semantic::profile_for_path(&path_text, &content) {
+        event = event
+            .with_field("semantic_kind", profile.kind)
+            .with_field("semantic_hash", profile.hash)
+            .with_field("semantic_summary", profile.summary);
+        if !profile.features.is_empty() {
+            event = event.with_field("semantic_features", profile.features.join(", "));
+        }
+    }
+    events.push(event);
 }
 
 fn cron_paths() -> Vec<PathBuf> {

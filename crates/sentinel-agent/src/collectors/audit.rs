@@ -61,7 +61,25 @@ fn parse_audit_line(line: &str, path: &str) -> Option<RawEvent> {
         }
     }
     if kind == "audit_exec" {
-        event.fields.insert("argv".to_string(), audit_argv(&fields));
+        let argv = audit_argv(&fields);
+        event.fields.insert("argv".to_string(), argv.clone());
+        event.fields.insert("cmdline".to_string(), argv);
+        event
+            .fields
+            .insert("ephemeral_event".to_string(), "true".to_string());
+        event.fields.insert(
+            "event_source_detail".to_string(),
+            "audit_execve".to_string(),
+        );
+        if let Some(value) = fields.get("exe").filter(|value| !value.is_empty()) {
+            event.fields.insert("exe_path".to_string(), value.clone());
+        }
+        if let Some(value) = fields.get("comm").filter(|value| !value.is_empty()) {
+            event
+                .fields
+                .insert("process_name".to_string(), value.clone());
+            event.fields.insert("name".to_string(), value.clone());
+        }
     }
     Some(event)
 }
@@ -111,6 +129,11 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "audit_exec");
         assert_eq!(events[0].field("argv"), Some("sh -c id"));
+        assert_eq!(events[0].field("cmdline"), Some("sh -c id"));
         assert_eq!(events[0].field("exe"), Some("/usr/bin/sh"));
+        assert_eq!(events[0].field("exe_path"), Some("/usr/bin/sh"));
+        assert_eq!(events[0].field("process_name"), Some("sh"));
+        assert_eq!(events[0].field("ephemeral_event"), Some("true"));
+        assert_eq!(events[0].field("event_source_detail"), Some("audit_execve"));
     }
 }

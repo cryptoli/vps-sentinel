@@ -307,6 +307,15 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
                 "尽量将上传目录放在不可执行路径。",
             ],
         },
+        "FILE-004" => RuleMessage {
+            title: "检测到敏感文件活动",
+            description: "短生命周期采集器观察到敏感路径上的写入、删除、重命名、权限或属主变更活动。",
+            impact: &["敏感文件活动可能表示持久化、凭据变更、权限变更或 Web payload 落地。"],
+            recommendations: &[
+                "结合软件包更新、部署记录、SSH 会话和进程父链确认来源。",
+                "如果不是授权操作，先保留文件、进程和 audit/eBPF 证据再清理。",
+            ],
+        },
         "PERSIST-001" => RuleMessage {
             title: "持久化相关文件发生变化",
             description: "cron、systemd 或 shell 启动文件相对基线发生变化。",

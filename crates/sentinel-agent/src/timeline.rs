@@ -64,6 +64,12 @@ fn correlation_keys(finding: &Finding) -> Vec<String> {
     {
         keys.push(format!("process:{process_name}"));
     }
+    if let Some(hash) = evidence_value(&finding.evidence, "exe_hash_blake3") {
+        keys.push(format!("exe_hash:{hash}"));
+    }
+    if let Some(unit) = evidence_value(&finding.evidence, "systemd_unit") {
+        keys.push(format!("systemd_unit:{unit}"));
+    }
     keys.sort();
     keys.dedup();
     keys
@@ -132,11 +138,16 @@ fn qualified_group(group: &TimelineGroup<'_>) -> bool {
         || group.phases.contains("anti_forensics")
         || group.phases.contains("rootkit_signal");
     let has_external = group.phases.contains("web_probe") || group.phases.contains("ssh_access");
+    let has_drift = group.phases.contains("file_change")
+        || group.phases.contains("network_exposure")
+        || group.phases.contains("persistence");
     let has_high_rule = group
         .findings
         .iter()
         .any(|finding| finding.severity.meets(Severity::High) || high_value_rule(&finding.rule_id));
-    (has_execution && has_high_rule) || (has_external && group.phases.len() >= 3)
+    (has_execution && has_high_rule)
+        || (has_external && has_drift && group.phases.len() >= 3)
+        || chain_stage_score(&group.phases) >= 5 && has_high_rule
 }
 
 fn timeline_finding(group: TimelineGroup<'_>) -> Finding {
@@ -145,7 +156,8 @@ fn timeline_finding(group: TimelineGroup<'_>) -> Finding {
     } else {
         Severity::Medium
     };
-    let phases = group.phases.into_iter().collect::<Vec<_>>().join(", ");
+    let phases = sorted_phases(&group.phases).join(", ");
+    let chain = timeline_chain(&group.phases);
     let rules = group.rules.into_iter().collect::<Vec<_>>().join(", ");
     Finding::new(
         &group.findings[0].host_id,
@@ -161,6 +173,7 @@ fn timeline_finding(group: TimelineGroup<'_>) -> Finding {
             Evidence::new("timeline_subject", group.subject),
             Evidence::new("timeline_key", group.key),
             Evidence::new("timeline_phases", phases),
+            Evidence::new("timeline_chain", chain),
             Evidence::new("timeline_rules", rules),
             Evidence::new("timeline_score", group.score.to_string()),
             Evidence::new("related_finding_count", group.findings.len().to_string()),
@@ -174,6 +187,49 @@ fn timeline_finding(group: TimelineGroup<'_>) -> Finding {
         "Review the related source, process, file, and persistence evidence before approving baseline changes.".to_string(),
         "Preserve logs and process metadata if the chain includes execution, persistence, or anti-forensics.".to_string(),
     ])
+}
+
+fn sorted_phases(phases: &BTreeSet<&'static str>) -> Vec<&'static str> {
+    let mut phases = phases.iter().copied().collect::<Vec<_>>();
+    phases.sort_by_key(|phase| phase_order(phase));
+    phases
+}
+
+fn timeline_chain(phases: &BTreeSet<&'static str>) -> String {
+    sorted_phases(phases).join(" -> ")
+}
+
+fn chain_stage_score(phases: &BTreeSet<&'static str>) -> u8 {
+    let mut score = 0;
+    if phases.contains("web_probe") || phases.contains("ssh_access") {
+        score += 1;
+    }
+    if phases.contains("process_execution") {
+        score += 2;
+    }
+    if phases.contains("persistence") {
+        score += 2;
+    }
+    if phases.contains("file_change") || phases.contains("network_exposure") {
+        score += 1;
+    }
+    if phases.contains("anti_forensics") || phases.contains("rootkit_signal") {
+        score += 2;
+    }
+    score
+}
+
+fn phase_order(phase: &str) -> u8 {
+    match phase {
+        "web_probe" | "ssh_access" => 10,
+        "process_execution" => 20,
+        "file_change" => 30,
+        "persistence" => 40,
+        "network_exposure" => 50,
+        "anti_forensics" => 60,
+        "rootkit_signal" => 70,
+        _ => 100,
+    }
 }
 
 fn timeline_subject(key: &str) -> String {
@@ -231,6 +287,11 @@ mod tests {
 
         assert_eq!(timelines.len(), 1);
         assert_eq!(timelines[0].rule_id, "TIMELINE-001");
+        assert!(timelines[0]
+            .evidence
+            .iter()
+            .any(|item| item.key == "timeline_chain"
+                && item.value == "process_execution -> persistence"));
     }
 
     #[test]
@@ -260,5 +321,43 @@ mod tests {
         ];
 
         assert!(correlate_timelines(&findings, &config).is_empty());
+    }
+
+    #[test]
+    fn correlates_by_executable_hash_when_path_changes() {
+        let config = SentinelConfig::default();
+        let findings = vec![
+            Finding::new(
+                "host",
+                "process",
+                "process",
+                Severity::High,
+                Category::Process,
+                "PROC-005",
+                "pid",
+            )
+            .with_evidence(vec![
+                Evidence::new("exe_path", "/tmp/.x"),
+                Evidence::new("exe_hash_blake3", "hash-a"),
+            ]),
+            Finding::new(
+                "host",
+                "network",
+                "network",
+                Severity::Medium,
+                Category::Network,
+                "NET-003",
+                "*:443",
+            )
+            .with_evidence(vec![Evidence::new("exe_hash_blake3", "hash-a")]),
+        ];
+
+        let timelines = correlate_timelines(&findings, &config);
+
+        assert_eq!(timelines.len(), 1);
+        assert!(timelines[0]
+            .evidence
+            .iter()
+            .any(|item| item.key == "timeline_key" && item.value == "exe_hash:hash-a"));
     }
 }

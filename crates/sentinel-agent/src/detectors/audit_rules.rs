@@ -112,7 +112,17 @@ fn audit_common_evidence(event: &RawEvent, argv: &str, mut extra: Vec<Evidence>)
         evidence("exe_path", string_field(event, "exe")),
         evidence("process_name", string_field(event, "comm")),
     ];
-    for key in ["pid", "ppid", "uid", "auid", "ses", "msg", "terminal"] {
+    for key in [
+        "pid",
+        "ppid",
+        "uid",
+        "auid",
+        "ses",
+        "msg",
+        "terminal",
+        "ephemeral_event",
+        "event_source_detail",
+    ] {
         if let Some(value) = event.field(key).filter(|value| !value.trim().is_empty()) {
             items.push(evidence(key, value));
         }

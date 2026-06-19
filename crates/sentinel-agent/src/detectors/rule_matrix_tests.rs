@@ -226,6 +226,16 @@ fn positive_cases() -> Vec<PositiveCase> {
                 .with_field("extension", "bin")],
         ),
         positive(
+            "FILE-004",
+            "short-lived sensitive file write",
+            vec![RawEvent::new("ebpf", "file_activity")
+                .with_field("path", "/etc/cron.d/worker")
+                .with_field("operation", "write")
+                .with_field("process_name", "bash")
+                .with_field("event_source_detail", "file_write")
+                .with_field("ephemeral_event", "true")],
+        ),
+        positive(
             "USER-001",
             "new user",
             vec![user_event("user_created", "app", "1001")],
@@ -521,6 +531,13 @@ fn negative_cases() -> Vec<NegativeCase> {
                 .with_field("is_web_path", "false")
                 .with_field("executable", "true")
                 .with_field("extension", "")],
+        ),
+        negative(
+            "FILE-004",
+            "short-lived non-sensitive file write",
+            vec![RawEvent::new("ebpf", "file_activity")
+                .with_field("path", "/opt/app/config.yml")
+                .with_field("operation", "write")],
         ),
         negative(
             "USER-001",

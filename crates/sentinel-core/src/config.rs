@@ -200,6 +200,16 @@ impl SentinelConfig {
                 "process.suspicious_socket_fd_threshold must be greater than 0".to_string(),
             ));
         }
+        if self.process.public_outbound_fanout_threshold == 0 {
+            return Err(SentinelError::Config(
+                "process.public_outbound_fanout_threshold must be greater than 0".to_string(),
+            ));
+        }
+        if self.process.outbound_remote_addr_sample_size == 0 {
+            return Err(SentinelError::Config(
+                "process.outbound_remote_addr_sample_size must be greater than 0".to_string(),
+            ));
+        }
         for dir in &self.process.suspicious_dirs {
             let normalized = dir.to_string_lossy().replace('\\', "/");
             let normalized = normalized.trim_end_matches('/');
@@ -231,6 +241,16 @@ impl SentinelConfig {
         if self.gpu.min_memory_mb == 0 {
             return Err(SentinelError::Config(
                 "gpu.min_memory_mb must be greater than 0".to_string(),
+            ));
+        }
+        if self.gpu.high_utilization_percent == 0 || self.gpu.high_utilization_percent > 100 {
+            return Err(SentinelError::Config(
+                "gpu.high_utilization_percent must be between 1 and 100".to_string(),
+            ));
+        }
+        if !self.gpu.high_power_watts.is_finite() || self.gpu.high_power_watts <= 0.0 {
+            return Err(SentinelError::Config(
+                "gpu.high_power_watts must be a positive finite number".to_string(),
             ));
         }
         if self.gpu.mining_min_score == 0 {
@@ -875,6 +895,30 @@ mod tests {
 
         let mut config = SentinelConfig::default();
         config.process.suspicious_socket_fd_threshold = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.process.public_outbound_fanout_threshold = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.process.outbound_remote_addr_sample_size = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.gpu.high_utilization_percent = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.gpu.high_utilization_percent = 101;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.gpu.high_power_watts = 0.0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.gpu.high_power_watts = f32::NAN;
         assert!(config.validate().is_err());
     }
 

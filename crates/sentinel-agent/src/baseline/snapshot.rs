@@ -52,6 +52,22 @@ impl BaselineSnapshot {
                                     .field("is_web_path")
                                     .unwrap_or_default()
                                     .to_string(),
+                                semantic_kind: event
+                                    .field("semantic_kind")
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                semantic_hash: event
+                                    .field("semantic_hash")
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                semantic_summary: event
+                                    .field("semantic_summary")
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                semantic_features: event
+                                    .field("semantic_features")
+                                    .unwrap_or_default()
+                                    .to_string(),
                             },
                         );
                     }
@@ -81,6 +97,22 @@ impl BaselineSnapshot {
                                 hash: event.field("hash").unwrap_or_default().to_string(),
                                 persistence_type: event
                                     .field("type")
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                semantic_kind: event
+                                    .field("semantic_kind")
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                semantic_hash: event
+                                    .field("semantic_hash")
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                semantic_summary: event
+                                    .field("semantic_summary")
+                                    .unwrap_or_default()
+                                    .to_string(),
+                                semantic_features: event
+                                    .field("semantic_features")
                                     .unwrap_or_default()
                                     .to_string(),
                             },
@@ -133,6 +165,14 @@ pub struct FileBaseline {
     pub size: String,
     pub executable: String,
     pub is_web_path: String,
+    #[serde(default)]
+    pub semantic_kind: String,
+    #[serde(default)]
+    pub semantic_hash: String,
+    #[serde(default)]
+    pub semantic_summary: String,
+    #[serde(default)]
+    pub semantic_features: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +187,14 @@ pub struct UserBaseline {
 pub struct PersistenceBaseline {
     pub hash: String,
     pub persistence_type: String,
+    #[serde(default)]
+    pub semantic_kind: String,
+    #[serde(default)]
+    pub semantic_hash: String,
+    #[serde(default)]
+    pub semantic_summary: String,
+    #[serde(default)]
+    pub semantic_features: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

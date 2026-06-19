@@ -302,6 +302,8 @@ pub struct ProcessConfig {
     pub deleted_executable_min_score: u16,
     pub behavior_min_score: u16,
     pub suspicious_socket_fd_threshold: usize,
+    pub public_outbound_fanout_threshold: usize,
+    pub outbound_remote_addr_sample_size: usize,
     pub suspicious_dirs: Vec<PathBuf>,
     #[serde(default = "default_known_bad_tool_names")]
     pub known_bad_tool_names: Vec<String>,
@@ -316,6 +318,8 @@ impl Default for ProcessConfig {
             deleted_executable_min_score: 70,
             behavior_min_score: 70,
             suspicious_socket_fd_threshold: 20,
+            public_outbound_fanout_threshold: 12,
+            outbound_remote_addr_sample_size: 16,
             suspicious_dirs: ["/tmp", "/var/tmp", "/dev/shm", "/run"]
                 .into_iter()
                 .map(PathBuf::from)
@@ -361,6 +365,8 @@ pub struct GpuConfig {
     pub rocm_smi_path: String,
     pub command_timeout_seconds: u64,
     pub min_memory_mb: u64,
+    pub high_utilization_percent: u8,
+    pub high_power_watts: f32,
     pub mining_min_score: u16,
     pub mining_pool_ports: Vec<u16>,
 }
@@ -373,6 +379,8 @@ impl Default for GpuConfig {
             rocm_smi_path: "rocm-smi".to_string(),
             command_timeout_seconds: 2,
             min_memory_mb: 256,
+            high_utilization_percent: 85,
+            high_power_watts: 120.0,
             mining_min_score: 80,
             mining_pool_ports: vec![
                 3333, 3334, 3335, 4444, 5555, 7777, 8888, 9999, 14444, 16000, 18081, 18082,

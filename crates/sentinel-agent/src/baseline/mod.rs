@@ -1,6 +1,7 @@
 pub mod approval;
 pub mod diff;
 pub mod drift;
+pub mod semantic;
 pub mod snapshot;
 
 pub use approval::{

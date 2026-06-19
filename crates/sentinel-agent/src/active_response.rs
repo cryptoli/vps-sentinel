@@ -67,7 +67,7 @@ impl BlockActionStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BlockEntry {
     pub ip: String,
     pub rule_id: String,

@@ -232,6 +232,17 @@ fn event_signals(event: &RawEvent, assessment: &mut DriftBuilder, policy: &Drift
     if event.kind == "listening_socket_owner_changed" {
         assessment.add_signal(15, "listener owner changed");
     }
+    if event.field("semantic_delta").is_some() {
+        assessment.add_signal(18, "semantic content changed");
+    }
+    if risky_semantic_features(
+        event
+            .field("current_semantic_features")
+            .or_else(|| event.field("semantic_features"))
+            .unwrap_or_default(),
+    ) {
+        assessment.add_signal(25, "risky semantic traits present");
+    }
     if public_listener_event(event) {
         assessment.add_signal(12, "public listener exposure");
     }
@@ -266,6 +277,15 @@ fn finding_signals(finding: &Finding, assessment: &mut DriftBuilder) {
         || evidence_value(&finding.evidence, "previous_executable").is_some()
     {
         assessment.add_signal(12, "service owner changed");
+    }
+    if evidence_value(&finding.evidence, "semantic_delta").is_some() {
+        assessment.add_signal(18, "semantic content changed");
+    }
+    if evidence_value(&finding.evidence, "current_semantic_features")
+        .or_else(|| evidence_value(&finding.evidence, "semantic_features"))
+        .is_some_and(risky_semantic_features)
+    {
+        assessment.add_signal(25, "risky semantic traits present");
     }
     if evidence_value(&finding.evidence, "risk_score")
         .and_then(|value| value.parse::<u16>().ok())
@@ -318,6 +338,19 @@ fn security_sensitive_path(path: &str) -> bool {
             "/etc/passwd" | "/etc/group" | "/etc/shadow" | "/etc/gshadow" | "/etc/sudoers"
         )
         || normalized.starts_with("/etc/sudoers.d/")
+}
+
+fn risky_semantic_features(value: &str) -> bool {
+    value.split(',').map(str::trim).any(|feature| {
+        matches!(
+            feature,
+            "network_or_shell_command"
+                | "temporary_path"
+                | "reboot_entry"
+                | "nopasswd"
+                | "broad_privilege"
+        )
+    })
 }
 
 fn public_listener_event(event: &RawEvent) -> bool {
@@ -549,6 +582,44 @@ mod tests {
         assert!(assessment
             .reasons
             .contains(&"security-sensitive drift".to_string()));
+    }
+
+    #[test]
+    fn approval_event_scores_semantic_persistence_traits() {
+        let event = RawEvent::new("baseline", "persistence_modified")
+            .with_field("path", "/etc/systemd/system/app.service")
+            .with_field("type", "systemd")
+            .with_field("previous_hash", "old")
+            .with_field("current_hash", "new")
+            .with_field("semantic_delta", "systemd_unit: commands=1 -> commands=2")
+            .with_field("current_semantic_features", "network_or_shell_command");
+
+        let assessment = assess_event(&event).expect("assessment");
+
+        assert_eq!(assessment.tier, "critical");
+        assert!(assessment
+            .reasons
+            .contains(&"semantic content changed".to_string()));
+        assert!(assessment
+            .reasons
+            .contains(&"risky semantic traits present".to_string()));
+    }
+
+    #[test]
+    fn approval_event_scores_sudoers_privilege_traits() {
+        let event = RawEvent::new("baseline", "file_modified")
+            .with_field("path", "/etc/sudoers.d/admin")
+            .with_field("previous_hash", "old")
+            .with_field("current_hash", "new")
+            .with_field("semantic_delta", "sudoers: rules=1 -> rules=2")
+            .with_field("current_semantic_features", "broad_privilege, nopasswd");
+
+        let assessment = assess_event(&event).expect("assessment");
+
+        assert_eq!(assessment.tier, "critical");
+        assert!(assessment
+            .reasons
+            .contains(&"risky semantic traits present".to_string()));
     }
 
     #[test]

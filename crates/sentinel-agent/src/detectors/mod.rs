@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 pub mod audit_rules;
+pub(crate) mod behavior_profile;
 pub mod command_profile;
 pub mod config_rules;
 pub mod docker_rules;
@@ -103,6 +104,17 @@ pub fn default_detectors() -> Vec<Box<dyn Detector>> {
 
 fn evidence(key: &str, value: impl Into<String>) -> Evidence {
     Evidence::new(key, value)
+}
+
+pub(crate) fn push_event_evidence_if_present(
+    items: &mut Vec<Evidence>,
+    event: &RawEvent,
+    key: &str,
+) {
+    let value = string_field(event, key);
+    if !value.trim().is_empty() {
+        items.push(evidence(key, value));
+    }
 }
 
 fn string_field(event: &RawEvent, key: &str) -> String {

@@ -3,9 +3,11 @@ use crate::utils::command::successful_stdout;
 use async_trait::async_trait;
 use sentinel_core::{RawEvent, SentinelResult};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 const NVIDIA_SMI_FORMAT: &str = "--format=csv,noheader,nounits";
+const NVIDIA_GPU_STATS_QUERY: &str = "--query-gpu=uuid,utilization.gpu,power.draw";
 const NVIDIA_SMI_QUERIES: &[&str] = &[
     "--query-compute-apps=pid,process_name,used_gpu_memory,gpu_uuid",
     "--query-compute-apps=pid,process_name,used_gpu_memory",
@@ -43,7 +45,19 @@ fn collect_nvidia_compute_processes(program: &str, timeout: Duration) -> Vec<Raw
         .iter()
         .find_map(|query| successful_stdout(program, &[*query, NVIDIA_SMI_FORMAT], timeout))
         .map(|output| {
-            parse_nvidia_compute_apps(&output)
+            let processes = parse_nvidia_compute_apps(&output);
+            let stats = if processes.iter().any(|process| process.gpu_uuid.is_some()) {
+                successful_stdout(
+                    program,
+                    &[NVIDIA_GPU_STATS_QUERY, NVIDIA_SMI_FORMAT],
+                    timeout,
+                )
+                .map(|output| parse_nvidia_gpu_stats(&output))
+                .unwrap_or_default()
+            } else {
+                BTreeMap::new()
+            };
+            processes
                 .into_iter()
                 .map(|process| {
                     let mut event = RawEvent::new("gpu", "gpu_compute_process")
@@ -52,6 +66,15 @@ fn collect_nvidia_compute_processes(program: &str, timeout: Duration) -> Vec<Raw
                         .with_field("gpu_process_name", process.process_name)
                         .with_field("gpu_memory_mb", process.used_memory_mb.to_string());
                     if let Some(uuid) = process.gpu_uuid {
+                        if let Some(stat) = stats.get(&uuid) {
+                            event = event.with_field(
+                                "gpu_utilization_percent",
+                                stat.utilization_percent.to_string(),
+                            );
+                            if let Some(power) = stat.power_watts {
+                                event = event.with_field("gpu_power_watts", format!("{power:.1}"));
+                            }
+                        }
                         event = event.with_field("gpu_uuid", uuid);
                     }
                     event
@@ -84,6 +107,12 @@ struct GpuProcess {
     process_name: String,
     used_memory_mb: u64,
     gpu_uuid: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct GpuDeviceStats {
+    utilization_percent: u8,
+    power_watts: Option<f32>,
 }
 
 fn parse_nvidia_compute_apps(output: &str) -> Vec<GpuProcess> {
@@ -126,6 +155,37 @@ fn parse_nvidia_compute_app_line(line: &str) -> Option<GpuProcess> {
     })
 }
 
+fn parse_nvidia_gpu_stats(output: &str) -> BTreeMap<String, GpuDeviceStats> {
+    output
+        .lines()
+        .filter_map(parse_nvidia_gpu_stat_line)
+        .collect()
+}
+
+fn parse_nvidia_gpu_stat_line(line: &str) -> Option<(String, GpuDeviceStats)> {
+    let columns = line
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if columns.len() < 2 {
+        return None;
+    }
+    let uuid = columns.first()?.trim();
+    if !uuid.starts_with("GPU-") {
+        return None;
+    }
+    let utilization_percent = parse_percent(columns.get(1)?)?;
+    let power_watts = columns.get(2).and_then(|value| parse_float(value));
+    Some((
+        uuid.to_string(),
+        GpuDeviceStats {
+            utilization_percent,
+            power_watts,
+        },
+    ))
+}
+
 fn parse_memory_mb(value: &str) -> Option<u64> {
     let digits = value
         .chars()
@@ -133,6 +193,23 @@ fn parse_memory_mb(value: &str) -> Option<u64> {
         .take_while(|ch| ch.is_ascii_digit())
         .collect::<String>();
     digits.parse::<u64>().ok()
+}
+
+fn parse_percent(value: &str) -> Option<u8> {
+    parse_float(value).map(|value| value.round().clamp(0.0, 100.0) as u8)
+}
+
+fn parse_float(value: &str) -> Option<f32> {
+    let normalized = value.trim().replace('%', "");
+    let numeric = normalized
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_matches(|ch: char| ch == '[' || ch == ']');
+    numeric
+        .parse::<f32>()
+        .ok()
+        .filter(|value| value.is_finite())
 }
 
 fn parse_rocm_compute_apps(output: &str) -> Vec<GpuProcess> {
@@ -209,7 +286,9 @@ fn first_json_string(map: &serde_json::Map<String, Value>, keys: &[&str]) -> Opt
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_memory_mb, parse_nvidia_compute_apps, parse_rocm_compute_apps};
+    use super::{
+        parse_memory_mb, parse_nvidia_compute_apps, parse_nvidia_gpu_stats, parse_rocm_compute_apps,
+    };
 
     #[test]
     fn parses_nvidia_compute_apps_with_gpu_uuid() {
@@ -245,6 +324,16 @@ mod tests {
     fn parses_numeric_memory_prefix() {
         assert_eq!(parse_memory_mb("2048 MiB"), Some(2048));
         assert_eq!(parse_memory_mb("[N/A]"), None);
+    }
+
+    #[test]
+    fn parses_nvidia_gpu_utilization_and_power_stats() {
+        let stats = parse_nvidia_gpu_stats("GPU-abc, 97, 211.5\nGPU-def, 12 %, [N/A]\n");
+
+        assert_eq!(stats["GPU-abc"].utilization_percent, 97);
+        assert_eq!(stats["GPU-abc"].power_watts, Some(211.5));
+        assert_eq!(stats["GPU-def"].utilization_percent, 12);
+        assert_eq!(stats["GPU-def"].power_watts, None);
     }
 
     #[test]
