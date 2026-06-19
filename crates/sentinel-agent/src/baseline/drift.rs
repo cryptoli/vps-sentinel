@@ -1,4 +1,7 @@
-use sentinel_core::{evidence_value, Category, Confidence, Evidence, Finding, RawEvent, Severity};
+use sentinel_core::{
+    evidence_value, Category, Confidence, Evidence, Finding, RawEvent, SentinelConfig, Severity,
+    DEFAULT_DYNAMIC_UDP_MIN_PORT,
+};
 use std::collections::BTreeSet;
 
 const DRIFT_SCORE_KEY: &str = "baseline_drift_score";
@@ -17,13 +20,44 @@ pub struct BaselineDriftAssessment {
     pub review_steps: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriftPolicy {
+    dynamic_udp_enabled: bool,
+    dynamic_udp_min_port: u16,
+}
+
+impl Default for DriftPolicy {
+    fn default() -> Self {
+        Self {
+            dynamic_udp_enabled: true,
+            dynamic_udp_min_port: DEFAULT_DYNAMIC_UDP_MIN_PORT,
+        }
+    }
+}
+
+impl From<&SentinelConfig> for DriftPolicy {
+    fn from(config: &SentinelConfig) -> Self {
+        Self {
+            dynamic_udp_enabled: config.service_profile.dynamic_udp_enabled,
+            dynamic_udp_min_port: config.service_profile.dynamic_udp_min_port,
+        }
+    }
+}
+
 pub fn assess_event(event: &RawEvent) -> Option<BaselineDriftAssessment> {
+    assess_event_with_policy(event, &DriftPolicy::default())
+}
+
+pub fn assess_event_with_policy(
+    event: &RawEvent,
+    policy: &DriftPolicy,
+) -> Option<BaselineDriftAssessment> {
     if !baseline_event_kind(&event.kind) {
         return None;
     }
     let mut assessment = DriftBuilder::new(event_base_score(event));
     assessment.add_reason("baseline change detected");
-    event_signals(event, &mut assessment);
+    event_signals(event, &mut assessment, policy);
     Some(assessment.finish())
 }
 
@@ -185,7 +219,7 @@ fn finding_base_score(finding: &Finding) -> u16 {
     }
 }
 
-fn event_signals(event: &RawEvent, assessment: &mut DriftBuilder) {
+fn event_signals(event: &RawEvent, assessment: &mut DriftBuilder, policy: &DriftPolicy) {
     if security_sensitive_event(event) {
         assessment.add_signal(35, "security-sensitive drift");
     }
@@ -203,6 +237,9 @@ fn event_signals(event: &RawEvent, assessment: &mut DriftBuilder) {
     }
     if non_public_listener_event(event) {
         assessment.add_downgrade(18, "not publicly exposed");
+    }
+    if dynamic_udp_listener_event(event, policy) {
+        assessment.add_downgrade(25, "dynamic UDP listener");
     }
     if large_file_size_change(event) {
         assessment.add_signal(8, "large file size delta");
@@ -296,6 +333,23 @@ fn non_public_listener_event(event: &RawEvent) -> bool {
     ) && event
         .field("local_addr")
         .is_some_and(|addr| !crate::utils::ip::is_public_listener_addr(addr))
+}
+
+fn dynamic_udp_listener_event(event: &RawEvent, policy: &DriftPolicy) -> bool {
+    policy.dynamic_udp_enabled
+        && matches!(
+            event.kind.as_str(),
+            "listening_socket" | "listening_socket_owner_changed"
+        )
+        && event.field("protocol").is_some_and(is_udp_protocol)
+        && event
+            .field("local_port")
+            .and_then(|value| value.parse::<u16>().ok())
+            .is_some_and(|port| port >= policy.dynamic_udp_min_port)
+}
+
+fn is_udp_protocol(protocol: &str) -> bool {
+    protocol.eq_ignore_ascii_case("udp") || protocol.eq_ignore_ascii_case("udp6")
 }
 
 fn public_listener_evidence(finding: &Finding) -> bool {
@@ -510,6 +564,43 @@ mod tests {
         assert!(assessment
             .downgrades
             .contains(&"not publicly exposed".to_string()));
+    }
+
+    #[test]
+    fn approval_event_downgrades_dynamic_udp_listener_drift() {
+        let event = RawEvent::new("baseline", "listening_socket")
+            .with_field("protocol", "udp")
+            .with_field("local_addr", "0.0.0.0")
+            .with_field("local_port", "51659")
+            .with_field("process_name", "v2ray")
+            .with_field("executable", "/usr/bin/v2ray/v2ray");
+
+        let assessment = assess_event(&event).expect("assessment");
+
+        assert_eq!(assessment.tier, "routine");
+        assert!(assessment
+            .reasons
+            .contains(&"public listener exposure".to_string()));
+        assert!(assessment
+            .downgrades
+            .contains(&"dynamic UDP listener".to_string()));
+    }
+
+    #[test]
+    fn approval_event_keeps_low_udp_listener_reviewable() {
+        let event = RawEvent::new("baseline", "listening_socket")
+            .with_field("protocol", "udp")
+            .with_field("local_addr", "0.0.0.0")
+            .with_field("local_port", "11211")
+            .with_field("process_name", "memcached")
+            .with_field("executable", "/usr/bin/memcached");
+
+        let assessment = assess_event(&event).expect("assessment");
+
+        assert_eq!(assessment.tier, "review");
+        assert!(!assessment
+            .downgrades
+            .contains(&"dynamic UDP listener".to_string()));
     }
 
     #[test]

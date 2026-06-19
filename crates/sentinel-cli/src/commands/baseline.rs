@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use clap::Subcommand;
 use sentinel_agent::baseline::{
-    apply_approved_changes, approval_items, approve_keys, BaselineApprovalItem,
+    apply_approved_changes, approval_items_with_config, approve_keys, BaselineApprovalItem,
     BaselineApprovalState, BASELINE_APPROVAL_STATE_ID,
 };
 use sentinel_agent::scanner::create_baseline_snapshot;
@@ -108,8 +108,8 @@ async fn current_approval_items(
     let Some(previous) = store.latest_baseline_snapshot()? else {
         bail!("no baseline snapshot found");
     };
-    let current = create_baseline_snapshot(config, PathBuf::from("/")).await?;
-    Ok(approval_items(&previous, &current))
+    let current = create_baseline_snapshot(config.clone(), PathBuf::from("/")).await?;
+    Ok(approval_items_with_config(&previous, &current, &config))
 }
 
 fn print_approval_items(items: &[BaselineApprovalItem], json: bool) -> Result<()> {

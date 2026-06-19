@@ -697,6 +697,8 @@ pub struct ServiceProfileConfig {
     pub ignore_loopback_ssh_forwarding: bool,
 }
 
+pub const DEFAULT_DYNAMIC_UDP_MIN_PORT: u16 = 32768;
+
 impl Default for ServiceProfileConfig {
     fn default() -> Self {
         Self {
@@ -704,7 +706,7 @@ impl Default for ServiceProfileConfig {
             drift_requires_public_exposure: false,
             baseline_refresh_after_package_activity: false,
             dynamic_udp_enabled: true,
-            dynamic_udp_min_port: 32768,
+            dynamic_udp_min_port: DEFAULT_DYNAMIC_UDP_MIN_PORT,
             ignored_dynamic_udp_process_names: default_ignored_dynamic_udp_process_names(),
             ignore_loopback_ssh_forwarding: true,
         }

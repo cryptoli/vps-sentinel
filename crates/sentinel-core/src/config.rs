@@ -19,6 +19,7 @@ pub use sections::{
     NoiseControlConfig, PackageManagerConfig, PerformanceConfig, PersistenceConfig, PrivacyConfig,
     ProcessConfig, ReportsConfig, ResourceBudgetConfig, ResponsePolicyConfig, ResponsePolicyRule,
     SentinelPaths, ServiceProfileConfig, SshConfig, StorageConfig, ThreatIntelConfig, WebConfig,
+    DEFAULT_DYNAMIC_UDP_MIN_PORT,
 };
 
 const MIN_RESOURCE_EVIDENCE_ITEMS_PER_FINDING: usize = 16;
