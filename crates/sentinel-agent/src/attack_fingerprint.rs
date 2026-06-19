@@ -61,6 +61,25 @@ pub struct FingerprintFeature {
     pub value: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FingerprintExplanation {
+    pub fingerprint_id: String,
+    pub kind: String,
+    pub verdict: String,
+    pub risk_tier: String,
+    pub recommended_action: String,
+    pub score: u16,
+    pub confidence: u16,
+    pub seen_count: usize,
+    pub source_ip_count: usize,
+    pub host_count: usize,
+    pub rule_count: usize,
+    pub signals: Vec<String>,
+    pub limitations: Vec<String>,
+    pub top_features: Vec<FingerprintFeature>,
+    pub recent_observations: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MatchKind {
     New,
@@ -938,8 +957,163 @@ pub fn redact_observation(observation: &mut AttackObservation) {
     }
 }
 
+pub fn explain_fingerprint(
+    fingerprint: &AttackFingerprint,
+    observations: &[AttackObservation],
+) -> FingerprintExplanation {
+    FingerprintExplanation {
+        fingerprint_id: fingerprint.id.clone(),
+        kind: fingerprint.kind.clone(),
+        verdict: fingerprint.verdict.clone(),
+        risk_tier: fingerprint_risk_tier(fingerprint).to_string(),
+        recommended_action: fingerprint_recommended_action(fingerprint).to_string(),
+        score: fingerprint.score,
+        confidence: fingerprint.confidence,
+        seen_count: fingerprint.seen_count,
+        source_ip_count: fingerprint.source_ips.len(),
+        host_count: fingerprint.hosts.len(),
+        rule_count: fingerprint.rule_ids.len(),
+        signals: fingerprint_signals(fingerprint, observations),
+        limitations: fingerprint_limitations(fingerprint, observations),
+        top_features: top_explainable_features(&fingerprint.features, 10),
+        recent_observations: observations
+            .iter()
+            .take(8)
+            .map(observation_summary)
+            .collect(),
+    }
+}
+
 pub fn valid_verdict(value: &str) -> bool {
     matches!(value, VERDICT_UNKNOWN | VERDICT_BENIGN | VERDICT_MALICIOUS)
+}
+
+fn fingerprint_risk_tier(fingerprint: &AttackFingerprint) -> &'static str {
+    if fingerprint.verdict == VERDICT_BENIGN {
+        "benign"
+    } else if fingerprint.verdict == VERDICT_MALICIOUS
+        || fingerprint.score >= 90
+        || (fingerprint.score >= 80 && fingerprint.source_ips.len() >= 2)
+    {
+        "high"
+    } else if fingerprint.score >= 65 || fingerprint.seen_count >= 3 {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
+fn fingerprint_recommended_action(fingerprint: &AttackFingerprint) -> &'static str {
+    match fingerprint.verdict.as_str() {
+        VERDICT_BENIGN => "keep as benign unless new evidence appears",
+        VERDICT_MALICIOUS => "eligible for active response when source IP safety checks pass",
+        _ if fingerprint.score >= 80 && fingerprint.seen_count >= 2 => {
+            "review and consider marking malicious if the behavior is unwanted"
+        }
+        _ if fingerprint.score >= 65 => "monitor and review recent observations",
+        _ => "keep observing; current evidence is weak",
+    }
+}
+
+fn fingerprint_signals(
+    fingerprint: &AttackFingerprint,
+    observations: &[AttackObservation],
+) -> Vec<String> {
+    let mut signals = Vec::new();
+    if fingerprint.score >= 80 {
+        signals.push(format!("high composite score {}", fingerprint.score));
+    }
+    if fingerprint.confidence >= 80 {
+        signals.push(format!("high confidence {}", fingerprint.confidence));
+    }
+    if fingerprint.seen_count >= 2 {
+        signals.push(format!("seen {} times", fingerprint.seen_count));
+    }
+    if fingerprint.source_ips.len() >= 2 {
+        signals.push(format!(
+            "observed from {} distinct sources",
+            fingerprint.source_ips.len()
+        ));
+    }
+    if fingerprint.hosts.len() >= 2 {
+        signals.push(format!("seen on {} hosts", fingerprint.hosts.len()));
+    }
+    if !fingerprint.rule_ids.is_empty() {
+        signals.push(format!("rules {}", fingerprint.rule_ids.join(",")));
+    }
+    if observations
+        .iter()
+        .any(|observation| !observation.evidence_summary.trim().is_empty())
+    {
+        signals.push("recent observations include retained evidence summaries".to_string());
+    }
+    if signals.is_empty() {
+        signals.push("single low-volume observation".to_string());
+    }
+    signals
+}
+
+fn fingerprint_limitations(
+    fingerprint: &AttackFingerprint,
+    observations: &[AttackObservation],
+) -> Vec<String> {
+    let mut limitations = Vec::new();
+    if fingerprint.source_ips.len() <= 1 {
+        limitations.push("only one source has been observed".to_string());
+    }
+    if fingerprint.seen_count <= 1 {
+        limitations.push("not enough repeated observations yet".to_string());
+    }
+    if fingerprint.verdict == VERDICT_UNKNOWN {
+        limitations.push("operator verdict is still unknown".to_string());
+    }
+    if observations.is_empty() {
+        limitations.push("no recent observations were loaded for this explanation".to_string());
+    }
+    limitations
+}
+
+fn top_explainable_features(
+    features: &[FingerprintFeature],
+    limit: usize,
+) -> Vec<FingerprintFeature> {
+    let mut ranked = features.to_vec();
+    ranked.sort_by_key(|feature| {
+        (
+            Reverse(feature_explainability_rank(&feature.key)),
+            feature.key.clone(),
+            feature.value.clone(),
+        )
+    });
+    ranked.truncate(limit);
+    ranked
+}
+
+fn feature_explainability_rank(key: &str) -> u8 {
+    match key {
+        "kind" | "rule" | "category" => 9,
+        "families" | "family" | "path_shapes" | "users" | "success_users" => 8,
+        "process_name" | "exe_path" | "exe_hash_blake3" | "cmdline" => 7,
+        "responses" | "response" | "failure_bucket" | "volume_bucket" => 6,
+        "systemd_unit" | "package_owner" | "parent_name" | "gpu_process" => 5,
+        _ => 1,
+    }
+}
+
+fn observation_summary(observation: &AttackObservation) -> String {
+    let source = if observation.source_ip.is_empty() {
+        "-"
+    } else {
+        observation.source_ip.as_str()
+    };
+    format!(
+        "{} rule={} host={} source={} {}",
+        observation.observed_at,
+        observation.rule_id,
+        observation.host_id,
+        source,
+        observation.evidence_summary
+    )
 }
 
 #[cfg(test)]
@@ -1045,6 +1219,46 @@ mod tests {
         assert_eq!(merged.simhash, original_simhash);
         assert_ne!(merged.exact_hash, right.exact_hash);
         Ok(())
+    }
+
+    #[test]
+    fn explanation_prioritizes_interpretable_cluster_signals() {
+        let mut fingerprint = new_fingerprint(&manual_candidate("cccccccccccc0000", 0x4321));
+        fingerprint.score = 88;
+        fingerprint.confidence = 90;
+        fingerprint.seen_count = 4;
+        fingerprint.source_ips = vec!["1.1.1.1".to_string(), "8.8.8.8".to_string()];
+        fingerprint.hosts = vec!["host-a".to_string(), "host-b".to_string()];
+        fingerprint.rule_ids = vec!["WEB-001".to_string()];
+        fingerprint.features.push(FingerprintFeature {
+            key: "path_shapes".to_string(),
+            value: "/.env".to_string(),
+        });
+        let observations = vec![AttackObservation {
+            id: "obs-1".to_string(),
+            fingerprint_id: fingerprint.id.clone(),
+            finding_id: "finding-1".to_string(),
+            host_id: "host-a".to_string(),
+            source_ip: "1.1.1.1".to_string(),
+            rule_id: "WEB-001".to_string(),
+            observed_at: Utc::now(),
+            features: Vec::new(),
+            evidence_summary: "probe_family=env_file; request_count=25".to_string(),
+        }];
+
+        let explanation = explain_fingerprint(&fingerprint, &observations);
+
+        assert_eq!(explanation.risk_tier, "high");
+        assert!(explanation
+            .signals
+            .iter()
+            .any(|signal| signal.contains("distinct sources")));
+        assert_eq!(explanation.top_features[0].key, "kind");
+        assert!(explanation
+            .top_features
+            .iter()
+            .any(|feature| feature.key == "path_shapes"));
+        assert_eq!(explanation.recent_observations.len(), 1);
     }
 
     fn manual_candidate(exact_hash: &str, simhash: u64) -> FingerprintCandidate {

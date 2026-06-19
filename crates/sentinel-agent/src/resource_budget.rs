@@ -86,6 +86,9 @@ fn evidence_priority(key: &str) -> u8 {
     if key.starts_with("attack_fingerprint_") {
         return 95;
     }
+    if key.starts_with("baseline_") {
+        return 75;
+    }
     match key {
         keys::SOURCE_IP | keys::ACTIVE_RESPONSE_IP => 90,
         keys::PATH | keys::EXE_PATH | keys::CMDLINE | keys::PROCESS_NAME => 80,

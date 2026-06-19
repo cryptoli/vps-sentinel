@@ -1,4 +1,6 @@
-use crate::attack_fingerprint::{ACTION_HINT_KEY, FINGERPRINT_ID_KEY, VERDICT_BENIGN};
+use crate::attack_fingerprint::{
+    ACTION_HINT_KEY, FINGERPRINT_ID_KEY, VERDICT_BENIGN, VERDICT_MALICIOUS,
+};
 use crate::detectors::field_is_allowlisted;
 use crate::detectors::web_rules::{probe_family_blocks_on_single_attempt, probe_family_is_exploit};
 use crate::risk_score::{confidence_percent, unified_score};
@@ -96,6 +98,7 @@ pub struct UnblockReport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BlockCandidate {
+    kind: BlockCandidateKind,
     ip: IpAddr,
     rule_id: String,
     finding_id: String,
@@ -103,6 +106,15 @@ struct BlockCandidate {
     action: ResponseAction,
     ttl_seconds: Option<u64>,
     permanent_after: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockCandidateKind {
+    WebProbe,
+    WebError,
+    WebAggregate,
+    SshBruteforce,
+    AttackFingerprint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -669,6 +681,7 @@ fn block_candidate(finding: &Finding, config: &SentinelConfig) -> Option<BlockCa
         _ => None,
     }
     .or_else(|| attack_fingerprint_candidate(finding, config))?;
+    let candidate = apply_response_layer(candidate, finding, config);
     let candidate = apply_response_policy(candidate, finding, config)?;
     filter_block_candidate(candidate, config)
 }
@@ -699,6 +712,7 @@ fn web_probe_candidate(finding: &Finding, config: &SentinelConfig) -> Option<Blo
         return None;
     }
     Some(BlockCandidate {
+        kind: BlockCandidateKind::WebProbe,
         ip,
         rule_id: finding.rule_id.clone(),
         finding_id: finding.id.clone(),
@@ -730,6 +744,7 @@ fn web_error_candidate(finding: &Finding, config: &SentinelConfig) -> Option<Blo
         return None;
     }
     Some(BlockCandidate {
+        kind: BlockCandidateKind::WebError,
         ip,
         rule_id: finding.rule_id.clone(),
         finding_id: finding.id.clone(),
@@ -794,6 +809,7 @@ fn aggregate_web_probe_candidates(
         .into_iter()
         .filter_map(|(ip, group)| {
             let candidate = aggregate_web_candidate(ip, &group, config)?;
+            let candidate = apply_response_layer(candidate, group.finding, config);
             let candidate = apply_response_policy(candidate, group.finding, config)?;
             filter_block_candidate(candidate, config)
         })
@@ -831,6 +847,7 @@ fn aggregate_web_candidate(
         return None;
     }
     Some(BlockCandidate {
+        kind: BlockCandidateKind::WebAggregate,
         ip,
         rule_id: "WEB-001".to_string(),
         finding_id: group.finding.id.clone(),
@@ -883,6 +900,7 @@ fn ssh_bruteforce_candidate(finding: &Finding, config: &SentinelConfig) -> Optio
         return None;
     }
     Some(BlockCandidate {
+        kind: BlockCandidateKind::SshBruteforce,
         ip,
         rule_id: finding.rule_id.clone(),
         finding_id: finding.id.clone(),
@@ -909,6 +927,7 @@ fn attack_fingerprint_candidate(
     let fingerprint_kind = evidence_value(finding, "attack_fingerprint_kind").unwrap_or("unknown");
     let score = evidence_value(finding, "attack_fingerprint_score").unwrap_or("unknown");
     Some(BlockCandidate {
+        kind: BlockCandidateKind::AttackFingerprint,
         ip,
         rule_id: finding.rule_id.clone(),
         finding_id: finding.id.clone(),
@@ -919,6 +938,144 @@ fn attack_fingerprint_candidate(
         ttl_seconds: None,
         permanent_after: None,
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResponseLayer {
+    name: &'static str,
+    ttl_multiplier: u64,
+    permanent_after: Option<usize>,
+    action: Option<ResponseAction>,
+}
+
+fn apply_response_layer(
+    mut candidate: BlockCandidate,
+    finding: &Finding,
+    config: &SentinelConfig,
+) -> BlockCandidate {
+    let Some(layer) = response_layer(&candidate, finding, config) else {
+        return candidate;
+    };
+    candidate.reason = format!("{} layer={}", candidate.reason, layer.name);
+    if candidate.ttl_seconds.is_none() && layer.ttl_multiplier > 1 {
+        candidate.ttl_seconds = Some(layered_ttl_seconds(config, layer.ttl_multiplier));
+    }
+    if candidate.permanent_after.is_none() {
+        candidate.permanent_after = layer.permanent_after;
+    }
+    if let Some(action) = layer.action {
+        candidate.action = action;
+    }
+    candidate
+}
+
+fn response_layer(
+    candidate: &BlockCandidate,
+    finding: &Finding,
+    config: &SentinelConfig,
+) -> Option<ResponseLayer> {
+    if evidence_value(finding, "attack_fingerprint_verdict") == Some(VERDICT_MALICIOUS) {
+        return Some(ResponseLayer {
+            name: "confirmed_malicious_fingerprint",
+            ttl_multiplier: 4,
+            permanent_after: Some(layered_permanent_after(config, 1)),
+            action: Some(ResponseAction::PermanentBlock),
+        });
+    }
+    if evidence_value(finding, ACTION_HINT_KEY) == Some("block") {
+        return Some(ResponseLayer {
+            name: "repeated_attack_fingerprint",
+            ttl_multiplier: 2,
+            permanent_after: Some(layered_permanent_after(config, 2)),
+            action: None,
+        });
+    }
+    match finding.rule_id.as_str() {
+        "SSH-007" => Some(ResponseLayer {
+            name: "ssh_success_after_bruteforce",
+            ttl_multiplier: 4,
+            permanent_after: Some(layered_permanent_after(config, 2)),
+            action: None,
+        }),
+        "SSH-003" if high_volume_ssh_bruteforce(finding, config) => Some(ResponseLayer {
+            name: "high_volume_ssh_bruteforce",
+            ttl_multiplier: 2,
+            permanent_after: Some(layered_permanent_after(config, 2)),
+            action: None,
+        }),
+        "WEB-001" if candidate.kind == BlockCandidateKind::WebAggregate => Some(ResponseLayer {
+            name: "multi_family_web_scan",
+            ttl_multiplier: 2,
+            permanent_after: Some(layered_permanent_after(config, 2)),
+            action: None,
+        }),
+        "WEB-001" => web_probe_response_layer(finding, config),
+        "WEB-002" => Some(ResponseLayer {
+            name: "web_error_burst",
+            ttl_multiplier: 2,
+            permanent_after: Some(layered_permanent_after(config, 3)),
+            action: None,
+        }),
+        _ => None,
+    }
+}
+
+fn web_probe_response_layer(finding: &Finding, config: &SentinelConfig) -> Option<ResponseLayer> {
+    let family = evidence_value(finding, "probe_family")?;
+    let response = evidence_value(finding, "response_profile")?;
+    if response == "successful_response" {
+        return Some(ResponseLayer {
+            name: "confirmed_web_exposure",
+            ttl_multiplier: 4,
+            permanent_after: Some(layered_permanent_after(config, 2)),
+            action: None,
+        });
+    }
+    if probe_family_blocks_on_single_attempt(family) {
+        return Some(ResponseLayer {
+            name: "high_confidence_web_exploit",
+            ttl_multiplier: 3,
+            permanent_after: Some(layered_permanent_after(config, 2)),
+            action: None,
+        });
+    }
+    if probe_family_is_exploit(family) {
+        return Some(ResponseLayer {
+            name: "repeated_web_exploit",
+            ttl_multiplier: 2,
+            permanent_after: Some(layered_permanent_after(config, 2)),
+            action: None,
+        });
+    }
+    None
+}
+
+fn high_volume_ssh_bruteforce(finding: &Finding, config: &SentinelConfig) -> bool {
+    let Some(failure_count) = evidence_usize(finding, "failure_count") else {
+        return false;
+    };
+    failure_count
+        >= config
+            .active_response
+            .ssh_failed_login_block_threshold
+            .saturating_mul(2)
+}
+
+fn layered_ttl_seconds(config: &SentinelConfig, multiplier: u64) -> u64 {
+    const MAX_LAYERED_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
+    config
+        .active_response
+        .block_ttl_seconds
+        .saturating_mul(multiplier)
+        .min(MAX_LAYERED_TTL_SECONDS)
+}
+
+fn layered_permanent_after(config: &SentinelConfig, target: usize) -> usize {
+    config
+        .active_response
+        .permanent_block_threshold
+        .max(1)
+        .min(target.max(1))
 }
 
 fn apply_response_policy(
@@ -953,8 +1110,12 @@ fn apply_response_policy(
         "permanent_block" => ResponseAction::PermanentBlock,
         _ => ResponseAction::Block,
     };
-    candidate.ttl_seconds = policy.ttl_seconds;
-    candidate.permanent_after = policy.permanent_after;
+    if let Some(ttl_seconds) = policy.ttl_seconds {
+        candidate.ttl_seconds = Some(ttl_seconds);
+    }
+    if let Some(permanent_after) = policy.permanent_after {
+        candidate.permanent_after = Some(permanent_after);
+    }
     candidate.reason = format!("{} policy={name}", candidate.reason);
     Some(candidate)
 }
@@ -1434,7 +1595,7 @@ mod tests {
         BlockActionStatus, BlockRecord, BlockState, IpBlocker, ResponseAction, SentinelResult,
         STATE_RULE_ID,
     };
-    use crate::attack_fingerprint::VERDICT_BENIGN;
+    use crate::attack_fingerprint::{VERDICT_BENIGN, VERDICT_MALICIOUS};
     use crate::storage::SqliteStore;
     use chrono::{Duration as ChronoDuration, Utc};
     use sentinel_core::{Category, Evidence, Finding, SentinelConfig, Severity};
@@ -1741,6 +1902,78 @@ mod tests {
         assert!(candidates
             .iter()
             .any(|item| item.ip.to_string() == "4.4.4.6"));
+    }
+
+    #[test]
+    fn strong_web_signal_uses_layered_ttl_and_permanent_threshold() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.block_ttl_seconds = 60;
+        config.active_response.permanent_block_threshold = 5;
+        let finding = web_finding("9.9.9.9", "env_file", "successful_response", 1);
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].ttl_seconds, Some(240));
+        assert_eq!(candidates[0].permanent_after, Some(2));
+        assert!(candidates[0]
+            .reason
+            .contains("layer=confirmed_web_exposure"));
+    }
+
+    #[test]
+    fn response_policy_explicit_ttl_and_permanent_threshold_override_layer() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.block_ttl_seconds = 60;
+        let policy = config
+            .response_policy
+            .policies
+            .get_mut("web_attack")
+            .expect("web policy");
+        policy.ttl_seconds = Some(30);
+        policy.permanent_after = Some(4);
+        let finding = web_finding("9.9.9.9", "env_file", "successful_response", 1);
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].ttl_seconds, Some(30));
+        assert_eq!(candidates[0].permanent_after, Some(4));
+        assert!(candidates[0].reason.contains("policy=web_attack"));
+    }
+
+    #[test]
+    fn malicious_fingerprint_verdict_uses_permanent_response_layer() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.web_probe_block_threshold = 25;
+        let mut finding = web_finding("8.8.8.8", "env_file", "missing_or_rejected", 1);
+        finding.evidence.push(Evidence::new(
+            crate::attack_fingerprint::FINGERPRINT_ID_KEY,
+            "WEB-FP-test",
+        ));
+        finding.evidence.push(Evidence::new(
+            crate::attack_fingerprint::ACTION_HINT_KEY,
+            "block",
+        ));
+        finding.evidence.push(Evidence::new(
+            "attack_fingerprint_verdict",
+            VERDICT_MALICIOUS,
+        ));
+        finding
+            .evidence
+            .push(Evidence::new("attack_fingerprint_score", "95"));
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].action, ResponseAction::Block);
+        assert_eq!(candidates[0].permanent_after, Some(1));
+        assert!(candidates[0]
+            .reason
+            .contains("layer=confirmed_malicious_fingerprint"));
     }
 
     #[test]

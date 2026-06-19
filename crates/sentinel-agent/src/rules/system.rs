@@ -5,6 +5,7 @@ pub const ACTIVE_RESPONSE_SUMMARY_RULE_ID: &str = "ACTIVE-001";
 pub const DAILY_REPORT_RULE_ID: &str = "REPORT-001";
 pub const SERVICE_PROFILE_NEW_RULE_ID: &str = "SERVICE-001";
 pub const SERVICE_PROFILE_DRIFT_RULE_ID: &str = "SERVICE-002";
+pub const TIMELINE_RULE_ID: &str = "TIMELINE-001";
 
 pub fn rules() -> Vec<RuleMetadata> {
     vec![
@@ -35,6 +36,13 @@ pub fn rules() -> Vec<RuleMetadata> {
             Category::Network,
             Severity::Medium,
             "A known listening service is now owned by a different executable or process identity.",
+        ),
+        RuleMetadata::new(
+            TIMELINE_RULE_ID,
+            "Correlated intrusion timeline detected",
+            Category::System,
+            Severity::Medium,
+            "Multiple related findings form an intrusion-style sequence in the same scan window.",
         ),
     ]
 }

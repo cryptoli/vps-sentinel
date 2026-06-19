@@ -1,7 +1,8 @@
 use anyhow::{bail, Result};
 use clap::Subcommand;
 use sentinel_agent::attack_fingerprint::{
-    redact_fingerprint, redact_observation, valid_verdict, AttackFingerprint, AttackObservation,
+    explain_fingerprint, redact_fingerprint, redact_observation, valid_verdict, AttackFingerprint,
+    AttackObservation, FingerprintExplanation,
 };
 use sentinel_agent::storage::SqliteStore;
 use sentinel_core::SentinelConfig;
@@ -23,6 +24,13 @@ pub enum FingerprintsCommand {
     Timeline {
         fingerprint_id: String,
         #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    Explain {
+        fingerprint_id: String,
+        #[arg(long, default_value_t = 20)]
         limit: usize,
         #[arg(long)]
         json: bool,
@@ -83,6 +91,23 @@ pub fn run_fingerprints(config: SentinelConfig, command: FingerprintsCommand) ->
                 for observation in observations {
                     print_observation(&observation);
                 }
+            }
+        }
+        FingerprintsCommand::Explain {
+            fingerprint_id,
+            limit,
+            json,
+        } => {
+            let Some(fingerprint) = store.get_attack_fingerprint(&fingerprint_id)? else {
+                println!("fingerprint not found: {fingerprint_id}");
+                return Ok(());
+            };
+            let observations = store.list_attack_observations(&fingerprint_id, limit)?;
+            let explanation = explain_fingerprint(&fingerprint, &observations);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&explanation)?);
+            } else {
+                print_fingerprint_explanation(&explanation);
             }
         }
         FingerprintsCommand::MarkBenign { fingerprint_id } => {
@@ -164,6 +189,46 @@ fn print_fingerprint_detail(fingerprint: &AttackFingerprint) {
         println!("features:");
         for feature in &fingerprint.features {
             println!("- {}={}", feature.key, feature.value);
+        }
+    }
+}
+
+fn print_fingerprint_explanation(explanation: &FingerprintExplanation) {
+    println!(
+        "{} kind={} tier={} score={} confidence={} seen={} sources={} hosts={} verdict={}",
+        explanation.fingerprint_id,
+        explanation.kind,
+        explanation.risk_tier,
+        explanation.score,
+        explanation.confidence,
+        explanation.seen_count,
+        explanation.source_ip_count,
+        explanation.host_count,
+        explanation.verdict
+    );
+    println!("recommended_action: {}", explanation.recommended_action);
+    if !explanation.signals.is_empty() {
+        println!("signals:");
+        for signal in &explanation.signals {
+            println!("- {signal}");
+        }
+    }
+    if !explanation.limitations.is_empty() {
+        println!("limitations:");
+        for limitation in &explanation.limitations {
+            println!("- {limitation}");
+        }
+    }
+    if !explanation.top_features.is_empty() {
+        println!("top_features:");
+        for feature in &explanation.top_features {
+            println!("- {}={}", feature.key, feature.value);
+        }
+    }
+    if !explanation.recent_observations.is_empty() {
+        println!("recent_observations:");
+        for observation in &explanation.recent_observations {
+            println!("- {observation}");
         }
     }
 }

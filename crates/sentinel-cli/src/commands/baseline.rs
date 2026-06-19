@@ -123,9 +123,19 @@ fn print_approval_items(items: &[BaselineApprovalItem], json: bool) -> Result<()
     }
     for item in items {
         println!(
-            "{} {} subject={} action={} risk={}",
-            item.key, item.kind, item.subject, item.action, item.risk_hint
+            "{} {} subject={} action={} risk={} tier={} score={} review={}",
+            item.key,
+            item.kind,
+            item.subject,
+            item.action,
+            item.risk_hint,
+            item.risk_tier,
+            item.risk_score,
+            item.review_action
         );
+        if !item.reasons.is_empty() {
+            println!("  reasons={}", item.reasons.join("; "));
+        }
     }
     Ok(())
 }

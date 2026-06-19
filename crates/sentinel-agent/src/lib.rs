@@ -7,6 +7,7 @@ pub mod baseline;
 pub mod collectors;
 pub mod daemon;
 pub mod detectors;
+pub mod evidence_score;
 pub(crate) mod findings;
 pub mod fleet;
 pub mod incident;
@@ -21,6 +22,7 @@ pub mod scanner;
 pub mod service_profile;
 pub mod storage;
 pub mod threat_intel;
+pub mod timeline;
 pub mod utils;
 
 #[cfg(test)]

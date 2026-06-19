@@ -1,8 +1,9 @@
 use crate::active_response::{apply_active_response, ActiveResponseReport, BlockActionStatus};
 use crate::attack_fingerprint::enrich_and_persist_findings;
-use crate::baseline::{diff_snapshots, BaselineSnapshot};
+use crate::baseline::{diff_snapshots, enrich_baseline_drift_findings, BaselineSnapshot};
 use crate::collectors::{default_collectors, CollectContext};
 use crate::detectors::{default_detectors, DetectContext, EventIndex};
+use crate::evidence_score;
 use crate::findings::coalesce_related_findings;
 use crate::incident::{correlate_findings, prune_incidents, save_incidents};
 use crate::maintenance::apply_maintenance_policy;
@@ -13,6 +14,7 @@ use crate::rules::system::ACTIVE_RESPONSE_SUMMARY_RULE_ID;
 use crate::service_profile::evaluate_service_profile;
 use crate::storage::SqliteStore;
 use crate::threat_intel;
+use crate::timeline;
 use crate::utils::fs::path_string;
 use crate::utils::memory::current_rss_kb;
 use crate::utils::redact::{mask_command_args, mask_ip, mask_ips_in_text};
@@ -169,9 +171,11 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     }
     normalize_finding_evidence(&mut findings);
     findings = coalesce_related_findings(findings);
+    enrich_baseline_drift_findings(&mut findings);
     normalize_finding_evidence(&mut findings);
     let intel = threat_intel::load_threat_intel(&config).await;
     threat_intel::enrich_findings(&mut findings, &intel);
+    evidence_score::enrich_findings(&mut findings);
     risk_score::enrich_findings(&mut findings);
     let mut maintenance_suppressed_count = 0;
     if options.persist {
@@ -274,6 +278,14 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             active_response = options.active_response,
             "active response skipped because side effects are disabled for this scan"
         );
+    }
+
+    let mut timeline_findings = timeline::correlate_timelines(&findings, &config);
+    if !timeline_findings.is_empty() {
+        evidence_score::enrich_findings(&mut timeline_findings);
+        risk_score::enrich_findings(&mut timeline_findings);
+        findings.append(&mut timeline_findings);
+        normalize_finding_evidence(&mut findings);
     }
 
     if options.persist {

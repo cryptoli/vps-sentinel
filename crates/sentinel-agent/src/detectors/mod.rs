@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+pub mod audit_rules;
 pub mod command_profile;
 pub mod config_rules;
 pub mod docker_rules;

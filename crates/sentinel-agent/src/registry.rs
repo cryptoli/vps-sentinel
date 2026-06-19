@@ -3,8 +3,9 @@ use crate::collectors::{
     package_manager, persistence, process, rootkit, ssh, users, web_logs, Collector,
 };
 use crate::detectors::{
-    config_rules, docker_rules, external_rules, file_rules, network_rules, persistence_rules,
-    process_rules, rootkit_rules, ssh_rules, tamper_rules, user_rules, web_rules, Detector,
+    audit_rules, config_rules, docker_rules, external_rules, file_rules, network_rules,
+    persistence_rules, process_rules, rootkit_rules, ssh_rules, tamper_rules, user_rules,
+    web_rules, Detector,
 };
 
 /// Registry for host fact collectors.
@@ -76,6 +77,7 @@ impl DetectorRegistry {
         registry.register(Box::new(docker_rules::DockerDetector));
         registry.register(Box::new(rootkit_rules::RootkitDetector));
         registry.register(Box::new(tamper_rules::TamperDetector));
+        registry.register(Box::new(audit_rules::AuditDetector));
         registry.register(Box::new(external_rules::ExternalRulesDetector));
         registry
     }

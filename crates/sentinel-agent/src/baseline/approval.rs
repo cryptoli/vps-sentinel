@@ -1,4 +1,5 @@
 use crate::baseline::diff_snapshots;
+use crate::baseline::drift::assess_event;
 use crate::baseline::snapshot::{listener_key, BaselineSnapshot};
 use blake3::Hasher;
 use chrono::{DateTime, Utc};
@@ -16,6 +17,14 @@ pub struct BaselineApprovalItem {
     pub subject: String,
     pub action: String,
     pub risk_hint: String,
+    #[serde(default)]
+    pub risk_score: u16,
+    #[serde(default)]
+    pub risk_tier: String,
+    #[serde(default)]
+    pub review_action: String,
+    #[serde(default)]
+    pub reasons: Vec<String>,
     pub fields: BTreeMap<String, String>,
 }
 
@@ -120,12 +129,29 @@ pub fn apply_approved_changes(
 
 fn approval_item_from_event(event: &RawEvent) -> BaselineApprovalItem {
     let subject = event_subject(event);
+    let assessment = assess_event(event);
     BaselineApprovalItem {
         key: approval_key(event, &subject),
         kind: event.kind.clone(),
         subject: subject.clone(),
         action: event_action(event.kind.as_str()).to_string(),
         risk_hint: risk_hint(event, &subject).to_string(),
+        risk_score: assessment
+            .as_ref()
+            .map(|item| item.score)
+            .unwrap_or_default(),
+        risk_tier: assessment
+            .as_ref()
+            .map(|item| item.tier.to_string())
+            .unwrap_or_else(|| "review".to_string()),
+        review_action: assessment
+            .as_ref()
+            .map(|item| item.review_action.to_string())
+            .unwrap_or_else(|| "review_change_before_refresh".to_string()),
+        reasons: assessment
+            .as_ref()
+            .map(|item| item.reasons.clone())
+            .unwrap_or_default(),
         fields: event.fields.clone(),
     }
 }
@@ -261,6 +287,8 @@ mod tests {
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].key, right[0].key);
         assert_eq!(left[0].action, "update_file_baseline");
+        assert!(left[0].risk_score > 0);
+        assert!(!left[0].risk_tier.is_empty());
     }
 
     #[test]

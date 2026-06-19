@@ -107,6 +107,11 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "attack_fingerprint_seen_count" => "attack fingerprint observations",
             "attack_fingerprint_source_ip_count" => "attack fingerprint source IPs",
             "attack_fingerprint_verdict" => "attack fingerprint verdict",
+            "baseline_drift_downgrades" => "baseline drift downgrades",
+            "baseline_drift_reasons" => "baseline drift reasons",
+            "baseline_drift_score" => "baseline drift score",
+            "baseline_drift_tier" => "baseline drift tier",
+            "baseline_review_action" => "baseline review action",
             "change" => "change",
             "cmdline" => "command line",
             "command" => "command",
@@ -241,6 +246,11 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "attack_fingerprint_seen_count" => "攻击指纹观察次数",
             "attack_fingerprint_source_ip_count" => "攻击指纹来源 IP 数",
             "attack_fingerprint_verdict" => "攻击指纹判定",
+            "baseline_drift_downgrades" => "基线漂移降噪因素",
+            "baseline_drift_reasons" => "基线漂移原因",
+            "baseline_drift_score" => "基线漂移评分",
+            "baseline_drift_tier" => "基线漂移层级",
+            "baseline_review_action" => "基线复核动作",
             "change" => "变化类型",
             "cmdline" => "命令行",
             "command" => "命令",
@@ -519,6 +529,42 @@ fn direct_value_label(
         ("attack_fingerprint_verdict", "malicious", NotificationLanguage::ZhCn) => {
             Some("已确认恶意")
         }
+        ("baseline_drift_tier", "routine", NotificationLanguage::En) => Some("routine"),
+        ("baseline_drift_tier", "routine", NotificationLanguage::ZhCn) => Some("常规变更"),
+        ("baseline_drift_tier", "review", NotificationLanguage::En) => Some("needs review"),
+        ("baseline_drift_tier", "review", NotificationLanguage::ZhCn) => Some("需要复核"),
+        ("baseline_drift_tier", "suspicious", NotificationLanguage::En) => Some("suspicious"),
+        ("baseline_drift_tier", "suspicious", NotificationLanguage::ZhCn) => Some("可疑"),
+        ("baseline_drift_tier", "critical", NotificationLanguage::En) => Some("critical"),
+        ("baseline_drift_tier", "critical", NotificationLanguage::ZhCn) => Some("严重"),
+        ("baseline_review_action", "confirm_context_then_refresh", NotificationLanguage::En) => {
+            Some("confirm context before refreshing baseline")
+        }
+        ("baseline_review_action", "confirm_context_then_refresh", NotificationLanguage::ZhCn) => {
+            Some("确认变更上下文后再刷新基线")
+        }
+        ("baseline_review_action", "review_change_before_refresh", NotificationLanguage::En) => {
+            Some("review change before refreshing baseline")
+        }
+        ("baseline_review_action", "review_change_before_refresh", NotificationLanguage::ZhCn) => {
+            Some("复核变更后再刷新基线")
+        }
+        ("baseline_review_action", "investigate_before_refresh", NotificationLanguage::En) => {
+            Some("investigate before refreshing baseline")
+        }
+        ("baseline_review_action", "investigate_before_refresh", NotificationLanguage::ZhCn) => {
+            Some("调查清楚后再刷新基线")
+        }
+        (
+            "baseline_review_action",
+            "treat_as_incident_before_refresh",
+            NotificationLanguage::En,
+        ) => Some("treat as incident before refreshing baseline"),
+        (
+            "baseline_review_action",
+            "treat_as_incident_before_refresh",
+            NotificationLanguage::ZhCn,
+        ) => Some("按安全事件处置后再考虑刷新基线"),
         ("probe_family", value, language) => probe_family_value_label(value, language),
         ("process_start_drift", "changed", NotificationLanguage::En) => {
             Some("changed since previous scan")
@@ -619,7 +665,12 @@ fn direct_value_label(
 fn is_localized_list_key(key: &str) -> bool {
     matches!(
         key,
-        "signals" | "risk_features" | "risk_reasons" | "content_markers"
+        "signals"
+            | "risk_features"
+            | "risk_reasons"
+            | "content_markers"
+            | "baseline_drift_reasons"
+            | "baseline_drift_downgrades"
     )
 }
 
@@ -905,15 +956,32 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
     match language {
         NotificationLanguage::En => match value {
             "account file drift" => Some("account file drift"),
+            "baseline change detected" => Some("baseline change detected"),
+            "baseline drift finding" => Some("baseline drift finding"),
             "dev_tcp" => Some("/dev/tcp"),
+            "dynamic linker preload changed" => Some("dynamic linker preload changed"),
+            "executable state changed" => Some("executable state changed"),
             "exec_bridge" => Some("exec bridge"),
+            "large file size delta" => Some("large file size delta"),
             "fd_bridge" | "fd_duplication" => Some("file descriptor bridge"),
             "inline_interpreter" => Some("inline interpreter"),
             "interactive_shell" => Some("interactive shell"),
+            "listener owner changed" => Some("listener owner changed"),
             "network_channel" => Some("network channel"),
             "network_execution_bridge" => Some("network execution bridge"),
+            "not publicly exposed" => Some("not publicly exposed"),
             "local user account" => Some("local user account"),
+            "local firewall context is present" => Some("local firewall context is present"),
+            "privileged account state changed" => Some("privileged account state changed"),
             "privilege account change" => Some("privilege account change"),
+            "public listener exposure" => Some("public listener exposure"),
+            "recent package manager activity" => Some("recent package manager activity"),
+            "risk evidence attached" => Some("risk evidence attached"),
+            "risk-scored suspicious traits present" => {
+                Some("risk-scored suspicious traits present")
+            }
+            "security-sensitive drift" => Some("security-sensitive drift"),
+            "service owner changed" => Some("service owner changed"),
             "shell_target" => Some("shell target"),
             "socket_api" => Some("socket API"),
             "suspicious executable path" => Some("suspicious executable path"),
@@ -958,6 +1026,21 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
         },
         NotificationLanguage::ZhCn => match value {
             "account file drift" => Some("账号文件漂移"),
+            "baseline change detected" => Some("检测到基线变更"),
+            "baseline drift finding" => Some("基线漂移告警"),
+            "dynamic linker preload changed" => Some("动态链接器 preload 发生变化"),
+            "executable state changed" => Some("可执行状态发生变化"),
+            "large file size delta" => Some("文件大小变化较大"),
+            "listener owner changed" => Some("监听端口所属进程发生变化"),
+            "local firewall context is present" => Some("存在本机防火墙上下文"),
+            "not publicly exposed" => Some("未暴露到公网"),
+            "privileged account state changed" => Some("特权账号状态发生变化"),
+            "public listener exposure" => Some("存在公网监听暴露"),
+            "recent package manager activity" => Some("近期存在软件包管理器活动"),
+            "risk evidence attached" => Some("已附加风险证据"),
+            "risk-scored suspicious traits present" => Some("存在达到风险评分的可疑特征"),
+            "security-sensitive drift" => Some("安全敏感对象发生漂移"),
+            "service owner changed" => Some("服务所属进程发生变化"),
             "anonymous_deleted_executable" => Some("匿名或 memfd 删除态可执行文件"),
             "command_execution_marker" => Some("命令执行特征"),
             "configured miner/scanner identity matched" => Some("命中配置中的挖矿或扫描工具身份"),

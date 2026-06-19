@@ -1,4 +1,4 @@
-use crate::baseline::snapshot::{BaselineSnapshot, ListenerBaseline};
+use crate::baseline::snapshot::{BaselineSnapshot, FileBaseline, ListenerBaseline};
 use sentinel_core::RawEvent;
 
 /// Produce synthetic raw events representing baseline drift.
@@ -14,33 +14,49 @@ pub fn diff_snapshots(previous: &BaselineSnapshot, current: &BaselineSnapshot) -
 fn diff_files(previous: &BaselineSnapshot, current: &BaselineSnapshot, events: &mut Vec<RawEvent>) {
     for (path, now) in &current.files {
         match previous.files.get(path) {
-            Some(old) if old.hash != now.hash => events.push(
-                RawEvent::new("baseline", "file_modified")
-                    .with_field("path", path)
-                    .with_field("previous_hash", &old.hash)
-                    .with_field("current_hash", &now.hash)
-                    .with_field("size", &now.size),
-            ),
-            None => events.push(
-                RawEvent::new("baseline", "file_created")
-                    .with_field("path", path)
-                    .with_field("previous_hash", "")
-                    .with_field("current_hash", &now.hash)
-                    .with_field("size", &now.size),
-            ),
+            Some(old) if old.hash != now.hash => {
+                events.push(file_diff_event("file_modified", path, Some(old), Some(now)))
+            }
+            None => events.push(file_diff_event("file_created", path, None, Some(now))),
             _ => {}
         }
     }
     for (path, old) in &previous.files {
         if !current.files.contains_key(path) {
-            events.push(
-                RawEvent::new("baseline", "file_deleted")
-                    .with_field("path", path)
-                    .with_field("previous_hash", &old.hash)
-                    .with_field("current_hash", ""),
-            );
+            events.push(file_diff_event("file_deleted", path, Some(old), None));
         }
     }
+}
+
+fn file_diff_event(
+    kind: &str,
+    path: &str,
+    previous: Option<&FileBaseline>,
+    current: Option<&FileBaseline>,
+) -> RawEvent {
+    let mut event = RawEvent::new("baseline", kind).with_field("path", path);
+    if let Some(previous) = previous {
+        event = event
+            .with_field("previous_hash", &previous.hash)
+            .with_field("previous_size", &previous.size)
+            .with_field("previous_executable", &previous.executable)
+            .with_field("previous_is_web_path", &previous.is_web_path);
+    } else {
+        event = event.with_field("previous_hash", "");
+    }
+    if let Some(current) = current {
+        event = event
+            .with_field("current_hash", &current.hash)
+            .with_field("current_size", &current.size)
+            .with_field("current_executable", &current.executable)
+            .with_field("current_is_web_path", &current.is_web_path)
+            .with_field("size", &current.size)
+            .with_field("executable", &current.executable)
+            .with_field("is_web_path", &current.is_web_path);
+    } else {
+        event = event.with_field("current_hash", "");
+    }
+    event
 }
 
 fn diff_users(previous: &BaselineSnapshot, current: &BaselineSnapshot, events: &mut Vec<RawEvent>) {
@@ -165,13 +181,20 @@ mod tests {
     fn detects_authorized_keys_hash_change() {
         let old = BaselineSnapshot::from_events(&[RawEvent::new("file", "file_snapshot")
             .with_field("path", "/home/app/.ssh/authorized_keys")
-            .with_field("hash", "old")]);
+            .with_field("hash", "old")
+            .with_field("size", "64")
+            .with_field("executable", "false")]);
         let new = BaselineSnapshot::from_events(&[RawEvent::new("file", "file_snapshot")
             .with_field("path", "/home/app/.ssh/authorized_keys")
-            .with_field("hash", "new")]);
+            .with_field("hash", "new")
+            .with_field("size", "128")
+            .with_field("executable", "false")]);
         let diff = diff_snapshots(&old, &new);
         assert_eq!(diff.len(), 1);
         assert_eq!(diff[0].kind, "file_modified");
+        assert_eq!(diff[0].field("previous_size"), Some("64"));
+        assert_eq!(diff[0].field("current_size"), Some("128"));
+        assert_eq!(diff[0].field("current_executable"), Some("false"));
     }
 
     #[test]
