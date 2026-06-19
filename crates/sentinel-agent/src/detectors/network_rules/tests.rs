@@ -184,10 +184,75 @@ fn reports_high_risk_public_port_from_current_state() {
     let findings = detect_with_default_config(vec![socket_event("network", 6379)]);
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].rule_id, "CONFIG-003");
+    assert_eq!(findings[0].subject, "*:6379");
     assert!(findings[0]
         .evidence
         .iter()
         .any(|item| item.key == "service_profile" && item.value == "Redis"));
+}
+
+#[test]
+fn coalesces_dual_stack_high_risk_public_port() {
+    let findings = detect_with_default_config(vec![
+        RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "0.0.0.0")
+            .with_field("local_port", "3000")
+            .with_field("process_name", "docker-proxy")
+            .with_field("executable", "/usr/bin/docker-proxy"),
+        RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp6")
+            .with_field("local_addr", "::")
+            .with_field("local_port", "3000")
+            .with_field("process_name", "docker-proxy")
+            .with_field("executable", "/usr/bin/docker-proxy"),
+    ]);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "CONFIG-003");
+    assert_eq!(findings[0].subject, "*:3000");
+}
+
+#[test]
+fn coalesces_dual_stack_new_public_port_drift() {
+    let findings = detect_with_default_config(vec![
+        RawEvent::new("baseline", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "0.0.0.0")
+            .with_field("local_port", "8443")
+            .with_field("process_name", "sing-box")
+            .with_field("executable", "/usr/bin/sing-box"),
+        RawEvent::new("baseline", "listening_socket")
+            .with_field("protocol", "tcp6")
+            .with_field("local_addr", "::")
+            .with_field("local_port", "8443")
+            .with_field("process_name", "sing-box")
+            .with_field("executable", "/usr/bin/sing-box"),
+    ]);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-001");
+    assert_eq!(findings[0].subject, "*:8443");
+}
+
+#[test]
+fn keeps_distinct_specific_public_listener_addresses() {
+    let findings = detect_with_default_config(vec![
+        RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "8.8.8.8")
+            .with_field("local_port", "6379")
+            .with_field("process_name", "redis")
+            .with_field("executable", "/usr/bin/redis-server"),
+        RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "1.1.1.1")
+            .with_field("local_port", "6379")
+            .with_field("process_name", "redis")
+            .with_field("executable", "/usr/bin/redis-server"),
+    ]);
+
+    assert_eq!(findings.len(), 2);
 }
 
 #[test]

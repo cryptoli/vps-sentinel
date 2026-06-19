@@ -67,6 +67,7 @@ impl Detector for NetworkDetector {
 
 fn detect_network_events(index: &EventIndex<'_>, ctx: &DetectContext) -> Vec<Finding> {
     let mut findings = Vec::new();
+    let mut reported_listener_alerts = BTreeSet::new();
     let policy = PortPolicy::from_context(ctx);
     let firewall = firewall_context(index.kind("firewall_state"));
     let process_context = process_context_by_pid(index.kind("process_snapshot"));
@@ -89,34 +90,61 @@ fn detect_network_events(index: &EventIndex<'_>, ctx: &DetectContext) -> Vec<Fin
         let owner_context = event.field("pid").and_then(|pid| process_context.get(pid));
         let high_risk_service = policy.high_risk_service_name(port);
         if let Some(profile) = ListenerRiskProfile::from_event(event, ctx, owner_context) {
-            findings.push(suspicious_listener(
+            if reported_listener_alerts.insert(listener_alert_key(
+                "NET-003",
                 event,
-                ctx,
-                profile,
                 high_risk_service,
-                firewall.as_ref(),
                 owner_context,
-            ));
+            )) {
+                findings.push(suspicious_listener(
+                    event,
+                    ctx,
+                    profile,
+                    high_risk_service,
+                    firewall.as_ref(),
+                    owner_context,
+                ));
+            }
         } else if let Some(service_name) = high_risk_service {
-            findings.push(risky_port(
+            if reported_listener_alerts.insert(listener_alert_key(
+                "CONFIG-003",
                 event,
-                ctx,
-                service_name,
-                firewall.as_ref(),
+                Some(service_name),
                 owner_context,
-            ));
+            )) {
+                findings.push(risky_port(
+                    event,
+                    ctx,
+                    service_name,
+                    firewall.as_ref(),
+                    owner_context,
+                ));
+            }
         } else if event.kind == "listening_socket_owner_changed" {
-            findings.push(listener_owner_changed(
+            if reported_listener_alerts.insert(listener_alert_key(
+                "NET-002",
                 event,
-                ctx,
-                firewall.as_ref(),
+                None,
                 owner_context,
-            ));
+            )) {
+                findings.push(listener_owner_changed(
+                    event,
+                    ctx,
+                    firewall.as_ref(),
+                    owner_context,
+                ));
+            }
         } else if policy.is_expected_public(port) {
             continue;
         } else if event.source == "baseline"
             && ctx.config.network.alert_on_new_listening_port
             && is_tcp_protocol(event)
+            && reported_listener_alerts.insert(listener_alert_key(
+                "NET-001",
+                event,
+                None,
+                owner_context,
+            ))
         {
             findings.push(public_listen(event, ctx, firewall.as_ref(), owner_context));
         }
@@ -137,11 +165,7 @@ fn public_listen(
         Severity::Medium,
         Category::Network,
         "NET-001",
-        format!(
-            "{}:{}",
-            string_field(event, "local_addr"),
-            string_field(event, "local_port")
-        ),
+        listener_subject(event),
     )
     .with_evidence_deduped_by(
         socket_evidence_with_context(event, firewall, process),
@@ -167,11 +191,7 @@ fn listener_owner_changed(
         Severity::Medium,
         Category::Network,
         "NET-002",
-        format!(
-            "{}:{}",
-            string_field(event, "local_addr"),
-            string_field(event, "local_port")
-        ),
+        listener_subject(event),
     )
     .with_evidence_deduped_by(
         socket_evidence_with_context(event, firewall, process),
@@ -207,11 +227,7 @@ fn suspicious_listener(
         Severity::High,
         Category::Network,
         "NET-003",
-        format!(
-            "{}:{}",
-            string_field(event, "local_addr"),
-            string_field(event, "local_port")
-        ),
+        listener_subject(event),
     )
     .with_evidence_deduped_by(
         {
@@ -260,7 +276,7 @@ fn risky_port(
         Severity::High,
         Category::ConfigRisk,
         "CONFIG-003",
-        format!("{}:{}", string_field(event, "local_addr"), string_field(event, "local_port")),
+        listener_subject(event),
     )
     .with_evidence_deduped_by({
         let mut items = socket_evidence_with_context(event, firewall, process);
@@ -403,6 +419,61 @@ fn is_tcp_protocol(event: &RawEvent) -> bool {
     event
         .field("protocol")
         .is_some_and(|protocol| protocol.starts_with("tcp"))
+}
+
+fn listener_subject(event: &RawEvent) -> String {
+    format!(
+        "{}:{}",
+        listener_display_addr(event),
+        string_field(event, "local_port")
+    )
+}
+
+fn listener_alert_key(
+    rule_id: &str,
+    event: &RawEvent,
+    service_name: Option<&str>,
+    process: Option<&ProcessContext>,
+) -> String {
+    format!(
+        "{}\n{}\n{}\n{}\n{}\n{}",
+        rule_id,
+        listener_identity(event),
+        string_field(event, "process_name"),
+        string_field(event, "executable"),
+        process
+            .map(|process| process.field("systemd_unit"))
+            .unwrap_or(""),
+        service_name.unwrap_or("")
+    )
+}
+
+fn listener_identity(event: &RawEvent) -> String {
+    format!(
+        "{}:{}:{}",
+        listener_protocol_family(string_field(event, "protocol").as_str()),
+        listener_display_addr(event),
+        string_field(event, "local_port")
+    )
+}
+
+fn listener_protocol_family(protocol: &str) -> &str {
+    if protocol.starts_with("tcp") {
+        "tcp"
+    } else if protocol.starts_with("udp") {
+        "udp"
+    } else {
+        protocol
+    }
+}
+
+fn listener_display_addr(event: &RawEvent) -> String {
+    let addr = string_field(event, "local_addr");
+    if matches!(addr.as_str(), "0.0.0.0" | "::") {
+        "*".to_string()
+    } else {
+        addr
+    }
 }
 
 struct PortPolicy {
