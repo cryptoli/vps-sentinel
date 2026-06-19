@@ -12,6 +12,10 @@ const DEPRECATED_KEYS: &[&str] = &[
 ];
 const LEGACY_DEFAULT_LANGUAGE_KEY: &str = "notifications.language";
 const LEGACY_SSH_RESPONSE_POLICY_KEY: &str = "response_policy.policies.ssh_bruteforce.rule_ids";
+const LEGACY_SSH_FAILED_LOGIN_THRESHOLD: usize = 10;
+const SSH_FAILED_LOGIN_THRESHOLD_KEY: &str = "ssh.failed_login_threshold";
+const ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD_KEY: &str =
+    "active_response.ssh_failed_login_block_threshold";
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
@@ -129,7 +133,12 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
     let deprecated = deprecated_keys_in_text(&text);
     let legacy_default_language = contains_legacy_default_language(&text);
     let legacy_ssh_response_policy = contains_legacy_ssh_response_policy(&text);
-    if deprecated.is_empty() && !legacy_default_language && !legacy_ssh_response_policy {
+    let threshold_migration = legacy_ssh_threshold_migration(&text)?;
+    if deprecated.is_empty()
+        && !legacy_default_language
+        && !legacy_ssh_response_policy
+        && threshold_migration.changes.is_empty()
+    {
         println!(
             "configuration does not require migration: {}",
             path.display()
@@ -137,7 +146,7 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
         return Ok(());
     }
     let migrated = migrate_legacy_ssh_response_policy(&migrate_legacy_default_language(
-        &remove_deprecated_keys(&text),
+        &migrate_legacy_ssh_thresholds(&remove_deprecated_keys(&text), &threshold_migration)?,
     ));
     let _: SentinelConfig = toml::from_str(&migrated)?;
     if dry_run {
@@ -155,6 +164,12 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
             println!("legacy defaults that would be updated:");
             println!("- {LEGACY_SSH_RESPONSE_POLICY_KEY}: [SSH-003] -> [SSH-003, SSH-007]");
         }
+        if !threshold_migration.changes.is_empty() {
+            println!("legacy defaults that would be updated:");
+            for change in threshold_migration.changes {
+                println!("- {}: {} -> {}", change.path, change.old, change.new);
+            }
+        }
         return Ok(());
     }
     let backup = write_config_backup(path, &text)?;
@@ -167,8 +182,10 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
 
 fn sync_config_defaults(path: &Path, dry_run: bool) -> Result<()> {
     let text = fs::read_to_string(path)?;
-    let missing = missing_default_entries(&text)?;
-    if missing.is_empty() {
+    let threshold_migration = legacy_ssh_threshold_migration(&text)?;
+    let normalized = migrate_legacy_ssh_thresholds(&text, &threshold_migration)?;
+    let missing = missing_default_entries(&normalized)?;
+    if missing.is_empty() && threshold_migration.changes.is_empty() {
         println!(
             "configuration already contains all default keys: {}",
             path.display()
@@ -176,14 +193,22 @@ fn sync_config_defaults(path: &Path, dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
-    let updated = insert_missing_default_keys(&text, &missing)?;
+    let updated = insert_missing_default_keys(&normalized, &missing)?;
     let config: SentinelConfig = toml::from_str(&updated)?;
     config.validate()?;
 
     if dry_run {
-        println!("default keys that would be added:");
-        for entry in missing {
-            println!("- {}", entry.path);
+        if !threshold_migration.changes.is_empty() {
+            println!("legacy defaults that would be updated:");
+            for change in threshold_migration.changes {
+                println!("- {}: {} -> {}", change.path, change.old, change.new);
+            }
+        }
+        if !missing.is_empty() {
+            println!("default keys that would be added:");
+            for entry in missing {
+                println!("- {}", entry.path);
+            }
         }
         return Ok(());
     }
@@ -373,6 +398,146 @@ fn is_legacy_ssh_response_policy_rule_ids_line(line: &str) -> bool {
     value == "[\"SSH-003\"]"
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LegacyDefaultChange {
+    path: &'static str,
+    old: usize,
+    new: usize,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct LegacySshThresholdMigration {
+    changes: Vec<LegacyDefaultChange>,
+}
+
+fn legacy_ssh_threshold_migration(text: &str) -> Result<LegacySshThresholdMigration> {
+    let value: toml::Value = toml::from_str(text)?;
+    let current_default = SentinelConfig::default().ssh.failed_login_threshold;
+    let ssh_threshold = toml_usize_at_path(&value, SSH_FAILED_LOGIN_THRESHOLD_KEY);
+    let active_threshold =
+        toml_usize_at_path(&value, ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD_KEY);
+    let mut changes = Vec::new();
+
+    if ssh_threshold == Some(LEGACY_SSH_FAILED_LOGIN_THRESHOLD)
+        && active_threshold
+            .map(|threshold| {
+                threshold == current_default || threshold == LEGACY_SSH_FAILED_LOGIN_THRESHOLD
+            })
+            .unwrap_or(true)
+    {
+        changes.push(LegacyDefaultChange {
+            path: SSH_FAILED_LOGIN_THRESHOLD_KEY,
+            old: LEGACY_SSH_FAILED_LOGIN_THRESHOLD,
+            new: current_default,
+        });
+    }
+
+    if active_threshold == Some(LEGACY_SSH_FAILED_LOGIN_THRESHOLD)
+        && ssh_threshold
+            .map(|threshold| {
+                threshold == current_default || threshold == LEGACY_SSH_FAILED_LOGIN_THRESHOLD
+            })
+            .unwrap_or(true)
+    {
+        changes.push(LegacyDefaultChange {
+            path: ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD_KEY,
+            old: LEGACY_SSH_FAILED_LOGIN_THRESHOLD,
+            new: current_default,
+        });
+    }
+
+    Ok(LegacySshThresholdMigration { changes })
+}
+
+fn migrate_legacy_ssh_thresholds(
+    text: &str,
+    migration: &LegacySshThresholdMigration,
+) -> Result<String> {
+    let mut migrated = text.to_string();
+    for change in &migration.changes {
+        migrated = replace_toml_usize_value(&migrated, change.path, change.old, change.new)?;
+    }
+    Ok(migrated)
+}
+
+fn replace_toml_usize_value(
+    text: &str,
+    path: &str,
+    old_value: usize,
+    new_value: usize,
+) -> Result<String> {
+    let (target_section, target_key) = path.rsplit_once('.').unwrap_or(("", path));
+    let mut section = String::new();
+    let mut changed = false;
+    let mut output = Vec::new();
+
+    for line in text.lines() {
+        if let Some(next_section) = parse_toml_section_header(line) {
+            section = next_section;
+            output.push(line.to_string());
+            continue;
+        }
+        if section == target_section
+            && !line.trim_start().starts_with('#')
+            && toml_line_key(line) == Some(target_key)
+            && toml_line_usize_value(line) == Some(old_value)
+        {
+            output.push(rewrite_toml_scalar_line(line, new_value));
+            changed = true;
+            continue;
+        }
+        output.push(line.to_string());
+    }
+
+    if !changed {
+        bail!("could not migrate legacy default key: {path}");
+    }
+    let mut migrated = output.join("\n");
+    migrated.push('\n');
+    Ok(migrated)
+}
+
+fn rewrite_toml_scalar_line(line: &str, new_value: usize) -> String {
+    let indent = line
+        .chars()
+        .take_while(|ch| ch.is_whitespace())
+        .collect::<String>();
+    let key = toml_line_key(line).unwrap_or_default();
+    let comment = line
+        .split_once('#')
+        .map(|(_, comment)| format!(" #{}", comment))
+        .unwrap_or_default();
+    format!("{indent}{key} = {new_value}{comment}")
+}
+
+fn toml_line_key(line: &str) -> Option<&str> {
+    let trimmed = line.trim();
+    if trimmed.starts_with('#') {
+        return None;
+    }
+    trimmed
+        .split_once('=')
+        .map(|(key, _)| key.trim())
+        .filter(|key| !key.is_empty())
+}
+
+fn toml_line_usize_value(line: &str) -> Option<usize> {
+    let (_, value) = line.trim().split_once('=')?;
+    let value = value
+        .split_once('#')
+        .map(|(value, _)| value)
+        .unwrap_or(value)
+        .trim();
+    value.parse().ok()
+}
+
+fn toml_usize_at_path(value: &toml::Value, path: &str) -> Option<usize> {
+    let value = toml_value_at_path(value, path)?;
+    value
+        .as_integer()
+        .and_then(|value| usize::try_from(value).ok())
+}
+
 #[derive(Debug, Clone)]
 struct MissingDefaultEntry {
     path: String,
@@ -558,8 +723,9 @@ mod tests {
     use super::{
         contains_legacy_default_language, contains_legacy_ssh_response_policy,
         deprecated_keys_in_text, flatten_toml_keys, insert_missing_default_keys,
-        migrate_legacy_default_language, migrate_legacy_ssh_response_policy,
-        missing_default_entries, next_backup_path, remove_deprecated_keys,
+        legacy_ssh_threshold_migration, migrate_legacy_default_language,
+        migrate_legacy_ssh_response_policy, migrate_legacy_ssh_thresholds, missing_default_entries,
+        next_backup_path, remove_deprecated_keys,
     };
     use sentinel_core::SentinelConfig;
     use std::fs;
@@ -616,6 +782,46 @@ mod tests {
 
         assert!(!contains_legacy_ssh_response_policy(text));
         assert_eq!(migrate_legacy_ssh_response_policy(text), text);
+    }
+
+    #[test]
+    fn migrates_legacy_default_ssh_thresholds_together() {
+        let text = "[ssh]\nfailed_login_threshold = 10 # old default\n\n[active_response]\nssh_failed_login_block_threshold = 10 # old default\n";
+        let migration = legacy_ssh_threshold_migration(text).unwrap();
+
+        let migrated = migrate_legacy_ssh_thresholds(text, &migration).unwrap();
+
+        assert_eq!(migration.changes.len(), 2);
+        assert!(migrated.contains("failed_login_threshold = 6 # old default"));
+        assert!(migrated.contains("ssh_failed_login_block_threshold = 6 # old default"));
+        let config: SentinelConfig = toml::from_str(&migrated).unwrap();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn repairs_partially_synced_ssh_threshold_defaults() {
+        let text = "[ssh]\nfailed_login_threshold = 10\n\n[active_response]\nssh_failed_login_block_threshold = 6\n";
+        let migration = legacy_ssh_threshold_migration(text).unwrap();
+
+        let migrated = migrate_legacy_ssh_thresholds(text, &migration).unwrap();
+
+        assert_eq!(migration.changes.len(), 1);
+        assert!(migrated.contains("failed_login_threshold = 6"));
+        let config: SentinelConfig = toml::from_str(&migrated).unwrap();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn preserves_custom_ssh_thresholds() {
+        let text = "[ssh]\nfailed_login_threshold = 10\n\n[active_response]\nssh_failed_login_block_threshold = 20\n";
+
+        let migration = legacy_ssh_threshold_migration(text).unwrap();
+
+        assert!(migration.changes.is_empty());
+        assert_eq!(
+            migrate_legacy_ssh_thresholds(text, &migration).unwrap(),
+            text
+        );
     }
 
     #[test]
