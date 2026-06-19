@@ -5,6 +5,7 @@ pub mod error;
 pub mod event;
 pub mod evidence_schema;
 pub mod finding;
+pub mod panel_auth;
 pub mod severity;
 pub mod time_window;
 

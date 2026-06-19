@@ -5,19 +5,18 @@ use crate::scanner::ScanReport;
 use crate::storage::{SqliteStore, StorageStats};
 use crate::utils::redact::{mask_command_args, mask_ip, mask_ips_in_text};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use hmac::{Hmac, Mac};
+use sentinel_core::panel_auth::{
+    panel_body_sha256_hex, panel_header_nonce, panel_signature_hex, PANEL_INGEST_PATH,
+};
 use sentinel_core::{
     evidence_value, Evidence, Finding, RawEvent, SentinelConfig, SentinelError, SentinelResult,
     Severity,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::time::Duration;
 use tracing::{debug, warn};
 use uuid::Uuid;
-
-type HmacSha256 = Hmac<Sha256>;
 
 const PANEL_OUTBOX_RULE_ID: &str = "panel_outbox";
 const PANEL_SCHEMA_VERSION: u16 = 1;
@@ -392,7 +391,7 @@ async fn send_envelope(config: &SentinelConfig, payload: &PanelEnvelope) -> Sent
     }
     let signed = sign_request(
         "POST",
-        "/api/v1/ingest",
+        PANEL_INGEST_PATH,
         &body,
         &config.panel.secret,
         &payload.node.node_id,
@@ -431,52 +430,15 @@ fn sign_request(
     node_id: &str,
 ) -> SentinelResult<SignedRequest> {
     let timestamp = Utc::now().timestamp();
-    let nonce = Uuid::new_v4().to_string();
-    let body_hash = sha256_hex(body);
-    let signing = signing_string(method, path, timestamp, &nonce, &body_hash);
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .map_err(|err| SentinelError::Notify(err.to_string()))?;
-    mac.update(signing.as_bytes());
-    let signature = hex_encode(&mac.finalize().into_bytes());
+    let nonce = panel_header_nonce(node_id, &Uuid::new_v4().to_string());
+    let body_hash = panel_body_sha256_hex(body);
+    let signature = panel_signature_hex(secret, method, path, timestamp, &nonce, &body_hash);
     Ok(SignedRequest {
         timestamp,
-        nonce: format!("{node_id}:{nonce}"),
+        nonce,
         body_hash,
         signature,
     })
-}
-
-fn signing_string(
-    method: &str,
-    path: &str,
-    timestamp: i64,
-    nonce: &str,
-    body_hash: &str,
-) -> String {
-    format!(
-        "{}\n{}\n{}\n{}\n{}",
-        method.to_ascii_uppercase(),
-        path,
-        timestamp,
-        nonce,
-        body_hash
-    )
-}
-
-fn sha256_hex(body: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(body);
-    hex_encode(&hasher.finalize())
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
 }
 
 fn enqueue_payload(
@@ -785,6 +747,7 @@ mod tests {
     };
     use crate::storage::SqliteStore;
     use chrono::Utc;
+    use sentinel_core::panel_auth::{panel_signature_hex, PANEL_INGEST_METHOD, PANEL_INGEST_PATH};
     use sentinel_core::{Category, Evidence, Finding, SentinelConfig, Severity};
     use std::collections::BTreeMap;
 
@@ -802,6 +765,17 @@ mod tests {
         assert_eq!(signed.body_hash.len(), 64);
         assert_eq!(signed.signature.len(), 64);
         assert!(signed.nonce.starts_with("node:"));
+        assert_eq!(
+            signed.signature,
+            panel_signature_hex(
+                "secret-secret-secret",
+                PANEL_INGEST_METHOD,
+                PANEL_INGEST_PATH,
+                signed.timestamp,
+                &signed.nonce,
+                &signed.body_hash,
+            )
+        );
     }
 
     #[test]

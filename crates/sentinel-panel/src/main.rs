@@ -7,11 +7,13 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use clap::{Parser, ValueEnum};
-use hmac::{Hmac, Mac};
 use rusqlite::{Connection, OptionalExtension};
+use sentinel_core::panel_auth::{
+    constant_time_eq, panel_body_sha256_hex, panel_signature_hex, PANEL_INGEST_METHOD,
+    PANEL_INGEST_PATH,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use sqlx_core::column::Column;
 use sqlx_core::query::query as sql_query;
 use sqlx_core::row::Row;
@@ -24,8 +26,6 @@ use std::sync::{Arc, Mutex};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::ServeDir;
 use tracing::{info, warn};
-
-type HmacSha256 = Hmac<Sha256>;
 
 const SIGNATURE_WINDOW_SECONDS: i64 = 300;
 const DEFAULT_MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -1094,7 +1094,7 @@ async fn verify_signature(
             "nonce_node_mismatch",
         ));
     }
-    let actual_hash = sha256_hex(body);
+    let actual_hash = panel_body_sha256_hex(body);
     if !constant_time_eq(&actual_hash, &body_hash) {
         return Err(PanelApiError::new(
             StatusCode::UNAUTHORIZED,
@@ -1107,11 +1107,14 @@ async fn verify_signature(
             "unknown_node_secret",
         ));
     };
-    let signing = format!("POST\n/api/v1/ingest\n{timestamp}\n{nonce}\n{body_hash}");
-    let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
-        .map_err(|err| PanelApiError::detail(StatusCode::UNAUTHORIZED, "signature_error", err))?;
-    mac.update(signing.as_bytes());
-    let expected = hex_encode(&mac.finalize().into_bytes());
+    let expected = panel_signature_hex(
+        secret,
+        PANEL_INGEST_METHOD,
+        PANEL_INGEST_PATH,
+        timestamp,
+        &nonce,
+        &body_hash,
+    );
     if !constant_time_eq(&expected, &signature) {
         return Err(PanelApiError::new(
             StatusCode::UNAUTHORIZED,
@@ -1129,32 +1132,6 @@ fn header(headers: &HeaderMap, name: &str) -> Result<String, PanelApiError> {
         .ok_or_else(|| {
             PanelApiError::new(StatusCode::UNAUTHORIZED, format!("missing_header:{name}"))
         })
-}
-
-fn sha256_hex(body: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(body);
-    hex_encode(&hasher.finalize())
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
-}
-
-fn constant_time_eq(left: &str, right: &str) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.bytes()
-        .zip(right.bytes())
-        .fold(0_u8, |acc, (left, right)| acc | (left ^ right))
-        == 0
 }
 
 fn json_string(value: impl Serialize) -> Result<String, PanelApiError> {
@@ -1228,20 +1205,8 @@ impl From<rusqlite::Error> for PanelApiError {
 
 #[cfg(test)]
 mod tests {
-    use super::{constant_time_eq, hex_encode, SecretResolver};
+    use super::SecretResolver;
     use std::collections::BTreeMap;
-
-    #[test]
-    fn constant_time_compare_checks_full_string() {
-        assert!(constant_time_eq("abcdef", "abcdef"));
-        assert!(!constant_time_eq("abcdef", "abcdeg"));
-        assert!(!constant_time_eq("abcdef", "abc"));
-    }
-
-    #[test]
-    fn hex_encoding_is_lowercase() {
-        assert_eq!(hex_encode(&[0, 15, 255]), "000fff");
-    }
 
     #[test]
     fn per_node_secret_overrides_shared_secret() {

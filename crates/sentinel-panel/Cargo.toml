@@ -15,10 +15,9 @@ anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
 clap.workspace = true
-hmac.workspace = true
+sentinel-core = { path = "../sentinel-core" }
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 rusqlite.workspace = true
 sqlx-core.workspace = true
 sqlx-mysql.workspace = true
