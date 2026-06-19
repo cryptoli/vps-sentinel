@@ -8,15 +8,17 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const SIZE_LIMIT_TARGET_PERCENT: u64 = 80;
-const SIZE_LIMIT_MAX_PASSES: usize = 6;
+const SIZE_LIMIT_MAX_PASSES: usize = 12;
 const MIN_SIZE_PRUNE_BATCH: usize = 1_000;
 const KEEP_LATEST_FINDINGS: usize = 5_000;
 const KEEP_LATEST_NOTIFICATION_LOGS: usize = 5_000;
 const KEEP_LATEST_SCAN_RUNS: usize = 1_000;
 const KEEP_LATEST_ATTACK_FINGERPRINTS: usize = 2_000;
 const KEEP_LATEST_ATTACK_OBSERVATIONS: usize = 10_000;
+const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy)]
 struct SizePrunePolicy {
@@ -835,7 +837,9 @@ impl SqliteStore {
         let mut vacuumed = false;
 
         for pass in 0..SIZE_LIMIT_MAX_PASSES {
-            let deleted_this_pass = prune_size_pressure_batch(&conn, pass)?;
+            let current_size = self.database_footprint_bytes()?;
+            let deleted_this_pass =
+                prune_size_pressure_batch(&conn, pass, current_size, target_bytes)?;
             deleted_rows += deleted_this_pass;
             checkpoint_and_vacuum(&conn)?;
             vacuumed = true;
@@ -862,7 +866,10 @@ impl SqliteStore {
     }
 
     fn connection(&self) -> SentinelResult<Connection> {
-        Connection::open(&self.path).map_err(|err| SentinelError::Storage(err.to_string()))
+        let conn =
+            Connection::open(&self.path).map_err(|err| SentinelError::Storage(err.to_string()))?;
+        configure_connection(&conn)?;
+        Ok(conn)
     }
 
     fn migrate(&self) -> SentinelResult<()> {
@@ -1034,13 +1041,24 @@ impl StorageClearTarget {
     }
 }
 
-fn prune_size_pressure_batch(conn: &Connection, pass: usize) -> SentinelResult<usize> {
+fn configure_connection(conn: &Connection) -> SentinelResult<()> {
+    conn.busy_timeout(SQLITE_BUSY_TIMEOUT)
+        .map_err(|err| SentinelError::Storage(err.to_string()))?;
+    Ok(())
+}
+
+fn prune_size_pressure_batch(
+    conn: &Connection,
+    pass: usize,
+    current_size_bytes: u64,
+    target_bytes: u64,
+) -> SentinelResult<usize> {
     let mut deleted = 0;
     for policy in SIZE_PRUNE_POLICIES {
         if pass < policy.min_pass {
             continue;
         }
-        let batch = policy.prune_batch_size(conn)?;
+        let batch = policy.prune_batch_size(conn, current_size_bytes, target_bytes)?;
         if batch == 0 {
             continue;
         }
@@ -1072,14 +1090,33 @@ fn has_future_size_prune_candidates(conn: &Connection, pass: usize) -> SentinelR
 }
 
 impl SizePrunePolicy {
-    fn prune_batch_size(&self, conn: &Connection) -> SentinelResult<usize> {
+    fn prune_batch_size(
+        &self,
+        conn: &Connection,
+        current_size_bytes: u64,
+        target_bytes: u64,
+    ) -> SentinelResult<usize> {
         let deletable = self.deletable_count(conn)?;
         if deletable == 0 {
             return Ok(0);
         }
-        Ok((deletable / self.divisor)
+        let divisor = self.pressure_adjusted_divisor(current_size_bytes, target_bytes);
+        Ok((deletable / divisor)
             .max(MIN_SIZE_PRUNE_BATCH)
             .min(deletable))
+    }
+
+    fn pressure_adjusted_divisor(&self, current_size_bytes: u64, target_bytes: u64) -> usize {
+        if target_bytes == 0 {
+            return self.divisor;
+        }
+        if current_size_bytes > target_bytes.saturating_mul(4) {
+            return self.divisor.min(2);
+        }
+        if current_size_bytes > target_bytes.saturating_mul(2) {
+            return self.divisor.min(3);
+        }
+        self.divisor
     }
 
     fn deletable_count(&self, conn: &Connection) -> SentinelResult<usize> {
@@ -1334,12 +1371,38 @@ fn is_volatile_raw_event_field(key: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{SqliteStore, StorageClearTarget};
+    use super::{SqliteStore, StorageClearTarget, SIZE_PRUNE_POLICIES, SQLITE_BUSY_TIMEOUT};
     use crate::attack_fingerprint::{AttackFingerprint, AttackObservation, FingerprintFeature};
     use crate::baseline::{snapshot::FileBaseline, BaselineSnapshot};
     use chrono::{Duration, Utc};
     use sentinel_core::{Category, Finding, RawEvent, Severity};
     use serde::{Deserialize, Serialize};
+
+    #[test]
+    fn sqlite_connections_set_busy_timeout() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let conn = store.connection()?;
+        let busy_timeout_ms: i64 = conn.query_row("PRAGMA busy_timeout", [], |row| row.get(0))?;
+
+        assert!(busy_timeout_ms >= SQLITE_BUSY_TIMEOUT.as_millis() as i64);
+        Ok(())
+    }
+
+    #[test]
+    fn size_prune_policy_is_more_aggressive_under_high_pressure() {
+        let raw_policy = SIZE_PRUNE_POLICIES
+            .iter()
+            .find(|policy| policy.table == "raw_events")
+            .expect("raw event prune policy");
+
+        assert_eq!(raw_policy.pressure_adjusted_divisor(900, 200), 2);
+        assert_eq!(raw_policy.pressure_adjusted_divisor(500, 200), 3);
+        assert_eq!(
+            raw_policy.pressure_adjusted_divisor(250, 200),
+            raw_policy.divisor
+        );
+    }
 
     #[test]
     fn stores_and_reads_findings() -> Result<(), Box<dyn std::error::Error>> {
