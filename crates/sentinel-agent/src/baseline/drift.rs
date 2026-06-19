@@ -186,6 +186,9 @@ fn finding_base_score(finding: &Finding) -> u16 {
 }
 
 fn event_signals(event: &RawEvent, assessment: &mut DriftBuilder) {
+    if security_sensitive_event(event) {
+        assessment.add_signal(35, "security-sensitive drift");
+    }
     if event.field("type") == Some("ld_preload") {
         assessment.add_signal(25, "dynamic linker preload changed");
     }
@@ -197,6 +200,9 @@ fn event_signals(event: &RawEvent, assessment: &mut DriftBuilder) {
     }
     if public_listener_event(event) {
         assessment.add_signal(12, "public listener exposure");
+    }
+    if non_public_listener_event(event) {
+        assessment.add_downgrade(18, "not publicly exposed");
     }
     if large_file_size_change(event) {
         assessment.add_signal(8, "large file size delta");
@@ -256,12 +262,40 @@ fn protected_high_signal(finding: &Finding) -> bool {
         "SSH-005" | "USER-002" | "PERSIST-003"
     ) || evidence_value(&finding.evidence, "identity_files").is_some()
         || evidence_value(&finding.evidence, "uid") == Some("0")
+        || evidence_value(&finding.evidence, "path").is_some_and(security_sensitive_path)
+}
+
+fn security_sensitive_event(event: &RawEvent) -> bool {
+    event.kind == "user_uid_changed_to_zero"
+        || event.field("uid") == Some("0")
+        || event.field("type") == Some("ld_preload")
+        || event.field("path").is_some_and(security_sensitive_path)
+}
+
+fn security_sensitive_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    normalized.ends_with("/authorized_keys")
+        || normalized.ends_with("/authorized_keys2")
+        || matches!(
+            normalized.as_str(),
+            "/etc/passwd" | "/etc/group" | "/etc/shadow" | "/etc/gshadow" | "/etc/sudoers"
+        )
+        || normalized.starts_with("/etc/sudoers.d/")
 }
 
 fn public_listener_event(event: &RawEvent) -> bool {
     event
         .field("local_addr")
         .is_some_and(crate::utils::ip::is_public_listener_addr)
+}
+
+fn non_public_listener_event(event: &RawEvent) -> bool {
+    matches!(
+        event.kind.as_str(),
+        "listening_socket" | "listening_socket_owner_changed"
+    ) && event
+        .field("local_addr")
+        .is_some_and(|addr| !crate::utils::ip::is_public_listener_addr(addr))
 }
 
 fn public_listener_evidence(finding: &Finding) -> bool {
@@ -446,6 +480,36 @@ mod tests {
         assert!(assessment
             .reasons
             .contains(&"large file size delta".to_string()));
+    }
+
+    #[test]
+    fn approval_event_treats_authorized_keys_as_sensitive_drift() {
+        let event = RawEvent::new("baseline", "file_modified")
+            .with_field("path", "/root/.ssh/authorized_keys")
+            .with_field("previous_hash", "old")
+            .with_field("current_hash", "new");
+
+        let assessment = assess_event(&event).expect("assessment");
+
+        assert_eq!(assessment.tier, "critical");
+        assert!(assessment
+            .reasons
+            .contains(&"security-sensitive drift".to_string()));
+    }
+
+    #[test]
+    fn approval_event_downgrades_non_public_listener_drift() {
+        let event = RawEvent::new("baseline", "listening_socket")
+            .with_field("protocol", "tcp6")
+            .with_field("local_addr", "::1")
+            .with_field("local_port", "25");
+
+        let assessment = assess_event(&event).expect("assessment");
+
+        assert_eq!(assessment.tier, "routine");
+        assert!(assessment
+            .downgrades
+            .contains(&"not publicly exposed".to_string()));
     }
 
     #[test]
