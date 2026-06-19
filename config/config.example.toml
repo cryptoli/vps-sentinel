@@ -311,6 +311,7 @@ export_path = "/var/lib/vps-sentinel/fleet-node.json"
 [maintenance]
 enabled = false
 suppress_baseline_drift = true
+suppress_interactive_logins = true
 max_duration_seconds = 7200
 
 [allowlist]

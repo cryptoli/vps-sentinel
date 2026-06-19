@@ -23,8 +23,20 @@ MIGRATE_CONFIG="${MIGRATE_CONFIG:-yes}"
 SYNC_CONFIG_DEFAULTS="${SYNC_CONFIG_DEFAULTS:-yes}"
 REFRESH_BASELINE="${REFRESH_BASELINE:-no}"
 POST_UPDATE_SCAN="${POST_UPDATE_SCAN:-yes}"
+UPDATE_MAINTENANCE_SECONDS="${UPDATE_MAINTENANCE_SECONDS:-600}"
 SYSTEMD_UNIT_INSTALLED=0
 SERVICE_WAS_ACTIVE=0
+SERVICE_STOPPED_FOR_UPDATE=0
+
+cleanup_on_exit() {
+  status=$?
+  if [ "$status" -ne 0 ] && [ "$SERVICE_STOPPED_FOR_UPDATE" -eq 1 ] && systemd_available; then
+    echo "update failed; attempting to restart existing $SERVICE_NAME service" >&2
+    systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true
+  fi
+}
+
+trap cleanup_on_exit EXIT
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "please run as root, for example: sudo sh update.sh" >&2
@@ -247,6 +259,7 @@ stop_service_before_update() {
   if systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
     SERVICE_WAS_ACTIVE=1
     systemctl stop "$SERVICE_NAME"
+    SERVICE_STOPPED_FOR_UPDATE=1
   fi
 }
 
@@ -259,6 +272,7 @@ restart_updated_service() {
     auto)
       if [ "$SERVICE_WAS_ACTIVE" -eq 1 ] || systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
         systemctl start "$SERVICE_NAME"
+        SERVICE_STOPPED_FOR_UPDATE=0
       else
         echo "updated systemd unit; service is not active or enabled"
       fi
@@ -266,6 +280,7 @@ restart_updated_service() {
     yes|true|1)
       systemctl enable "$SERVICE_NAME"
       systemctl restart "$SERVICE_NAME"
+      SERVICE_STOPPED_FOR_UPDATE=0
       ;;
     no|false|0)
       echo "updated systemd unit; skipped service restart"
@@ -275,6 +290,28 @@ restart_updated_service() {
       exit 1
       ;;
   esac
+}
+
+start_update_maintenance() {
+  case "$UPDATE_MAINTENANCE_SECONDS" in
+    ''|*[!0-9]*)
+      echo "invalid UPDATE_MAINTENANCE_SECONDS value: $UPDATE_MAINTENANCE_SECONDS" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$UPDATE_MAINTENANCE_SECONDS" -eq 0 ]; then
+    return
+  fi
+  if [ ! -x "$PREFIX/bin/vps-sentinel" ] || [ ! -f "$CONFIG_DIR/config.toml" ]; then
+    return
+  fi
+  if "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" maintenance start \
+    --duration-seconds "$UPDATE_MAINTENANCE_SECONDS" \
+    --reason "vps-sentinel update" >/dev/null 2>&1; then
+    echo "started update maintenance window for ${UPDATE_MAINTENANCE_SECONDS}s"
+  else
+    echo "could not start update maintenance window; continuing update" >&2
+  fi
 }
 
 post_update_scan() {
@@ -481,6 +518,7 @@ install_from_release() {
   fi
 
   install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+  start_update_maintenance
   stop_service_before_update
   install -m 0755 "$tmp_dir/vps-sentinel" "$PREFIX/bin/vps-sentinel"
   install_binary_aliases
@@ -500,10 +538,11 @@ build_and_install_from_source() {
   install_deps source
   ensure_source_tools
   checkout_or_update
+  install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+  start_update_maintenance
+  stop_service_before_update
   cd "$WORK_DIR"
   cargo build --release --locked
-  install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
-  stop_service_before_update
   install -m 0755 target/release/vps-sentinel "$PREFIX/bin/vps-sentinel"
   install_binary_aliases
   install_helper_scripts "$WORK_DIR"

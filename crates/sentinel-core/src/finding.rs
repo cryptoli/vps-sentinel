@@ -167,10 +167,13 @@ impl Finding {
     }
 
     /// Normalize evidence already attached through direct mutation.
+    ///
+    /// Deduplication identity is chosen by the detector when the finding is
+    /// created. Later pipeline stages append display-only evidence such as risk
+    /// scores, fingerprint context, active-response status, or volatile ports,
+    /// so normalization must not widen the deduplication key implicitly.
     pub fn normalize_evidence(&mut self) {
         self.evidence = normalize_evidence_items(std::mem::take(&mut self.evidence));
-        self.dedup_key =
-            stable_dedup_key(&self.host_id, &self.rule_id, &self.subject, &self.evidence);
     }
 
     /// Attach likely impact statements.
@@ -315,5 +318,40 @@ mod tests {
 
         assert_eq!(left.dedup_key, right.dedup_key);
         assert_ne!(left.evidence, right.evidence);
+    }
+
+    #[test]
+    fn normalize_evidence_preserves_detector_dedup_identity() {
+        let mut finding = Finding::new(
+            "host",
+            "Root SSH login detected",
+            "Root logged in through SSH.",
+            Severity::High,
+            Category::Ssh,
+            "SSH-001",
+            "root@203.0.113.10",
+        )
+        .with_evidence_deduped_by(
+            vec![
+                Evidence::new("user", "root"),
+                Evidence::new("source_ip", "203.0.113.10"),
+                Evidence::new("method", "publickey"),
+                Evidence::new("port", "42100"),
+            ],
+            &["user", "source_ip", "method"],
+        );
+        let before = finding.dedup_key.clone();
+
+        finding.evidence.push(Evidence::new("port", "58812"));
+        finding
+            .evidence
+            .push(Evidence::new("unified_risk_score", "80"));
+        finding.normalize_evidence();
+
+        assert_eq!(finding.dedup_key, before);
+        assert!(finding
+            .evidence
+            .iter()
+            .any(|item| item.key == "unified_risk_score"));
     }
 }

@@ -54,7 +54,10 @@ pub fn apply_maintenance_policy(
     store: Option<&SqliteStore>,
 ) -> SentinelResult<(Vec<Finding>, MaintenanceDecision)> {
     let active = maintenance_active(config, store)?;
-    if !active || !config.maintenance.suppress_baseline_drift {
+    if !active
+        || (!config.maintenance.suppress_baseline_drift
+            && !config.maintenance.suppress_interactive_logins)
+    {
         return Ok((
             findings,
             MaintenanceDecision {
@@ -66,7 +69,7 @@ pub fn apply_maintenance_policy(
     let before = findings.len();
     let retained = findings
         .into_iter()
-        .filter(|finding| !suppressible_drift_finding(finding))
+        .filter(|finding| !suppressible_maintenance_finding(finding, config))
         .collect::<Vec<_>>();
     let suppressed_count = before.saturating_sub(retained.len());
     Ok((
@@ -97,6 +100,12 @@ fn maintenance_active(
         .unwrap_or(false))
 }
 
+fn suppressible_maintenance_finding(finding: &Finding, config: &SentinelConfig) -> bool {
+    (config.maintenance.suppress_baseline_drift && suppressible_drift_finding(finding))
+        || (config.maintenance.suppress_interactive_logins
+            && suppressible_interactive_login_finding(finding))
+}
+
 fn suppressible_drift_finding(finding: &Finding) -> bool {
     matches!(
         finding.severity,
@@ -111,6 +120,10 @@ fn suppressible_drift_finding(finding: &Finding) -> bool {
             | "SERVICE-001"
             | "SERVICE-002"
     )
+}
+
+fn suppressible_interactive_login_finding(finding: &Finding) -> bool {
+    matches!(finding.rule_id.as_str(), "SSH-001" | "SSH-002" | "SSH-004")
 }
 
 fn duration_seconds_i64(seconds: u64) -> i64 {
@@ -156,5 +169,102 @@ mod tests {
         assert_eq!(decision.suppressed_count, 1);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, "SSH-003");
+    }
+
+    #[test]
+    fn maintenance_suppresses_interactive_logins_but_keeps_ssh_attack_signals() {
+        let mut config = SentinelConfig::default();
+        config.maintenance.enabled = true;
+        config.maintenance.suppress_interactive_logins = true;
+        let root_login = Finding::new(
+            "host",
+            "Root SSH login detected",
+            "root login",
+            Severity::High,
+            Category::Ssh,
+            "SSH-001",
+            "root@203.0.113.10",
+        );
+        let password_login = Finding::new(
+            "host",
+            "Password SSH login detected",
+            "password login",
+            Severity::Medium,
+            Category::Ssh,
+            "SSH-002",
+            "deploy@203.0.113.10",
+        );
+        let normal_login = Finding::new(
+            "host",
+            "SSH login detected",
+            "normal login",
+            Severity::Info,
+            Category::Ssh,
+            "SSH-004",
+            "deploy@203.0.113.10",
+        );
+        let brute_force = Finding::new(
+            "host",
+            "SSH brute force pattern detected",
+            "brute force",
+            Severity::High,
+            Category::Ssh,
+            "SSH-003",
+            "203.0.113.20",
+        );
+        let brute_force_success = Finding::new(
+            "host",
+            "SSH brute force followed by successful login",
+            "brute force success",
+            Severity::High,
+            Category::Ssh,
+            "SSH-007",
+            "203.0.113.20",
+        );
+
+        let (findings, decision) = apply_maintenance_policy(
+            vec![
+                root_login,
+                password_login,
+                normal_login,
+                brute_force,
+                brute_force_success,
+            ],
+            &config,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(decision.suppressed_count, 3);
+        assert_eq!(
+            findings
+                .iter()
+                .map(|finding| finding.rule_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["SSH-003", "SSH-007"]
+        );
+    }
+
+    #[test]
+    fn maintenance_can_keep_interactive_login_notifications_enabled() {
+        let mut config = SentinelConfig::default();
+        config.maintenance.enabled = true;
+        config.maintenance.suppress_baseline_drift = false;
+        config.maintenance.suppress_interactive_logins = false;
+        let root_login = Finding::new(
+            "host",
+            "Root SSH login detected",
+            "root login",
+            Severity::High,
+            Category::Ssh,
+            "SSH-001",
+            "root@203.0.113.10",
+        );
+
+        let (findings, decision) =
+            apply_maintenance_policy(vec![root_login], &config, None).unwrap();
+
+        assert_eq!(decision.suppressed_count, 0);
+        assert_eq!(findings.len(), 1);
     }
 }

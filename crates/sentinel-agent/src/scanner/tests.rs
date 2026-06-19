@@ -589,6 +589,31 @@ fn state_duplicates_are_suppressed_after_event_window() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn ssh_login_duplicate_suppression_ignores_volatile_port_after_enrichment(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+    let mut config = SentinelConfig::default();
+    config.noise_control.dedup_window_seconds = 3600;
+
+    let mut previous = root_ssh_login_finding("42100");
+    crate::risk_score::enrich_findings(std::slice::from_mut(&mut previous));
+    previous.normalize_evidence();
+    store.save_findings(std::slice::from_ref(&previous))?;
+
+    let mut next = root_ssh_login_finding("58812");
+    crate::risk_score::enrich_findings(std::slice::from_mut(&mut next));
+    next.normalize_evidence();
+
+    assert_eq!(previous.dedup_key, next.dedup_key);
+    let (retained, suppressed) = suppress_recent_duplicates(&store, vec![next], &config)?;
+
+    assert!(retained.is_empty());
+    assert_eq!(suppressed, 1);
+    Ok(())
+}
+
+#[test]
 fn state_duplicate_suppression_uses_identity_when_dedup_key_changes(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;
@@ -891,6 +916,27 @@ fn ssh_bruteforce_finding(source_ip: &str, failure_count: &str) -> Finding {
             Evidence::new("failure_count", failure_count),
         ],
         &["source_ip"],
+    )
+}
+
+fn root_ssh_login_finding(port: &str) -> Finding {
+    Finding::new(
+        "host",
+        "Root SSH login detected",
+        "Root logged in through SSH.",
+        Severity::High,
+        Category::Ssh,
+        "SSH-001",
+        "root@203.0.113.10",
+    )
+    .with_evidence_deduped_by(
+        vec![
+            Evidence::new("user", "root"),
+            Evidence::new("source_ip", "203.0.113.10"),
+            Evidence::new("port", port),
+            Evidence::new("method", "publickey"),
+        ],
+        &["user", "source_ip", "method"],
     )
 }
 

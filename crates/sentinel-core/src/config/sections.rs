@@ -839,6 +839,7 @@ impl Default for FleetConfig {
 pub struct MaintenanceConfig {
     pub enabled: bool,
     pub suppress_baseline_drift: bool,
+    pub suppress_interactive_logins: bool,
     pub max_duration_seconds: u64,
 }
 
@@ -847,6 +848,7 @@ impl Default for MaintenanceConfig {
         Self {
             enabled: false,
             suppress_baseline_drift: true,
+            suppress_interactive_logins: true,
             max_duration_seconds: 7200,
         }
     }

@@ -45,7 +45,7 @@ It is not:
 | External rules | Supports Sigma-like TOML event rules and optional YARA CLI scans for user-supplied defensive rules. The rule engine is enabled by default; it runs only when rule or scan paths are configured. |
 | Threat intelligence | Optionally enriches findings with local or remote indicators for IPs, paths, domains, and hashes. Indicator matches are supporting evidence, not standalone block triggers. |
 | Fleet view | Exports and ingests lightweight node snapshots so several VPS hosts can be reviewed from one local SQLite store. |
-| Maintenance mode | Provides a bounded maintenance window that can suppress low/medium baseline drift during planned upgrades without hiding high-risk activity. |
+| Maintenance mode | Provides a bounded maintenance window that can suppress low/medium baseline drift and interactive SSH login noise during planned upgrades without hiding brute-force or other attack signals. |
 | Storage and footprint control | Stores raw events, findings, baselines, scan runs, and self-contained notification logs in local SQLite; repeated raw facts use stable storage keys, raw log lines are omitted by default, ordinary Web access rows are not persisted unless enabled, and retention/database/runtime caps prevent unbounded growth. |
 | Noise control | Uses allowlists, minimum severity, finding deduplication, and configurable retention windows. |
 | Active response | Handles high-confidence public-source web probes and SSH brute-force sources through `observe`, `balanced`, or `strict` strategies; firewall writes use nftables or iptables with TTL-based expiry and public-IP safety checks. Enabled by default for new installs. |
@@ -227,7 +227,7 @@ The Docker containers used in CI are build and compatibility test environments o
 | Incidents and timeline | Groups related findings by IP, path, process, category, and time window, stores a bounded incident index, and exposes `incidents list/show/timeline`. | Turns isolated findings into a readable attack-chain view while keeping raw findings available. |
 | Service profile | Stores listener owner profiles with address, port, protocol, process name, executable, command line, and exposure classification; dynamic UDP/UDP6 high ports can be keyed by process identity, and configurable transient clients plus loopback SSH forwarding listeners are ignored. | Detects service drift on common ports and new listeners without blindly trusting 80/443 or alerting every time a legitimate dynamic UDP port changes. |
 | Advanced evidence | Optional auditd, eBPF JSONL bridge, Sigma-like TOML rules, YARA CLI scans, and threat-intel indicators feed the same RawEvent/Finding model. | Adds deeper host signals when the platform supports them while keeping default installs lightweight and compatible. |
-| Maintenance and fleet operations | Stores bounded maintenance state and fleet node snapshots in local rule state. | Suppresses planned low/medium drift during upgrades and lets several VPS node summaries be reviewed locally. |
+| Maintenance and fleet operations | Stores bounded maintenance state and fleet node snapshots in local rule state. | Suppresses planned low/medium drift and expected interactive SSH login noise during upgrades, while keeping SSH brute-force and attack-chain signals visible. |
 
 ## Quick Install
 
@@ -474,7 +474,7 @@ Commands:
 | `vps-sentinel service-profile refresh --config <path>` | Rebuild the service profile from current listener state after reviewed service changes. |
 | `vps-sentinel report show --config <path>` | Preview the default today report locally; add `--json` for structured output or `--period last24h` for a rolling 24-hour window. |
 | `vps-sentinel report send --config <path>` | Send the default today report through all enabled notification channels, bypassing per-channel minimum severity because this is an explicit report command. |
-| `vps-sentinel maintenance start --duration-seconds <n> --config <path>` | Start a bounded maintenance window that can suppress low/medium baseline drift during planned work. |
+| `vps-sentinel maintenance start --duration-seconds <n> --config <path>` | Start a bounded maintenance window that can suppress low/medium baseline drift and interactive SSH login noise during planned work. |
 | `vps-sentinel maintenance status --config <path>` | Show whether maintenance mode is active. |
 | `vps-sentinel maintenance end --config <path>` | End a manually started maintenance window. |
 | `vps-sentinel fleet export --config <path>` | Export this node's lightweight fleet snapshot to stdout or `fleet.export_path`. |
@@ -800,10 +800,11 @@ export_path = "/var/lib/vps-sentinel/fleet-node.json"
 [maintenance]
 enabled = false
 suppress_baseline_drift = true
+suppress_interactive_logins = true
 max_duration_seconds = 7200
 ```
 
-Threat-intel indicators can be plain text or JSON lines with `type` and `value`. Matches are added as evidence and can increase the unified risk score, but they do not trigger standalone alerts or blocks. Fleet snapshots are local JSON summaries for multi-VPS review. Maintenance mode is bounded and only suppresses low/medium baseline drift during planned work.
+Threat-intel indicators can be plain text or JSON lines with `type` and `value`. Matches are added as evidence and can increase the unified risk score, but they do not trigger standalone alerts or blocks. Fleet snapshots are local JSON summaries for multi-VPS review. Maintenance mode is bounded and suppresses only configured planned-work noise: low/medium baseline drift and interactive SSH login findings (`SSH-001`, `SSH-002`, `SSH-004`). SSH brute force (`SSH-003`) and brute force followed by success (`SSH-007`) remain visible.
 
 Noise control:
 

@@ -181,7 +181,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         if decision.suppressed_count > 0 {
             warn!(
                 suppressed_findings = decision.suppressed_count,
-                "maintenance mode suppressed baseline drift findings"
+                "maintenance mode suppressed configured findings"
             );
         }
     }
