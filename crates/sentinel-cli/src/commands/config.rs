@@ -11,6 +11,7 @@ const DEPRECATED_KEYS: &[&str] = &[
     "network.scan_interval_seconds",
 ];
 const LEGACY_DEFAULT_LANGUAGE_KEY: &str = "notifications.language";
+const LEGACY_SSH_RESPONSE_POLICY_KEY: &str = "response_policy.policies.ssh_bruteforce.rule_ids";
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
@@ -127,14 +128,17 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
     let text = fs::read_to_string(path)?;
     let deprecated = deprecated_keys_in_text(&text);
     let legacy_default_language = contains_legacy_default_language(&text);
-    if deprecated.is_empty() && !legacy_default_language {
+    let legacy_ssh_response_policy = contains_legacy_ssh_response_policy(&text);
+    if deprecated.is_empty() && !legacy_default_language && !legacy_ssh_response_policy {
         println!(
-            "configuration does not contain deprecated keys: {}",
+            "configuration does not require migration: {}",
             path.display()
         );
         return Ok(());
     }
-    let migrated = migrate_legacy_default_language(&remove_deprecated_keys(&text));
+    let migrated = migrate_legacy_ssh_response_policy(&migrate_legacy_default_language(
+        &remove_deprecated_keys(&text),
+    ));
     let _: SentinelConfig = toml::from_str(&migrated)?;
     if dry_run {
         if !deprecated.is_empty() {
@@ -146,6 +150,10 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
         if legacy_default_language {
             println!("legacy defaults that would be updated:");
             println!("- {LEGACY_DEFAULT_LANGUAGE_KEY}: en -> zh_cn");
+        }
+        if legacy_ssh_response_policy {
+            println!("legacy defaults that would be updated:");
+            println!("- {LEGACY_SSH_RESPONSE_POLICY_KEY}: [SSH-003] -> [SSH-003, SSH-007]");
         }
         return Ok(());
     }
@@ -299,6 +307,70 @@ fn is_legacy_default_language_line(line: &str) -> bool {
     key.trim() == "language"
         && value.trim() == "\"en\""
         && comment.to_ascii_lowercase().contains("en or zh_cn")
+}
+
+fn contains_legacy_ssh_response_policy(text: &str) -> bool {
+    let Ok(value) = toml::from_str::<toml::Value>(text) else {
+        return false;
+    };
+    let Some(rule_ids) =
+        toml_value_at_path(&value, LEGACY_SSH_RESPONSE_POLICY_KEY).and_then(toml::Value::as_array)
+    else {
+        return false;
+    };
+    rule_ids.len() == 1 && rule_ids[0].as_str() == Some("SSH-003")
+}
+
+fn migrate_legacy_ssh_response_policy(text: &str) -> String {
+    let mut section = String::new();
+    let mut output = Vec::new();
+    for line in text.lines() {
+        if let Some(next_section) = parse_toml_section_header(line) {
+            section = next_section;
+            output.push(line.to_string());
+            continue;
+        }
+        if section == "response_policy.policies.ssh_bruteforce"
+            && is_legacy_ssh_response_policy_rule_ids_line(line)
+        {
+            let indent = line
+                .chars()
+                .take_while(|ch| ch.is_whitespace())
+                .collect::<String>();
+            let comment = line
+                .split_once('#')
+                .map(|(_, comment)| format!(" #{}", comment))
+                .unwrap_or_default();
+            output.push(format!(
+                "{indent}rule_ids = [\"SSH-003\", \"SSH-007\"]{comment}"
+            ));
+            continue;
+        }
+        output.push(line.to_string());
+    }
+    let mut migrated = output.join("\n");
+    migrated.push('\n');
+    migrated
+}
+
+fn is_legacy_ssh_response_policy_rule_ids_line(line: &str) -> bool {
+    let trimmed = line.trim();
+    if trimmed.starts_with('#') {
+        return false;
+    }
+    let Some((key, tail)) = trimmed.split_once('=') else {
+        return false;
+    };
+    if key.trim() != "rule_ids" {
+        return false;
+    }
+    let value = tail
+        .split_once('#')
+        .map(|(value, _)| value)
+        .unwrap_or(tail)
+        .trim()
+        .replace(char::is_whitespace, "");
+    value == "[\"SSH-003\"]"
 }
 
 #[derive(Debug, Clone)]
@@ -484,9 +556,10 @@ fn flatten_value(prefix: &str, value: &toml::Value, keys: &mut BTreeSet<String>)
 #[cfg(test)]
 mod tests {
     use super::{
-        contains_legacy_default_language, deprecated_keys_in_text, flatten_toml_keys,
-        insert_missing_default_keys, migrate_legacy_default_language, missing_default_entries,
-        next_backup_path, remove_deprecated_keys,
+        contains_legacy_default_language, contains_legacy_ssh_response_policy,
+        deprecated_keys_in_text, flatten_toml_keys, insert_missing_default_keys,
+        migrate_legacy_default_language, migrate_legacy_ssh_response_policy,
+        missing_default_entries, next_backup_path, remove_deprecated_keys,
     };
     use sentinel_core::SentinelConfig;
     use std::fs;
@@ -524,6 +597,25 @@ mod tests {
 
         assert!(!contains_legacy_default_language(text));
         assert_eq!(migrate_legacy_default_language(text), text);
+    }
+
+    #[test]
+    fn migrates_legacy_ssh_response_policy_rule_ids() {
+        let text = "[response_policy.policies.ssh_bruteforce]\nrule_ids = [\"SSH-003\"] # legacy default\n";
+
+        assert!(contains_legacy_ssh_response_policy(text));
+        let migrated = migrate_legacy_ssh_response_policy(text);
+
+        assert!(migrated.contains("rule_ids = [\"SSH-003\", \"SSH-007\"] # legacy default"));
+    }
+
+    #[test]
+    fn preserves_custom_ssh_response_policy_rule_ids() {
+        let text =
+            "[response_policy.policies.ssh_bruteforce]\nrule_ids = [\"SSH-003\", \"CUSTOM-001\"]\n";
+
+        assert!(!contains_legacy_ssh_response_policy(text));
+        assert_eq!(migrate_legacy_ssh_response_policy(text), text);
     }
 
     #[test]
