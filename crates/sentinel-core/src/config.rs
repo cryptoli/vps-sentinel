@@ -21,6 +21,8 @@ pub use sections::{
     SentinelPaths, ServiceProfileConfig, SshConfig, StorageConfig, ThreatIntelConfig, WebConfig,
 };
 
+const MIN_RESOURCE_EVIDENCE_ITEMS_PER_FINDING: usize = 16;
+
 /// Top-level TOML configuration for the agent and CLI.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -481,10 +483,10 @@ fn validate_resource_budget(config: &ResourceBudgetConfig) -> SentinelResult<()>
             "resource_budget.max_findings_per_scan must be greater than 0".to_string(),
         ));
     }
-    if config.max_evidence_items_per_finding == 0 {
-        return Err(SentinelError::Config(
-            "resource_budget.max_evidence_items_per_finding must be greater than 0".to_string(),
-        ));
+    if config.max_evidence_items_per_finding < MIN_RESOURCE_EVIDENCE_ITEMS_PER_FINDING {
+        return Err(SentinelError::Config(format!(
+            "resource_budget.max_evidence_items_per_finding must be at least {MIN_RESOURCE_EVIDENCE_ITEMS_PER_FINDING} so response and notification evidence remains available"
+        )));
     }
     if config.max_evidence_value_bytes == 0 {
         return Err(SentinelError::Config(
@@ -781,6 +783,10 @@ mod tests {
 
         let mut config = SentinelConfig::default();
         config.resource_budget.max_evidence_items_per_finding = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.resource_budget.max_evidence_items_per_finding = 15;
         assert!(config.validate().is_err());
 
         let mut config = SentinelConfig::default();

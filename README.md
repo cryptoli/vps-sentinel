@@ -544,7 +544,7 @@ max_evidence_items_per_finding = 64
 max_evidence_value_bytes = 2048
 ```
 
-`resource_budget` limits in-memory finding volume after detection. When a scan exceeds `max_findings_per_scan`, findings are ranked by severity, unified risk score, confidence, and timestamp so higher-value evidence is retained first. Evidence item and value limits keep very large findings from bloating memory, notification payloads, or SQLite rows; source IPs, active-response fields, attack fingerprints, paths, process identity, probe families, and risk scores are prioritized before low-value context.
+`resource_budget` limits in-memory finding volume after detection. When a scan exceeds `max_findings_per_scan`, findings are ranked by severity, unified risk score, confidence, and timestamp so higher-value evidence is retained first. Evidence item and value limits keep very large findings from bloating memory, notification payloads, or SQLite rows; source IPs, active-response fields, attack fingerprints, paths, process identity, probe families, and risk scores are prioritized before low-value context. `max_evidence_items_per_finding` must stay at 16 or higher so response and notification evidence remains available.
 
 SSH alert policy:
 

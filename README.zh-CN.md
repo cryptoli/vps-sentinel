@@ -541,7 +541,7 @@ max_evidence_items_per_finding = 64
 max_evidence_value_bytes = 2048
 ```
 
-`resource_budget` 控制检测后 finding 的内存规模。超过 `max_findings_per_scan` 时，会按严重等级、统一风险评分、置信度和时间排序，优先保留高价值 finding。evidence 数量和值大小限制用于避免单条 finding 过大而拖累内存、通知 payload 或 SQLite 行；来源 IP、主动响应字段、攻击指纹、路径、进程身份、探测家族和风险评分会优先保留。
+`resource_budget` 控制检测后 finding 的内存规模。超过 `max_findings_per_scan` 时，会按严重等级、统一风险评分、置信度和时间排序，优先保留高价值 finding。evidence 数量和值大小限制用于避免单条 finding 过大而拖累内存、通知 payload 或 SQLite 行；来源 IP、主动响应字段、攻击指纹、路径、进程身份、探测家族和风险评分会优先保留。`max_evidence_items_per_finding` 必须保持在 16 或以上，避免裁掉主动响应和通知所需的关键证据。
 
 SSH 告警策略：
 
