@@ -106,6 +106,12 @@ fn detect_network_events(index: &EventIndex<'_>, ctx: &DetectContext) -> Vec<Fin
                 ));
             }
         } else if let Some(service_name) = high_risk_service {
+            if firewall
+                .as_ref()
+                .is_some_and(|firewall| firewall.protects_tcp_port(port) && is_tcp_protocol(event))
+            {
+                continue;
+            }
             if reported_listener_alerts.insert(listener_alert_key(
                 "CONFIG-003",
                 event,
@@ -139,6 +145,9 @@ fn detect_network_events(index: &EventIndex<'_>, ctx: &DetectContext) -> Vec<Fin
         } else if event.source == "baseline"
             && ctx.config.network.alert_on_new_listening_port
             && is_tcp_protocol(event)
+            && !firewall
+                .as_ref()
+                .is_some_and(|firewall| firewall.protects_tcp_port(port))
             && reported_listener_alerts.insert(listener_alert_key(
                 "NET-001",
                 event,
@@ -340,6 +349,13 @@ fn socket_evidence_with_context(
 struct FirewallContext {
     status: String,
     sources: Vec<String>,
+    protected_tcp_ports: BTreeSet<u16>,
+}
+
+impl FirewallContext {
+    fn protects_tcp_port(&self, port: u16) -> bool {
+        self.protected_tcp_ports.contains(&port)
+    }
 }
 
 fn firewall_context<'a>(events: impl IntoIterator<Item = &'a RawEvent>) -> Option<FirewallContext> {
@@ -352,7 +368,15 @@ fn firewall_context<'a>(events: impl IntoIterator<Item = &'a RawEvent>) -> Optio
             .filter(|value| !value.is_empty())
             .map(str::to_string)
             .collect(),
+        protected_tcp_ports: parse_port_set(&string_field(event, "protected_tcp_ports")),
     })
+}
+
+fn parse_port_set(value: &str) -> BTreeSet<u16> {
+    value
+        .split(',')
+        .filter_map(|item| item.trim().parse::<u16>().ok())
+        .collect()
 }
 
 #[derive(Debug, Clone, Default)]

