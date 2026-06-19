@@ -12,6 +12,16 @@ pub struct MaintenanceState {
     pub reason: String,
 }
 
+impl MaintenanceState {
+    pub fn is_active_at(&self, now: DateTime<Utc>) -> bool {
+        self.started_at.is_some()
+            && self
+                .expires_at
+                .map(|expires_at| expires_at > now)
+                .unwrap_or(false)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaintenanceDecision {
     pub active: bool,
@@ -94,10 +104,7 @@ fn maintenance_active(
     let Some(state) = maintenance_state(store)? else {
         return Ok(false);
     };
-    Ok(state
-        .expires_at
-        .map(|expires_at| expires_at > Utc::now())
-        .unwrap_or(false))
+    Ok(state.is_active_at(Utc::now()))
 }
 
 fn suppressible_maintenance_finding(finding: &Finding, config: &SentinelConfig) -> bool {
@@ -266,5 +273,27 @@ mod tests {
 
         assert_eq!(decision.suppressed_count, 0);
         assert_eq!(findings.len(), 1);
+    }
+
+    #[test]
+    fn maintenance_state_activity_uses_expiration_time() {
+        use super::MaintenanceState;
+        use chrono::{Duration, Utc};
+
+        let now = Utc::now();
+        let state = MaintenanceState {
+            started_at: Some(now - Duration::minutes(15)),
+            expires_at: Some(now - Duration::minutes(5)),
+            reason: "expired".to_string(),
+        };
+
+        assert!(!state.is_active_at(now));
+
+        let state = MaintenanceState {
+            expires_at: Some(now + Duration::minutes(5)),
+            ..state
+        };
+
+        assert!(state.is_active_at(now));
     }
 }
