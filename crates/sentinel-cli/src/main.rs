@@ -10,6 +10,7 @@ use commands::{
     doctor::run_doctor,
     events::{run_events, EventsCommand},
     findings::{run_findings, FindingsCommand},
+    fingerprints::{run_fingerprints, FingerprintsCommand},
     fleet::{run_fleet, FleetCommand},
     incidents::{run_incidents, IncidentsCommand},
     init::run_init,
@@ -88,6 +89,10 @@ enum Command {
         #[command(subcommand)]
         command: FindingsCommand,
     },
+    Fingerprints {
+        #[command(subcommand)]
+        command: FingerprintsCommand,
+    },
     Incidents {
         #[command(subcommand)]
         command: IncidentsCommand,
@@ -153,6 +158,9 @@ async fn main() -> Result<()> {
         Command::Events { command } => run_events(load_config(cli.config.as_deref())?, command),
         Command::Fleet { command } => run_fleet(load_config(cli.config.as_deref())?, command),
         Command::Findings { command } => run_findings(load_config(cli.config.as_deref())?, command),
+        Command::Fingerprints { command } => {
+            run_fingerprints(load_config(cli.config.as_deref())?, command)
+        }
         Command::Incidents { command } => {
             run_incidents(load_config(cli.config.as_deref())?, command)
         }

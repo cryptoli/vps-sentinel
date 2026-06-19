@@ -17,6 +17,12 @@ store_raw_log_lines = false
 store_all_web_access_events = false
 max_stored_field_bytes = 4096
 
+[resource_budget]
+enabled = true
+max_findings_per_scan = 500
+max_evidence_items_per_finding = 64
+max_evidence_value_bytes = 2048
+
 [storage]
 type = "sqlite"
 path = "/var/lib/vps-sentinel/sentinel.db"
@@ -215,6 +221,19 @@ web_probe_block_threshold = 25
 web_exploit_block_threshold = 5
 ssh_enabled = true
 ssh_failed_login_block_threshold = 6
+
+[attack_fingerprints]
+enabled = true
+similarity_enabled = true
+similarity_hamming_distance = 6
+max_match_candidates = 1000
+max_features_per_fingerprint = 40
+max_observations_per_fingerprint = 200
+retention_days = 30
+active_response_enabled = true
+active_response_min_score = 75
+active_response_min_observations = 2
+active_response_min_distinct_ips = 2
 
 [response_policy]
 enabled = true

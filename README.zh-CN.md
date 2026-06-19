@@ -38,13 +38,15 @@
 | Rootkit 信号 | 采集轻量级本地指标，用于发现隐藏进程和可疑 procfs 行为。 |
 | Docker 上下文 | 检测 Docker 可用性并给出初始容器攻击面提示，不要求 Docker 写权限。 |
 | 事件关联 | 按来源 IP、路径、进程、分类和时间窗口把相关 finding 聚合为 incident，并提供时间线。 |
+| 攻击指纹 | 从 Web、SSH、进程和持久化 finding 中提取归一化攻击指纹；保存精确 hash 和 SimHash 近似键；即使攻击源 IP 变化，也能按攻击手法聚合，并提供指纹时间线和人工判定。 |
+| 证据和规则治理 | 统一归一化来源 IP、用户、路径、计数和探测家族等常见 evidence 字段，并维护内置规则 owner、分类、响应范围和证据契约矩阵。 |
 | 服务画像 | 维护监听服务 owner 画像，发现新增服务或已知监听端口背后的可执行文件漂移；支持按进程身份建模动态 UDP/UDP6 高位端口，并忽略可配置的客户端临时 UDP 与本地 SSH 转发监听。 |
 | 高级采集 | 默认启用 auditd 日志采集和 eBPF JSONL/命令桥接入口；对应日志、文件或命令不存在时安全空跑。 |
 | 外部规则 | 支持 Sigma-like TOML 事件规则和可选 YARA CLI 扫描；规则引擎默认启用，但只有配置了规则路径或扫描根目录后才会实际运行。 |
 | 威胁情报 | 可选用本地或远程 indicator 对 IP、路径、域名、哈希做证据增强；命中只是辅助证据，不会单独触发封禁。 |
 | 多 VPS 视图 | 导出和导入轻量级节点快照，方便在一个本地 SQLite 中查看多台 VPS 摘要。 |
 | 维护模式 | 支持有时限的维护窗口，在计划升级期间压制低/中危基线漂移，不隐藏高危行为。 |
-| 本地存储与资源控制 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和自包含通知日志；重复 raw fact 使用稳定存储键，默认不持久化完整原始日志行，普通 Web 访问事件默认不入库，并提供保留期与数据库容量上限，避免无限增长。 |
+| 本地存储与资源控制 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和自包含通知日志；重复 raw fact 使用稳定存储键，默认不持久化完整原始日志行，普通 Web 访问事件默认不入库，并提供保留期、数据库容量和运行时预算上限，避免无限增长。 |
 | 噪声控制 | 支持白名单、最低告警级别、finding 去重和保留周期。 |
 | 主动响应 | 默认启用，以 `observe`、`balanced` 或 `strict` 策略处理高置信公网来源 IP；写防火墙时通过 nftables 或 iptables 临时封禁，并带公网 IP、白名单和可信代理归因保护。 |
 | 通知告警 | 支持 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan。 |
@@ -76,7 +78,17 @@ WebShell 内容检测也采用评分模型，不再因为单个 marker 直接告
 
 每个 finding 都会补充统一 0-100 风险评分，评分来自严重等级、检测器置信度、规则自身评分、主动响应上下文和可选威胁情报命中。incident 会在扫描内合并之后按时间窗口聚合相关 finding，用户可以通过 `vs incidents timeline <incident_id>` 查看攻击链，而不是只看孤立告警。
 
+攻击指纹会在 finding 合并和风险评分之后生成。指纹引擎会从 Web 探测、SSH 爆破用户字典、进程行为、持久化/文件变化 finding 中提取稳定特征；归一化数字 ID、路径变体和 URL 编码形式等易变内容；生成精确 BLAKE3 hash 和 64 位 SimHash 近似键；并把有界 observation 保存到 SQLite。来源 IP 不参与精确指纹计算，因此攻击者更换 IP 后仍可能按攻击手法聚合。如果启用 `privacy.mask_ip = true`，指纹库中保存的是稳定 IP 哈希而不是真实 IP。重复出现且评分较高的指纹可以给当前 finding 增加主动响应提示，但最终写防火墙仍然必须经过公网 IP、白名单、可信代理归因、响应策略和单轮封禁上限等安全过滤。
+
+evidence 会在后续关联和响应逻辑消费前统一归一化。`ip`、`remote_ip`、`remote_addr` 等常见别名会归一到 `source_ip`；列表值会稳定去重；布尔值和计数字段会规范化；路径和命令字段会在后续资源预算中被限制大小。这样通知、incident、攻击指纹、主动响应和存储不会各自解释同一个字段。
+
+内置规则元数据包含所有权矩阵：每条规则都有 owner、分类、默认等级、响应范围和预期 evidence 字段。规则引擎测试会校验矩阵兼容性，因此后续新增规则必须落到明确模块，不能悄悄形成重复或边界不清的规则族。`vs rules matrix` 可以输出该矩阵，方便审计和集成。
+
+人工反馈会进入检测闭环。`vs fingerprints mark-benign <id>` 会阻止该指纹产生基于指纹的主动响应提示，并且对携带 benign 判定的 finding 抑制自动主动封禁；`mark-malicious` 会让后续命中更容易产生响应提示，但最终写防火墙仍然必须经过公网 IP、白名单、可信代理归因、响应策略和单轮封禁上限等安全过滤。
+
 扫描管线会通过事件 kind/source 索引、SSH 失败日志按来源 IP 聚合、Web/SSH 日志时间窗口和每轮事件上限、以及基线对比后丢弃稳定普通文件快照来控制内存。文件变化、SSH key 文件不安全状态、WebShell marker 和 Web 目录可执行/脚本文件仍会保留并进入检测。
+
+运行时资源预算会在响应处理前、响应注解后执行。如果主机在一轮扫描中产生极端数量的 finding 或 evidence 字段，vps-sentinel 会按严重等级、统一风险评分、置信度和时间保留高价值记录。evidence 会优先保留来源 IP、主动响应字段、攻击指纹、路径、进程身份、探测家族和风险评分，然后再丢弃低价值上下文，从而保护小内存 VPS 和通知预算。
 
 ## 支持的通知渠道
 
@@ -208,6 +220,10 @@ CI 中使用的 Docker 容器只用于构建和兼容性测试，不代表推荐
 | 噪声控制 | 使用扫描内去重、跨扫描去重、状态提醒间隔、安静时段和小时级通知预算。 | 减少重复消息，同时保留高价值告警的可见性。 |
 | 主动响应 | 在扫描内 finding 合并/去重后、跨扫描通知去重前评估封禁候选；只有不在 `[allowlist].ips` 中的公网 IP 才可能被封，且无法还原真实客户端 IP 的可信代理/CDN 来源不会成为封禁候选。Web 需要敏感路径成功响应、高置信 exploit 探测、重复低置信 exploit 探测，或高频探测/错误突发；SSH 默认与 SSH 爆破告警使用相同失败次数阈值。 | 可把明显扫描源临时丢进防火墙，同时避免每条告警都变成破坏性动作或误封 CDN 边缘。 |
 | 响应策略 DSL | 在检测器产生主动响应候选之后应用配置化策略；策略可匹配规则 ID 或分类，并按最低严重等级、置信度、统一评分决定观察、临时封禁或永久封禁。 | 检测逻辑和响应决策解耦，用户无需改代码即可调节封禁策略。 |
+| 攻击指纹 | 从 Web/SSH/进程/持久化 finding 中提取归一化特征，生成精确 hash 和 SimHash 近似键，保存有界 observation，并把指纹证据写回 finding。 | 按攻击手法聚合换 IP 的攻击，提供 `vs fingerprints` 时间线和人工判定，并可让重复确认的攻击手法进入主动响应，而不是依赖 IP 黑名单。 |
+| 证据字段模型 | 对常见 evidence 别名做 canonical 归一化，规范列表、布尔值和计数字段，并让扫描、攻击指纹、主动响应和测试复用同一套 evidence 访问入口。 | 避免 `ip`、`remote_addr`、`source_ip` 在不同模块里含义不一致，后续新增规则更容易保持一致。 |
+| 规则所有权矩阵 | 每条内置规则声明 owner、分类、响应范围和预期 evidence 字段，并通过测试校验 owner/category 和 canonical 字段。 | 让规则按模块清晰归属，避免重复、混乱或作用范围不明的规则进入代码。 |
+| 资源预算 | 按严重等级、统一评分、置信度和时间排序保留高价值 finding，并限制 finding 数量、evidence 数量和 evidence 值大小。 | 控制内存、通知量和存储体积，同时优先保留关键安全证据。 |
 | Incident 与时间线 | 按 IP、路径、进程、分类和时间窗口聚合相关 finding，并提供 `incidents list/show/timeline`。 | 把孤立 finding 组织成可读攻击链，同时保留原始 finding。 |
 | 服务画像 | 保存监听服务的地址、端口、协议、进程名、可执行文件、命令行和暴露分类；动态 UDP/UDP6 高位端口可按进程身份建模，并忽略可配置的客户端临时 UDP 与本地 SSH 转发监听。 | 不盲信 80/443，也能发现常见端口背后的服务 owner 漂移，同时避免合法动态 UDP 端口每次变化都告警。 |
 | 高级证据 | 可选 auditd、eBPF JSONL bridge、Sigma-like TOML 规则、YARA CLI 和威胁情报 indicator 都进入同一 RawEvent/Finding 模型。 | 平台支持时可增加更深证据，默认安装仍保持轻量兼容。 |
@@ -441,6 +457,12 @@ sudo journalctl -u vps-sentinel -f
 | `vps-sentinel events show <event_id> --config <path>` | 按 finding ID 输出单条已保存 finding 的 JSON。 |
 | `vps-sentinel findings list --json --config <path>` | 列出最近保存的 findings，包含等级、置信度、规则 ID 和对象。 |
 | `vps-sentinel findings explain <finding_id> --json --config <path>` | 解释单条 finding，展示规则元数据、证据、置信度、影响和建议。 |
+| `vps-sentinel fingerprints list --config <path>` | 列出攻击指纹，包含类型、评分、观察次数、来源数量、主机数量、判定和摘要。 |
+| `vps-sentinel fingerprints show <fingerprint_id> --config <path>` | 查看单个攻击指纹，包括精确 hash、SimHash、特征、来源数量、规则和时间戳。 |
+| `vps-sentinel fingerprints timeline <fingerprint_id> --config <path>` | 查看某个指纹最近的命中观察记录。 |
+| `vps-sentinel fingerprints mark-benign <fingerprint_id> --config <path>` | 将指纹标记为正常，后续匹配 finding 不会产生指纹响应提示或自动主动封禁。 |
+| `vps-sentinel fingerprints mark-malicious <fingerprint_id> --config <path>` | 将指纹标记为确认恶意；后续命中且存在公网来源 IP 时可产生主动响应提示。 |
+| `vps-sentinel fingerprints export --redacted --config <path>` | 以 JSON 导出指纹和近期 observation，可选择脱敏来源 IP。 |
 | `vps-sentinel incidents list --config <path>` | 列出由相关 findings 聚合成的 incident；可加 `--json` 输出结构化结果。 |
 | `vps-sentinel incidents show <incident_id> --config <path>` | 查看单个 incident 的对象、分类、规则和摘要。 |
 | `vps-sentinel incidents timeline <incident_id> --config <path>` | 输出单个 incident 的 finding 时间线。 |
@@ -461,6 +483,7 @@ sudo journalctl -u vps-sentinel -f
 | `vps-sentinel storage clear <target> --yes --config <path>` | 手动清理指定历史数据，例如 `raw-events`、`findings`、`notifications`、`scan-runs`、`baselines` 或 `all-history`。 |
 | `vps-sentinel storage vacuum --config <path>` | 不删除行，只执行 SQLite checkpoint/VACUUM/optimize。 |
 | `vps-sentinel rules list` | 列出内置检测规则、默认等级和描述。 |
+| `vps-sentinel rules matrix --json` | 输出内置规则所有权矩阵，包含 owner、分类、响应范围和 evidence 字段。 |
 | `vps-sentinel rules test <rule_id>` | 检查指定内置规则 ID 是否存在并可加载。 |
 | `vps-sentinel notify test --config <path>` | 构造一条 Info 级别测试 finding 并发送到已启用通知渠道，用于验证凭据和路由。 |
 | `vps-sentinel reload --config <path>` | 校验配置并重载运行中的 systemd 服务。安装后可用 `vs reload` 简写。 |
@@ -507,6 +530,18 @@ max_stored_field_bytes = 4096
 ```
 
 `collect_memory_metrics` 会在扫描报告和 JSON 输出中记录进程 RSS 的 before/after 值。`store_raw_log_lines = false` 会保留 IP、用户、路径、状态码、方法等结构化字段，但不把完整原始日志行写入 raw event 存储。`store_all_web_access_events = false` 默认只保存能支撑 Web 探测证据的 Web access 事件，避免公网网站把普通 404/静态资源访问写满 SQLite。`max_stored_field_bytes` 会截断异常大的落库字段，不影响本轮内存中的检测输入。
+
+运行时资源预算：
+
+```toml
+[resource_budget]
+enabled = true
+max_findings_per_scan = 500
+max_evidence_items_per_finding = 64
+max_evidence_value_bytes = 2048
+```
+
+`resource_budget` 控制检测后 finding 的内存规模。超过 `max_findings_per_scan` 时，会按严重等级、统一风险评分、置信度和时间排序，优先保留高价值 finding。evidence 数量和值大小限制用于避免单条 finding 过大而拖累内存、通知 payload 或 SQLite 行；来源 IP、主动响应字段、攻击指纹、路径、进程身份、探测家族和风险评分会优先保留。
 
 SSH 告警策略：
 
@@ -666,6 +701,25 @@ ssh_failed_login_block_threshold = 6
 主动响应对新安装默认开启。升级时不会覆盖已有配置，因此已经显式写了 `active_response.enabled = false` 的主机会保持关闭，直到管理员手动修改。`strategy = "observe"` 只记录候选不写防火墙，`balanced` 是默认策略，`strict` 会对被拒绝的 Web 探测和 SSH 爆破要求更强证据。扫描器会在扫描内合并/去重之后、跨扫描通知去重之前执行封禁，因此同一来源计数升高时，即使重复通知会被压制，也仍能触发封禁。SSH 封禁需要先形成 `SSH-003` finding，默认扫描窗口内 6 次失败触发封禁。Web 封禁覆盖敏感路径成功响应、高置信 RCE 风格探测、重复低置信 exploit 探测和高频错误爆发，但标记为 `proxy_source_unresolved` 的 Web finding 不会进入封禁候选。安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。普通封禁是临时封禁；如果同一个公网来源 IP 在 `permanent_block_window_seconds` 窗口内至少 `permanent_block_threshold` 次成为封禁候选，则升级为无到期时间的永久封禁。永久升级仍然遵守 `[allowlist].ips`、可信代理归因安全、`strategy = "observe"` 和 `max_blocks_per_scan`，可以通过 `vs blocks unblock <ip>` 或 `vs blocks unblock-all --yes` 解除。只有公网可路由来源 IP 才会被考虑。
 
 每次扫描都会先把主动响应状态和真实防火墙规则同步，再判断某个来源是否已经封禁。如果规则已过期、被 firewalld/ufw reload 清掉，或者被人工修改，程序会移除失效状态；如果该来源仍然满足高置信封禁条件，后续可以再次封禁。iptables 后端在插入前会用 `-C` 检查规则是否已存在，避免重复 DROP 规则；手动解除封禁会删除重复匹配规则。日常运维可以使用 `vs blocks list`、`vs blocks cleanup`、`vs blocks unblock <ip>` 和 `vs blocks unblock-all --yes`。
+
+攻击指纹：
+
+```toml
+[attack_fingerprints]
+enabled = true
+similarity_enabled = true
+similarity_hamming_distance = 6
+max_match_candidates = 1000
+max_features_per_fingerprint = 40
+max_observations_per_fingerprint = 200
+retention_days = 30
+active_response_enabled = true
+active_response_min_score = 75
+active_response_min_observations = 2
+active_response_min_distinct_ips = 2
+```
+
+`attack_fingerprints` 控制基于攻击手法的聚类。精确指纹使用归一化后的特征，故意不包含来源 IP；近似匹配使用 SimHash 汉明距离，并只在最近同类指纹中匹配，`max_match_candidates` 用于限制内存和 CPU 开销。`max_observations_per_fingerprint` 和 `retention_days` 用于限制存储增长。基于指纹的主动响应只会在评分、观察次数和不同来源数量达到阈值，或管理员将指纹标记为恶意后，给 finding 添加封禁提示；最终是否写防火墙仍由主动响应安全过滤决定。如果某个合法管理脚本或运维行为形成稳定指纹，可用 `vs fingerprints mark-benign <id>` 标记为正常，并抑制后续匹配 finding 的指纹提示和自动封禁。
 
 响应策略：
 

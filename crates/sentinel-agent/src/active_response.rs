@@ -1,3 +1,4 @@
+use crate::attack_fingerprint::{ACTION_HINT_KEY, FINGERPRINT_ID_KEY, VERDICT_BENIGN};
 use crate::detectors::field_is_allowlisted;
 use crate::detectors::web_rules::{probe_family_blocks_on_single_attempt, probe_family_is_exploit};
 use crate::risk_score::{confidence_percent, unified_score};
@@ -656,6 +657,9 @@ fn block_candidates(findings: &[Finding], config: &SentinelConfig) -> Vec<BlockC
 }
 
 fn block_candidate(finding: &Finding, config: &SentinelConfig) -> Option<BlockCandidate> {
+    if evidence_value(finding, "attack_fingerprint_verdict") == Some(VERDICT_BENIGN) {
+        return None;
+    }
     let candidate = match finding.rule_id.as_str() {
         "WEB-001" if config.active_response.web_enabled => web_probe_candidate(finding, config),
         "WEB-002" if config.active_response.web_enabled => web_error_candidate(finding, config),
@@ -663,7 +667,8 @@ fn block_candidate(finding: &Finding, config: &SentinelConfig) -> Option<BlockCa
             ssh_bruteforce_candidate(finding, config)
         }
         _ => None,
-    }?;
+    }
+    .or_else(|| attack_fingerprint_candidate(finding, config))?;
     let candidate = apply_response_policy(candidate, finding, config)?;
     filter_block_candidate(candidate, config)
 }
@@ -888,6 +893,34 @@ fn ssh_bruteforce_candidate(finding: &Finding, config: &SentinelConfig) -> Optio
     })
 }
 
+fn attack_fingerprint_candidate(
+    finding: &Finding,
+    config: &SentinelConfig,
+) -> Option<BlockCandidate> {
+    if !config.attack_fingerprints.active_response_enabled {
+        return None;
+    }
+    if evidence_value(finding, ACTION_HINT_KEY) != Some("block") || proxy_source_unresolved(finding)
+    {
+        return None;
+    }
+    let ip = evidence_any_ip(finding, &["source_ip", "ip", "remote_ip", "remote_addr"])?;
+    let fingerprint_id = evidence_value(finding, FINGERPRINT_ID_KEY).unwrap_or("unknown");
+    let fingerprint_kind = evidence_value(finding, "attack_fingerprint_kind").unwrap_or("unknown");
+    let score = evidence_value(finding, "attack_fingerprint_score").unwrap_or("unknown");
+    Some(BlockCandidate {
+        ip,
+        rule_id: finding.rule_id.clone(),
+        finding_id: finding.id.clone(),
+        reason: format!(
+            "attack fingerprint id={fingerprint_id} kind={fingerprint_kind} score={score}"
+        ),
+        action: ResponseAction::Block,
+        ttl_seconds: None,
+        permanent_after: None,
+    })
+}
+
 fn apply_response_policy(
     mut candidate: BlockCandidate,
     finding: &Finding,
@@ -971,16 +1004,16 @@ fn evidence_ip(finding: &Finding, key: &str) -> Option<IpAddr> {
     evidence_value(finding, key)?.parse().ok()
 }
 
+fn evidence_any_ip(finding: &Finding, keys: &[&str]) -> Option<IpAddr> {
+    keys.iter().find_map(|key| evidence_ip(finding, key))
+}
+
 fn evidence_usize(finding: &Finding, key: &str) -> Option<usize> {
     evidence_value(finding, key)?.parse().ok()
 }
 
 fn evidence_value<'a>(finding: &'a Finding, key: &str) -> Option<&'a str> {
-    finding
-        .evidence
-        .iter()
-        .find(|item| item.key == key)
-        .map(|item| item.value.as_str())
+    sentinel_core::evidence_value(&finding.evidence, key)
 }
 
 fn record_firewall_present(config: &SentinelConfig, record: &BlockRecord) -> Option<bool> {
@@ -1401,6 +1434,7 @@ mod tests {
         BlockActionStatus, BlockRecord, BlockState, IpBlocker, ResponseAction, SentinelResult,
         STATE_RULE_ID,
     };
+    use crate::attack_fingerprint::VERDICT_BENIGN;
     use crate::storage::SqliteStore;
     use chrono::{Duration as ChronoDuration, Utc};
     use sentinel_core::{Category, Evidence, Finding, SentinelConfig, Severity};
@@ -1541,6 +1575,67 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].ip.to_string(), "1.1.1.1");
+    }
+
+    #[test]
+    fn fingerprint_action_hint_can_block_below_rule_threshold() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.web_probe_block_threshold = 25;
+        let mut finding = web_finding("8.8.8.8", "env_file", "missing_or_rejected", 1);
+        finding.evidence.push(Evidence::new(
+            crate::attack_fingerprint::FINGERPRINT_ID_KEY,
+            "WEB-FP-test",
+        ));
+        finding.evidence.push(Evidence::new(
+            crate::attack_fingerprint::ACTION_HINT_KEY,
+            "block",
+        ));
+        finding
+            .evidence
+            .push(Evidence::new("attack_fingerprint_kind", "web_probe"));
+        finding
+            .evidence
+            .push(Evidence::new("attack_fingerprint_score", "90"));
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].ip.to_string(), "8.8.8.8");
+        assert!(candidates[0].reason.contains("WEB-FP-test"));
+    }
+
+    #[test]
+    fn benign_fingerprint_feedback_suppresses_active_response() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.web_probe_block_threshold = 1;
+        let mut finding = web_finding("8.8.8.8", "env_file", "successful_response", 10);
+        finding
+            .evidence
+            .push(Evidence::new("attack_fingerprint_verdict", VERDICT_BENIGN));
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn fingerprint_action_hint_does_not_block_unresolved_proxy_source() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        let mut finding = web_finding("172.70.12.9", "env_file", "missing_or_rejected", 1);
+        finding.evidence.push(Evidence::new(
+            crate::attack_fingerprint::ACTION_HINT_KEY,
+            "block",
+        ));
+        finding
+            .evidence
+            .push(Evidence::new("proxy_source_unresolved", "true"));
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert!(candidates.is_empty());
     }
 
     #[test]

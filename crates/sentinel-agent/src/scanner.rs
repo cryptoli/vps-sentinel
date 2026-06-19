@@ -1,4 +1,5 @@
 use crate::active_response::{apply_active_response, ActiveResponseReport, BlockActionStatus};
+use crate::attack_fingerprint::enrich_and_persist_findings;
 use crate::baseline::{diff_snapshots, BaselineSnapshot};
 use crate::collectors::{default_collectors, CollectContext};
 use crate::detectors::{default_detectors, DetectContext, EventIndex};
@@ -6,6 +7,7 @@ use crate::findings::coalesce_related_findings;
 use crate::incident::{correlate_findings, prune_incidents, save_incidents};
 use crate::maintenance::apply_maintenance_policy;
 use crate::notify::{NotificationManager, NotifyContext};
+use crate::resource_budget::apply_resource_budget;
 use crate::risk_score;
 use crate::rules::system::ACTIVE_RESPONSE_SUMMARY_RULE_ID;
 use crate::service_profile::evaluate_service_profile;
@@ -14,6 +16,7 @@ use crate::threat_intel;
 use crate::utils::fs::path_string;
 use crate::utils::memory::current_rss_kb;
 use crate::utils::redact::{mask_command_args, mask_ip, mask_ips_in_text};
+pub(crate) use crate::utils::text::truncate_utf8;
 use chrono::{Duration, Local, Timelike, Utc};
 use sentinel_core::{
     Category, Evidence, Finding, MinuteWindow, NotificationTimeZone, RawEvent, SentinelConfig,
@@ -72,6 +75,11 @@ pub struct ScanReport {
     pub active_response_applied_count: usize,
     pub active_response_failed_count: usize,
     pub active_response_expired_count: usize,
+    pub attack_fingerprint_observation_count: usize,
+    pub attack_fingerprint_action_hint_count: usize,
+    pub resource_budget_dropped_findings: usize,
+    pub resource_budget_truncated_evidence_items: usize,
+    pub resource_budget_truncated_evidence_values: usize,
     pub incident_count: usize,
     pub findings: Vec<Finding>,
     pub collector_errors: Vec<String>,
@@ -159,7 +167,9 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             }
         }
     }
+    normalize_finding_evidence(&mut findings);
     findings = coalesce_related_findings(findings);
+    normalize_finding_evidence(&mut findings);
     let intel = threat_intel::load_threat_intel(&config).await;
     threat_intel::enrich_findings(&mut findings, &intel);
     risk_score::enrich_findings(&mut findings);
@@ -180,6 +190,40 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     let suppression = suppress_in_scan_duplicates(findings);
     findings = suppression.0;
     suppressed_duplicate_count += suppression.1;
+    let mut budget_report = apply_resource_budget(&mut findings, &config);
+    if budget_report.dropped_findings > 0
+        || budget_report.truncated_evidence_items > 0
+        || budget_report.truncated_evidence_values > 0
+    {
+        warn!(
+            dropped_findings = budget_report.dropped_findings,
+            truncated_evidence_items = budget_report.truncated_evidence_items,
+            truncated_evidence_values = budget_report.truncated_evidence_values,
+            "resource budget applied before response processing"
+        );
+    }
+
+    let mut attack_fingerprint_observation_count = 0;
+    let mut attack_fingerprint_action_hint_count = 0;
+    if config.attack_fingerprints.enabled && options.persist {
+        if let Some(store) = &store {
+            match enrich_and_persist_findings(&mut findings, &config, store) {
+                Ok(report) => {
+                    attack_fingerprint_observation_count = report.observations;
+                    attack_fingerprint_action_hint_count = report.action_hints;
+                    debug!(
+                        observations = report.observations,
+                        created = report.created,
+                        matched_exact = report.matched_exact,
+                        matched_similar = report.matched_similar,
+                        action_hints = report.action_hints,
+                        "attack fingerprint enrichment completed"
+                    );
+                }
+                Err(err) => warn!(error = %err, "attack fingerprint enrichment failed"),
+            }
+        }
+    }
 
     // Active response must evaluate current evidence before persisted duplicate
     // suppression can hide an escalated failure/probe count. Block state prevents
@@ -210,6 +254,13 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
                         &report,
                         config.as_ref(),
                     );
+                    normalize_finding_evidence(&mut findings);
+                    let active_response_budget = apply_resource_budget(&mut findings, &config);
+                    budget_report.dropped_findings += active_response_budget.dropped_findings;
+                    budget_report.truncated_evidence_items +=
+                        active_response_budget.truncated_evidence_items;
+                    budget_report.truncated_evidence_values +=
+                        active_response_budget.truncated_evidence_values;
                     active_response_report = report;
                 }
                 Err(err) => {
@@ -372,6 +423,14 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             if pruned_incidents > 0 {
                 debug!(deleted_incidents = pruned_incidents, "old incidents pruned");
             }
+            let pruned_fingerprints =
+                store.prune_attack_fingerprints(config.attack_fingerprints.retention_days)?;
+            if pruned_fingerprints > 0 {
+                debug!(
+                    deleted_rows = pruned_fingerprints,
+                    "old attack fingerprint rows pruned"
+                );
+            }
             if let Some(report) = store.enforce_size_limit(config.storage.max_database_size_mb)? {
                 if report.size_after_bytes
                     > config
@@ -428,6 +487,11 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         active_response_applied = active_response_report.applied_blocks,
         active_response_failed = active_response_report.failed_blocks,
         active_response_expired = active_response_report.expired_blocks,
+        attack_fingerprint_observations = attack_fingerprint_observation_count,
+        attack_fingerprint_action_hints = attack_fingerprint_action_hint_count,
+        resource_budget_dropped_findings = budget_report.dropped_findings,
+        resource_budget_truncated_evidence_items = budget_report.truncated_evidence_items,
+        resource_budget_truncated_evidence_values = budget_report.truncated_evidence_values,
         incidents = incident_count,
         collector_errors = collector_errors.len(),
         "scan completed"
@@ -452,6 +516,11 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         active_response_applied_count: active_response_report.applied_blocks,
         active_response_failed_count: active_response_report.failed_blocks,
         active_response_expired_count: active_response_report.expired_blocks,
+        attack_fingerprint_observation_count,
+        attack_fingerprint_action_hint_count,
+        resource_budget_dropped_findings: budget_report.dropped_findings,
+        resource_budget_truncated_evidence_items: budget_report.truncated_evidence_items,
+        resource_budget_truncated_evidence_values: budget_report.truncated_evidence_values,
         incident_count,
         findings,
         collector_errors,
@@ -467,6 +536,12 @@ fn count_events_by<'a>(
         *counts.entry(key_fn(event).to_string()).or_default() += 1;
     }
     counts
+}
+
+fn normalize_finding_evidence(findings: &mut [Finding]) {
+    for finding in findings {
+        finding.normalize_evidence();
+    }
 }
 
 fn changed_file_paths(events: &[RawEvent]) -> BTreeSet<String> {
@@ -555,30 +630,6 @@ fn compact_raw_event_for_storage(event: &RawEvent, config: &SentinelConfig) -> R
         }
     }
     compact
-}
-
-fn truncate_utf8(value: &str, max_bytes: usize) -> String {
-    if value.len() <= max_bytes {
-        return value.to_string();
-    }
-    const TRUNCATION_MARKER: &str = "...[truncated]";
-    if max_bytes <= TRUNCATION_MARKER.len() {
-        return utf8_prefix(value, max_bytes).to_string();
-    }
-    let prefix_budget = max_bytes - TRUNCATION_MARKER.len();
-    format!("{}{}", utf8_prefix(value, prefix_budget), TRUNCATION_MARKER)
-}
-
-fn utf8_prefix(value: &str, max_bytes: usize) -> &str {
-    let mut end = 0;
-    for (index, ch) in value.char_indices() {
-        let next = index + ch.len_utf8();
-        if next > max_bytes {
-            break;
-        }
-        end = next;
-    }
-    &value[..end]
 }
 
 fn apply_active_response_notification_policy(

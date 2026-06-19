@@ -55,6 +55,24 @@ fn print_report(report: &sentinel_agent::ScanReport, json: bool) -> Result<()> {
             report.notification_failure_count
         );
     }
+    if report.attack_fingerprint_observation_count > 0 {
+        println!(
+            "attack fingerprints: observations={}, action_hints={}",
+            report.attack_fingerprint_observation_count,
+            report.attack_fingerprint_action_hint_count
+        );
+    }
+    if report.resource_budget_dropped_findings > 0
+        || report.resource_budget_truncated_evidence_items > 0
+        || report.resource_budget_truncated_evidence_values > 0
+    {
+        println!(
+            "resource budget: dropped_findings={}, truncated_evidence_items={}, truncated_evidence_values={}",
+            report.resource_budget_dropped_findings,
+            report.resource_budget_truncated_evidence_items,
+            report.resource_budget_truncated_evidence_values
+        );
+    }
     if let (Some(before), Some(after)) = (report.memory_rss_before_kb, report.memory_rss_after_kb) {
         println!(
             "memory rss: before={} KiB, after={} KiB, delta={} KiB",

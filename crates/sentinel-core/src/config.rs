@@ -13,12 +13,12 @@ pub use notifications::{
     WebhookConfig,
 };
 pub use sections::{
-    ActiveResponseConfig, AdvancedCollectorsConfig, AgentConfig, AllowlistConfig, DockerConfig,
-    ExternalRulesConfig, FileIntegrityConfig, FleetConfig, GpuConfig, IncidentConfig,
-    LogIntegrityConfig, MaintenanceConfig, NetworkConfig, NoiseControlConfig, PackageManagerConfig,
-    PerformanceConfig, PersistenceConfig, PrivacyConfig, ProcessConfig, ReportsConfig,
-    ResponsePolicyConfig, ResponsePolicyRule, SentinelPaths, ServiceProfileConfig, SshConfig,
-    StorageConfig, ThreatIntelConfig, WebConfig,
+    ActiveResponseConfig, AdvancedCollectorsConfig, AgentConfig, AllowlistConfig,
+    AttackFingerprintConfig, DockerConfig, ExternalRulesConfig, FileIntegrityConfig, FleetConfig,
+    GpuConfig, IncidentConfig, LogIntegrityConfig, MaintenanceConfig, NetworkConfig,
+    NoiseControlConfig, PackageManagerConfig, PerformanceConfig, PersistenceConfig, PrivacyConfig,
+    ProcessConfig, ReportsConfig, ResourceBudgetConfig, ResponsePolicyConfig, ResponsePolicyRule,
+    SentinelPaths, ServiceProfileConfig, SshConfig, StorageConfig, ThreatIntelConfig, WebConfig,
 };
 
 /// Top-level TOML configuration for the agent and CLI.
@@ -28,6 +28,7 @@ pub struct SentinelConfig {
     pub agent: AgentConfig,
     pub privacy: PrivacyConfig,
     pub performance: PerformanceConfig,
+    pub resource_budget: ResourceBudgetConfig,
     pub storage: StorageConfig,
     pub ssh: SshConfig,
     pub file_integrity: FileIntegrityConfig,
@@ -42,6 +43,7 @@ pub struct SentinelConfig {
     pub notifications: NotificationsConfig,
     pub noise_control: NoiseControlConfig,
     pub active_response: ActiveResponseConfig,
+    pub attack_fingerprints: AttackFingerprintConfig,
     pub response_policy: ResponsePolicyConfig,
     pub incidents: IncidentConfig,
     pub service_profile: ServiceProfileConfig,
@@ -98,6 +100,7 @@ impl SentinelConfig {
                 "performance.max_stored_field_bytes must be greater than 0".to_string(),
             ));
         }
+        validate_resource_budget(&self.resource_budget)?;
         validate_ip_patterns("ssh.trusted_admin_ips", &self.ssh.trusted_admin_ips)?;
         if self.ssh.failed_login_threshold == 0 {
             return Err(SentinelError::Config(
@@ -253,6 +256,7 @@ impl SentinelConfig {
             ));
         }
         validate_active_response(&self.active_response, &self.ssh)?;
+        validate_attack_fingerprints(&self.attack_fingerprints)?;
         validate_response_policy(&self.response_policy)?;
         validate_incidents(&self.incidents)?;
         validate_service_profile(&self.service_profile)?;
@@ -383,6 +387,53 @@ fn validate_incidents(config: &IncidentConfig) -> SentinelResult<()> {
     Ok(())
 }
 
+fn validate_attack_fingerprints(config: &AttackFingerprintConfig) -> SentinelResult<()> {
+    if config.similarity_hamming_distance > 64 {
+        return Err(SentinelError::Config(
+            "attack_fingerprints.similarity_hamming_distance must be between 0 and 64".to_string(),
+        ));
+    }
+    if config.max_match_candidates == 0 {
+        return Err(SentinelError::Config(
+            "attack_fingerprints.max_match_candidates must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_features_per_fingerprint == 0 {
+        return Err(SentinelError::Config(
+            "attack_fingerprints.max_features_per_fingerprint must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_observations_per_fingerprint == 0 {
+        return Err(SentinelError::Config(
+            "attack_fingerprints.max_observations_per_fingerprint must be greater than 0"
+                .to_string(),
+        ));
+    }
+    if config.retention_days == 0 {
+        return Err(SentinelError::Config(
+            "attack_fingerprints.retention_days must be greater than 0".to_string(),
+        ));
+    }
+    if config.active_response_min_score > 100 {
+        return Err(SentinelError::Config(
+            "attack_fingerprints.active_response_min_score must be between 0 and 100".to_string(),
+        ));
+    }
+    if config.active_response_min_observations == 0 {
+        return Err(SentinelError::Config(
+            "attack_fingerprints.active_response_min_observations must be greater than 0"
+                .to_string(),
+        ));
+    }
+    if config.active_response_min_distinct_ips == 0 {
+        return Err(SentinelError::Config(
+            "attack_fingerprints.active_response_min_distinct_ips must be greater than 0"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_service_profile(config: &ServiceProfileConfig) -> SentinelResult<()> {
     if config.dynamic_udp_enabled && config.dynamic_udp_min_port == 0 {
         return Err(SentinelError::Config(
@@ -419,6 +470,25 @@ fn validate_reports(config: &ReportsConfig) -> SentinelResult<()> {
     if config.min_interval_seconds == 0 {
         return Err(SentinelError::Config(
             "reports.min_interval_seconds must be greater than 0".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_resource_budget(config: &ResourceBudgetConfig) -> SentinelResult<()> {
+    if config.max_findings_per_scan == 0 {
+        return Err(SentinelError::Config(
+            "resource_budget.max_findings_per_scan must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_evidence_items_per_finding == 0 {
+        return Err(SentinelError::Config(
+            "resource_budget.max_evidence_items_per_finding must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_evidence_value_bytes == 0 {
+        return Err(SentinelError::Config(
+            "resource_budget.max_evidence_value_bytes must be greater than 0".to_string(),
         ));
     }
     Ok(())
@@ -670,6 +740,10 @@ mod tests {
         assert_eq!(decoded.ssh.failed_login_threshold, 6);
         assert!(decoded.active_response.enabled);
         assert_eq!(decoded.active_response.ssh_failed_login_block_threshold, 6);
+        assert!(decoded.attack_fingerprints.enabled);
+        assert!(decoded.attack_fingerprints.similarity_enabled);
+        assert!(decoded.resource_budget.enabled);
+        assert!(decoded.resource_budget.max_findings_per_scan > 0);
         assert!(decoded.reports.scheduled_enabled);
         assert!(decoded.advanced_collectors.auditd_enabled);
         assert!(decoded.advanced_collectors.ebpf_bridge_enabled);
@@ -696,6 +770,21 @@ mod tests {
 
         let mut config = SentinelConfig::default();
         config.storage.max_database_size_mb = 15;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_resource_budget_is_rejected() {
+        let mut config = SentinelConfig::default();
+        config.resource_budget.max_findings_per_scan = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.resource_budget.max_evidence_items_per_finding = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.resource_budget.max_evidence_value_bytes = 0;
         assert!(config.validate().is_err());
     }
 

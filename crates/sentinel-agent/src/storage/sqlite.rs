@@ -1,7 +1,8 @@
+use crate::attack_fingerprint::{AttackFingerprint, AttackObservation};
 use crate::baseline::BaselineSnapshot;
 use blake3::Hasher;
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Row};
 use sentinel_core::{Finding, RawEvent, SentinelError, SentinelResult};
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::BTreeMap;
@@ -14,6 +15,8 @@ const MIN_SIZE_PRUNE_BATCH: usize = 1_000;
 const KEEP_LATEST_FINDINGS: usize = 5_000;
 const KEEP_LATEST_NOTIFICATION_LOGS: usize = 5_000;
 const KEEP_LATEST_SCAN_RUNS: usize = 1_000;
+const KEEP_LATEST_ATTACK_FINGERPRINTS: usize = 2_000;
+const KEEP_LATEST_ATTACK_OBSERVATIONS: usize = 10_000;
 
 #[derive(Debug, Clone, Copy)]
 struct SizePrunePolicy {
@@ -47,11 +50,25 @@ const SIZE_PRUNE_POLICIES: &[SizePrunePolicy] = &[
         keep_latest: KEEP_LATEST_SCAN_RUNS,
     },
     SizePrunePolicy {
+        table: "attack_observations",
+        order_column: "observed_at",
+        divisor: 3,
+        min_pass: 0,
+        keep_latest: KEEP_LATEST_ATTACK_OBSERVATIONS,
+    },
+    SizePrunePolicy {
         table: "findings",
         order_column: "timestamp",
         divisor: 5,
         min_pass: 1,
         keep_latest: KEEP_LATEST_FINDINGS,
+    },
+    SizePrunePolicy {
+        table: "attack_fingerprints",
+        order_column: "last_seen_at",
+        divisor: 5,
+        min_pass: 2,
+        keep_latest: KEEP_LATEST_ATTACK_FINGERPRINTS,
     },
     SizePrunePolicy {
         table: "baseline_snapshots",
@@ -92,6 +109,8 @@ pub struct StorageStats {
     pub raw_events: usize,
     pub findings: usize,
     pub notification_logs: usize,
+    pub attack_fingerprints: usize,
+    pub attack_observations: usize,
     pub finding_dedup_states: usize,
     pub scan_runs: usize,
     pub baseline_snapshots: usize,
@@ -138,6 +157,8 @@ impl SqliteStore {
             raw_events: table_row_count(&conn, "raw_events")?,
             findings: table_row_count(&conn, "findings")?,
             notification_logs: table_row_count(&conn, "notification_logs")?,
+            attack_fingerprints: table_row_count(&conn, "attack_fingerprints")?,
+            attack_observations: table_row_count(&conn, "attack_observations")?,
             finding_dedup_states: table_row_count(&conn, "finding_dedup_state")?,
             scan_runs: table_row_count(&conn, "scan_runs")?,
             baseline_snapshots: table_row_count(&conn, "baseline_snapshots")?,
@@ -285,6 +306,242 @@ impl SqliteStore {
             return Ok(Some(finding));
         }
         Ok(None)
+    }
+
+    pub fn save_attack_fingerprint(&self, fingerprint: &AttackFingerprint) -> SentinelResult<()> {
+        let conn = self.connection()?;
+        let features_json = serde_json::to_string(&fingerprint.features)
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO attack_fingerprints
+             (id, kind, title, exact_hash, simhash, first_seen_at, last_seen_at, seen_count,
+              source_ips_json, hosts_json, rule_ids_json, categories_json, score, confidence,
+              verdict, summary, features_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            params![
+                fingerprint.id,
+                fingerprint.kind,
+                fingerprint.title,
+                fingerprint.exact_hash,
+                fingerprint.simhash,
+                fingerprint.first_seen_at.to_rfc3339(),
+                fingerprint.last_seen_at.to_rfc3339(),
+                fingerprint.seen_count as i64,
+                serde_json::to_string(&fingerprint.source_ips)
+                    .map_err(|err| SentinelError::Storage(err.to_string()))?,
+                serde_json::to_string(&fingerprint.hosts)
+                    .map_err(|err| SentinelError::Storage(err.to_string()))?,
+                serde_json::to_string(&fingerprint.rule_ids)
+                    .map_err(|err| SentinelError::Storage(err.to_string()))?,
+                serde_json::to_string(&fingerprint.categories)
+                    .map_err(|err| SentinelError::Storage(err.to_string()))?,
+                fingerprint.score as i64,
+                fingerprint.confidence as i64,
+                fingerprint.verdict,
+                fingerprint.summary,
+                features_json,
+            ],
+        )
+        .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        Ok(())
+    }
+
+    pub fn save_attack_observation(
+        &self,
+        observation: &AttackObservation,
+        keep_latest_per_fingerprint: usize,
+    ) -> SentinelResult<()> {
+        let conn = self.connection()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO attack_observations
+             (id, fingerprint_id, finding_id, host_id, source_ip, rule_id, observed_at,
+              features_json, evidence_summary)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                observation.id,
+                observation.fingerprint_id,
+                observation.finding_id,
+                observation.host_id,
+                observation.source_ip,
+                observation.rule_id,
+                observation.observed_at.to_rfc3339(),
+                serde_json::to_string(&observation.features)
+                    .map_err(|err| SentinelError::Storage(err.to_string()))?,
+                observation.evidence_summary,
+            ],
+        )
+        .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        if keep_latest_per_fingerprint > 0 {
+            conn.execute(
+                "DELETE FROM attack_observations
+                 WHERE fingerprint_id = ?1
+                   AND id NOT IN (
+                     SELECT id FROM attack_observations
+                     WHERE fingerprint_id = ?1
+                     ORDER BY observed_at DESC
+                     LIMIT ?2
+                   )",
+                params![
+                    observation.fingerprint_id,
+                    keep_latest_per_fingerprint as i64
+                ],
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        }
+        Ok(())
+    }
+
+    pub fn find_attack_fingerprint_by_exact_hash(
+        &self,
+        kind: &str,
+        exact_hash: &str,
+    ) -> SentinelResult<Option<AttackFingerprint>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, kind, title, exact_hash, simhash, first_seen_at, last_seen_at,
+                        seen_count, source_ips_json, hosts_json, rule_ids_json, categories_json,
+                        score, confidence, verdict, summary, features_json
+                 FROM attack_fingerprints
+                 WHERE kind = ?1 AND exact_hash = ?2
+                 LIMIT 1",
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        let mut rows = stmt
+            .query(params![kind, exact_hash])
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        if let Some(row) = rows
+            .next()
+            .map_err(|err| SentinelError::Storage(err.to_string()))?
+        {
+            return row_to_attack_fingerprint(row)
+                .map(Some)
+                .map_err(|err| SentinelError::Storage(err.to_string()));
+        }
+        Ok(None)
+    }
+
+    pub fn list_attack_fingerprints_by_kind(
+        &self,
+        kind: &str,
+        limit: usize,
+    ) -> SentinelResult<Vec<AttackFingerprint>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, kind, title, exact_hash, simhash, first_seen_at, last_seen_at,
+                        seen_count, source_ips_json, hosts_json, rule_ids_json, categories_json,
+                        score, confidence, verdict, summary, features_json
+                 FROM attack_fingerprints
+                 WHERE kind = ?1
+                 ORDER BY last_seen_at DESC
+                 LIMIT ?2",
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        let rows = stmt
+            .query_map(params![kind, limit as i64], row_to_attack_fingerprint)
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        collect_rows(rows)
+    }
+
+    pub fn list_attack_fingerprints(&self, limit: usize) -> SentinelResult<Vec<AttackFingerprint>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, kind, title, exact_hash, simhash, first_seen_at, last_seen_at,
+                        seen_count, source_ips_json, hosts_json, rule_ids_json, categories_json,
+                        score, confidence, verdict, summary, features_json
+                 FROM attack_fingerprints
+                 ORDER BY last_seen_at DESC
+                 LIMIT ?1",
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        let rows = stmt
+            .query_map([limit as i64], row_to_attack_fingerprint)
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        collect_rows(rows)
+    }
+
+    pub fn get_attack_fingerprint(&self, id: &str) -> SentinelResult<Option<AttackFingerprint>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, kind, title, exact_hash, simhash, first_seen_at, last_seen_at,
+                        seen_count, source_ips_json, hosts_json, rule_ids_json, categories_json,
+                        score, confidence, verdict, summary, features_json
+                 FROM attack_fingerprints
+                 WHERE id = ?1
+                 LIMIT 1",
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        let mut rows = stmt
+            .query([id])
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        if let Some(row) = rows
+            .next()
+            .map_err(|err| SentinelError::Storage(err.to_string()))?
+        {
+            return row_to_attack_fingerprint(row)
+                .map(Some)
+                .map_err(|err| SentinelError::Storage(err.to_string()));
+        }
+        Ok(None)
+    }
+
+    pub fn list_attack_observations(
+        &self,
+        fingerprint_id: &str,
+        limit: usize,
+    ) -> SentinelResult<Vec<AttackObservation>> {
+        let conn = self.connection()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, fingerprint_id, finding_id, host_id, source_ip, rule_id,
+                        observed_at, features_json, evidence_summary
+                 FROM attack_observations
+                 WHERE fingerprint_id = ?1
+                 ORDER BY observed_at DESC
+                 LIMIT ?2",
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        let rows = stmt
+            .query_map(
+                params![fingerprint_id, limit as i64],
+                row_to_attack_observation,
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        collect_rows(rows)
+    }
+
+    pub fn set_attack_fingerprint_verdict(&self, id: &str, verdict: &str) -> SentinelResult<bool> {
+        let conn = self.connection()?;
+        let changed = conn
+            .execute(
+                "UPDATE attack_fingerprints SET verdict = ?1 WHERE id = ?2",
+                params![verdict, id],
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        Ok(changed > 0)
+    }
+
+    pub fn prune_attack_fingerprints(&self, retention_days: u32) -> SentinelResult<usize> {
+        let cutoff =
+            (Utc::now() - chrono::Duration::days(retention_days.max(1) as i64)).to_rfc3339();
+        let conn = self.connection()?;
+        let deleted_observations = conn
+            .execute(
+                "DELETE FROM attack_observations WHERE observed_at < ?1",
+                [&cutoff],
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        let deleted_fingerprints = conn
+            .execute(
+                "DELETE FROM attack_fingerprints
+                 WHERE last_seen_at < ?1 AND verdict != 'malicious'",
+                [&cutoff],
+            )
+            .map_err(|err| SentinelError::Storage(err.to_string()))?;
+        Ok(deleted_observations + deleted_fingerprints)
     }
 
     pub fn finding_seen_since(
@@ -534,6 +791,7 @@ impl SqliteStore {
             ("finding_dedup_state", "last_seen_at"),
             ("notification_logs", "attempted_at"),
             ("scan_runs", "finished_at"),
+            ("attack_observations", "observed_at"),
         ] {
             let sql = format!("DELETE FROM {table} WHERE {column} < ?1");
             deleted += conn
@@ -662,6 +920,42 @@ impl SqliteStore {
             );
             CREATE INDEX IF NOT EXISTS idx_notification_logs_attempted
               ON notification_logs(attempted_at);
+            CREATE TABLE IF NOT EXISTS attack_fingerprints (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                title TEXT NOT NULL,
+                exact_hash TEXT NOT NULL,
+                simhash TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                seen_count INTEGER NOT NULL,
+                source_ips_json TEXT NOT NULL,
+                hosts_json TEXT NOT NULL,
+                rule_ids_json TEXT NOT NULL,
+                categories_json TEXT NOT NULL,
+                score INTEGER NOT NULL,
+                confidence INTEGER NOT NULL,
+                verdict TEXT NOT NULL DEFAULT 'unknown',
+                summary TEXT NOT NULL DEFAULT '',
+                features_json TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_attack_fingerprints_kind_exact
+              ON attack_fingerprints(kind, exact_hash);
+            CREATE INDEX IF NOT EXISTS idx_attack_fingerprints_kind_seen
+              ON attack_fingerprints(kind, last_seen_at);
+            CREATE TABLE IF NOT EXISTS attack_observations (
+                id TEXT PRIMARY KEY,
+                fingerprint_id TEXT NOT NULL,
+                finding_id TEXT NOT NULL,
+                host_id TEXT NOT NULL,
+                source_ip TEXT NOT NULL DEFAULT '',
+                rule_id TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                features_json TEXT NOT NULL,
+                evidence_summary TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_attack_observations_fp_seen
+              ON attack_observations(fingerprint_id, observed_at);
             CREATE TABLE IF NOT EXISTS rule_states (
                 rule_id TEXT PRIMARY KEY,
                 state_json TEXT NOT NULL
@@ -733,6 +1027,8 @@ impl StorageClearTarget {
                 "finding_dedup_state",
                 "notification_logs",
                 "scan_runs",
+                "attack_observations",
+                "attack_fingerprints",
             ],
         }
     }
@@ -798,6 +1094,73 @@ fn table_row_count(conn: &Connection, table: &str) -> SentinelResult<usize> {
         .query_row(&sql, [], |row| row.get::<_, i64>(0))
         .map_err(|err| SentinelError::Storage(err.to_string()))?;
     Ok(count.max(0) as usize)
+}
+
+fn row_to_attack_fingerprint(row: &Row<'_>) -> rusqlite::Result<AttackFingerprint> {
+    let first_seen_at = parse_rfc3339_utc(row.get::<_, String>(5)?).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(err))
+    })?;
+    let last_seen_at = parse_rfc3339_utc(row.get::<_, String>(6)?).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(err))
+    })?;
+    Ok(AttackFingerprint {
+        id: row.get(0)?,
+        kind: row.get(1)?,
+        title: row.get(2)?,
+        exact_hash: row.get(3)?,
+        simhash: row.get(4)?,
+        first_seen_at,
+        last_seen_at,
+        seen_count: row.get::<_, i64>(7)?.max(0) as usize,
+        source_ips: parse_json_cell(row, 8)?,
+        hosts: parse_json_cell(row, 9)?,
+        rule_ids: parse_json_cell(row, 10)?,
+        categories: parse_json_cell(row, 11)?,
+        score: row.get::<_, i64>(12)?.clamp(0, 100) as u16,
+        confidence: row.get::<_, i64>(13)?.clamp(0, 100) as u16,
+        verdict: row.get(14)?,
+        summary: row.get(15)?,
+        features: parse_json_cell(row, 16)?,
+    })
+}
+
+fn row_to_attack_observation(row: &Row<'_>) -> rusqlite::Result<AttackObservation> {
+    let observed_at = parse_rfc3339_utc(row.get::<_, String>(6)?).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(err))
+    })?;
+    Ok(AttackObservation {
+        id: row.get(0)?,
+        fingerprint_id: row.get(1)?,
+        finding_id: row.get(2)?,
+        host_id: row.get(3)?,
+        source_ip: row.get(4)?,
+        rule_id: row.get(5)?,
+        observed_at,
+        features: parse_json_cell(row, 7)?,
+        evidence_summary: row.get(8)?,
+    })
+}
+
+fn parse_json_cell<T>(row: &Row<'_>, index: usize) -> rusqlite::Result<T>
+where
+    T: DeserializeOwned,
+{
+    let value: String = row.get(index)?;
+    serde_json::from_str(&value).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(index, rusqlite::types::Type::Text, Box::new(err))
+    })
+}
+
+fn parse_rfc3339_utc(value: String) -> Result<DateTime<Utc>, chrono::ParseError> {
+    DateTime::parse_from_rfc3339(&value).map(|value| value.with_timezone(&Utc))
+}
+
+fn collect_rows<T>(rows: impl Iterator<Item = rusqlite::Result<T>>) -> SentinelResult<Vec<T>> {
+    let mut items = Vec::new();
+    for row in rows {
+        items.push(row.map_err(|err| SentinelError::Storage(err.to_string()))?);
+    }
+    Ok(items)
 }
 
 fn ensure_column(
@@ -972,6 +1335,7 @@ fn is_volatile_raw_event_field(key: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{SqliteStore, StorageClearTarget};
+    use crate::attack_fingerprint::{AttackFingerprint, AttackObservation, FingerprintFeature};
     use crate::baseline::{snapshot::FileBaseline, BaselineSnapshot};
     use chrono::{Duration, Utc};
     use sentinel_core::{Category, Finding, RawEvent, Severity};
@@ -1046,6 +1410,65 @@ mod tests {
         assert_eq!(snapshot.1, "High");
         assert_eq!(snapshot.2, "subject");
         assert_eq!(snapshot.3, "title");
+        Ok(())
+    }
+
+    #[test]
+    fn stores_attack_fingerprints_and_observations() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let now = Utc::now();
+        let fingerprint = AttackFingerprint {
+            id: "WEB-FP-test".to_string(),
+            kind: "web_probe".to_string(),
+            title: "Web attack fingerprint".to_string(),
+            exact_hash: "abc".to_string(),
+            simhash: "0000000000000001".to_string(),
+            first_seen_at: now,
+            last_seen_at: now,
+            seen_count: 1,
+            source_ips: vec!["8.8.8.8".to_string()],
+            hosts: vec!["host".to_string()],
+            rule_ids: vec!["WEB-001".to_string()],
+            categories: vec!["web".to_string()],
+            score: 85,
+            confidence: 85,
+            verdict: "unknown".to_string(),
+            summary: "probe".to_string(),
+            features: vec![FingerprintFeature {
+                key: "family".to_string(),
+                value: "env_file".to_string(),
+            }],
+        };
+        let observation = AttackObservation {
+            id: "obs-1".to_string(),
+            fingerprint_id: fingerprint.id.clone(),
+            finding_id: "finding-1".to_string(),
+            host_id: "host".to_string(),
+            source_ip: "8.8.8.8".to_string(),
+            rule_id: "WEB-001".to_string(),
+            observed_at: now,
+            features: fingerprint.features.clone(),
+            evidence_summary: "probe_family=env_file".to_string(),
+        };
+
+        store.save_attack_fingerprint(&fingerprint)?;
+        store.save_attack_observation(&observation, 10)?;
+        assert_eq!(
+            store
+                .find_attack_fingerprint_by_exact_hash("web_probe", "abc")?
+                .map(|item| item.id),
+            Some("WEB-FP-test".to_string())
+        );
+        assert_eq!(store.list_attack_fingerprints(10)?.len(), 1);
+        assert_eq!(store.list_attack_observations("WEB-FP-test", 10)?.len(), 1);
+        assert!(store.set_attack_fingerprint_verdict("WEB-FP-test", "benign")?);
+        assert_eq!(
+            store
+                .get_attack_fingerprint("WEB-FP-test")?
+                .map(|item| item.verdict),
+            Some("benign".to_string())
+        );
         Ok(())
     }
 

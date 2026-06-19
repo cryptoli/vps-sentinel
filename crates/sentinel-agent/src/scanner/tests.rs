@@ -9,7 +9,10 @@ use super::{
 use crate::active_response::{ActiveResponseReport, BlockAction, BlockActionStatus};
 use crate::storage::SqliteStore;
 use chrono::{Duration, Utc};
-use sentinel_core::{Category, Evidence, Finding, RawEvent, SentinelConfig, Severity};
+use sentinel_core::{
+    evidence_value as core_evidence_value, Category, Evidence, Finding, RawEvent, SentinelConfig,
+    Severity,
+};
 
 #[test]
 fn redacts_finding_subject_and_evidence() {
@@ -34,9 +37,18 @@ fn redacts_finding_subject_and_evidence() {
 
     let redacted = redact_findings(vec![finding], &config);
     assert_eq!(redacted[0].subject, "root@203.0.x.x");
-    assert_eq!(redacted[0].evidence[0].value, "203.0.x.x");
-    assert_eq!(redacted[0].evidence[1].value, "/bin/bash [args masked]");
-    assert_eq!(redacted[0].evidence[2].value, "[masked by privacy config]");
+    assert_eq!(
+        core_evidence_value(&redacted[0].evidence, "source_ip"),
+        Some("203.0.x.x")
+    );
+    assert_eq!(
+        core_evidence_value(&redacted[0].evidence, "cmdline"),
+        Some("/bin/bash [args masked]")
+    );
+    assert_eq!(
+        core_evidence_value(&redacted[0].evidence, "raw"),
+        Some("[masked by privacy config]")
+    );
 }
 
 #[test]

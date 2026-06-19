@@ -90,6 +90,26 @@ impl Default for PerformanceConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct ResourceBudgetConfig {
+    pub enabled: bool,
+    pub max_findings_per_scan: usize,
+    pub max_evidence_items_per_finding: usize,
+    pub max_evidence_value_bytes: usize,
+}
+
+impl Default for ResourceBudgetConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_findings_per_scan: 500,
+            max_evidence_items_per_finding: 64,
+            max_evidence_value_bytes: 2048,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SshConfig {
     pub enabled: bool,
     pub auth_log_paths: Vec<PathBuf>,
@@ -534,6 +554,40 @@ impl Default for ActiveResponseConfig {
             web_exploit_block_threshold: 5,
             ssh_enabled: true,
             ssh_failed_login_block_threshold: DEFAULT_SSH_FAILED_LOGIN_THRESHOLD,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AttackFingerprintConfig {
+    pub enabled: bool,
+    pub similarity_enabled: bool,
+    pub similarity_hamming_distance: u32,
+    pub max_match_candidates: usize,
+    pub max_features_per_fingerprint: usize,
+    pub max_observations_per_fingerprint: usize,
+    pub retention_days: u32,
+    pub active_response_enabled: bool,
+    pub active_response_min_score: u16,
+    pub active_response_min_observations: usize,
+    pub active_response_min_distinct_ips: usize,
+}
+
+impl Default for AttackFingerprintConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            similarity_enabled: true,
+            similarity_hamming_distance: 6,
+            max_match_candidates: 1000,
+            max_features_per_fingerprint: 40,
+            max_observations_per_fingerprint: 200,
+            retention_days: 30,
+            active_response_enabled: true,
+            active_response_min_score: 75,
+            active_response_min_observations: 2,
+            active_response_min_distinct_ips: 2,
         }
     }
 }

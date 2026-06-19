@@ -99,6 +99,13 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "active_response_reason_summary" => "active response reason summary",
             "active_response_status" => "active response status",
             "active_response_window" => "active response window",
+            "attack_fingerprint_action_hint" => "attack fingerprint action",
+            "attack_fingerprint_id" => "attack fingerprint",
+            "attack_fingerprint_kind" => "attack fingerprint kind",
+            "attack_fingerprint_score" => "attack fingerprint score",
+            "attack_fingerprint_seen_count" => "attack fingerprint observations",
+            "attack_fingerprint_source_ip_count" => "attack fingerprint source IPs",
+            "attack_fingerprint_verdict" => "attack fingerprint verdict",
             "change" => "change",
             "cmdline" => "command line",
             "command" => "command",
@@ -224,6 +231,13 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "active_response_reason_summary" => "封禁原因摘要",
             "active_response_status" => "主动响应状态",
             "active_response_window" => "主动响应窗口",
+            "attack_fingerprint_action_hint" => "攻击指纹动作",
+            "attack_fingerprint_id" => "攻击指纹",
+            "attack_fingerprint_kind" => "攻击指纹类型",
+            "attack_fingerprint_score" => "攻击指纹评分",
+            "attack_fingerprint_seen_count" => "攻击指纹观察次数",
+            "attack_fingerprint_source_ip_count" => "攻击指纹来源 IP 数",
+            "attack_fingerprint_verdict" => "攻击指纹判定",
             "change" => "变化类型",
             "cmdline" => "命令行",
             "command" => "命令",
@@ -458,6 +472,48 @@ fn direct_value_label(
         }
         ("active_response_status", "skipped_limit", NotificationLanguage::ZhCn) => {
             Some("达到单轮封禁上限，已跳过")
+        }
+        ("attack_fingerprint_action_hint", "block", NotificationLanguage::En) => {
+            Some("block current source")
+        }
+        ("attack_fingerprint_action_hint", "block", NotificationLanguage::ZhCn) => {
+            Some("封禁当前来源")
+        }
+        ("attack_fingerprint_kind", "web_probe", NotificationLanguage::En) => {
+            Some("Web probing pattern")
+        }
+        ("attack_fingerprint_kind", "web_probe", NotificationLanguage::ZhCn) => {
+            Some("Web 探测模式")
+        }
+        ("attack_fingerprint_kind", "ssh_bruteforce", NotificationLanguage::En) => {
+            Some("SSH brute-force pattern")
+        }
+        ("attack_fingerprint_kind", "ssh_bruteforce", NotificationLanguage::ZhCn) => {
+            Some("SSH 爆破模式")
+        }
+        ("attack_fingerprint_kind", "host_process", NotificationLanguage::En) => {
+            Some("host process behavior")
+        }
+        ("attack_fingerprint_kind", "host_process", NotificationLanguage::ZhCn) => {
+            Some("主机进程行为")
+        }
+        ("attack_fingerprint_kind", "host_persistence", NotificationLanguage::En) => {
+            Some("host persistence behavior")
+        }
+        ("attack_fingerprint_kind", "host_persistence", NotificationLanguage::ZhCn) => {
+            Some("主机持久化行为")
+        }
+        ("attack_fingerprint_verdict", "unknown", NotificationLanguage::En) => Some("unknown"),
+        ("attack_fingerprint_verdict", "unknown", NotificationLanguage::ZhCn) => Some("未确认"),
+        ("attack_fingerprint_verdict", "benign", NotificationLanguage::En) => Some("benign"),
+        ("attack_fingerprint_verdict", "benign", NotificationLanguage::ZhCn) => {
+            Some("已标记为正常")
+        }
+        ("attack_fingerprint_verdict", "malicious", NotificationLanguage::En) => {
+            Some("confirmed malicious")
+        }
+        ("attack_fingerprint_verdict", "malicious", NotificationLanguage::ZhCn) => {
+            Some("已确认恶意")
         }
         ("probe_family", value, language) => probe_family_value_label(value, language),
         ("process_start_drift", "changed", NotificationLanguage::En) => {

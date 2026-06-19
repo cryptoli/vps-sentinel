@@ -38,13 +38,15 @@ It is not:
 | Rootkit signals | Collects lightweight local indicators for hidden process and suspicious procfs behavior. |
 | Docker context | Detects Docker availability and emits initial container-surface context without requiring Docker-specific write access. |
 | Incident correlation | Correlates findings by source IP, path, process, category, and time window into local incidents with timelines. |
+| Attack fingerprints | Extracts normalized Web, SSH, process, and persistence attack fingerprints from findings; stores exact hashes plus SimHash-style similarity keys; groups repeated attack methods across changing IPs; exposes fingerprint timelines and operator verdicts. |
+| Evidence and rule governance | Normalizes common evidence fields such as source IPs, users, paths, counts, and probe families; keeps built-in rule ownership, category, response scope, and evidence contracts in one rule matrix. |
 | Service profile | Maintains a service-owner profile for listening sockets and reports new services or executable drift on known listeners. |
 | Advanced collectors | Reads auditd logs when present and accepts an eBPF JSONL/command bridge when configured. The collectors are enabled by default and safely produce no events when their inputs are absent. |
 | External rules | Supports Sigma-like TOML event rules and optional YARA CLI scans for user-supplied defensive rules. The rule engine is enabled by default; it runs only when rule or scan paths are configured. |
 | Threat intelligence | Optionally enriches findings with local or remote indicators for IPs, paths, domains, and hashes. Indicator matches are supporting evidence, not standalone block triggers. |
 | Fleet view | Exports and ingests lightweight node snapshots so several VPS hosts can be reviewed from one local SQLite store. |
 | Maintenance mode | Provides a bounded maintenance window that can suppress low/medium baseline drift during planned upgrades without hiding high-risk activity. |
-| Storage and footprint control | Stores raw events, findings, baselines, scan runs, and self-contained notification logs in local SQLite; repeated raw facts use stable storage keys, raw log lines are omitted by default, ordinary Web access rows are not persisted unless enabled, and retention/database caps prevent unbounded growth. |
+| Storage and footprint control | Stores raw events, findings, baselines, scan runs, and self-contained notification logs in local SQLite; repeated raw facts use stable storage keys, raw log lines are omitted by default, ordinary Web access rows are not persisted unless enabled, and retention/database/runtime caps prevent unbounded growth. |
 | Noise control | Uses allowlists, minimum severity, finding deduplication, and configurable retention windows. |
 | Active response | Handles high-confidence public-source web probes and SSH brute-force sources through `observe`, `balanced`, or `strict` strategies; firewall writes use nftables or iptables with TTL-based expiry and public-IP safety checks. Enabled by default for new installs. |
 | Notifications | Sends alerts through Telegram, Email SMTP, generic webhook, ntfy, Gotify, Bark, and ServerChan. |
@@ -76,7 +78,17 @@ Firewall state is auxiliary context, not the source of truth. Socket exposure st
 
 Every finding is enriched with a unified 0-100 risk score derived from severity, detector confidence, rule-specific scores, active-response context, and optional threat-intel matches. Incidents are generated after scan-level coalescing by grouping related findings within a configured time window, so operators can inspect an attack chain with `vs incidents timeline <incident_id>` instead of reading isolated alerts.
 
+Attack fingerprints are generated after finding coalescing and risk scoring. The fingerprint engine extracts stable features from Web probes, SSH brute-force dictionaries, process behavior, and persistence/file-change findings; normalizes volatile values such as numeric IDs, path variants, and encoded URL forms; derives an exact BLAKE3 hash plus a 64-bit SimHash for near-match clustering; and stores bounded observations in SQLite. Source IPs are not part of the exact fingerprint, so a scanner that rotates IPs can still be grouped by method. If `privacy.mask_ip = true`, stored source-IP values are replaced with stable hashes. A repeated high-score fingerprint can add an active-response action hint to the current finding, but firewall writes still go through the normal public-IP, allowlist, trusted-proxy, response-policy, and max-block safeguards.
+
+Evidence is normalized before downstream correlation and response logic consumes it. Common aliases such as `ip`, `remote_ip`, and `remote_addr` are canonicalized to `source_ip`; list values are deduplicated deterministically; booleans and counts are normalized; and path/command values are bounded later by the resource budget. This keeps notification rendering, incidents, attack fingerprints, active response, and storage from each inventing different meanings for the same field.
+
+Built-in rule metadata includes an ownership matrix: every rule has a domain owner, category, default severity, response scope, and expected evidence keys. The matrix is tested with the rule engine so future rule additions must fit an existing domain instead of silently creating a duplicate or ambiguous rule family. `vs rules matrix` prints this view for audits and integrations.
+
+Operator feedback is part of the detection loop. `vs fingerprints mark-benign <id>` prevents that fingerprint from creating fingerprint-based response hints and also suppresses automatic active-response blocking for findings carrying the benign verdict. `mark-malicious` can make future matches eligible for response hints, but the final firewall action still requires a public source IP and must pass allowlists, trusted-proxy safety, response policy, and per-scan block limits.
+
 The scan pipeline keeps memory bounded by indexing events by kind/source before detection, aggregating SSH failure logs by source IP, applying time windows and per-scan caps to Web/SSH log events, and dropping stable file snapshots from the detector/storage path after they have been used for baseline comparison. Changes, unsafe SSH key-file state, WebShell markers, and executable web files are still retained for detection.
+
+Runtime resource budgets run on findings before response processing and again after response annotations. If a host produces an extreme number of findings or evidence fields, vps-sentinel ranks findings by severity, unified risk score, confidence, and timestamp, then keeps the highest-value records. Evidence fields are prioritized so source IPs, active-response fields, attack fingerprints, paths, process identity, probe families, and risk scores survive before low-value context. This protects small VPS memory and notification budgets without changing detector rules.
 
 ## Notification Channels
 
@@ -208,6 +220,10 @@ The Docker containers used in CI are build and compatibility test environments o
 | Noise control | Applies scan-level deduplication, persisted dedup windows, state reminder intervals, quiet hours, and hourly notification budgets. | Reduces repeat messages while keeping high-value alerts visible. |
 | Active response | Evaluates current findings after scan-level coalescing/deduplication and before persisted notification deduplication; only public IPs outside `[allowlist].ips` can be blocked, and unresolved trusted proxy/CDN sources are never block candidates. Web blocks require successful sensitive responses, high-confidence exploit probes, repeated lower-confidence exploit probes, or high-volume probe/error bursts; SSH blocks default to the same failed-login threshold as the SSH brute-force alert. | Lets operators turn noisy, obvious scanners into temporary firewall drops without making every alert destructive or blocking CDN edges by mistake. |
 | Response policy DSL | Applies configurable response policies after detection candidates are created. Policies match rule IDs or categories and choose observe, temporary block, or permanent block with minimum severity, confidence, and unified score thresholds. | Keeps detection logic separate from response decisions and lets operators tune blocking without code changes. |
+| Attack fingerprints | Extracts normalized feature sets from Web/SSH/process/persistence findings, builds exact hashes and SimHash similarity keys, stores bounded observations, and writes fingerprint evidence back to findings. | Groups rotating-IP attacks by method, exposes `vs fingerprints` timelines and verdicts, and can make repeated confirmed methods eligible for active response without relying on IP blacklists. |
+| Evidence schema | Canonicalizes common evidence aliases, normalizes lists/booleans/counts, and shares evidence access helpers across scanning, fingerprints, active response, and tests. | Prevents modules from interpreting `ip`, `remote_addr`, and `source_ip` differently, making future rules safer to add. |
+| Rule ownership matrix | Each built-in rule declares an owner, category, response scope, and expected evidence keys; tests enforce compatibility and canonical fields. | Keeps rule families organized and catches duplicated, ambiguous, or poorly scoped rules during development. |
+| Resource budgets | Ranks findings by severity, unified score, confidence, and timestamp; limits finding count, evidence count, and evidence value length with UTF-8-safe truncation. | Keeps memory, notification volume, and stored finding size bounded while preserving the highest-value security evidence. |
 | Incidents and timeline | Groups related findings by IP, path, process, category, and time window, stores a bounded incident index, and exposes `incidents list/show/timeline`. | Turns isolated findings into a readable attack-chain view while keeping raw findings available. |
 | Service profile | Stores listener owner profiles with address, port, protocol, process name, executable, command line, and exposure classification; dynamic UDP/UDP6 high ports can be keyed by process identity, and configurable transient clients plus loopback SSH forwarding listeners are ignored. | Detects service drift on common ports and new listeners without blindly trusting 80/443 or alerting every time a legitimate dynamic UDP port changes. |
 | Advanced evidence | Optional auditd, eBPF JSONL bridge, Sigma-like TOML rules, YARA CLI scans, and threat-intel indicators feed the same RawEvent/Finding model. | Adds deeper host signals when the platform supports them while keeping default installs lightweight and compatible. |
@@ -445,6 +461,12 @@ Commands:
 | `vps-sentinel events show <event_id> --config <path>` | Show one stored finding by ID as JSON. |
 | `vps-sentinel findings list --json --config <path>` | List recent stored findings with severity, confidence, rule ID, and subject. |
 | `vps-sentinel findings explain <finding_id> --json --config <path>` | Explain one stored finding with rule metadata, evidence, confidence, impact, and recommendations. |
+| `vps-sentinel fingerprints list --config <path>` | List attack fingerprints with kind, score, observation count, source count, host count, verdict, and summary. |
+| `vps-sentinel fingerprints show <fingerprint_id> --config <path>` | Show one attack fingerprint, including exact hash, SimHash, features, source count, rules, and timestamps. |
+| `vps-sentinel fingerprints timeline <fingerprint_id> --config <path>` | Show recent observations that matched a fingerprint. |
+| `vps-sentinel fingerprints mark-benign <fingerprint_id> --config <path>` | Mark a fingerprint as benign so matching findings will not create fingerprint hints or automatic active-response blocks. |
+| `vps-sentinel fingerprints mark-malicious <fingerprint_id> --config <path>` | Mark a fingerprint as confirmed malicious; future matches can create active-response hints when a public source IP is present. |
+| `vps-sentinel fingerprints export --redacted --config <path>` | Export fingerprints and recent observations as JSON, optionally redacting source IPs. |
 | `vps-sentinel incidents list --config <path>` | List correlated incidents built from related findings. Add `--json` for structured output. |
 | `vps-sentinel incidents show <incident_id> --config <path>` | Show one correlated incident with subjects, categories, rules, and summary. |
 | `vps-sentinel incidents timeline <incident_id> --config <path>` | Print the finding timeline for a correlated incident. |
@@ -465,6 +487,7 @@ Commands:
 | `vps-sentinel storage clear <target> --yes --config <path>` | Manually clear selected history such as `raw-events`, `findings`, `notifications`, `scan-runs`, `baselines`, or `all-history`. |
 | `vps-sentinel storage vacuum --config <path>` | Run SQLite checkpoint/VACUUM/optimize without deleting rows. |
 | `vps-sentinel rules list` | List built-in detection rules, severity, and descriptions. |
+| `vps-sentinel rules matrix --json` | Print the built-in rule ownership matrix, including owner, category, response scope, and evidence keys. |
 | `vps-sentinel rules test <rule_id>` | Verify that a built-in rule ID exists and can be loaded. |
 | `vps-sentinel notify test --config <path>` | Send a synthetic Info finding through enabled notification channels. Use this to verify credentials and routing. |
 | `vps-sentinel-stop` | Stop the running systemd service while keeping config, data, logs, and binaries in place. |
@@ -510,6 +533,18 @@ max_stored_field_bytes = 4096
 ```
 
 `collect_memory_metrics` adds best-effort process RSS before/after values to scan reports and JSON output. `store_raw_log_lines = false` keeps structured fields such as IP, user, path, status, and method while omitting full raw log lines from stored raw events. `store_all_web_access_events = false` stores only Web access rows that are relevant to Web probing evidence, which keeps busy public websites from filling SQLite with ordinary 404/static traffic. `max_stored_field_bytes` truncates unusually large stored field values without changing the in-memory detection input.
+
+Runtime resource budgets:
+
+```toml
+[resource_budget]
+enabled = true
+max_findings_per_scan = 500
+max_evidence_items_per_finding = 64
+max_evidence_value_bytes = 2048
+```
+
+`resource_budget` limits in-memory finding volume after detection. When a scan exceeds `max_findings_per_scan`, findings are ranked by severity, unified risk score, confidence, and timestamp so higher-value evidence is retained first. Evidence item and value limits keep very large findings from bloating memory, notification payloads, or SQLite rows; source IPs, active-response fields, attack fingerprints, paths, process identity, probe families, and risk scores are prioritized before low-value context.
 
 SSH alert policy:
 
@@ -669,6 +704,25 @@ ssh_failed_login_block_threshold = 6
 Active response is enabled by default for new installs. Existing configs are not overwritten during upgrade, so a host that explicitly has `active_response.enabled = false` stays disabled until the operator changes it. `strategy = "observe"` records block candidates without writing firewall rules, `balanced` is the default policy, and `strict` requires stronger evidence for rejected Web probes and SSH brute-force sources. The scanner applies active response after scan-level coalescing/deduplication but before persisted notification deduplication, so an escalating source can still be blocked even when repeated notifications are suppressed. SSH blocking requires an `SSH-003` finding and defaults to 6 failed logins in the scan window. Web blocking covers successful sensitive responses, high-confidence RCE-style exploit probes, repeated lower-confidence exploit probes, and high-volume error bursts, but Web findings marked `proxy_source_unresolved` are never block candidates. Quiet hours and notification limiters do not prevent blocking. The backend uses nftables when available and falls back to iptables/ip6tables. Normal blocks are temporary: nftables uses set timeouts and vps-sentinel also stores block state in SQLite so expired entries can be removed on later scans. If the same public source IP repeatedly becomes a block candidate at least `permanent_block_threshold` times within `permanent_block_window_seconds`, it is escalated to a permanent firewall block with no expiry. Permanent escalation still respects `[allowlist].ips`, trusted proxy attribution safety, `strategy = "observe"`, and `max_blocks_per_scan`, and operators can remove it with `vs blocks unblock <ip>` or `vs blocks unblock-all --yes`. Only public routable source IPs are eligible. When one scan creates at most `notification_detail_limit` new blocks, alerts include the blocked IP and reason; larger block bursts produce one summary alert and operators can inspect details with `vs blocks list --no-verify`.
 
 Every scan synchronizes active-response state with the real firewall before deciding whether a source is already blocked. If a rule expired, was removed by firewalld/ufw reload, or was changed manually, the stale state record is removed and a still-escalating source can be blocked again. The iptables backend checks for an existing rule before inserting, so repeated scans do not create duplicate DROP rules, and manual unblock removes duplicate matching rules if they exist. Use `vs blocks list`, `vs blocks cleanup`, `vs blocks unblock <ip>`, and `vs blocks unblock-all --yes` for operational control.
+
+Attack fingerprints:
+
+```toml
+[attack_fingerprints]
+enabled = true
+similarity_enabled = true
+similarity_hamming_distance = 6
+max_match_candidates = 1000
+max_features_per_fingerprint = 40
+max_observations_per_fingerprint = 200
+retention_days = 30
+active_response_enabled = true
+active_response_min_score = 75
+active_response_min_observations = 2
+active_response_min_distinct_ips = 2
+```
+
+`attack_fingerprints` controls method-based clustering. Exact fingerprints use normalized features and intentionally exclude source IPs. Similarity matching uses SimHash hamming distance against recent same-kind fingerprints, bounded by `max_match_candidates` for predictable memory and CPU use. `max_observations_per_fingerprint` and `retention_days` bound storage growth. Fingerprint-based active response only adds a block hint after score, observation, and distinct-source thresholds are met, or after the operator marks a fingerprint malicious; the final firewall decision still goes through the normal active-response safety filters. Mark a noisy legitimate pattern with `vs fingerprints mark-benign <id>` to suppress fingerprint hints and automatic blocking for matching findings.
 
 Response policy:
 

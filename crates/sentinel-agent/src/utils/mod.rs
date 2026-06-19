@@ -6,3 +6,4 @@ pub mod package;
 pub mod procfs;
 pub mod redact;
 pub mod ssh_config;
+pub mod text;

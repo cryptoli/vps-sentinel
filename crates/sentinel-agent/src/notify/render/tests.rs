@@ -119,6 +119,37 @@ fn localizes_web_probe_family_evidence_value() {
 }
 
 #[test]
+fn localizes_attack_fingerprint_evidence() {
+    let finding = Finding::new(
+        "host",
+        "Web vulnerability probing detected",
+        "Web requests match a known probing family.",
+        Severity::High,
+        Category::Web,
+        "WEB-001",
+        "203.0.113.40",
+    )
+    .with_evidence(vec![
+        Evidence::new("attack_fingerprint_id", "WEB-FP-123456"),
+        Evidence::new("attack_fingerprint_kind", "web_probe"),
+        Evidence::new("attack_fingerprint_action_hint", "block"),
+        Evidence::new("attack_fingerprint_verdict", "malicious"),
+    ]);
+
+    let chinese = render_finding_with_language(
+        &finding,
+        NotificationFormat::PlainText,
+        NotificationLanguage::ZhCn,
+    );
+
+    assert!(chinese.contains("攻击指纹: WEB-FP-123456"));
+    assert!(chinese.contains("攻击指纹类型: Web 探测模式"));
+    assert!(chinese.contains("攻击指纹动作: 封禁当前来源"));
+    assert!(chinese.contains("攻击指纹判定: 已确认恶意"));
+    assert!(!chinese.contains("web_probe"));
+}
+
+#[test]
 fn renders_html_without_raw_markup_in_values() {
     let finding = sample_finding().with_evidence(vec![Evidence::new("path", "<script>")]);
     let alert = render_alert(&finding);

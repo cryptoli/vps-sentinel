@@ -5,6 +5,7 @@ pub mod config;
 pub mod doctor;
 pub mod events;
 pub mod findings;
+pub mod fingerprints;
 pub mod fleet;
 pub mod incidents;
 pub mod init;
