@@ -28,13 +28,58 @@ export function createView({ t, language, freshness = {} }) {
   function metrics(items) {
     const wrapper = document.createElement("div");
     wrapper.className = "grid metrics";
-    for (const [label, value, tone] of items) {
+    for (const itemConfig of items) {
+      const { label, value, tone, caption } = Array.isArray(itemConfig)
+        ? { label: itemConfig[0], value: itemConfig[1], tone: itemConfig[2], caption: "" }
+        : itemConfig;
       const item = document.createElement("div");
       item.className = `metric metric-${tone}`;
-      item.append(span("label", label), span("value", number(value)));
+      const head = document.createElement("div");
+      head.className = "metric-head";
+      head.append(span("label", label), span("metric-signal", ""));
+      item.append(head, span("value", number(value)));
+      if (caption) item.append(span("metric-caption", caption));
       wrapper.append(item);
     }
     return wrapper;
+  }
+
+  function dashboardShell(...children) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "dashboard-shell";
+    wrapper.append(...children);
+    return wrapper;
+  }
+
+  function heroBand({ eyebrow, title, description, status, actions = [] }) {
+    const wrapper = document.createElement("section");
+    wrapper.className = "hero-band";
+    const copy = document.createElement("div");
+    copy.className = "hero-copy";
+    copy.append(span("hero-eyebrow", eyebrow), heading("h2", title), paragraph(description));
+    const aside = document.createElement("div");
+    aside.className = "hero-actions";
+    aside.append(...actions.filter(Boolean));
+    wrapper.append(copy);
+    if (status || aside.childElementCount) {
+      const rail = document.createElement("div");
+      rail.className = "hero-rail";
+      if (status) rail.append(status);
+      if (aside.childElementCount) rail.append(aside);
+      wrapper.append(rail);
+    }
+    return wrapper;
+  }
+
+  function statusSummary(label, tone, detail) {
+    const wrapper = document.createElement("div");
+    wrapper.className = `status-summary ${tone || "fresh"}`;
+    wrapper.append(span("status-summary-label", label), span("status-summary-detail", detail));
+    return wrapper;
+  }
+
+  function timeRangeHint(label) {
+    return span("time-range-hint", label);
   }
 
   function chartsGrid(items) {
@@ -44,15 +89,49 @@ export function createView({ t, language, freshness = {} }) {
     return wrapper;
   }
 
-  function panel(title, content) {
+  function dashboardGrid(...items) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "dashboard-grid";
+    wrapper.append(...items);
+    return wrapper;
+  }
+
+  function splitPanels(...items) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "split-panels";
+    wrapper.append(...items);
+    return wrapper;
+  }
+
+  function panel(title, content, options = {}) {
     const wrapper = document.createElement("section");
-    wrapper.className = "panel";
+    wrapper.className = `panel${options.tone ? ` panel-${options.tone}` : ""}`;
     const head = document.createElement("div");
     head.className = "panel-title";
-    const heading = document.createElement("h3");
-    heading.textContent = title;
-    head.append(heading);
+    const text = document.createElement("div");
+    text.className = "panel-title-copy";
+    text.append(heading("h3", title));
+    if (options.meta) text.append(span("panel-meta", options.meta));
+    head.append(text);
+    if (options.action) head.append(options.action);
     wrapper.append(head, content);
+    return wrapper;
+  }
+
+  function compactRecords(rows, mapRecord) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "compact-records";
+    if (!rows.length) return emptyChart();
+    for (const row of rows.slice(0, 5).map(mapRecord)) {
+      const item = document.createElement("article");
+      item.className = `compact-record ${row.tone || "neutral"}`;
+      item.append(
+        span("compact-record-title", row.title || "-"),
+        span("compact-record-meta", row.meta || "-"),
+        span("compact-record-detail", row.detail || "-"),
+      );
+      wrapper.append(item);
+    }
     return wrapper;
   }
 
@@ -196,13 +275,7 @@ export function createView({ t, language, freshness = {} }) {
   }
 
   function freshnessBadge(nodes) {
-    const counts = nodes.reduce(
-      (acc, node) => {
-        acc[freshnessStatus(ageMinutes(node.last_seen_at), node)] += 1;
-        return acc;
-      },
-      { fresh: 0, stale: 0, offline: 0, retired: 0 },
-    );
+    const counts = freshnessCounts(nodes);
     const status = counts.offline > 0 ? "offline" : counts.stale > 0 ? "stale" : counts.retired > 0 ? "retired" : "fresh";
     const text =
       status === "offline"
@@ -222,6 +295,16 @@ export function createView({ t, language, freshness = {} }) {
       retiredThreshold: retiredThresholdMinutes,
     });
     return badge;
+  }
+
+  function freshnessCounts(nodes) {
+    return nodes.reduce(
+      (acc, node) => {
+        acc[freshnessStatus(ageMinutes(node.last_seen_at), node)] += 1;
+        return acc;
+      },
+      { fresh: 0, stale: 0, offline: 0, retired: 0 },
+    );
   }
 
   function emptyChart() {
@@ -354,6 +437,18 @@ export function createView({ t, language, freshness = {} }) {
     return item;
   }
 
+  function heading(level, text) {
+    const item = document.createElement(level);
+    item.textContent = text;
+    return item;
+  }
+
+  function paragraph(text) {
+    const item = document.createElement("p");
+    item.textContent = text;
+    return item;
+  }
+
   function fragment(...children) {
     const item = document.createDocumentFragment();
     item.append(...children);
@@ -375,10 +470,15 @@ export function createView({ t, language, freshness = {} }) {
     barChart,
     button,
     chartsGrid,
+    compactRecords,
+    dashboardGrid,
+    dashboardShell,
     detailList,
     donutChart,
     fragment,
     freshnessBadge,
+    freshnessCounts,
+    heroBand,
     input,
     labelControl,
     loading,
@@ -391,6 +491,9 @@ export function createView({ t, language, freshness = {} }) {
     sectionHeader,
     select,
     span,
+    splitPanels,
+    statusSummary,
+    timeRangeHint,
   };
 }
 

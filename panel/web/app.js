@@ -6,6 +6,7 @@ import {
   rangeInfo,
 } from "./components.js";
 import { DATASETS } from "./datasets.js";
+import { renderOverviewDashboard } from "./dashboard.js";
 import { createTranslator, selectedLanguage } from "./i18n.js";
 
 const API_BASE = "/api/v1";
@@ -133,11 +134,18 @@ async function buildPages(manifest) {
 
 function renderNav() {
   nav.replaceChildren(
-    ...state.pages.map((page) => {
+    ...state.pages.map((page, index) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = `nav-button${page.id === state.currentPage ? " active" : ""}`;
-      button.textContent = page.labelKey ? t(page.labelKey) : page.label;
+      if (page.id === state.currentPage) button.setAttribute("aria-current", "page");
+      const marker = document.createElement("span");
+      marker.className = "nav-marker";
+      marker.textContent = String(index + 1).padStart(2, "0");
+      const label = document.createElement("span");
+      label.className = "nav-label";
+      label.textContent = page.labelKey ? t(page.labelKey) : page.label;
+      button.append(marker, label);
       button.addEventListener("click", async () => {
         state.currentPage = page.id;
         renderNav();
@@ -195,30 +203,7 @@ async function renderOverview(ctx) {
   if (Object.keys(DATASETS).some((key) => !state.datasets[key]?.items)) {
     await loadOverviewDatasets();
   }
-  const ui = view();
-  const summary = ctx.state.summary || {};
-  app.append(
-    ui.sectionHeader(t("overviewTitle"), t("overviewDescription"), ui.freshnessBadge(ctx.state.datasets.nodes?.items || [])),
-    ui.metrics([
-      [t("nodesMetric"), summary.nodes, "nodes"],
-      [t("findingsMetric"), summary.findings, "findings"],
-      [t("incidentsMetric"), summary.incidents, "incidents"],
-      [t("driftsMetric"), summary.baseline_drifts, "drifts"],
-      [t("blocksMetric"), summary.active_blocks, "blocks"],
-    ]),
-    ui.chartsGrid([
-      ui.panel(t("severityDistribution"), ui.barChart(summary.by_severity || [], "severity", "count")),
-      ui.panel(t("activityMix"), ui.donutChart([
-        { label: t("findingsMetric"), value: summary.findings || 0, className: "chart-high" },
-        { label: t("incidentsMetric"), value: summary.incidents || 0, className: "chart-critical" },
-        { label: t("driftsMetric"), value: summary.baseline_drifts || 0, className: "chart-medium" },
-        { label: t("blocksMetric"), value: summary.active_blocks || 0, className: "chart-low" },
-      ])),
-      ui.panel(t("fleetFreshness"), ui.nodeFreshness(ctx.state.datasets.nodes?.items || [])),
-    ]),
-    ui.panel(t("latestFindings"), ui.renderTable(ctx.state.datasets.findings?.items || [], DATASETS.findings.columns)),
-    ui.panel(t("latestIncidents"), ui.renderTable(ctx.state.datasets.incidents?.items || [], DATASETS.incidents.columns)),
-  );
+  renderOverviewDashboard(ctx);
 }
 
 async function renderDatasetPage(ctx, datasetKey) {
