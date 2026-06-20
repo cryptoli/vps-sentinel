@@ -44,7 +44,7 @@ It is not:
 | Advanced collectors | Reads auditd logs when present, accepts an eBPF JSONL/command bridge, and can generate a lightweight bpftrace runtime probe script for short-lived exec and optional mutating file events. Audit and eBPF events can detect short-lived activity that procfs snapshots may miss. |
 | External rules | Supports Sigma-like TOML event rules, external-rule validation, and optional YARA CLI scans for user-supplied defensive rules. The rule engine is enabled by default; it runs only when rule or scan paths are configured. |
 | Threat intelligence | Optionally enriches findings with local or remote indicators for IPs, paths, domains, and hashes. Indicator matches are supporting evidence, not standalone block triggers. |
-| Fleet panel | Pushes signed, bounded telemetry to a self-hosted Rust panel or a Cloudflare Worker/D1 receiver; the panel stores nodes, findings, incidents, baseline drift, and active blocks, and the static UI supports third-party themes and custom pages. |
+| Fleet panel | Pushes signed, bounded, privacy-safe telemetry to a self-hosted Rust panel or a Cloudflare Worker/D1 receiver; raw IP addresses are removed before remote reporting, and the static UI supports third-party themes and custom pages. |
 | Maintenance mode | Provides a bounded maintenance window that can suppress low/medium baseline drift and interactive SSH login noise during planned upgrades without hiding brute-force or other attack signals. |
 | Storage and footprint control | Stores raw events, findings, baselines, scan runs, and self-contained notification logs in local SQLite; repeated raw facts use stable storage keys, raw log lines are omitted by default, ordinary Web access rows are not persisted unless enabled, and retention/database/runtime caps prevent unbounded growth. |
 | Noise control | Uses allowlists, minimum severity, finding deduplication, and configurable retention windows. |
@@ -171,7 +171,7 @@ min_severity = "Medium"
 
 ## Fleet Panel
 
-The agent can push signed telemetry to a central panel without exposing SSH or opening inbound ports on monitored VPS nodes. Self-hosted deployments use the Rust binary `vps-sentinel-panel` with SQLite, PostgreSQL, or MySQL. Cloudflare deployments can use the Worker/D1 receiver in `panel/cloudflare` and serve the static UI from `panel/web`. Browser read access is protected by a separate panel token, and list APIs return only fixed display fields instead of raw evidence or host storage details.
+The agent can push signed telemetry to a central panel without exposing SSH or opening inbound ports on monitored VPS nodes. Self-hosted deployments use the Rust binary `vps-sentinel-panel` with SQLite, PostgreSQL, or MySQL. Cloudflare deployments can use the Worker/D1 receiver in `panel/cloudflare` and serve the static UI from `panel/web`. Browser read access is protected by a separate panel token. Local detection and firewall response still use source IPs, but the default remote panel payload removes raw IP addresses before sending.
 
 Agent-side configuration:
 
@@ -182,7 +182,7 @@ url = "https://panel.example.com/api/v1/ingest"
 node_name = "prod-web-1"
 secret = "replace-with-a-long-random-secret"
 min_severity = "Medium"
-privacy_mode = "normal"
+privacy_mode = "strict"
 ```
 
 Useful commands are `vs panel push`, `vs panel flush`, and `vs panel outbox`. See [docs/panel.md](docs/panel.md) for the Rust panel service, Cloudflare Worker/D1 setup, MySQL/PostgreSQL notes, and third-party theme/page development.

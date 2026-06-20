@@ -96,6 +96,22 @@ export function createView({ t, language, freshness = {} }) {
     return wrapper;
   }
 
+  function insightStrip(items) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "insight-strip";
+    for (const item of items) {
+      const card = document.createElement("article");
+      card.className = `insight-card ${item.tone || "neutral"}`;
+      card.append(
+        span("insight-label", item.label),
+        span("insight-value", item.value),
+        span("insight-detail", item.detail),
+      );
+      wrapper.append(card);
+    }
+    return wrapper;
+  }
+
   function splitPanels(...items) {
     const wrapper = document.createElement("div");
     wrapper.className = "split-panels";
@@ -480,6 +496,7 @@ export function createView({ t, language, freshness = {} }) {
     freshnessCounts,
     heroBand,
     input,
+    insightStrip,
     labelControl,
     loading,
     metrics,

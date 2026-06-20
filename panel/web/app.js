@@ -380,8 +380,8 @@ function filters(datasetKey, pageState) {
   const resetButton = ui.button(t("reset"), "button", "secondary");
   form.append(
     quickRanges,
-    ui.labelControl(t("from"), ui.input("datetime-local", "from", pageState.from)),
-    ui.labelControl(t("to"), ui.input("datetime-local", "to", pageState.to)),
+    timeRangeControl(t("from"), "from", pageState.from),
+    timeRangeControl(t("to"), "to", pageState.to),
     ui.labelControl(t("pageSize"), ui.select("limit", [10, 25, 50, 100, 200], pageState.limit)),
     applyButton,
     resetButton,
@@ -403,6 +403,36 @@ function filters(datasetKey, pageState) {
     await renderCurrentPage();
   });
   return form;
+}
+
+function timeRangeControl(label, name, value) {
+  const ui = view();
+  const wrapper = document.createElement("label");
+  wrapper.className = "field range-field";
+  const hidden = ui.input("hidden", name, value || "");
+  const date = ui.input("date", `${name}_date`, datePart(value));
+  const time = ui.input("time", `${name}_time`, timePart(value));
+  time.step = 60;
+  date.setAttribute("aria-label", `${label} ${t("date")}`);
+  time.setAttribute("aria-label", `${label} ${t("time")}`);
+  const controls = document.createElement("span");
+  controls.className = "range-control";
+  controls.append(date, time);
+  const sync = () => {
+    hidden.value = date.value ? `${date.value}T${time.value || "00:00"}` : "";
+  };
+  date.addEventListener("input", sync);
+  time.addEventListener("input", sync);
+  wrapper.append(ui.span("field-label", label), controls, hidden);
+  return wrapper;
+}
+
+function datePart(value) {
+  return String(value || "").slice(0, 10);
+}
+
+function timePart(value) {
+  return String(value || "").slice(11, 16);
 }
 
 function rangePreset(preset) {
@@ -552,7 +582,47 @@ async function fetchJson(url, options = {}) {
     error.status = response.status;
     throw error;
   }
-  return response.json();
+  return sanitizePanelValue(await response.json());
+}
+
+function sanitizePanelValue(value) {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") return redactIpText(value);
+  if (Array.isArray(value)) return value.map((item) => sanitizePanelValue(item));
+  if (typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+      const lower = key.toLowerCase();
+      return [key, lower === "ip" || lower.includes("_ip") || lower.includes("addr") ? "redacted" : sanitizePanelValue(item)];
+    }));
+  }
+  return value;
+}
+
+function redactIpText(value) {
+  const withoutIpv4 = String(value).replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g, (match) => {
+    const parts = match.split(":")[0].split(".").map((part) => Number(part));
+    return parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)
+      ? "redacted"
+      : match;
+  });
+  return withoutIpv4
+    .split(/(\s+)/)
+    .map((token) => tokenContainsIpLiteral(token) ? "redacted" : token)
+    .join("");
+}
+
+function tokenContainsIpLiteral(token) {
+  const bracketed = token.match(/\[([0-9a-fA-F:.%]+)\](?::\d+)?/);
+  if (bracketed && ipv6Like(bracketed[1])) return true;
+  const candidate = token.replace(/^[,;"'({<\[]+|[,;"')}\]>.]+$/g, "");
+  return ipv6Like(candidate);
+}
+
+function ipv6Like(value) {
+  const candidate = String(value || "").split("%")[0];
+  const colonCount = (candidate.match(/:/g) || []).length;
+  if (colonCount < 2 || !/^[0-9a-fA-F:.]+$/.test(candidate)) return false;
+  return candidate.includes("::") || colonCount >= 3 || /[a-fA-F]/.test(candidate);
 }
 
 function renderError(error) {

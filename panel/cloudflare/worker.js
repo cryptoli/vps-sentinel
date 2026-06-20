@@ -34,7 +34,7 @@ const DATASETS = {
     table: "active_blocks",
     orderColumn: "blocked_at",
     activeFilter: "expired = 0",
-    columns: ["blocked_at", "node_id", "ip", "rule_id", "backend", "reason", "expires_at"],
+    columns: ["blocked_at", "node_id", "rule_id", "backend", "reason", "expires_at"],
   },
   "/api/v1/audit-logs": {
     table: "panel_audit_logs",
@@ -166,21 +166,24 @@ async function persistPayload(env, payload) {
       updated_at = excluded.updated_at
   `).bind(
     node.node_id,
-    node.node_name,
-    node.host_id,
-    node.hostname || "",
+    redactIpText(node.node_name || ""),
+    redactIpText(node.host_id || ""),
+    redactIpText(node.hostname || ""),
     node.agent_version,
     node.privacy_mode,
     JSON.stringify(node.enabled_features || []),
-    JSON.stringify(node.storage || {}),
+    JSON.stringify(redactPanelValue(node.storage || {})),
     payload.sent_at,
     receivedAt,
   ).run();
   await env.DB.prepare("INSERT OR REPLACE INTO heartbeats (message_id, node_id, sent_at, received_at, scan_json) VALUES (?, ?, ?, ?, ?)")
-    .bind(payload.message_id, node.node_id, payload.sent_at, receivedAt, JSON.stringify(payload.scan || {}))
+    .bind(payload.message_id, node.node_id, payload.sent_at, receivedAt, JSON.stringify(redactPanelValue(payload.scan || {})))
     .run();
 
   for (const finding of payload.findings || []) {
+    const evidence = redactPanelValue(finding.evidence || []);
+    const impact = redactPanelValue(finding.impact || []);
+    const recommendations = redactPanelValue(finding.recommendations || []);
     await env.DB.prepare(`
       INSERT OR REPLACE INTO findings
         (id, node_id, rule_id, title, severity, confidence, category, subject, timestamp, dedup_key, evidence_json, impact_json, recommendations_json, received_at)
@@ -189,21 +192,22 @@ async function persistPayload(env, payload) {
       finding.id,
       node.node_id,
       finding.rule_id,
-      finding.title,
+      redactIpText(finding.title || ""),
       finding.severity,
       finding.confidence,
       finding.category,
-      finding.subject,
+      redactIpText(finding.subject || ""),
       finding.timestamp,
-      finding.dedup_key,
-      JSON.stringify(finding.evidence || []),
-      JSON.stringify(finding.impact || []),
-      JSON.stringify(finding.recommendations || []),
+      redactIpText(finding.dedup_key || ""),
+      JSON.stringify(evidence),
+      JSON.stringify(impact),
+      JSON.stringify(recommendations),
       receivedAt,
     ).run();
   }
 
   for (const incident of payload.incidents || []) {
+    const incidentPayload = redactPanelValue(incident);
     await env.DB.prepare(`
       INSERT OR REPLACE INTO incidents
         (id, node_id, title, severity, score, first_seen, last_seen, summary, payload_json, received_at)
@@ -211,19 +215,20 @@ async function persistPayload(env, payload) {
     `).bind(
       incident.id,
       node.node_id,
-      incident.title,
+      redactIpText(incident.title || ""),
       incident.severity,
       Number(incident.score || 0),
       incident.first_seen,
       incident.last_seen,
-      incident.summary || "",
-      JSON.stringify(incident),
+      redactIpText(incident.summary || ""),
+      JSON.stringify(incidentPayload),
       receivedAt,
     ).run();
   }
 
   for (const drift of payload.baseline_drifts || []) {
-    const id = `${node.node_id}:${drift.finding_id || drift.rule_id}:${drift.subject}:${drift.timestamp}`;
+    const subject = redactIpText(drift.subject || "");
+    const id = `${node.node_id}:${drift.finding_id || drift.rule_id}:${subject}:${drift.timestamp}`;
     await env.DB.prepare(`
       INSERT OR REPLACE INTO baseline_drifts
         (id, node_id, finding_id, rule_id, severity, subject, timestamp, tier, score, review_action, reasons_json, received_at)
@@ -234,18 +239,18 @@ async function persistPayload(env, payload) {
       drift.finding_id || "",
       drift.rule_id,
       drift.severity,
-      drift.subject,
+      subject,
       drift.timestamp,
       drift.tier,
       drift.score ?? null,
       drift.review_action,
-      JSON.stringify(drift.reasons || []),
+      JSON.stringify(redactPanelValue(drift.reasons || [])),
       receivedAt,
     ).run();
   }
 
   for (const block of payload.active_blocks || []) {
-    const id = `${node.node_id}:${block.ip}`;
+    const id = panelBlockStorageId(node.node_id, block);
     await env.DB.prepare(`
       INSERT OR REPLACE INTO active_blocks
         (id, node_id, ip, rule_id, finding_id, reason, backend, blocked_at, expires_at, expired, firewall_present, received_at)
@@ -253,10 +258,10 @@ async function persistPayload(env, payload) {
     `).bind(
       id,
       node.node_id,
-      block.ip,
+      redactedIp(),
       block.rule_id,
       block.finding_id,
-      block.reason,
+      redactIpText(block.reason || ""),
       block.backend,
       block.blocked_at,
       block.expires_at || null,
@@ -300,7 +305,7 @@ async function queryPage(env, dataset, url) {
     `SELECT ${dataset.columns.join(", ")} FROM ${dataset.table}${whereSql} ORDER BY ${dataset.orderColumn} DESC LIMIT ? OFFSET ?`,
   ).bind(...values, page.limit, page.offset).all();
   return {
-    items: result.results || [],
+    items: redactPanelValue(result.results || []),
     total: Number(countRow?.count || 0),
     limit: page.limit,
     offset: page.offset,
@@ -325,7 +330,7 @@ async function findingDetail(env, url) {
   row.review = await env.DB.prepare(
     "SELECT finding_id, verdict, note, reviewer, reviewed_at FROM finding_reviews WHERE finding_id = ?",
   ).bind(id).first();
-  return row;
+  return redactPanelValue(row);
 }
 
 async function incidentDetail(env, url) {
@@ -338,7 +343,7 @@ async function incidentDetail(env, url) {
   if (!row) throwHttp(404, "incident_not_found");
   row.payload = parseJsonField(row.payload_json, null);
   delete row.payload_json;
-  return row;
+  return redactPanelValue(row);
 }
 
 async function findingReview(request, env) {
@@ -384,6 +389,67 @@ function normalizeFindingReview(payload) {
     reviewer: String(payload?.reviewer || "").trim().slice(0, 128),
     reviewed_at: new Date().toISOString(),
   };
+}
+
+function panelBlockStorageId(nodeId, block) {
+  const source = String(block?.finding_id || "").trim()
+    || [block?.rule_id || "", block?.blocked_at || "", block?.backend || ""].join(":");
+  return `${nodeId}:${source}`;
+}
+
+function redactedIp() {
+  return "redacted";
+}
+
+function redactPanelValue(value) {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string") return redactIpText(value);
+  if (Array.isArray(value)) return value.map((item) => redactPanelValue(item));
+  if (typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+      return [key, sensitiveNetworkKey(key) ? redactedIp() : redactPanelValue(item)];
+    }));
+  }
+  return value;
+}
+
+function sensitiveNetworkKey(key) {
+  const normalized = String(key || "").toLowerCase();
+  return normalized === "ip" || normalized.includes("_ip") || normalized.includes("addr");
+}
+
+function redactIpText(value) {
+  const text = String(value || "");
+  const withoutIpv4 = text.replace(/\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b/g, (match) => {
+    const candidate = match.split(":")[0];
+    const parts = candidate.split(".").map((part) => Number(part));
+    return parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)
+      ? redactedIp()
+      : match;
+  });
+  return withoutIpv4
+    .split(/(\s+)/)
+    .map((token) => redactIpToken(token))
+    .join("");
+}
+
+function redactIpToken(token) {
+  if (!token || /^\s+$/.test(token)) return token;
+  return tokenContainsIpLiteral(token) ? redactedIp() : token;
+}
+
+function tokenContainsIpLiteral(token) {
+  const bracketed = token.match(/\[([0-9a-fA-F:.%]+)\](?::\d+)?/);
+  if (bracketed && ipv6Like(bracketed[1])) return true;
+  const candidate = token.replace(/^[,;"'({<\[]+|[,;"')}\]>.]+$/g, "");
+  return ipv6Like(candidate);
+}
+
+function ipv6Like(value) {
+  const candidate = String(value || "").split("%")[0];
+  const colonCount = (candidate.match(/:/g) || []).length;
+  if (colonCount < 2 || !/^[0-9a-fA-F:.]+$/.test(candidate)) return false;
+  return candidate.includes("::") || colonCount >= 3 || /[a-fA-F]/.test(candidate);
 }
 
 function parseJsonField(value, fallback) {

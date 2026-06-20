@@ -915,7 +915,7 @@ impl Default for PanelConfig {
             request_timeout_seconds: 10,
             outbox_max_items: 128,
             max_payload_bytes: 512 * 1024,
-            privacy_mode: "normal".to_string(),
+            privacy_mode: "strict".to_string(),
         }
     }
 }

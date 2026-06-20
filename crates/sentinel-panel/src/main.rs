@@ -22,7 +22,7 @@ use sqlx_core::row::Row;
 use sqlx_mysql::MySqlPool;
 use sqlx_postgres::PgPool;
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tower_http::services::ServeDir;
@@ -229,7 +229,6 @@ struct PanelBaselineDrift {
 
 #[derive(Debug, Deserialize)]
 struct PanelActiveBlock {
-    ip: String,
     rule_id: String,
     finding_id: String,
     reason: String,
@@ -568,7 +567,8 @@ async fn finding_detail(
     Query(query): Query<DetailQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
     verify_view_auth(&state, &headers)?;
-    let detail = state.repo.finding_detail(&query.id).await?;
+    let mut detail = state.repo.finding_detail(&query.id).await?;
+    redact_panel_value(&mut detail);
     Ok(Json(detail))
 }
 
@@ -616,7 +616,8 @@ async fn incident_detail(
     Query(query): Query<DetailQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
     verify_view_auth(&state, &headers)?;
-    let detail = state.repo.incident_detail(&query.id).await?;
+    let mut detail = state.repo.incident_detail(&query.id).await?;
+    redact_panel_value(&mut detail);
     Ok(Json(detail))
 }
 
@@ -663,7 +664,6 @@ async fn active_blocks(
             columns: &[
                 "blocked_at",
                 "node_id",
-                "ip",
                 "rule_id",
                 "backend",
                 "reason",
@@ -699,7 +699,8 @@ async fn paginated_dataset(
     dataset: PanelDataset,
 ) -> Result<Json<Value>, PanelApiError> {
     let request = PageRequest::try_from(query)?;
-    let (items, total) = state.repo.query_page(dataset, &request).await?;
+    let (mut items, total) = state.repo.query_page(dataset, &request).await?;
+    redact_panel_value(&mut items);
     Ok(Json(json!({
         "items": items,
         "total": total,
@@ -1435,9 +1436,9 @@ impl Repository {
             &sql,
             &[
                 DbValue::Text(node.node_id.clone()),
-                DbValue::Text(node.node_name.clone()),
-                DbValue::Text(node.host_id.clone()),
-                DbValue::Text(node.hostname.clone()),
+                DbValue::Text(redact_ip_text(&node.node_name)),
+                DbValue::Text(redact_ip_text(&node.host_id)),
+                DbValue::Text(redact_ip_text(&node.hostname)),
                 DbValue::Text(node.agent_version.clone()),
                 DbValue::Text(node.privacy_mode.clone()),
                 DbValue::Text(json_string(&node.enabled_features)?),
@@ -1455,6 +1456,8 @@ impl Repository {
         payload: &PanelEnvelope,
         received_at: &str,
     ) -> Result<(), PanelApiError> {
+        let mut scan = payload.scan.clone();
+        redact_panel_value(&mut scan);
         let sql = self.upsert_sql(
             "heartbeats",
             &[
@@ -1474,7 +1477,7 @@ impl Repository {
                 DbValue::Text(payload.node.node_id.clone()),
                 DbValue::Text(payload.sent_at.to_rfc3339()),
                 DbValue::Text(received_at.to_string()),
-                DbValue::Text(json_string(&payload.scan)?),
+                DbValue::Text(json_string(&scan)?),
             ],
         )
         .await?;
@@ -1487,6 +1490,10 @@ impl Repository {
         finding: &PanelFinding,
         received_at: &str,
     ) -> Result<(), PanelApiError> {
+        let mut evidence = json!(finding.evidence);
+        redact_panel_value(&mut evidence);
+        let impact = redact_text_list(&finding.impact);
+        let recommendations = redact_text_list(&finding.recommendations);
         let sql = self.upsert_sql(
             "findings",
             &[
@@ -1526,16 +1533,16 @@ impl Repository {
                 DbValue::Text(finding.id.clone()),
                 DbValue::Text(node_id.to_string()),
                 DbValue::Text(finding.rule_id.clone()),
-                DbValue::Text(finding.title.clone()),
+                DbValue::Text(redact_ip_text(&finding.title)),
                 DbValue::Text(finding.severity.clone()),
                 DbValue::Text(finding.confidence.clone()),
                 DbValue::Text(finding.category.clone()),
-                DbValue::Text(finding.subject.clone()),
+                DbValue::Text(redact_ip_text(&finding.subject)),
                 DbValue::Text(finding.timestamp.to_rfc3339()),
-                DbValue::Text(finding.dedup_key.clone()),
-                DbValue::Text(json_string(&finding.evidence)?),
-                DbValue::Text(json_string(&finding.impact)?),
-                DbValue::Text(json_string(&finding.recommendations)?),
+                DbValue::Text(redact_ip_text(&finding.dedup_key)),
+                DbValue::Text(json_string(&evidence)?),
+                DbValue::Text(json_string(&impact)?),
+                DbValue::Text(json_string(&recommendations)?),
                 DbValue::Text(received_at.to_string()),
             ],
         )
@@ -1549,6 +1556,8 @@ impl Repository {
         incident: &PanelIncident,
         received_at: &str,
     ) -> Result<(), PanelApiError> {
+        let mut payload = json!(incident);
+        redact_panel_value(&mut payload);
         let sql = self.upsert_sql(
             "incidents",
             &[
@@ -1580,13 +1589,13 @@ impl Repository {
             &[
                 DbValue::Text(incident.id.clone()),
                 DbValue::Text(node_id.to_string()),
-                DbValue::Text(incident.title.clone()),
+                DbValue::Text(redact_ip_text(&incident.title)),
                 DbValue::Text(incident.severity.clone()),
                 DbValue::Integer(i64::from(incident.score)),
                 DbValue::Text(incident.first_seen.to_rfc3339()),
                 DbValue::Text(incident.last_seen.to_rfc3339()),
-                DbValue::Text(incident.summary.clone()),
-                DbValue::Text(json_string(incident)?),
+                DbValue::Text(redact_ip_text(&incident.summary)),
+                DbValue::Text(json_string(&payload)?),
                 DbValue::Text(received_at.to_string()),
             ],
         )
@@ -1600,9 +1609,11 @@ impl Repository {
         drift: &PanelBaselineDrift,
         received_at: &str,
     ) -> Result<(), PanelApiError> {
+        let subject = redact_ip_text(&drift.subject);
+        let reasons = redact_text_list(&drift.reasons);
         let id = format!(
             "{}:{}:{}:{}",
-            node_id, drift.finding_id, drift.subject, drift.timestamp
+            node_id, drift.finding_id, subject, drift.timestamp
         );
         let sql = self.upsert_sql(
             "baseline_drifts",
@@ -1640,12 +1651,12 @@ impl Repository {
                 DbValue::Text(drift.finding_id.clone()),
                 DbValue::Text(drift.rule_id.clone()),
                 DbValue::Text(drift.severity.clone()),
-                DbValue::Text(drift.subject.clone()),
+                DbValue::Text(subject),
                 DbValue::Text(drift.timestamp.to_rfc3339()),
                 DbValue::Text(drift.tier.clone()),
                 optional_i64(drift.score.map(i64::from)),
                 DbValue::Text(drift.review_action.clone()),
-                DbValue::Text(json_string(&drift.reasons)?),
+                DbValue::Text(json_string(&reasons)?),
                 DbValue::Text(received_at.to_string()),
             ],
         )
@@ -1659,7 +1670,7 @@ impl Repository {
         block: &PanelActiveBlock,
         received_at: &str,
     ) -> Result<(), PanelApiError> {
-        let id = format!("{}:{}", node_id, block.ip);
+        let id = panel_block_storage_id(node_id, block);
         let sql = self.upsert_sql(
             "active_blocks",
             &[
@@ -1694,10 +1705,10 @@ impl Repository {
             &[
                 DbValue::Text(id),
                 DbValue::Text(node_id.to_string()),
-                DbValue::Text(block.ip.clone()),
+                DbValue::Text(panel_redacted_ip_value()),
                 DbValue::Text(block.rule_id.clone()),
                 DbValue::Text(block.finding_id.clone()),
-                DbValue::Text(block.reason.clone()),
+                DbValue::Text(redact_ip_text(&block.reason)),
                 DbValue::Text(block.backend.clone()),
                 DbValue::Text(block.blocked_at.to_rfc3339()),
                 optional_string(block.expires_at.map(|value| value.to_rfc3339())),
@@ -1733,6 +1744,150 @@ impl SecretResolver {
             .map(String::as_str)
             .or(self.shared_secret.as_deref())
     }
+}
+
+fn panel_block_storage_id(node_id: &str, block: &PanelActiveBlock) -> String {
+    let source = if block.finding_id.trim().is_empty() {
+        format!(
+            "{}:{}:{}",
+            block.rule_id,
+            block.blocked_at.timestamp_millis(),
+            block.backend
+        )
+    } else {
+        block.finding_id.clone()
+    };
+    format!("{node_id}:{source}")
+}
+
+fn panel_redacted_ip_value() -> String {
+    "redacted".to_string()
+}
+
+fn redact_text_list(items: &[String]) -> Vec<String> {
+    items.iter().map(|item| redact_ip_text(item)).collect()
+}
+
+fn redact_panel_value(value: &mut Value) {
+    match value {
+        Value::String(text) => *text = redact_ip_text(text),
+        Value::Array(items) => {
+            for item in items {
+                redact_panel_value(item);
+            }
+        }
+        Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                let normalized_key = key.to_ascii_lowercase();
+                if normalized_key == "ip"
+                    || normalized_key.contains("_ip")
+                    || normalized_key.contains("addr")
+                {
+                    *value = Value::String(panel_redacted_ip_value());
+                } else {
+                    redact_panel_value(value);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redact_ip_text(value: &str) -> String {
+    let chars = value.chars().collect::<Vec<_>>();
+    let mut out = String::with_capacity(value.len());
+    let mut index = 0;
+    while index < chars.len() {
+        if chars[index].is_ascii_digit() {
+            if let Some(next) = ipv4_end_at(&chars, index) {
+                out.push_str("redacted");
+                index = next;
+                continue;
+            }
+        }
+        out.push(chars[index]);
+        index += 1;
+    }
+    redact_ip_tokens(&out)
+}
+
+fn ipv4_end_at(chars: &[char], start: usize) -> Option<usize> {
+    let mut offset = start;
+    for part_index in 0..4 {
+        let part_start = offset;
+        while offset < chars.len() && chars[offset].is_ascii_digit() {
+            offset += 1;
+        }
+        if part_start == offset || offset - part_start > 3 {
+            return None;
+        }
+        let part = chars[part_start..offset]
+            .iter()
+            .collect::<String>()
+            .parse::<u16>()
+            .ok()?;
+        if part > 255 {
+            return None;
+        }
+        if part_index < 3 {
+            if chars.get(offset) != Some(&'.') {
+                return None;
+            }
+            offset += 1;
+        }
+    }
+    if matches!(chars.get(offset), Some(ch) if ch.is_ascii_digit() || *ch == '.') {
+        return None;
+    }
+    Some(offset)
+}
+
+fn redact_ip_tokens(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut token = String::new();
+    for ch in value.chars() {
+        if ch.is_whitespace() {
+            out.push_str(&redact_ip_token(&token));
+            token.clear();
+            out.push(ch);
+        } else {
+            token.push(ch);
+        }
+    }
+    if !token.is_empty() {
+        out.push_str(&redact_ip_token(&token));
+    }
+    out
+}
+
+fn redact_ip_token(token: &str) -> String {
+    if token_contains_ip_literal(token) {
+        panel_redacted_ip_value()
+    } else {
+        token.to_string()
+    }
+}
+
+fn token_contains_ip_literal(token: &str) -> bool {
+    if let Some(bracket_start) = token.find('[') {
+        if let Some(bracket_end) = token[bracket_start + 1..].find(']') {
+            let candidate = &token[bracket_start + 1..bracket_start + 1 + bracket_end];
+            return ip_candidate(candidate);
+        }
+    }
+
+    let candidate = token.trim_matches(|ch: char| {
+        matches!(
+            ch,
+            ',' | ';' | '"' | '\'' | '(' | ')' | '{' | '}' | '<' | '>' | '[' | ']'
+        )
+    });
+    ip_candidate(candidate)
+}
+
+fn ip_candidate(value: &str) -> bool {
+    let candidate = value.split('%').next().unwrap_or(value);
+    candidate.matches(':').count() >= 2 && candidate.parse::<IpAddr>().is_ok()
 }
 
 fn sqlite_path_from_url(url: &str) -> String {
@@ -1940,9 +2095,9 @@ impl From<rusqlite::Error> for PanelApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        verify_admin_auth, verify_view_auth, view_token_from_headers, AppState, FindingReview,
-        FindingReviewRequest, PageQuery, PageRequest, Repository, RepositoryDriver, SecretResolver,
-        MAX_PAGE_LIMIT,
+        redact_ip_text, redact_panel_value, verify_admin_auth, verify_view_auth,
+        view_token_from_headers, AppState, FindingReview, FindingReviewRequest, PageQuery,
+        PageRequest, Repository, RepositoryDriver, SecretResolver, MAX_PAGE_LIMIT,
     };
     use axum::http::{header, HeaderMap, HeaderValue};
     use rusqlite::Connection;
@@ -1976,6 +2131,36 @@ mod tests {
         .expect_err("inverted time range should fail");
 
         assert_eq!(err.code, "invalid_time_range");
+    }
+
+    #[test]
+    fn redacts_ipv4_and_ipv6_from_panel_values() {
+        let mut value = serde_json::json!({
+            "source_ip": "203.0.113.44",
+            "subject": "root@198.51.100.8 and [2001:db8::1]:443",
+            "items": ["fe80::1%eth0", "no network identity"]
+        });
+
+        redact_panel_value(&mut value);
+        let text = serde_json::to_string(&value).expect("json");
+
+        assert!(!text.contains("203.0.113"));
+        assert!(!text.contains("198.51.100"));
+        assert!(!text.contains("2001:db8"));
+        assert!(!text.contains("fe80::1"));
+        assert!(text.contains("redacted"));
+    }
+
+    #[test]
+    fn redacts_ip_text_without_touching_normal_text() {
+        assert_eq!(
+            redact_ip_text("attempt from 203.0.113.44 and [2001:db8::5]:22"),
+            "attempt from redacted and redacted"
+        );
+        assert_eq!(
+            redact_ip_text("normal service event"),
+            "normal service event"
+        );
     }
 
     #[test]

@@ -308,6 +308,74 @@ button:disabled {
   gap: 14px;
 }
 
+.insight-strip {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.insight-card {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 250, 252, 0.96));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--ring-shadow);
+  display: grid;
+  gap: 8px;
+  min-height: 112px;
+  overflow: hidden;
+  padding: 15px;
+  position: relative;
+}
+
+.insight-card::before {
+  content: "";
+  inset: 0 auto 0 0;
+  position: absolute;
+  width: 4px;
+}
+
+.insight-card.privacy::before {
+  background: var(--success);
+}
+
+.insight-card.risk::before {
+  background: var(--high);
+}
+
+.insight-card.offline::before {
+  background: var(--critical);
+}
+
+.insight-card.stale::before {
+  background: var(--medium);
+}
+
+.insight-card.fresh::before,
+.insight-card.neutral::before {
+  background: var(--accent);
+}
+
+.insight-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.insight-value {
+  color: var(--text);
+  font-size: 24px;
+  font-weight: 950;
+  line-height: 1;
+}
+
+.insight-detail {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .hero-band {
   align-items: stretch;
   background:
@@ -647,6 +715,38 @@ button:disabled {
   color: var(--muted);
   font-size: 12px;
   font-weight: 800;
+}
+
+.range-field {
+  min-width: 220px;
+}
+
+.range-control {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 1px;
+  grid-template-columns: minmax(120px, 1fr) 94px;
+  min-height: 38px;
+  overflow: hidden;
+}
+
+.range-control input {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  min-height: 38px;
+  padding: 0 10px;
+}
+
+.range-control input + input {
+  border-left: 1px solid var(--border);
+}
+
+.range-control:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .table-wrap {
@@ -1177,7 +1277,8 @@ tr:last-child td {
   }
 
   .charts-grid,
-  .dashboard-grid {
+  .dashboard-grid,
+  .insight-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1280,6 +1381,7 @@ tr:last-child td {
 
   .charts-grid,
   .dashboard-grid,
+  .insight-strip,
   .filters {
     grid-template-columns: 1fr;
   }
@@ -1430,6 +1532,15 @@ tr:last-child td {
 
   .filters {
     padding: 12px;
+  }
+
+  .range-control {
+    grid-template-columns: 1fr;
+  }
+
+  .range-control input + input {
+    border-left: 0;
+    border-top: 1px solid var(--border);
   }
 
   .quick-ranges .button {

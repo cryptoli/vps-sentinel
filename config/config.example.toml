@@ -339,7 +339,7 @@ push_interval_seconds = 60
 request_timeout_seconds = 10
 outbox_max_items = 128
 max_payload_bytes = 524288
-privacy_mode = "normal" # normal or strict
+privacy_mode = "strict" # strict avoids sending raw IPs or hostnames to the remote panel
 
 [maintenance]
 enabled = false

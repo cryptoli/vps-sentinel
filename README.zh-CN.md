@@ -44,7 +44,7 @@
 | 高级采集 | 默认启用 auditd 日志采集和 eBPF JSONL/命令桥接入口；可生成轻量 bpftrace runtime probe 脚本，用于捕捉短生命周期 exec 和可选的文件变更事件。auditd/eBPF 事件可识别 procfs 快照可能错过的短生命周期行为。 |
 | 外部规则 | 支持 Sigma-like TOML 事件规则、外部规则校验和可选 YARA CLI 扫描；规则引擎默认启用，但只有配置了规则路径或扫描根目录后才会实际运行。 |
 | 威胁情报 | 可选用本地或远程 indicator 对 IP、路径、域名、哈希做证据增强；命中只是辅助证据，不会单独触发封禁。 |
-| 多 VPS 面板 | 将有签名、有大小上限的遥测推送到 Rust 自建面板或 Cloudflare Worker/D1 接收端；面板保存节点、finding、incident、基线漂移和主动封禁记录，静态 UI 支持第三方主题和自定义页面。 |
+| 多 VPS 面板 | 将有签名、有大小上限、隐私安全的遥测推送到 Rust 自建面板或 Cloudflare Worker/D1 接收端；原始 IP 会在远端上报前移除，静态 UI 支持第三方主题和自定义页面。 |
 | 维护模式 | 支持有时限的维护窗口，在计划升级期间压制低/中危基线漂移和交互式 SSH 登录噪声，但不隐藏爆破或其它攻击信号。 |
 | 本地存储与资源控制 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和自包含通知日志；重复 raw fact 使用稳定存储键，默认不持久化完整原始日志行，普通 Web 访问事件默认不入库，并提供保留期、数据库容量和运行时预算上限，避免无限增长。 |
 | 噪声控制 | 支持白名单、最低告警级别、finding 去重和保留周期。 |
@@ -171,7 +171,7 @@ min_severity = "Medium"
 
 ## 多 VPS 面板
 
-agent 可以把签名后的遥测主动推送到中心面板，被监控 VPS 不需要开放入站管理端口。自建部署使用 Rust 二进制 `vps-sentinel-panel`，支持 SQLite、PostgreSQL 和 MySQL；Cloudflare 部署可使用 `panel/cloudflare` 中的 Worker/D1 接收端，并把 `panel/web` 作为静态 UI。浏览器读取面板需要独立访问令牌，列表 API 只返回固定展示字段，不返回原始证据、完整事件载荷或主机存储细节。
+agent 可以把签名后的遥测主动推送到中心面板，被监控 VPS 不需要开放入站管理端口。自建部署使用 Rust 二进制 `vps-sentinel-panel`，支持 SQLite、PostgreSQL 和 MySQL；Cloudflare 部署可使用 `panel/cloudflare` 中的 Worker/D1 接收端，并把 `panel/web` 作为静态 UI。浏览器读取面板需要独立访问令牌。本地检测和防火墙响应仍会使用来源 IP，但默认远端面板载荷会在离开被监控主机前移除原始 IP。
 
 agent 侧配置示例：
 
@@ -182,7 +182,7 @@ url = "https://panel.example.com/api/v1/ingest"
 node_name = "prod-web-1"
 secret = "replace-with-a-long-random-secret"
 min_severity = "Medium"
-privacy_mode = "normal"
+privacy_mode = "strict"
 ```
 
 常用命令是 `vs panel push`、`vs panel flush` 和 `vs panel outbox`。Rust 面板服务、Cloudflare Worker/D1、MySQL/PostgreSQL 注意事项和第三方主题/页面开发见 [docs/panel.md](docs/panel.md)。

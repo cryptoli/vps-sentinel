@@ -25,6 +25,26 @@ export function renderOverviewDashboard(ctx) {
         status: ui.statusSummary(status.label, status.tone, status.detail),
         actions: [ui.timeRangeHint(t("range_24h")), ui.freshnessBadge(nodes)],
       }),
+      ui.insightStrip([
+        {
+          label: t("privacyTelemetry"),
+          value: t("strict"),
+          detail: t("privacyTelemetryDetail"),
+          tone: "privacy",
+        },
+        {
+          label: t("fleetFreshness"),
+          value: status.label,
+          detail: status.detail,
+          tone: status.tone,
+        },
+        {
+          label: t("highRiskPressure"),
+          value: highRiskCount(severityRows),
+          detail: t("highRiskPressureDetail"),
+          tone: "risk",
+        },
+      ]),
       ui.metrics([
         metric(t("nodesMetric"), summary.nodes, "nodes", t("nodesMetricHint")),
         metric(t("findingsMetric"), summary.findings, "findings", t("findingsMetricHint")),
@@ -76,9 +96,15 @@ function signalMix(summary, t, ui) {
   ]);
 }
 
+function highRiskCount(rows) {
+  return rows
+    .filter((row) => ["critical", "high"].includes(String(row.severity || "").toLowerCase()))
+    .reduce((sum, row) => sum + Number(row.count || 0), 0);
+}
+
 function blockRecord(t) {
   return (block) => ({
-    title: block.ip || "-",
+    title: block.rule_id || t("activeResponse"),
     meta: [block.node_id, block.rule_id, block.backend].filter(Boolean).join(" / "),
     detail: block.reason || t("noReason"),
     tone: "blocked",

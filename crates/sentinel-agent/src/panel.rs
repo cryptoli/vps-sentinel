@@ -3,7 +3,7 @@ use crate::baseline::assess_baseline_event;
 use crate::incident::{list_incidents, Incident};
 use crate::scanner::ScanReport;
 use crate::storage::{SqliteStore, StorageStats};
-use crate::utils::redact::{mask_command_args, mask_ip, mask_ips_in_text};
+use crate::utils::redact::{mask_command_args, remove_ip, remove_ips_in_text};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use sentinel_core::panel_auth::{
     panel_body_sha256_hex, panel_header_nonce, panel_signature_hex, PANEL_INGEST_PATH,
@@ -32,9 +32,9 @@ pub struct PanelEnvelope {
     pub node: PanelNodeSnapshot,
     pub scan: PanelScanSummary,
     pub findings: Vec<PanelFinding>,
-    pub incidents: Vec<Incident>,
+    pub incidents: Vec<PanelIncident>,
     pub baseline_drifts: Vec<PanelBaselineDrift>,
-    pub active_blocks: Vec<BlockEntry>,
+    pub active_blocks: Vec<PanelActiveBlock>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +81,17 @@ pub struct PanelFinding {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PanelIncident {
+    pub id: String,
+    pub title: String,
+    pub severity: Severity,
+    pub score: u16,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PanelBaselineDrift {
     pub finding_id: String,
     pub rule_id: String,
@@ -91,6 +102,18 @@ pub struct PanelBaselineDrift {
     pub score: Option<u16>,
     pub review_action: String,
     pub reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PanelActiveBlock {
+    pub rule_id: String,
+    pub finding_id: String,
+    pub reason: String,
+    pub backend: String,
+    pub blocked_at: DateTime<Utc>,
+    pub expires_at: Option<DateTime<Utc>>,
+    pub expired: bool,
+    pub firewall_present: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -215,10 +238,10 @@ fn build_scan_payload(
         .iter()
         .filter(|incident| incident.severity.meets(config.panel.min_severity))
         .take(config.panel.batch_size)
-        .cloned()
+        .map(|incident| panel_incident(config, incident))
         .collect::<Vec<_>>();
     let baseline_drifts = baseline_drifts_from_findings(config, &report.findings);
-    let active_blocks = active_blocks(config, store)?;
+    let active_blocks = panel_active_blocks(config, store)?;
     let scan = PanelScanSummary {
         finished_at: Utc::now(),
         raw_events: report.raw_event_count,
@@ -259,9 +282,10 @@ fn build_snapshot_payload(
     let incidents = list_incidents(store, config.panel.batch_size)?
         .into_iter()
         .filter(|incident| incident.severity.meets(config.panel.min_severity))
+        .map(|incident| panel_incident(config, &incident))
         .collect::<Vec<_>>();
     let baseline_drifts = baseline_drifts_from_panel_findings(&findings);
-    let active_blocks = active_blocks(config, store)?;
+    let active_blocks = panel_active_blocks(config, store)?;
     let scan = PanelScanSummary {
         finished_at: Utc::now(),
         raw_events: 0,
@@ -294,9 +318,9 @@ fn panel_envelope(
     store: &SqliteStore,
     scan: PanelScanSummary,
     findings: Vec<PanelFinding>,
-    incidents: Vec<Incident>,
+    incidents: Vec<PanelIncident>,
     baseline_drifts: Vec<PanelBaselineDrift>,
-    active_blocks: Vec<BlockEntry>,
+    active_blocks: Vec<PanelActiveBlock>,
 ) -> SentinelResult<PanelEnvelope> {
     Ok(PanelEnvelope {
         schema_version: PANEL_SCHEMA_VERSION,
@@ -315,11 +339,16 @@ fn node_snapshot(
     config: &SentinelConfig,
     store: &SqliteStore,
 ) -> SentinelResult<PanelNodeSnapshot> {
+    let hostname = if config.panel.privacy_mode == "strict" {
+        String::new()
+    } else {
+        config.agent.hostname.clone()
+    };
     Ok(PanelNodeSnapshot {
         node_id: panel_node_id(config),
-        node_name: panel_node_name(config),
+        node_name: redact_text(config, &panel_node_name(config)),
         host_id: config.host_id(),
-        hostname: config.agent.hostname.clone(),
+        hostname,
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
         privacy_mode: config.panel.privacy_mode.clone(),
         enabled_features: enabled_features(config),
@@ -493,6 +522,29 @@ fn active_blocks(config: &SentinelConfig, store: &SqliteStore) -> SentinelResult
     Ok(blocks)
 }
 
+fn panel_active_blocks(
+    config: &SentinelConfig,
+    store: &SqliteStore,
+) -> SentinelResult<Vec<PanelActiveBlock>> {
+    Ok(active_blocks(config, store)?
+        .into_iter()
+        .map(|block| panel_active_block(config, block))
+        .collect())
+}
+
+fn panel_active_block(config: &SentinelConfig, block: BlockEntry) -> PanelActiveBlock {
+    PanelActiveBlock {
+        rule_id: block.rule_id,
+        finding_id: block.finding_id,
+        reason: redact_text(config, &block.reason),
+        backend: block.backend,
+        blocked_at: block.blocked_at,
+        expires_at: block.expires_at,
+        expired: block.expired,
+        firewall_present: block.firewall_present,
+    }
+}
+
 fn panel_finding(config: &SentinelConfig, finding: &Finding) -> PanelFinding {
     PanelFinding {
         id: finding.id.clone(),
@@ -515,6 +567,18 @@ fn panel_finding(config: &SentinelConfig, finding: &Finding) -> PanelFinding {
             .iter()
             .map(|item| redact_text(config, item))
             .collect(),
+    }
+}
+
+fn panel_incident(config: &SentinelConfig, incident: &Incident) -> PanelIncident {
+    PanelIncident {
+        id: incident.id.clone(),
+        title: redact_text(config, &incident.title),
+        severity: incident.severity,
+        score: incident.score,
+        first_seen: incident.first_seen,
+        last_seen: incident.last_seen,
+        summary: redact_text(config, &incident.summary),
     }
 }
 
@@ -698,30 +762,26 @@ fn enabled_features(config: &SentinelConfig) -> Vec<String> {
 }
 
 fn redact_subject(config: &SentinelConfig, value: &str) -> String {
-    if config.panel.privacy_mode == "strict" {
-        return mask_ips_in_text(value);
-    }
-    value.to_string()
+    redact_text(config, value)
 }
 
-fn redact_text(config: &SentinelConfig, value: &str) -> String {
-    if config.panel.privacy_mode == "strict" {
-        return mask_ips_in_text(value);
-    }
-    value.to_string()
+fn redact_text(_config: &SentinelConfig, value: &str) -> String {
+    remove_ips_in_text(value)
 }
 
 fn redact_evidence_value(config: &SentinelConfig, key: &str, value: &str) -> String {
-    if config.panel.privacy_mode != "strict" {
-        return value.to_string();
+    let normalized_key = key.to_ascii_lowercase();
+    let mut redacted = if normalized_key.contains("ip") || normalized_key.contains("addr") {
+        remove_ip(value)
+    } else {
+        remove_ips_in_text(value)
+    };
+    if config.panel.privacy_mode == "strict"
+        && (normalized_key.contains("command") || normalized_key == "cmdline")
+    {
+        redacted = mask_command_args(&redacted);
     }
-    if key.contains("command") || key == "cmdline" {
-        return mask_command_args(value);
-    }
-    if key.contains("ip") || key.contains("addr") {
-        return mask_ip(value);
-    }
-    mask_ips_in_text(value)
+    redacted
 }
 
 fn truncate_panel_value(value: &str) -> String {
@@ -749,6 +809,7 @@ mod tests {
         enqueue_payload, panel_envelope, sign_request, summary_from_state, PanelOutboxState,
         PanelScanSummary,
     };
+    use crate::active_response::BlockEntry;
     use crate::storage::SqliteStore;
     use chrono::Utc;
     use sentinel_core::panel_auth::{panel_signature_hex, PANEL_INGEST_METHOD, PANEL_INGEST_PATH};
@@ -844,8 +905,32 @@ mod tests {
 
         let panel = super::panel_finding(&config, &finding);
 
-        assert_eq!(panel.subject, "root@203.0.x.x");
-        assert_eq!(panel.evidence[0].value, "203.0.x.x");
+        assert_eq!(panel.subject, "root@redacted");
+        assert_eq!(panel.evidence[0].value, "redacted");
         assert_eq!(panel.evidence[1].value, "/bin/bash [args masked]");
+    }
+
+    #[test]
+    fn panel_active_blocks_do_not_report_ip_addresses() {
+        let mut config = SentinelConfig::default();
+        config.panel.privacy_mode = "strict".to_string();
+        let block = BlockEntry {
+            ip: "203.0.113.44".to_string(),
+            rule_id: "SSH-001".to_string(),
+            finding_id: "finding-1".to_string(),
+            reason: "blocked 203.0.113.44 after brute-force evidence".to_string(),
+            backend: "nftables".to_string(),
+            blocked_at: Utc::now(),
+            expires_at: None,
+            expired: false,
+            firewall_present: Some(true),
+        };
+
+        let panel = super::panel_active_block(&config, block);
+        let json = serde_json::to_string(&panel).expect("panel block json");
+
+        assert!(!json.contains("203.0.113"));
+        assert!(!json.contains("\"ip\""));
+        assert!(json.contains("redacted"));
     }
 }

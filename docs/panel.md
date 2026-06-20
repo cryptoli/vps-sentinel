@@ -1,6 +1,6 @@
 # Fleet Panel
 
-The fleet panel is an optional push-mode dashboard for multiple VPS nodes. Agents keep their normal local-first behavior and only push a bounded, signed summary to the configured receiver.
+The fleet panel is an optional push-mode dashboard for multiple VPS nodes. Agents keep their normal local-first behavior and only push a bounded, signed summary to the configured receiver. Local detection and active response can still use raw source IPs, but panel telemetry defaults to privacy-safe mode and removes raw IP addresses before it leaves the monitored host.
 
 ## What Gets Pushed
 
@@ -11,11 +11,11 @@ Each panel payload contains:
 - recent findings at or above `panel.min_severity`;
 - recent incidents;
 - baseline-drift review items;
-- active-response block records.
+- active-response block status such as rule, backend, reason, and expiry without raw blocked IPs.
 
 Payload size is bounded by `panel.max_payload_bytes`. If the panel is unavailable, the agent stores a small local outbox in the existing SQLite rule-state store and retries later. The outbox is capped by `panel.outbox_max_items`.
 
-The self-hosted and Worker panels store the signed payload, but read APIs only expose fixed display columns. Raw evidence JSON, incident payload JSON, host IDs, storage details, enabled feature lists, and database timestamps are not returned by the browser-facing list endpoints.
+The self-hosted and Worker panels store the signed payload after a second server-side redaction pass, and read APIs only expose fixed display columns. Raw IP addresses, raw evidence JSON, incident payload JSON, host IDs, storage details, enabled feature lists, and database timestamps are not returned by the browser-facing list endpoints.
 
 ## Agent Configuration
 
@@ -32,7 +32,7 @@ push_interval_seconds = 60
 request_timeout_seconds = 10
 outbox_max_items = 128
 max_payload_bytes = 524288
-privacy_mode = "normal" # normal or strict
+privacy_mode = "strict" # strict avoids sending raw IPs or hostnames to the remote panel
 ```
 
 Use HTTPS for remote panel URLs. Plain HTTP is accepted only for `localhost` or `127.0.0.1` because panel payloads can contain sensitive security context even though they are HMAC signed.
