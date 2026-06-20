@@ -6,6 +6,7 @@ const JSON_HEADERS = {
 const SIGNATURE_WINDOW_SECONDS = 300;
 const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 200;
+const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
 
 const DATASETS = {
   "/api/v1/nodes": {
@@ -57,6 +58,8 @@ export default {
           auth_required: true,
           auth_configured: Boolean(viewToken(env) || adminToken(env)),
           admin_configured: Boolean(adminToken(env)),
+          freshness_threshold_minutes: DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
+          server_time: new Date().toISOString(),
         }), request, env);
       }
       if (request.method === "GET" && url.pathname === "/api/v1/summary") {

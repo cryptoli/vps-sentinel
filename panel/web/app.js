@@ -1,4 +1,4 @@
-import { createView, formatTemplate, rangeInfo } from "./components.js";
+import { DEFAULT_FRESHNESS_THRESHOLD_MINUTES, createView, formatTemplate, rangeInfo } from "./components.js";
 import { DATASETS } from "./datasets.js";
 import { createTranslator, selectedLanguage } from "./i18n.js";
 
@@ -6,8 +6,6 @@ const API_BASE = "/api/v1";
 const DEFAULT_LIMIT = 25;
 const OVERVIEW_LIMIT = 12;
 const TOKEN_STORAGE_KEY = "vps-sentinel-panel-token";
-const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
-
 const BUILTIN_PAGES = [
   { id: "overview", labelKey: "overview", render: renderOverview },
   { id: "findings", labelKey: "findings", render: (ctx) => renderDatasetPage(ctx, "findings") },

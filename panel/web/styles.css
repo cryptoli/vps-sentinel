@@ -190,12 +190,14 @@ button:disabled {
 .layout {
   display: grid;
   grid-template-columns: 232px minmax(0, 1fr);
+  min-width: 0;
   min-height: calc(100vh - 68px);
 }
 
 .sidebar {
   background: rgba(255, 255, 255, 0.76);
   border-right: 1px solid var(--border);
+  min-width: 0;
   padding: 16px 14px;
 }
 
@@ -232,6 +234,7 @@ button:disabled {
 .content {
   margin: 0 auto;
   max-width: 1480px;
+  min-width: 0;
   padding: 22px 24px 32px;
   width: 100%;
 }

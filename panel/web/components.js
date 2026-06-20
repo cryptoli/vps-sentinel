@@ -1,4 +1,4 @@
-const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
+export const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
 
 export function createView({ t, language, freshness = {} }) {
   const freshnessThresholdMinutes = Number.isFinite(Number(freshness.thresholdMinutes))
