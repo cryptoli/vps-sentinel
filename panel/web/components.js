@@ -1,4 +1,12 @@
-export function createView({ t, language }) {
+const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
+
+export function createView({ t, language, freshness = {} }) {
+  const freshnessThresholdMinutes = Number.isFinite(Number(freshness.thresholdMinutes))
+    ? Math.max(1, Number(freshness.thresholdMinutes))
+    : DEFAULT_FRESHNESS_THRESHOLD_MINUTES;
+  const offlineThresholdMinutes = freshnessThresholdMinutes * 6;
+  const nowMs = Number.isFinite(Number(freshness.nowMs)) ? Number(freshness.nowMs) : Date.now();
+
   function sectionHeader(title, description, action) {
     const wrapper = document.createElement("div");
     wrapper.className = "section-head";
@@ -163,11 +171,18 @@ export function createView({ t, language }) {
     if (!nodes.length) return emptyChart();
     for (const node of nodes.slice(0, 8)) {
       const age = ageMinutes(node.last_seen_at);
+      const status = freshnessStatus(age);
       const row = document.createElement("div");
-      row.className = "freshness-row";
+      row.className = `freshness-row ${status}`;
+      row.title = formatTemplate(t(`${status}Reason`), {
+        age: relativeAge(age),
+        threshold: freshnessThresholdMinutes,
+        offlineThreshold: offlineThresholdMinutes,
+      });
       row.append(
-        span(`status-dot ${age <= 10 ? "fresh" : "stale"}`, ""),
+        span(`status-dot ${status}`, ""),
         span("freshness-name", node.node_name || node.node_id || "-"),
+        span("freshness-state", t(status)),
         span("freshness-age", relativeAge(age)),
       );
       wrapper.append(row);
@@ -176,8 +191,29 @@ export function createView({ t, language }) {
   }
 
   function freshnessBadge(nodes) {
-    const stale = nodes.filter((node) => ageMinutes(node.last_seen_at) > 10).length;
-    return span(`freshness-badge ${stale ? "stale" : "fresh"}`, stale ? t("stale") : t("fresh"));
+    const counts = nodes.reduce(
+      (acc, node) => {
+        acc[freshnessStatus(ageMinutes(node.last_seen_at))] += 1;
+        return acc;
+      },
+      { fresh: 0, stale: 0, offline: 0 },
+    );
+    const status = counts.offline > 0 ? "offline" : counts.stale > 0 ? "stale" : "fresh";
+    const text =
+      status === "offline"
+        ? formatTemplate(t("offlineCount"), { count: counts.offline })
+        : status === "stale"
+          ? formatTemplate(t("staleCount"), { count: counts.stale })
+          : t("fresh");
+    const badge = span(
+      `freshness-badge ${status}`,
+      text,
+    );
+    badge.title = formatTemplate(t("freshnessThreshold"), {
+      threshold: freshnessThresholdMinutes,
+      offlineThreshold: offlineThresholdMinutes,
+    });
+    return badge;
   }
 
   function emptyChart() {
@@ -221,7 +257,13 @@ export function createView({ t, language }) {
   function ageMinutes(value) {
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return Number.POSITIVE_INFINITY;
-    return Math.max(0, Math.floor((Date.now() - date.getTime()) / 60000));
+    return Math.max(0, Math.floor((nowMs - date.getTime()) / 60000));
+  }
+
+  function freshnessStatus(minutes) {
+    if (!Number.isFinite(minutes) || minutes > offlineThresholdMinutes) return "offline";
+    if (minutes > freshnessThresholdMinutes) return "stale";
+    return "fresh";
   }
 
   function relativeAge(minutes) {

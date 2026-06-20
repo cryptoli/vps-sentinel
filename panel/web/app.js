@@ -6,6 +6,7 @@ const API_BASE = "/api/v1";
 const DEFAULT_LIMIT = 25;
 const OVERVIEW_LIMIT = 12;
 const TOKEN_STORAGE_KEY = "vps-sentinel-panel-token";
+const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
 
 const BUILTIN_PAGES = [
   { id: "overview", labelKey: "overview", render: renderOverview },
@@ -24,6 +25,7 @@ const state = {
   datasetState: {},
   settings: {},
   summary: {},
+  panelClockOffsetMs: 0,
   theme: null,
   language: selectedLanguage(),
   manifest: null,
@@ -39,6 +41,7 @@ init().catch((error) => renderError(error));
 
 async function init() {
   state.settings = await fetchJson(`${API_BASE}/settings`).catch(() => ({ theme: "default" }));
+  state.panelClockOffsetMs = panelClockOffsetMs(state.settings.server_time);
   state.theme = selectedTheme(state.settings.theme || "default");
   state.manifest = await loadTheme(state.theme);
   state.pages = await buildPages(state.manifest);
@@ -429,7 +432,20 @@ function t(key) {
 }
 
 function view() {
-  return createView({ t, language: state.language });
+  return createView({
+    t,
+    language: state.language,
+    freshness: {
+      thresholdMinutes: state.settings.freshness_threshold_minutes || DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
+      nowMs: Date.now() - state.panelClockOffsetMs,
+    },
+  });
+}
+
+function panelClockOffsetMs(serverTime) {
+  const serverDate = new Date(serverTime);
+  if (Number.isNaN(serverDate.getTime())) return 0;
+  return Date.now() - serverDate.getTime();
 }
 
 function renderAccessGate(message = "") {
