@@ -12,6 +12,7 @@ const DEPRECATED_KEYS: &[&str] = &[
 ];
 const LEGACY_DEFAULT_LANGUAGE_KEY: &str = "notifications.language";
 const LEGACY_SSH_RESPONSE_POLICY_KEY: &str = "response_policy.policies.ssh_bruteforce.rule_ids";
+const LEGACY_EMPTY_EBPF_EVENT_PATHS_KEY: &str = "advanced_collectors.ebpf_event_paths";
 const LEGACY_SSH_FAILED_LOGIN_THRESHOLD: usize = 10;
 const SSH_FAILED_LOGIN_THRESHOLD_KEY: &str = "ssh.failed_login_threshold";
 const ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD_KEY: &str =
@@ -133,10 +134,12 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
     let deprecated = deprecated_keys_in_text(&text);
     let legacy_default_language = contains_legacy_default_language(&text);
     let legacy_ssh_response_policy = contains_legacy_ssh_response_policy(&text);
+    let legacy_empty_ebpf_event_paths = contains_legacy_empty_ebpf_event_paths(&text);
     let threshold_migration = legacy_ssh_threshold_migration(&text)?;
     if deprecated.is_empty()
         && !legacy_default_language
         && !legacy_ssh_response_policy
+        && !legacy_empty_ebpf_event_paths
         && threshold_migration.changes.is_empty()
     {
         println!(
@@ -146,7 +149,10 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
         return Ok(());
     }
     let migrated = migrate_legacy_ssh_response_policy(&migrate_legacy_default_language(
-        &migrate_legacy_ssh_thresholds(&remove_deprecated_keys(&text), &threshold_migration)?,
+        &migrate_legacy_empty_ebpf_event_paths(&migrate_legacy_ssh_thresholds(
+            &remove_deprecated_keys(&text),
+            &threshold_migration,
+        )?)?,
     ));
     let _: SentinelConfig = toml::from_str(&migrated)?;
     if dry_run {
@@ -163,6 +169,13 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
         if legacy_ssh_response_policy {
             println!("legacy defaults that would be updated:");
             println!("- {LEGACY_SSH_RESPONSE_POLICY_KEY}: [SSH-003] -> [SSH-003, SSH-007]");
+        }
+        if legacy_empty_ebpf_event_paths {
+            println!("legacy defaults that would be updated:");
+            println!(
+                "- {LEGACY_EMPTY_EBPF_EVENT_PATHS_KEY}: [] -> {}",
+                default_ebpf_event_paths_text()?
+            );
         }
         if !threshold_migration.changes.is_empty() {
             println!("legacy defaults that would be updated:");
@@ -183,9 +196,15 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
 fn sync_config_defaults(path: &Path, dry_run: bool) -> Result<()> {
     let text = fs::read_to_string(path)?;
     let threshold_migration = legacy_ssh_threshold_migration(&text)?;
-    let normalized = migrate_legacy_ssh_thresholds(&text, &threshold_migration)?;
+    let normalized_thresholds = migrate_legacy_ssh_thresholds(&text, &threshold_migration)?;
+    let legacy_empty_ebpf_event_paths =
+        contains_legacy_empty_ebpf_event_paths(&normalized_thresholds);
+    let normalized = migrate_legacy_empty_ebpf_event_paths(&normalized_thresholds)?;
     let missing = missing_default_entries(&normalized)?;
-    if missing.is_empty() && threshold_migration.changes.is_empty() {
+    if missing.is_empty()
+        && threshold_migration.changes.is_empty()
+        && !legacy_empty_ebpf_event_paths
+    {
         println!(
             "configuration already contains all default keys: {}",
             path.display()
@@ -203,6 +222,13 @@ fn sync_config_defaults(path: &Path, dry_run: bool) -> Result<()> {
             for change in threshold_migration.changes {
                 println!("- {}: {} -> {}", change.path, change.old, change.new);
             }
+        }
+        if legacy_empty_ebpf_event_paths {
+            println!("legacy defaults that would be updated:");
+            println!(
+                "- {LEGACY_EMPTY_EBPF_EVENT_PATHS_KEY}: [] -> {}",
+                default_ebpf_event_paths_text()?
+            );
         }
         if !missing.is_empty() {
             println!("default keys that would be added:");
@@ -398,6 +424,44 @@ fn is_legacy_ssh_response_policy_rule_ids_line(line: &str) -> bool {
     value == "[\"SSH-003\"]"
 }
 
+fn contains_legacy_empty_ebpf_event_paths(text: &str) -> bool {
+    let Ok(value) = toml::from_str::<toml::Value>(text) else {
+        return false;
+    };
+    let Some(paths) = toml_value_at_path(&value, LEGACY_EMPTY_EBPF_EVENT_PATHS_KEY)
+        .and_then(toml::Value::as_array)
+    else {
+        return false;
+    };
+    paths.is_empty()
+}
+
+fn migrate_legacy_empty_ebpf_event_paths(text: &str) -> Result<String> {
+    if !contains_legacy_empty_ebpf_event_paths(text) {
+        return Ok(text.to_string());
+    }
+    replace_toml_array_value(
+        text,
+        LEGACY_EMPTY_EBPF_EVENT_PATHS_KEY,
+        &default_ebpf_event_paths_value(),
+    )
+}
+
+fn default_ebpf_event_paths_text() -> Result<String> {
+    format_toml_value(&default_ebpf_event_paths_value())
+}
+
+fn default_ebpf_event_paths_value() -> toml::Value {
+    toml::Value::Array(
+        SentinelConfig::default()
+            .advanced_collectors
+            .ebpf_event_paths
+            .iter()
+            .map(|path| toml::Value::String(path.to_string_lossy().into_owned()))
+            .collect(),
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LegacyDefaultChange {
     path: &'static str,
@@ -497,7 +561,43 @@ fn replace_toml_usize_value(
     Ok(migrated)
 }
 
+fn replace_toml_array_value(text: &str, path: &str, new_value: &toml::Value) -> Result<String> {
+    let (target_section, target_key) = path.rsplit_once('.').unwrap_or(("", path));
+    let mut section = String::new();
+    let mut changed = false;
+    let mut output = Vec::new();
+    let rendered = format_toml_value(new_value)?;
+
+    for line in text.lines() {
+        if let Some(next_section) = parse_toml_section_header(line) {
+            section = next_section;
+            output.push(line.to_string());
+            continue;
+        }
+        let matches_section_key =
+            section == target_section && toml_line_key(line) == Some(target_key);
+        let matches_dotted_key = section.is_empty() && toml_line_key(line) == Some(path);
+        if (matches_section_key || matches_dotted_key) && toml_line_array_is_empty(line) {
+            output.push(rewrite_toml_value_line(line, &rendered));
+            changed = true;
+            continue;
+        }
+        output.push(line.to_string());
+    }
+
+    if !changed {
+        bail!("could not migrate legacy default key: {path}");
+    }
+    let mut migrated = output.join("\n");
+    migrated.push('\n');
+    Ok(migrated)
+}
+
 fn rewrite_toml_scalar_line(line: &str, new_value: usize) -> String {
+    rewrite_toml_value_line(line, &new_value.to_string())
+}
+
+fn rewrite_toml_value_line(line: &str, new_value: &str) -> String {
     let indent = line
         .chars()
         .take_while(|ch| ch.is_whitespace())
@@ -529,6 +629,20 @@ fn toml_line_usize_value(line: &str) -> Option<usize> {
         .unwrap_or(value)
         .trim();
     value.parse().ok()
+}
+
+fn toml_line_array_is_empty(line: &str) -> bool {
+    let (_, value) = match line.trim().split_once('=') {
+        Some(pair) => pair,
+        None => return false,
+    };
+    let value = value
+        .split_once('#')
+        .map(|(value, _)| value)
+        .unwrap_or(value)
+        .trim()
+        .replace(char::is_whitespace, "");
+    value == "[]"
 }
 
 fn toml_usize_at_path(value: &toml::Value, path: &str) -> Option<usize> {
@@ -721,9 +835,10 @@ fn flatten_value(prefix: &str, value: &toml::Value, keys: &mut BTreeSet<String>)
 #[cfg(test)]
 mod tests {
     use super::{
-        contains_legacy_default_language, contains_legacy_ssh_response_policy,
-        deprecated_keys_in_text, flatten_toml_keys, insert_missing_default_keys,
-        legacy_ssh_threshold_migration, migrate_legacy_default_language,
+        contains_legacy_default_language, contains_legacy_empty_ebpf_event_paths,
+        contains_legacy_ssh_response_policy, deprecated_keys_in_text, flatten_toml_keys,
+        insert_missing_default_keys, legacy_ssh_threshold_migration,
+        migrate_legacy_default_language, migrate_legacy_empty_ebpf_event_paths,
         migrate_legacy_ssh_response_policy, migrate_legacy_ssh_thresholds, missing_default_entries,
         next_backup_path, remove_deprecated_keys,
     };
@@ -782,6 +897,26 @@ mod tests {
 
         assert!(!contains_legacy_ssh_response_policy(text));
         assert_eq!(migrate_legacy_ssh_response_policy(text), text);
+    }
+
+    #[test]
+    fn migrates_legacy_empty_ebpf_event_paths() {
+        let text = "[advanced_collectors]\nebpf_event_paths = [] # old empty default\n";
+
+        assert!(contains_legacy_empty_ebpf_event_paths(text));
+        let migrated = migrate_legacy_empty_ebpf_event_paths(text).unwrap();
+
+        assert!(migrated.contains(
+            "ebpf_event_paths = [\"/var/lib/vps-sentinel/ebpf-runtime.jsonl\"] # old empty default"
+        ));
+    }
+
+    #[test]
+    fn preserves_custom_ebpf_event_paths() {
+        let text = "[advanced_collectors]\nebpf_event_paths = [\"/tmp/custom-runtime.jsonl\"]\n";
+
+        assert!(!contains_legacy_empty_ebpf_event_paths(text));
+        assert_eq!(migrate_legacy_empty_ebpf_event_paths(text).unwrap(), text);
     }
 
     #[test]
@@ -854,6 +989,22 @@ mod tests {
         let text = SentinelConfig::default_toml().unwrap();
         let missing = missing_default_entries(&text).unwrap();
         assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn sync_defaults_repairs_legacy_empty_ebpf_event_paths() {
+        let text = SentinelConfig::default_toml().unwrap().replace(
+            "ebpf_event_paths = [\"/var/lib/vps-sentinel/ebpf-runtime.jsonl\"]",
+            "ebpf_event_paths = []",
+        );
+        let normalized = migrate_legacy_empty_ebpf_event_paths(&text).unwrap();
+        let missing = missing_default_entries(&normalized).unwrap();
+
+        assert!(missing.is_empty());
+        assert!(normalized
+            .contains("ebpf_event_paths = [\"/var/lib/vps-sentinel/ebpf-runtime.jsonl\"]"));
+        let config: SentinelConfig = toml::from_str(&normalized).unwrap();
+        assert_eq!(config.advanced_collectors.ebpf_event_paths.len(), 1);
     }
 
     #[test]
