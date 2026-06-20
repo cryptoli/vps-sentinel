@@ -107,6 +107,13 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "attack_fingerprint_seen_count" => "attack fingerprint observations",
             "attack_fingerprint_source_ip_count" => "attack fingerprint source IPs",
             "attack_fingerprint_verdict" => "attack fingerprint verdict",
+            "behavior_profile_current_public_outbound" => "current public outbound count",
+            "behavior_profile_drift" => "local behavior drift",
+            "behavior_profile_first_seen" => "first seen in local behavior profile",
+            "behavior_profile_new_remote_ports" => "new remote ports in local behavior profile",
+            "behavior_profile_observations" => "local behavior observations",
+            "behavior_profile_previous_public_outbound_max" => "previous public outbound max",
+            "behavior_profile_public_fanout_drift" => "local public fanout drift",
             "baseline_drift_downgrades" => "baseline drift downgrades",
             "baseline_drift_reasons" => "baseline drift reasons",
             "baseline_drift_score" => "baseline drift score",
@@ -257,6 +264,13 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "attack_fingerprint_seen_count" => "攻击指纹观察次数",
             "attack_fingerprint_source_ip_count" => "攻击指纹来源 IP 数",
             "attack_fingerprint_verdict" => "攻击指纹判定",
+            "behavior_profile_current_public_outbound" => "当前公网出站连接数",
+            "behavior_profile_drift" => "本地行为画像漂移",
+            "behavior_profile_first_seen" => "首次出现在本地行为画像",
+            "behavior_profile_new_remote_ports" => "行为画像新增远端端口",
+            "behavior_profile_observations" => "本地行为观察次数",
+            "behavior_profile_previous_public_outbound_max" => "历史公网出站峰值",
+            "behavior_profile_public_fanout_drift" => "公网出站 fanout 漂移",
             "baseline_drift_downgrades" => "基线漂移降噪因素",
             "baseline_drift_reasons" => "基线漂移原因",
             "baseline_drift_score" => "基线漂移评分",
@@ -555,6 +569,34 @@ fn direct_value_label(
         ("attack_fingerprint_verdict", "malicious", NotificationLanguage::ZhCn) => {
             Some("已确认恶意")
         }
+        (
+            "behavior_profile_drift"
+            | "behavior_profile_first_seen"
+            | "behavior_profile_public_fanout_drift",
+            "true",
+            NotificationLanguage::En,
+        ) => Some("yes"),
+        (
+            "behavior_profile_drift"
+            | "behavior_profile_first_seen"
+            | "behavior_profile_public_fanout_drift",
+            "true",
+            NotificationLanguage::ZhCn,
+        ) => Some("是"),
+        (
+            "behavior_profile_drift"
+            | "behavior_profile_first_seen"
+            | "behavior_profile_public_fanout_drift",
+            "false",
+            NotificationLanguage::En,
+        ) => Some("no"),
+        (
+            "behavior_profile_drift"
+            | "behavior_profile_first_seen"
+            | "behavior_profile_public_fanout_drift",
+            "false",
+            NotificationLanguage::ZhCn,
+        ) => Some("否"),
         ("baseline_drift_tier", "routine", NotificationLanguage::En) => Some("routine"),
         ("baseline_drift_tier", "routine", NotificationLanguage::ZhCn) => Some("常规变更"),
         ("baseline_drift_tier", "review", NotificationLanguage::En) => Some("needs review"),
@@ -695,6 +737,7 @@ fn is_localized_list_key(key: &str) -> bool {
             | "risk_features"
             | "risk_reasons"
             | "content_markers"
+            | "behavior_profile_new_remote_ports"
             | "baseline_drift_reasons"
             | "baseline_drift_downgrades"
     )
@@ -994,6 +1037,20 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
             "inline_interpreter" => Some("inline interpreter"),
             "interactive_shell" => Some("interactive shell"),
             "listener owner changed" => Some("listener owner changed"),
+            "local_behavior_first_seen" => Some("first seen local behavior identity"),
+            "local_behavior_new_remote_ports" => Some("new remote ports in local behavior profile"),
+            "local_behavior_public_fanout_drift" => {
+                Some("public outbound fanout drift in local behavior profile")
+            }
+            "local behavior profile observed remote ports not seen in the matured process profile" => {
+                Some("local behavior profile observed remote ports not seen in the matured process profile")
+            }
+            "local behavior profile observed a public outbound fanout above the matured process profile" => {
+                Some("local behavior profile observed a public outbound fanout above the matured process profile")
+            }
+            "process identity has not yet appeared in the local behavior profile" => {
+                Some("process identity has not yet appeared in the local behavior profile")
+            }
             "network_channel" => Some("network channel"),
             "network_execution_bridge" => Some("network execution bridge"),
             "not publicly exposed" => Some("not publicly exposed"),
@@ -1114,6 +1171,18 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
             "interactive_shell" => Some("交互式 Shell"),
             "kernel_thread_masquerade" => Some("伪装成内核线程名"),
             "known_bad_tool" => Some("已知高风险工具"),
+            "local_behavior_first_seen" => Some("本地行为画像首次出现"),
+            "local_behavior_new_remote_ports" => Some("本地行为画像新增远端端口"),
+            "local_behavior_public_fanout_drift" => Some("本地画像公网出站 fanout 漂移"),
+            "local behavior profile observed remote ports not seen in the matured process profile" => {
+                Some("本地成熟行为画像中未见过这些远端端口")
+            }
+            "local behavior profile observed a public outbound fanout above the matured process profile" => {
+                Some("当前公网出站 fanout 高于本地成熟行为画像")
+            }
+            "process identity has not yet appeared in the local behavior profile" => {
+                Some("该进程身份尚未出现在本地行为画像中")
+            }
             "large_encoded_web_script" => Some("Web 脚本中的大段编码内容"),
             "listener owner changed from baseline" => Some("监听进程相对基线发生变化"),
             "many_socket_fds" => Some("大量 Socket 文件描述符"),

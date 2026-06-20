@@ -8,6 +8,7 @@ use commands::{
     blocks::{run_blocks, BlocksCommand},
     config::{run_config, ConfigCommand},
     doctor::run_doctor,
+    ebpf::{run_ebpf, EbpfCommand},
     events::{run_events, EventsCommand},
     findings::{run_findings, FindingsCommand},
     fingerprints::{run_fingerprints, FingerprintsCommand},
@@ -132,6 +133,10 @@ enum Command {
         #[command(subcommand)]
         command: StorageCommand,
     },
+    Ebpf {
+        #[command(subcommand)]
+        command: EbpfCommand,
+    },
     Status {
         #[arg(long)]
         json: bool,
@@ -195,6 +200,7 @@ async fn main() -> Result<()> {
         }
         Command::Config { command } => run_config(cli.config.as_deref(), command),
         Command::Storage { command } => run_storage(load_config(cli.config.as_deref())?, command),
+        Command::Ebpf { command } => run_ebpf(load_config(cli.config.as_deref())?, command),
         Command::Status { json } => run_status(load_config(cli.config.as_deref())?, json),
         Command::Reload { service_name } => {
             let (_, path) = load_config_with_path(cli.config.as_deref())?;

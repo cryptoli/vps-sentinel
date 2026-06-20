@@ -85,16 +85,16 @@ mod tests {
             RawEvent::new("ssh", "ssh_auth")
                 .with_field("outcome", "failure")
                 .with_field("source_ip", "8.8.8.8"),
-            RawEvent::new("file", "file_snapshot")
-                .with_field("path", "/root/.ssh/authorized_keys"),
+            RawEvent::new("file", "file_snapshot").with_field("path", "/root/.ssh/authorized_keys"),
         ];
 
         let report = apply_raw_event_budget(&mut events, &config);
 
         assert_eq!(report.dropped_events, 2);
         assert!(events.iter().any(|event| event.kind == "ssh_auth"));
-        assert!(events.iter().any(|event| {
-            event.field("path") == Some("/root/.ssh/authorized_keys")
-        }));
+        let retained_authorized_keys = events
+            .iter()
+            .any(|event| event.field("path") == Some("/root/.ssh/authorized_keys"));
+        assert!(retained_authorized_keys);
     }
 }

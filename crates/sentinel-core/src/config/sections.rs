@@ -732,6 +732,34 @@ fn default_ignored_dynamic_udp_process_names() -> Vec<String> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct BehaviorProfileConfig {
+    pub enabled: bool,
+    pub min_observations_before_drift: u32,
+    pub max_process_identities: usize,
+    pub max_remote_ports_per_identity: usize,
+    pub max_executable_samples_per_identity: usize,
+    pub max_age_days: u32,
+    pub public_fanout_multiplier: usize,
+    pub public_fanout_min_delta: usize,
+}
+
+impl Default for BehaviorProfileConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min_observations_before_drift: 3,
+            max_process_identities: 512,
+            max_remote_ports_per_identity: 32,
+            max_executable_samples_per_identity: 8,
+            max_age_days: 30,
+            public_fanout_multiplier: 3,
+            public_fanout_min_delta: 8,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ReportsConfig {
     pub scheduled_enabled: bool,
     pub scheduled_hour: u8,
@@ -759,6 +787,10 @@ pub struct AdvancedCollectorsConfig {
     pub ebpf_bridge_enabled: bool,
     pub ebpf_event_paths: Vec<PathBuf>,
     pub ebpf_command: Vec<String>,
+    pub ebpf_runtime_probe_enabled: bool,
+    pub ebpf_runtime_probe_output_path: PathBuf,
+    pub ebpf_runtime_probe_command: String,
+    pub ebpf_runtime_probe_capture_files: bool,
     pub command_timeout_seconds: u64,
 }
 
@@ -769,8 +801,14 @@ impl Default for AdvancedCollectorsConfig {
             audit_log_paths: vec![PathBuf::from("/var/log/audit/audit.log")],
             audit_max_tail_bytes: 1024 * 1024,
             ebpf_bridge_enabled: true,
-            ebpf_event_paths: Vec::new(),
+            ebpf_event_paths: vec![PathBuf::from("/var/lib/vps-sentinel/ebpf-runtime.jsonl")],
             ebpf_command: Vec::new(),
+            ebpf_runtime_probe_enabled: false,
+            ebpf_runtime_probe_output_path: PathBuf::from(
+                "/var/lib/vps-sentinel/ebpf-runtime.jsonl",
+            ),
+            ebpf_runtime_probe_command: "bpftrace".to_string(),
+            ebpf_runtime_probe_capture_files: false,
             command_timeout_seconds: 3,
         }
     }

@@ -25,7 +25,10 @@ pub struct RulePackOwnerSummary {
 pub fn builtin_rule_pack() -> RulePackSummary {
     let mut by_owner = BTreeMap::<String, Vec<&'static str>>::new();
     for rule in builtin_rules() {
-        by_owner.entry(rule.owner.to_string()).or_default().push(rule.id);
+        by_owner
+            .entry(rule.owner.to_string())
+            .or_default()
+            .push(rule.id);
     }
     let owners = by_owner
         .into_iter()

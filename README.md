@@ -32,7 +32,7 @@ It is not:
 | File integrity | Watches configured critical paths and web roots; hashes bounded file content; detects modified files, executable scripts in web roots, and risk-scored WebShell-style marker combinations. |
 | Log integrity | Watches sensitive authentication/login log files for risky symlinks and abrupt size drops that are not explained by recent rotation context. |
 | Persistence checks | Monitors cron, systemd, shell profile, and preload-related locations for new or risk-scored suspicious startup entries. |
-| Process and GPU checks | Reads procfs argv, parent process, executable path, cwd, UID context, socket-FD count, CPU lifetime metrics, procfs start-time drift, structured cgroup/container context, systemd unit/ExecStart, executable owner/size/hash, package ownership, outbound connection profile, NVIDIA GPU compute-process facts via `nvidia-smi`, and AMD/ROCm GPU process facts via `rocm-smi`. It flags risk-scored suspicious executable paths, deleted executables, network command-execution bridges, suspicious behavior clusters, known miner/scanner identities, and suspicious GPU compute workloads. |
+| Process and GPU checks | Reads procfs argv, parent process, executable path, cwd, UID context, socket-FD count, CPU lifetime metrics, procfs start-time drift, local behavior profile drift, structured cgroup/container context, systemd unit/ExecStart, executable owner/size/hash, package ownership, outbound connection profile, NVIDIA GPU compute-process facts via `nvidia-smi`, and AMD/ROCm GPU process facts via `rocm-smi`. It flags risk-scored suspicious executable paths, deleted executables, network command-execution bridges, suspicious behavior clusters, known miner/scanner identities, and suspicious GPU compute workloads. |
 | Network checks | Reads listening sockets and owning process details; attaches process context and firewall state; flags high-risk public services, suspicious listener processes, baseline owner drift, and ordinary new public listeners. Expected web/SSH ports such as 22, 80, and 443 reduce noise but are not blindly trusted. |
 | Web log checks | Parses common access logs, JSON access logs, Nginx-style error log request context, and recent `.1` rotated logs; restores real client IPs from trusted proxy/CDN JSON fields when available, avoids blocking unresolved proxy sources, classifies automated probing into attack families, and aggregates probes by source to avoid path-by-path alert floods. |
 | Rootkit signals | Collects lightweight local indicators for hidden process and suspicious procfs behavior. |
@@ -41,7 +41,7 @@ It is not:
 | Attack fingerprints | Extracts normalized Web, SSH, process, and persistence attack fingerprints from findings; stores exact hashes plus SimHash-style similarity keys; groups repeated attack methods across changing IPs; exposes fingerprint timelines, explanations, and operator verdicts. |
 | Evidence and rule governance | Normalizes common evidence fields such as source IPs, users, paths, counts, and probe families; keeps built-in rule ownership, category, response scope, and evidence contracts in one rule matrix. |
 | Service profile | Maintains a service-owner profile for listening sockets and reports new services or executable drift on known listeners. |
-| Advanced collectors | Reads auditd logs when present and accepts an eBPF JSONL/command bridge when configured. Audit events can detect short-lived network command execution and non-interactive privilege shell execution that procfs snapshots may miss. |
+| Advanced collectors | Reads auditd logs when present, accepts an eBPF JSONL/command bridge, and can generate a lightweight bpftrace runtime probe script for short-lived exec and optional mutating file events. Audit and eBPF events can detect short-lived activity that procfs snapshots may miss. |
 | External rules | Supports Sigma-like TOML event rules, external-rule validation, and optional YARA CLI scans for user-supplied defensive rules. The rule engine is enabled by default; it runs only when rule or scan paths are configured. |
 | Threat intelligence | Optionally enriches findings with local or remote indicators for IPs, paths, domains, and hashes. Indicator matches are supporting evidence, not standalone block triggers. |
 | Fleet panel | Pushes signed, bounded telemetry to a self-hosted Rust panel or a Cloudflare Worker/D1 receiver; the panel stores nodes, findings, incidents, baseline drift, and active blocks, and the static UI supports third-party themes and custom pages. |
@@ -69,6 +69,8 @@ Sensitive auth/login log integrity is stateful. vps-sentinel records the previou
 WebShell content detection is risk-scored instead of marker-only. A single marker such as `eval` in a legitimate admin script is below the default threshold. Combinations such as command execution in a script-like web path, dynamic execution plus encoded payload markers, command execution plus encoding, or large encoded payloads in script-like web paths raise `FILE-002`.
 
 `PROC-005` covers renamed or lightly disguised processes that may not expose a known tool name, temporary executable path, or obvious network shell bridge. It combines weaker behavior signals such as kernel-thread masquerading, execution from configured web roots, hidden executable names, suspicious working directories, socket-FD activity, sustained high CPU, procfs start-time drift for the same process identity, and effective-root privilege context. No single weak signal is enough at the default threshold, and start-time drift only contributes after other suspicious context already exists.
+
+The local behavior profile is a bounded, on-host memory aid rather than a cloud model. It stores a small SQLite rule-state profile keyed by process identity, with capped executable samples, remote ports, public outbound fanout, observation counts, and age-based pruning. A matured profile can add supporting evidence when a process suddenly uses unseen remote ports or public fanout grows sharply, but profile drift does not alert by itself; existing process risk signals must still be present.
 
 `PROC-006` adds GPU mining coverage when `nvidia-smi` or `rocm-smi` is visible to the host service. The collector reads current compute apps and joins them with procfs and outbound-connection facts by PID. GPU memory use alone is not an alert because normal CUDA, ROCm, AI, rendering, and transcoding jobs can be heavy; the rule requires stronger evidence such as a known GPU miner identity, configured mining-pool remote port, temporary or deleted executable, anonymous/memfd executable, network execution bridge, or a hidden GPU executable with public outbound activity. Containerized deployments that cannot see host GPU/process namespaces are outside this signal unless the relevant runtime is visible from the host.
 
@@ -464,6 +466,9 @@ Commands:
 | `vps-sentinel reload --config <path>` | Validate the config and reload the running systemd service. Use `vs reload` after installing the shorthand. |
 | `vps-sentinel status --config <path>` | Show enabled features, storage footprint, last-24h scan health, notification channels, and active-response block counts. Add `--json` for automation. |
 | `vps-sentinel doctor --config <path>` | Check runtime readiness and print a capability matrix for root visibility, procfs, SSH logs, auditd, eBPF bridge, package ownership, systemd, firewall backend, GPU tooling, and YARA. |
+| `vps-sentinel ebpf doctor --config <path>` | Show runtime-probe command, output path, bridge configuration, and default capture mode. |
+| `vps-sentinel ebpf script --config <path>` | Print the built-in lightweight bpftrace script for short-lived exec and optional mutating file activity. Add `--capture-files` to include file probes. |
+| `vps-sentinel ebpf run --config <path>` | Run bpftrace in the foreground and append JSONL events to the configured eBPF bridge output path. Use this for manual or separately supervised probe operation; the daemon starts the probe itself when `ebpf_runtime_probe_enabled = true`. |
 | `vps-sentinel check --json --config <path>` | Run collectors and detectors once without persisting results, sending notifications, or applying active response. Omit `--json` for a human-readable summary. |
 | `vps-sentinel scan --config <path>` | Run one full scan, persist compact raw events/findings, update notification logs, apply deduplication, send enabled notifications, and print RSS/event-source diagnostics. |
 | `vps-sentinel scan --no-notify --json --config <path>` | Persist scan results but suppress notification delivery and active response. Useful before enabling channels. Omit `--json` for text output. |
@@ -791,13 +796,23 @@ dynamic_udp_min_port = 32768
 ignored_dynamic_udp_process_names = ["systemd-timesyncd", "chronyd", "ntpd"]
 ignore_loopback_ssh_forwarding = true
 
+[behavior_profile]
+enabled = true
+min_observations_before_drift = 3
+max_process_identities = 512
+max_remote_ports_per_identity = 32
+max_executable_samples_per_identity = 8
+max_age_days = 30
+public_fanout_multiplier = 3
+public_fanout_min_delta = 8
+
 [reports]
 scheduled_enabled = true
 scheduled_hour = 8
 scheduled_period = "today"
 ```
 
-`incidents` controls local attack-chain grouping. `service_profile` controls listener owner drift detection. Dynamic UDP/UDP6 services above `dynamic_udp_min_port` are keyed by process identity when enabled, so VPN/relay-style software that changes high UDP ports does not alert every scan. `ignored_dynamic_udp_process_names` covers known client-style UDP processes such as time sync daemons, and `ignore_loopback_ssh_forwarding` suppresses local SSH X11/forwarding listeners such as `127.0.0.1:6010`. Scheduled reports are enabled by default and send the configured daily report from the daemon through enabled notification channels, with `min_interval_seconds` preventing duplicate sends after restarts. If no notification channel is configured, scheduled reports are skipped without building or sending a report.
+`incidents` controls local attack-chain grouping. `service_profile` controls listener owner drift detection. Dynamic UDP/UDP6 services above `dynamic_udp_min_port` are keyed by process identity when enabled, so VPN/relay-style software that changes high UDP ports does not alert every scan. `behavior_profile` controls a bounded local process behavior profile used as supporting evidence for new remote ports and outbound fanout drift; it is capped by identity count, per-identity sample limits, and age-based pruning. Scheduled reports are enabled by default and send the configured daily report from the daemon through enabled notification channels, with `min_interval_seconds` preventing duplicate sends after restarts. If no notification channel is configured, scheduled reports are skipped without building or sending a report.
 
 Advanced collectors and external rules:
 
@@ -805,8 +820,12 @@ Advanced collectors and external rules:
 [advanced_collectors]
 auditd_enabled = true
 ebpf_bridge_enabled = true
-ebpf_event_paths = []
+ebpf_event_paths = ["/var/lib/vps-sentinel/ebpf-runtime.jsonl"]
 ebpf_command = []
+ebpf_runtime_probe_enabled = false
+ebpf_runtime_probe_output_path = "/var/lib/vps-sentinel/ebpf-runtime.jsonl"
+ebpf_runtime_probe_command = "bpftrace"
+ebpf_runtime_probe_capture_files = false
 
 [external_rules]
 enabled = true
@@ -816,7 +835,7 @@ yara_paths = []
 yara_scan_roots = []
 ```
 
-Auditd reads configured audit logs when available. Audit EXECVE events are converted into normalized RawEvents and can identify network-to-shell execution bridges or non-interactive sudo/su/pkexec shell execution using the shared command-profile logic. The eBPF bridge expects JSONL events from files or a configured command, which lets operators integrate their own BPF tooling without making kernel probes a hard dependency; common exec/connect/file events are normalized into the same process, outbound, and file-activity field names used by built-in rules. Sigma-like rules are TOML files containing structured event field conditions; validate them with `vs rules validate-external <path...>` before deployment. YARA support calls the configured `yara` binary only when rule paths and scan roots are configured, so the default engine is active but does no YARA work until inputs exist.
+Auditd reads configured audit logs when available. Audit EXECVE events are converted into normalized RawEvents and can identify network-to-shell execution bridges or non-interactive sudo/su/pkexec shell execution using the shared command-profile logic. The eBPF bridge expects JSONL events from files or a configured command, which lets operators integrate their own BPF tooling without making kernel probes a hard dependency; common exec/connect/file events are normalized into the same process, outbound, and file-activity field names used by built-in rules. File-backed eBPF JSONL input is consumed incrementally inside each daemon process, with bounded reads and rotation/truncation detection, so short-lived runtime events do not repeatedly pollute later scans. `vs ebpf script` prints the built-in lightweight bpftrace script, `vs ebpf run` runs it in the foreground for manual or separately supervised use, and the daemon starts/stops/restarts the same probe automatically when `ebpf_runtime_probe_enabled = true`; daemon-managed probes reset their own output file at start, while manual `vs ebpf run` appends. Mutating file probes are optional through `--capture-files` or `ebpf_runtime_probe_capture_files` because busy hosts can generate many file events. Sigma-like rules are TOML files containing structured event field conditions; validate them with `vs rules validate-external <path...>` before deployment. YARA support calls the configured `yara` binary only when rule paths and scan roots are configured, so the default engine is active but does no YARA work until inputs exist.
 
 Threat intelligence, fleet, and maintenance:
 

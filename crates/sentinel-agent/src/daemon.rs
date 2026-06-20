@@ -1,4 +1,5 @@
 use crate::report::{build_report_finding, send_report_finding, ReportPeriod};
+use crate::runtime_probe::{spawn_runtime_probe, RuntimeProbeHandle, RuntimeProbeLaunch};
 use crate::scanner::{run_scan, ScanOptions};
 use crate::storage::SqliteStore;
 use chrono::{DateTime, Local, Timelike, Utc};
@@ -31,8 +32,11 @@ pub async fn run_daemon(
     let mut reload_signal = reload_signal();
     let interval = Duration::from_secs(config.agent.scan_interval_seconds);
     info!(seconds = interval.as_secs(), "vps-sentinel daemon started");
+    let mut runtime_probe = None;
+    reconcile_runtime_probe(&mut runtime_probe, &config);
 
     loop {
+        reconcile_runtime_probe(&mut runtime_probe, &config);
         match run_scan(config.clone(), ScanOptions::default()).await {
             Ok(report) => info!(
                 raw_events = report.raw_event_count,
@@ -68,11 +72,61 @@ pub async fn run_daemon(
             _ = recv_reload_signal(&mut reload_signal), if reload_path.is_some() => {
                 if let Some(path) = &reload_path {
                     reload_config(&mut config, path);
+                    reconcile_runtime_probe(&mut runtime_probe, &config);
                 }
             }
         }
     }
     Ok(())
+}
+
+fn reconcile_runtime_probe(
+    runtime_probe: &mut Option<RuntimeProbeHandle>,
+    config: &SentinelConfig,
+) {
+    if !config.advanced_collectors.ebpf_runtime_probe_enabled {
+        if let Some(mut handle) = runtime_probe.take() {
+            if let Err(err) = handle.stop() {
+                warn!(error = %err, "failed to stop eBPF runtime probe");
+            } else {
+                info!("eBPF runtime probe stopped");
+            }
+        }
+        return;
+    }
+
+    let desired = RuntimeProbeLaunch::from_config(config);
+    let needs_start = if let Some(handle) = runtime_probe.as_mut() {
+        if handle.launch() == &desired && handle.is_running() {
+            false
+        } else {
+            if let Err(err) = handle.stop() {
+                warn!(error = %err, "failed to stop stale eBPF runtime probe");
+            }
+            true
+        }
+    } else {
+        true
+    };
+    if !needs_start {
+        return;
+    }
+    match spawn_runtime_probe(desired.clone()) {
+        Ok(handle) => {
+            info!(
+                command = %desired.program,
+                output_path = %desired.output_path.display(),
+                script_path = %desired.script_path.display(),
+                capture_files = desired.options.capture_file_activity,
+                "eBPF runtime probe started"
+            );
+            *runtime_probe = Some(handle);
+        }
+        Err(err) => {
+            warn!(error = %err, "failed to start eBPF runtime probe");
+            *runtime_probe = None;
+        }
+    }
 }
 
 async fn maybe_send_scheduled_report(config: &SentinelConfig) -> SentinelResult<()> {

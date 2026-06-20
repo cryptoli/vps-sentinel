@@ -275,12 +275,7 @@ impl TryFrom<FindingReviewRequest> for FindingReview {
             finding_id: finding_id.to_string(),
             verdict: verdict.to_string(),
             note: value.note.trim().chars().take(1000).collect(),
-            reviewer: value
-                .reviewer
-                .trim()
-                .chars()
-                .take(128)
-                .collect::<String>(),
+            reviewer: value.reviewer.trim().chars().take(128).collect::<String>(),
             reviewed_at: Utc::now(),
         })
     }
@@ -687,13 +682,7 @@ async fn audit_logs(
             table: "panel_audit_logs",
             order_column: "created_at",
             active_filter: None,
-            columns: &[
-                "created_at",
-                "action",
-                "actor",
-                "target_type",
-                "target_id",
-            ],
+            columns: &["created_at", "action", "actor", "target_type", "target_id"],
         },
     )
     .await
@@ -1050,15 +1039,15 @@ impl Repository {
             .query_one_with_values(&sql, &[DbValue::Text(id.to_string())])
             .await?
         else {
-            return Err(PanelApiError::new(StatusCode::NOT_FOUND, "finding_not_found"));
+            return Err(PanelApiError::new(
+                StatusCode::NOT_FOUND,
+                "finding_not_found",
+            ));
         };
         expand_json_column(&mut detail, "evidence_json", "evidence");
         expand_json_column(&mut detail, "impact_json", "impact");
         expand_json_column(&mut detail, "recommendations_json", "recommendations");
-        detail["review"] = self
-            .finding_review_value(id)
-            .await?
-            .unwrap_or_else(|| Value::Null);
+        detail["review"] = self.finding_review_value(id).await?.unwrap_or(Value::Null);
         Ok(detail)
     }
 
@@ -1084,7 +1073,10 @@ impl Repository {
             .query_one_with_values(&sql, &[DbValue::Text(id.to_string())])
             .await?
         else {
-            return Err(PanelApiError::new(StatusCode::NOT_FOUND, "incident_not_found"));
+            return Err(PanelApiError::new(
+                StatusCode::NOT_FOUND,
+                "incident_not_found",
+            ));
         };
         expand_json_column(&mut detail, "payload_json", "payload");
         Ok(detail)
@@ -1119,14 +1111,14 @@ impl Repository {
             self.placeholder(1)
         );
         if self
-            .count_sql(
-                &exists_sql,
-                &[DbValue::Text(review.finding_id.clone())],
-            )
+            .count_sql(&exists_sql, &[DbValue::Text(review.finding_id.clone())])
             .await?
             == 0
         {
-            return Err(PanelApiError::new(StatusCode::NOT_FOUND, "finding_not_found"));
+            return Err(PanelApiError::new(
+                StatusCode::NOT_FOUND,
+                "finding_not_found",
+            ));
         }
         let columns = ["finding_id", "verdict", "note", "reviewer", "reviewed_at"];
         let sql = self.upsert_sql(
@@ -1943,9 +1935,9 @@ impl From<rusqlite::Error> for PanelApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        verify_admin_auth, verify_view_auth, view_token_from_headers, AppState,
-        FindingReview, FindingReviewRequest, PageQuery, PageRequest, Repository, RepositoryDriver,
-        SecretResolver, MAX_PAGE_LIMIT,
+        verify_admin_auth, verify_view_auth, view_token_from_headers, AppState, FindingReview,
+        FindingReviewRequest, PageQuery, PageRequest, Repository, RepositoryDriver, SecretResolver,
+        MAX_PAGE_LIMIT,
     };
     use axum::http::{header, HeaderMap, HeaderValue};
     use rusqlite::Connection;

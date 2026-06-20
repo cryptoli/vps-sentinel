@@ -32,7 +32,7 @@
 | 文件完整性 | 监控关键路径和 Web 根目录；对限定大小内文件做哈希和内容扫描；检测关键文件变化、Web 目录可执行脚本、达到风险评分阈值的 WebShell 风格特征组合。 |
 | 日志完整性 | 监控敏感认证/登录日志文件，识别高风险软链和没有近期轮转上下文的大幅截断。 |
 | 持久化检查 | 监控 cron、systemd、shell profile、`ld.so.preload` 等启动相关位置，并对可疑启动命令进行风险评分。 |
-| 进程和 GPU 检查 | 读取 procfs argv、父进程、可执行路径、工作目录、UID 上下文、socket FD 数、CPU 生命周期指标、procfs 启动时间漂移、结构化 cgroup/container 上下文、systemd unit/ExecStart、可执行文件 owner/size/hash、软件包归属、出站连接画像，并通过 `nvidia-smi` 读取 NVIDIA GPU 计算进程、通过 `rocm-smi` 读取 AMD/ROCm GPU 进程事实，识别达到风险评分阈值的可疑可执行路径、deleted executable、网络命令执行桥接、可疑行为聚类、已知挖矿/扫描器身份和可疑 GPU 计算负载。 |
+| 进程和 GPU 检查 | 读取 procfs argv、父进程、可执行路径、工作目录、UID 上下文、socket FD 数、CPU 生命周期指标、procfs 启动时间漂移、本地行为画像漂移、结构化 cgroup/container 上下文、systemd unit/ExecStart、可执行文件 owner/size/hash、软件包归属、出站连接画像，并通过 `nvidia-smi` 读取 NVIDIA GPU 计算进程、通过 `rocm-smi` 读取 AMD/ROCm GPU 进程事实，识别达到风险评分阈值的可疑可执行路径、deleted executable、网络命令执行桥接、可疑行为聚类、已知挖矿/扫描器身份和可疑 GPU 计算负载。 |
 | 网络检查 | 读取监听 socket 与所属进程；附加进程上下文和防火墙状态；检测高风险公网服务、可疑监听进程、监听 owner 基线漂移和新增公网监听。22/80/443 等预期端口会降低噪音，但不会被无脑信任。 |
 | Web 日志 | 解析常见 access log、JSON access log、Nginx 风格 error log 请求上下文和近期 `.1` 轮转日志；可从可信代理/CDN 的 JSON 字段还原真实客户端 IP，无法还原时不会把代理边缘当攻击者封禁；将自动化探测归类为攻击家族，并按来源聚合同类路径，避免按路径刷屏。 |
 | Rootkit 信号 | 采集轻量级本地指标，用于发现隐藏进程和可疑 procfs 行为。 |
@@ -41,7 +41,7 @@
 | 攻击指纹 | 从 Web、SSH、进程和持久化 finding 中提取归一化攻击指纹；保存精确 hash 和 SimHash 近似键；即使攻击源 IP 变化，也能按攻击手法聚合，并提供指纹时间线、解释和人工判定。 |
 | 证据和规则治理 | 统一归一化来源 IP、用户、路径、计数和探测家族等常见 evidence 字段，并维护内置规则 owner、分类、响应范围和证据契约矩阵。 |
 | 服务画像 | 维护监听服务 owner 画像，发现新增服务或已知监听端口背后的可执行文件漂移；支持按进程身份建模动态 UDP/UDP6 高位端口，并忽略可配置的客户端临时 UDP 与本地 SSH 转发监听。 |
-| 高级采集 | 默认启用 auditd 日志采集和 eBPF JSONL/命令桥接入口；auditd 事件可识别 procfs 快照可能错过的短生命周期网络命令执行和非交互式提权 shell 执行。 |
+| 高级采集 | 默认启用 auditd 日志采集和 eBPF JSONL/命令桥接入口；可生成轻量 bpftrace runtime probe 脚本，用于捕捉短生命周期 exec 和可选的文件变更事件。auditd/eBPF 事件可识别 procfs 快照可能错过的短生命周期行为。 |
 | 外部规则 | 支持 Sigma-like TOML 事件规则、外部规则校验和可选 YARA CLI 扫描；规则引擎默认启用，但只有配置了规则路径或扫描根目录后才会实际运行。 |
 | 威胁情报 | 可选用本地或远程 indicator 对 IP、路径、域名、哈希做证据增强；命中只是辅助证据，不会单独触发封禁。 |
 | 多 VPS 面板 | 将有签名、有大小上限的遥测推送到 Rust 自建面板或 Cloudflare Worker/D1 接收端；面板保存节点、finding、incident、基线漂移和主动封禁记录，静态 UI 支持第三方主题和自定义页面。 |
@@ -69,6 +69,8 @@ SSH key 文件状态检测独立于基线漂移。采集器会读取 OpenSSH 默
 WebShell 内容检测也采用评分模型，不再因为单个 marker 直接告警。合法管理脚本中单独出现 `eval` 默认达不到阈值；Web 脚本中的命令执行、动态执行叠加编码 payload、命令执行叠加编码、Web 脚本中出现大块编码内容等组合才会触发 `FILE-002`。
 
 `PROC-005` 用于补充识别已改名、轻度伪装、没有明显临时路径或网络 shell 桥接的可疑进程。它组合内核线程伪装、Web 根目录执行、隐藏可执行文件名、可疑工作目录、socket FD 活动、持续高 CPU、同一进程身份的 procfs 启动时间漂移、有效 root 权限等弱信号。默认阈值下单个弱信号不会独立告警，启动时间漂移也只会在已经存在其它可疑上下文时加权。
+
+本地行为画像是有界的主机侧辅助模型，不是云端模型。它把进程身份、有限的可执行文件样本、远端端口、公网出站 fanout、观察次数和过期时间保存在 SQLite `rule_states` 中；成熟画像发现新远端端口或公网出站 fanout 突增时只会补充证据，不会单独告警，仍然需要叠加现有进程风险信号。
 
 `PROC-006` 在宿主机服务能看到 `nvidia-smi` 或 `rocm-smi` 时提供 GPU 挖矿检测。采集器读取当前 GPU compute apps，并按 PID 与 procfs、出站连接事实关联。GPU 显存占用本身不会告警，因为正常 CUDA、ROCm、AI 训练、渲染、转码任务也可能大量占用显存；该规则需要叠加更强证据，例如已知 GPU 挖矿器身份、配置中的矿池远端端口、临时或 deleted executable、匿名/memfd 可执行文件、网络命令执行桥接，或隐藏 GPU 可执行文件伴随公网出站连接。看不到宿主机 GPU/进程命名空间的容器化部署，不在该信号覆盖范围内。
 
@@ -460,6 +462,9 @@ sudo journalctl -u vps-sentinel -f
 | `vps-sentinel config sync-defaults --dry-run --config <path>` | 只显示将被追加的默认配置项，不修改文件。 |
 | `vps-sentinel status --config <path>` | 查看启用功能、存储占用、最近 24 小时扫描健康度、通知渠道和主动响应封禁数量；加 `--json` 可用于自动化。 |
 | `vps-sentinel doctor --config <path>` | 检查运行环境，并输出 root 可见性、procfs、SSH 日志、auditd、eBPF bridge、包归属、systemd、防火墙后端、GPU 工具和 YARA 的能力矩阵。 |
+| `vps-sentinel ebpf doctor --config <path>` | 查看 runtime probe 命令、输出路径、bridge 配置和默认采集模式。 |
+| `vps-sentinel ebpf script --config <path>` | 输出内置轻量 bpftrace 脚本，用于短生命周期 exec 和可选文件变更事件；加 `--capture-files` 可包含文件探针。 |
+| `vps-sentinel ebpf run --config <path>` | 前台运行 bpftrace，并把 JSONL 事件追加到配置中的 eBPF bridge 输出路径；适合手动运行或独立托管。daemon 在 `ebpf_runtime_probe_enabled = true` 时会自行启动探针。 |
 | `vps-sentinel check --json --config <path>` | 执行一次采集和检测，但不持久化结果、不发送通知、不执行主动响应；省略 `--json` 输出文本摘要。 |
 | `vps-sentinel scan --config <path>` | 执行一次完整扫描，持久化精简 raw events/findings，记录通知日志，应用去重，发送已启用通知，并输出 RSS 与事件来源诊断。 |
 | `vps-sentinel scan --no-notify --json --config <path>` | 持久化扫描结果但不发送通知、不执行主动响应；适合启用通知前试运行。省略 `--json` 输出文本摘要。 |
@@ -788,13 +793,23 @@ dynamic_udp_min_port = 32768
 ignored_dynamic_udp_process_names = ["systemd-timesyncd", "chronyd", "ntpd"]
 ignore_loopback_ssh_forwarding = true
 
+[behavior_profile]
+enabled = true
+min_observations_before_drift = 3
+max_process_identities = 512
+max_remote_ports_per_identity = 32
+max_executable_samples_per_identity = 8
+max_age_days = 30
+public_fanout_multiplier = 3
+public_fanout_min_delta = 8
+
 [reports]
 scheduled_enabled = true
 scheduled_hour = 8
 scheduled_period = "today"
 ```
 
-`incidents` 控制本地攻击链聚合；`service_profile` 控制监听服务 owner 漂移检测。启用动态 UDP/UDP6 建模后，高于 `dynamic_udp_min_port` 的公网 UDP 监听会按进程身份建模，因此 VPN/转发类软件更换高位 UDP 端口不会每次都告警。`ignored_dynamic_udp_process_names` 用于时间同步这类客户端式 UDP 进程，`ignore_loopback_ssh_forwarding` 会压制 `127.0.0.1:6010` 这类本地 SSH X11/转发监听。定时报表默认开启，会让 daemon 通过已启用通知渠道发送每日安全报告，并用 `min_interval_seconds` 避免重启后重复发送；如果没有配置任何通知渠道，daemon 会直接跳过定时报表，不构建也不发送。
+`incidents` 控制本地攻击链聚合；`service_profile` 控制监听服务 owner 漂移检测。启用动态 UDP/UDP6 建模后，高于 `dynamic_udp_min_port` 的公网 UDP 监听会按进程身份建模，因此 VPN/转发类软件更换高位 UDP 端口不会每次都告警。`behavior_profile` 控制本地进程行为画像，用有界身份数、单身份样本上限和过期清理来提供新远端端口、公网出站 fanout 漂移等辅助证据。定时报表默认开启，会让 daemon 通过已启用通知渠道发送每日安全报告，并用 `min_interval_seconds` 避免重启后重复发送；如果没有配置任何通知渠道，daemon 会直接跳过定时报表，不构建也不发送。
 
 高级采集和外部规则：
 
@@ -802,8 +817,12 @@ scheduled_period = "today"
 [advanced_collectors]
 auditd_enabled = true
 ebpf_bridge_enabled = true
-ebpf_event_paths = []
+ebpf_event_paths = ["/var/lib/vps-sentinel/ebpf-runtime.jsonl"]
 ebpf_command = []
+ebpf_runtime_probe_enabled = false
+ebpf_runtime_probe_output_path = "/var/lib/vps-sentinel/ebpf-runtime.jsonl"
+ebpf_runtime_probe_command = "bpftrace"
+ebpf_runtime_probe_capture_files = false
 
 [external_rules]
 enabled = true
@@ -813,7 +832,7 @@ yara_paths = []
 yara_scan_roots = []
 ```
 
-auditd 会在日志存在时读取配置的 audit 日志；audit EXECVE 事件会转换成标准化 RawEvent，并复用命令画像逻辑识别网络到 shell 的执行桥接、非交互式 sudo/su/pkexec shell 执行。eBPF bridge 接收 JSONL 文件或命令输出，方便接入你自己的 BPF 工具而不把内核探针作为硬依赖；常见 exec/connect/file 事件会归一化为内置规则使用的进程、出站连接和文件活动字段。Sigma-like 规则是 TOML 结构化事件字段条件，部署前可用 `vs rules validate-external <path...>` 校验解析错误、缺失条件、重复 ID 和未知分类。YARA 只有在配置了规则路径和扫描根目录时才会调用 `yara` 命令，因此默认启用规则引擎不会带来额外扫描开销。
+auditd 会在日志存在时读取配置的 audit 日志；audit EXECVE 事件会转换成标准化 RawEvent，并复用命令画像逻辑识别网络到 shell 的执行桥接、非交互式 sudo/su/pkexec shell 执行。eBPF bridge 接收 JSONL 文件或命令输出，方便接入你自己的 BPF 工具而不把内核探针作为硬依赖；常见 exec/connect/file 事件会归一化为内置规则使用的进程、出站连接和文件活动字段。文件型 eBPF JSONL 输入会在 daemon 进程内按游标增量消费，并使用有界读取和截断/轮转识别，避免短生命周期运行时事件在后续扫描中反复污染判断。`vs ebpf script` 可以输出内置轻量 bpftrace 脚本，`vs ebpf run` 可前台运行探针用于手动或独立托管，daemon 在 `ebpf_runtime_probe_enabled = true` 时会自动启动、停止和重启同一探针；daemon 托管的探针启动时会重置自己的输出文件，手动 `vs ebpf run` 保持追加写入。文件变更探针需要显式 `--capture-files` 或配置 `ebpf_runtime_probe_capture_files = true`，因为繁忙主机可能产生较多文件事件。Sigma-like 规则是 TOML 结构化事件字段条件，部署前可用 `vs rules validate-external <path...>` 校验解析错误、缺失条件、重复 ID 和未知分类。YARA 只有在配置了规则路径和扫描根目录时才会调用 `yara` 命令，因此默认启用规则引擎不会带来额外扫描开销。
 
 威胁情报、fleet 和维护模式：
 

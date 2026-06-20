@@ -703,6 +703,21 @@ fn process_evidence(
     push_evidence_if_present(&mut items, event, "cpu_total_seconds");
     push_evidence_if_present(&mut items, event, "process_age_seconds");
     push_evidence_if_present(&mut items, event, "process_start_drift");
+    push_evidence_if_present(&mut items, event, "behavior_profile_first_seen");
+    push_evidence_if_present(&mut items, event, "behavior_profile_observations");
+    push_evidence_if_present(&mut items, event, "behavior_profile_drift");
+    push_evidence_if_present(&mut items, event, "behavior_profile_new_remote_ports");
+    push_evidence_if_present(&mut items, event, "behavior_profile_public_fanout_drift");
+    push_evidence_if_present(
+        &mut items,
+        event,
+        "behavior_profile_previous_public_outbound_max",
+    );
+    push_evidence_if_present(
+        &mut items,
+        event,
+        "behavior_profile_current_public_outbound",
+    );
     push_evidence_if_present(&mut items, event, "outbound_connection_count");
     push_evidence_if_present(&mut items, event, "public_outbound_count");
     push_evidence_if_present(&mut items, event, "outbound_remote_ports");
@@ -906,6 +921,34 @@ fn behavior_cluster_assessment(
             10,
             "process_start_drift",
             "same process identity has a different procfs start time than the previous scan",
+        );
+    }
+    if !string_field(event, "behavior_profile_new_remote_ports").is_empty()
+        && (public_outbound_count > 0 || socket_fd_count > 0)
+    {
+        assessment.add_signal(
+            15,
+            "local_behavior_new_remote_ports",
+            "local behavior profile observed remote ports not seen in the matured process profile",
+        );
+    }
+    if string_field(event, "behavior_profile_public_fanout_drift") == "true"
+        && public_outbound_count > 0
+    {
+        assessment.add_signal(
+            25,
+            "local_behavior_public_fanout_drift",
+            "local behavior profile observed a public outbound fanout above the matured process profile",
+        );
+    }
+    if string_field(event, "behavior_profile_first_seen") == "true"
+        && assessment.score >= 55
+        && (public_outbound_count > 0 || socket_fd_count > 0)
+    {
+        assessment.add_signal(
+            5,
+            "local_behavior_first_seen",
+            "process identity has not yet appeared in the local behavior profile",
         );
     }
     if euid == ROOT_UID && assessment.score >= 55 {
@@ -1884,6 +1927,32 @@ mod tests {
         assert!(assessment.is_some_and(|assessment| {
             assessment.has_feature("process_start_drift")
                 && assessment.has_feature("kernel_thread_masquerade")
+        }));
+    }
+
+    #[test]
+    fn local_behavior_profile_drift_is_only_a_supporting_signal() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let normal_drift = process_event("/usr/local/bin/app", "app", "app --serve")
+            .with_field("socket_fd_count", "1")
+            .with_field("public_outbound_count", "1")
+            .with_field("behavior_profile_new_remote_ports", "8443")
+            .with_field("behavior_profile_public_fanout_drift", "true");
+
+        assert!(behavior_cluster_assessment(&normal_drift, &ctx).is_none());
+
+        let suspicious_drift = process_event("/usr/local/bin/.sysd", ".sysd", ".sysd --worker")
+            .with_field("socket_fd_count", "1")
+            .with_field("public_outbound_count", "16")
+            .with_field("behavior_profile_new_remote_ports", "3333")
+            .with_field("behavior_profile_public_fanout_drift", "true");
+
+        let assessment = behavior_cluster_assessment(&suspicious_drift, &ctx);
+
+        assert!(assessment.is_some_and(|assessment| {
+            assessment.has_feature("hidden_executable_name")
+                && assessment.has_feature("local_behavior_new_remote_ports")
+                && assessment.has_feature("local_behavior_public_fanout_drift")
         }));
     }
 

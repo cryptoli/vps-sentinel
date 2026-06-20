@@ -6,6 +6,7 @@ use crate::detectors::{default_detectors, DetectContext, EventIndex};
 use crate::evidence_score;
 use crate::findings::coalesce_related_findings;
 use crate::incident::{correlate_findings, prune_incidents, save_incidents};
+use crate::local_behavior::enrich_local_behavior;
 use crate::maintenance::apply_maintenance_policy;
 use crate::notify::{NotificationManager, NotifyContext};
 use crate::panel;
@@ -166,6 +167,9 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         if let Some(store) = &store {
             enrich_process_start_drift(&mut detection_events, store)?;
             enrich_log_integrity_state(&mut detection_events, store, config.as_ref())?;
+            if let Err(err) = enrich_local_behavior(&mut detection_events, config.as_ref(), store) {
+                warn!(error = %err, "local behavior profile enrichment failed");
+            }
         }
     }
 

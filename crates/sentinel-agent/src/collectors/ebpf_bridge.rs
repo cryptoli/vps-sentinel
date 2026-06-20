@@ -1,13 +1,27 @@
 use crate::collectors::{CollectContext, Collector};
 use crate::utils::command::command_output;
-use crate::utils::fs::read_tail;
 use crate::utils::ip::is_public_remote_ip;
 use async_trait::async_trait;
-use sentinel_core::{RawEvent, SentinelResult};
+use sentinel_core::{RawEvent, SentinelError, SentinelResult};
 use serde_json::Value;
+use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 pub struct EbpfBridgeCollector;
+
+const FINGERPRINT_SAMPLE_BYTES: u64 = 512;
+
+#[derive(Debug, Clone, Copy, Default)]
+struct FileCursor {
+    offset: u64,
+    fingerprint: Option<blake3::Hash>,
+}
+
+static FILE_CURSORS: OnceLock<Mutex<BTreeMap<PathBuf, FileCursor>>> = OnceLock::new();
 
 #[async_trait]
 impl Collector for EbpfBridgeCollector {
@@ -25,7 +39,7 @@ impl Collector for EbpfBridgeCollector {
             if !resolved.exists() {
                 continue;
             }
-            let text = read_tail(
+            let text = read_incremental_jsonl(
                 &resolved,
                 ctx.config.advanced_collectors.audit_max_tail_bytes,
             )?;
@@ -47,6 +61,115 @@ impl Collector for EbpfBridgeCollector {
         }
         Ok(events)
     }
+}
+
+fn read_incremental_jsonl(path: &Path, max_bytes: u64) -> SentinelResult<String> {
+    let mut file = File::open(path).map_err(|err| SentinelError::io(path, err))?;
+    let metadata = file
+        .metadata()
+        .map_err(|err| SentinelError::io(path, err))?;
+    let len = metadata.len();
+    let fingerprint = file_fingerprint(&mut file, path, len)?;
+    let start = next_file_offset(path, len, fingerprint)?;
+    if start == len || max_bytes == 0 {
+        update_file_offset(path, len, fingerprint)?;
+        return Ok(String::new());
+    }
+
+    let available = len.saturating_sub(start);
+    let capped = available > max_bytes;
+    let read_start = if capped {
+        len.saturating_sub(max_bytes)
+    } else {
+        start
+    };
+    file.seek(SeekFrom::Start(read_start))
+        .map_err(|err| SentinelError::io(path, err))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|err| SentinelError::io(path, err))?;
+    update_file_offset(path, len, fingerprint)?;
+
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    if capped {
+        Ok(drop_partial_first_line(text))
+    } else {
+        Ok(text)
+    }
+}
+
+fn next_file_offset(path: &Path, len: u64, fingerprint: blake3::Hash) -> SentinelResult<u64> {
+    let cursors = FILE_CURSORS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut cursors = cursors
+        .lock()
+        .map_err(|_| SentinelError::Config("eBPF bridge cursor state lock poisoned".to_string()))?;
+    let cursor = cursors.entry(path.to_path_buf()).or_default();
+    if cursor.offset > len || (cursor.offset == len && cursor.fingerprint != Some(fingerprint)) {
+        cursor.offset = 0;
+    }
+    Ok(cursor.offset)
+}
+
+fn update_file_offset(path: &Path, offset: u64, fingerprint: blake3::Hash) -> SentinelResult<()> {
+    let cursors = FILE_CURSORS.get_or_init(|| Mutex::new(BTreeMap::new()));
+    let mut cursors = cursors
+        .lock()
+        .map_err(|_| SentinelError::Config("eBPF bridge cursor state lock poisoned".to_string()))?;
+    cursors.insert(
+        path.to_path_buf(),
+        FileCursor {
+            offset,
+            fingerprint: Some(fingerprint),
+        },
+    );
+    Ok(())
+}
+
+fn file_fingerprint(file: &mut File, path: &Path, len: u64) -> SentinelResult<blake3::Hash> {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&len.to_le_bytes());
+    if len == 0 {
+        return Ok(hasher.finalize());
+    }
+
+    let head_len = len.min(FINGERPRINT_SAMPLE_BYTES);
+    hash_file_slice(file, path, 0, head_len, &mut hasher)?;
+    if len > head_len {
+        let tail_len = (len - head_len).min(FINGERPRINT_SAMPLE_BYTES);
+        hash_file_slice(file, path, len - tail_len, tail_len, &mut hasher)?;
+    }
+    Ok(hasher.finalize())
+}
+
+fn hash_file_slice(
+    file: &mut File,
+    path: &Path,
+    offset: u64,
+    len: u64,
+    hasher: &mut blake3::Hasher,
+) -> SentinelResult<()> {
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|err| SentinelError::io(path, err))?;
+    let mut remaining = len as usize;
+    let mut buffer = [0_u8; FINGERPRINT_SAMPLE_BYTES as usize];
+    while remaining > 0 {
+        let read_len = remaining.min(buffer.len());
+        let read = file
+            .read(&mut buffer[..read_len])
+            .map_err(|err| SentinelError::io(path, err))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        remaining -= read;
+    }
+    Ok(())
+}
+
+fn drop_partial_first_line(text: String) -> String {
+    text.split_once('\n')
+        .map(|(_, rest)| rest.to_string())
+        .unwrap_or_default()
 }
 
 pub fn parse_jsonl_events(text: &str, origin: &str) -> Vec<RawEvent> {
@@ -103,6 +226,9 @@ fn normalize_fields(event: &mut RawEvent) {
     copy_first_field(event, "cmdline", &["argv", "args", "command", "comm"]);
     copy_first_field(event, "name", &["process_name", "comm"]);
     copy_first_field(event, "process_name", &["name", "comm"]);
+    copy_first_field(event, "pid", &["tgid"]);
+    copy_first_field(event, "uid", &["user_id"]);
+    copy_first_field(event, "euid", &["effective_uid", "uid"]);
     copy_first_field(
         event,
         "remote_addr",
@@ -140,7 +266,9 @@ fn copy_first_field(event: &mut RawEvent, target: &str, sources: &[&str]) {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_jsonl_events;
+    use super::{parse_jsonl_events, read_incremental_jsonl};
+    use std::fs;
+    use std::io::Write;
 
     #[test]
     fn parses_jsonl_bridge_events() {
@@ -157,6 +285,20 @@ mod tests {
         assert_eq!(events[0].field("pid"), Some("123"));
         assert_eq!(events[0].field("ephemeral_event"), Some("true"));
         assert_eq!(events[0].field("event_source_detail"), Some("process_exec"));
+    }
+
+    #[test]
+    fn normalizes_runtime_probe_exec_fields() {
+        let events = parse_jsonl_events(
+            r#"{"kind":"process_exec","pid":123,"uid":0,"comm":"bash","exe":"/bin/bash"}"#,
+            "file",
+        );
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].field("name"), Some("bash"));
+        assert_eq!(events[0].field("process_name"), Some("bash"));
+        assert_eq!(events[0].field("exe_path"), Some("/bin/bash"));
+        assert_eq!(events[0].field("euid"), Some("0"));
     }
 
     #[test]
@@ -183,5 +325,45 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "file_activity");
         assert_eq!(events[0].field("operation"), Some("write"));
+    }
+
+    #[test]
+    fn file_bridge_reads_only_new_jsonl_lines() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("ebpf.jsonl");
+        fs::write(&path, r#"{"kind":"process_exec","pid":1}"#)?;
+        fs::write(&path, format!("{}\n", fs::read_to_string(&path)?))?;
+
+        let first = read_incremental_jsonl(&path, 4096)?;
+        let second = read_incremental_jsonl(&path, 4096)?;
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)?
+            .write_all(br#"{"kind":"process_exec","pid":2}"#)?;
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)?
+            .write_all(b"\n")?;
+        let third = read_incremental_jsonl(&path, 4096)?;
+
+        assert!(first.contains(r#""pid":1"#));
+        assert!(second.is_empty());
+        assert!(!third.contains(r#""pid":1"#));
+        assert!(third.contains(r#""pid":2"#));
+        Ok(())
+    }
+
+    #[test]
+    fn file_bridge_resets_cursor_after_truncation() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("ebpf-rotated.jsonl");
+        fs::write(&path, "{\"kind\":\"process_exec\",\"pid\":1}\n")?;
+        assert!(read_incremental_jsonl(&path, 4096)?.contains(r#""pid":1"#));
+
+        fs::write(&path, "{\"kind\":\"process_exec\",\"pid\":2}\n")?;
+        let after_truncate = read_incremental_jsonl(&path, 4096)?;
+
+        assert!(after_truncate.contains(r#""pid":2"#));
+        Ok(())
     }
 }

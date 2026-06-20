@@ -1,4 +1,5 @@
 use anyhow::Result;
+use sentinel_agent::runtime_probe::{default_output_path, output_path_is_bridge_configured};
 use sentinel_agent::utils::command::command_output;
 use sentinel_core::SentinelConfig;
 use std::fs;
@@ -148,6 +149,12 @@ fn capability_checks(config: &SentinelConfig) -> Vec<CapabilityCheck> {
             affects: "short-lived exec/connect/file events",
         },
         CapabilityCheck {
+            name: "ebpf_runtime_probe",
+            status: ebpf_runtime_probe_status(config),
+            detail: ebpf_runtime_probe_detail(config),
+            affects: "optional eBPF exec and file-activity runtime events",
+        },
+        CapabilityCheck {
             name: "package_ownership",
             status: if package_managers.is_empty() {
                 CapabilityStatus::Degraded
@@ -275,6 +282,28 @@ fn ebpf_detail(config: &SentinelConfig) -> String {
         "event_paths={} command_configured={}",
         config.advanced_collectors.ebpf_event_paths.len(),
         !config.advanced_collectors.ebpf_command.is_empty()
+    )
+}
+
+fn ebpf_runtime_probe_status(config: &SentinelConfig) -> CapabilityStatus {
+    if !config.advanced_collectors.ebpf_runtime_probe_enabled {
+        return CapabilityStatus::Disabled;
+    }
+    if command_available(&config.advanced_collectors.ebpf_runtime_probe_command) {
+        CapabilityStatus::Ok
+    } else {
+        CapabilityStatus::Missing
+    }
+}
+
+fn ebpf_runtime_probe_detail(config: &SentinelConfig) -> String {
+    let output_path = default_output_path(config);
+    format!(
+        "command={} output={} bridge_configured={} capture_files={}",
+        config.advanced_collectors.ebpf_runtime_probe_command,
+        output_path.display(),
+        output_path_is_bridge_configured(config, &output_path),
+        config.advanced_collectors.ebpf_runtime_probe_capture_files
     )
 }
 

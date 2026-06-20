@@ -32,7 +32,10 @@ pub fn evaluate_config(config: &SentinelConfig) -> SecurityWizardReport {
     check_response(config, &mut checks);
     check_storage_and_memory(config, &mut checks);
     check_panel(config, &mut checks);
-    let status = if checks.iter().any(|item| item.severity.meets(Severity::High)) {
+    let status = if checks
+        .iter()
+        .any(|item| item.severity.meets(Severity::High))
+    {
         WizardStatus::Risky
     } else if checks.iter().any(|item| item.severity.meets(Severity::Low)) {
         WizardStatus::NeedsReview

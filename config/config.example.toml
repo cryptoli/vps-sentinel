@@ -275,6 +275,16 @@ dynamic_udp_min_port = 32768
 ignored_dynamic_udp_process_names = ["systemd-timesyncd", "chronyd", "ntpd"]
 ignore_loopback_ssh_forwarding = true
 
+[behavior_profile]
+enabled = true
+min_observations_before_drift = 3
+max_process_identities = 512
+max_remote_ports_per_identity = 32
+max_executable_samples_per_identity = 8
+max_age_days = 30
+public_fanout_multiplier = 3
+public_fanout_min_delta = 8
+
 [reports]
 scheduled_enabled = true
 scheduled_hour = 8
@@ -286,8 +296,12 @@ auditd_enabled = true
 audit_log_paths = ["/var/log/audit/audit.log"]
 audit_max_tail_bytes = 1048576
 ebpf_bridge_enabled = true
-ebpf_event_paths = []
+ebpf_event_paths = ["/var/lib/vps-sentinel/ebpf-runtime.jsonl"]
 ebpf_command = []
+ebpf_runtime_probe_enabled = false
+ebpf_runtime_probe_output_path = "/var/lib/vps-sentinel/ebpf-runtime.jsonl"
+ebpf_runtime_probe_command = "bpftrace"
+ebpf_runtime_probe_capture_files = false
 command_timeout_seconds = 3
 
 [external_rules]

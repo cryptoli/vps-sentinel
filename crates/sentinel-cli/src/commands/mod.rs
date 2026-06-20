@@ -3,6 +3,7 @@ pub mod baseline;
 pub mod blocks;
 pub mod config;
 pub mod doctor;
+pub mod ebpf;
 pub mod events;
 pub mod findings;
 pub mod fingerprints;

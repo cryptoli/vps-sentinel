@@ -14,12 +14,13 @@ pub use notifications::{
 };
 pub use sections::{
     ActiveResponseConfig, AdvancedCollectorsConfig, AgentConfig, AllowlistConfig,
-    AttackFingerprintConfig, DockerConfig, ExternalRulesConfig, FileIntegrityConfig, FleetConfig,
-    GpuConfig, IncidentConfig, LogIntegrityConfig, MaintenanceConfig, NetworkConfig,
-    NoiseControlConfig, PackageManagerConfig, PanelConfig, PerformanceConfig, PersistenceConfig,
-    PrivacyConfig, ProcessConfig, ReportsConfig, ResourceBudgetConfig, ResponsePolicyConfig,
-    ResponsePolicyRule, SentinelPaths, ServiceProfileConfig, SshConfig, StorageConfig,
-    ThreatIntelConfig, WebConfig, DEFAULT_DYNAMIC_UDP_MIN_PORT,
+    AttackFingerprintConfig, BehaviorProfileConfig, DockerConfig, ExternalRulesConfig,
+    FileIntegrityConfig, FleetConfig, GpuConfig, IncidentConfig, LogIntegrityConfig,
+    MaintenanceConfig, NetworkConfig, NoiseControlConfig, PackageManagerConfig, PanelConfig,
+    PerformanceConfig, PersistenceConfig, PrivacyConfig, ProcessConfig, ReportsConfig,
+    ResourceBudgetConfig, ResponsePolicyConfig, ResponsePolicyRule, SentinelPaths,
+    ServiceProfileConfig, SshConfig, StorageConfig, ThreatIntelConfig, WebConfig,
+    DEFAULT_DYNAMIC_UDP_MIN_PORT,
 };
 
 const MIN_RESOURCE_EVIDENCE_ITEMS_PER_FINDING: usize = 16;
@@ -50,6 +51,7 @@ pub struct SentinelConfig {
     pub response_policy: ResponsePolicyConfig,
     pub incidents: IncidentConfig,
     pub service_profile: ServiceProfileConfig,
+    pub behavior_profile: BehaviorProfileConfig,
     pub reports: ReportsConfig,
     pub advanced_collectors: AdvancedCollectorsConfig,
     pub external_rules: ExternalRulesConfig,
@@ -284,6 +286,7 @@ impl SentinelConfig {
         validate_response_policy(&self.response_policy)?;
         validate_incidents(&self.incidents)?;
         validate_service_profile(&self.service_profile)?;
+        validate_behavior_profile(&self.behavior_profile)?;
         validate_reports(&self.reports)?;
         validate_advanced_collectors(&self.advanced_collectors)?;
         validate_external_rules(&self.external_rules)?;
@@ -478,6 +481,46 @@ fn validate_service_profile(config: &ServiceProfileConfig) -> SentinelResult<()>
     Ok(())
 }
 
+fn validate_behavior_profile(config: &BehaviorProfileConfig) -> SentinelResult<()> {
+    if config.min_observations_before_drift == 0 {
+        return Err(SentinelError::Config(
+            "behavior_profile.min_observations_before_drift must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_process_identities == 0 {
+        return Err(SentinelError::Config(
+            "behavior_profile.max_process_identities must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_remote_ports_per_identity == 0 {
+        return Err(SentinelError::Config(
+            "behavior_profile.max_remote_ports_per_identity must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_executable_samples_per_identity == 0 {
+        return Err(SentinelError::Config(
+            "behavior_profile.max_executable_samples_per_identity must be greater than 0"
+                .to_string(),
+        ));
+    }
+    if config.max_age_days == 0 {
+        return Err(SentinelError::Config(
+            "behavior_profile.max_age_days must be greater than 0".to_string(),
+        ));
+    }
+    if config.public_fanout_multiplier < 2 {
+        return Err(SentinelError::Config(
+            "behavior_profile.public_fanout_multiplier must be at least 2".to_string(),
+        ));
+    }
+    if config.public_fanout_min_delta == 0 {
+        return Err(SentinelError::Config(
+            "behavior_profile.public_fanout_min_delta must be greater than 0".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_reports(config: &ReportsConfig) -> SentinelResult<()> {
     if config.scheduled_hour > 23 {
         return Err(SentinelError::Config(
@@ -534,6 +577,18 @@ fn validate_advanced_collectors(config: &AdvancedCollectorsConfig) -> SentinelRe
         return Err(SentinelError::Config(
             "advanced_collectors.command_timeout_seconds must be greater than 0".to_string(),
         ));
+    }
+    if config.ebpf_runtime_probe_enabled {
+        if config.ebpf_runtime_probe_command.trim().is_empty() {
+            return Err(SentinelError::Config(
+                "advanced_collectors.ebpf_runtime_probe_command is required when ebpf_runtime_probe_enabled is true".to_string(),
+            ));
+        }
+        if config.ebpf_runtime_probe_output_path.as_os_str().is_empty() {
+            return Err(SentinelError::Config(
+                "advanced_collectors.ebpf_runtime_probe_output_path is required when ebpf_runtime_probe_enabled is true".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -836,9 +891,12 @@ mod tests {
         assert!(decoded.attack_fingerprints.similarity_enabled);
         assert!(decoded.resource_budget.enabled);
         assert!(decoded.resource_budget.max_findings_per_scan > 0);
+        assert!(decoded.behavior_profile.enabled);
+        assert!(decoded.behavior_profile.max_process_identities > 0);
         assert!(decoded.reports.scheduled_enabled);
         assert!(decoded.advanced_collectors.auditd_enabled);
         assert!(decoded.advanced_collectors.ebpf_bridge_enabled);
+        assert!(!decoded.advanced_collectors.ebpf_runtime_probe_enabled);
         assert!(decoded.external_rules.enabled);
         assert!(decoded.external_rules.yara_enabled);
         assert!(decoded.threat_intel.enabled);

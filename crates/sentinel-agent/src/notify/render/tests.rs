@@ -200,10 +200,18 @@ fn localizes_common_evidence_keys_and_values() {
         Evidence::new("change", "file_modified"),
         Evidence::new("method", "password"),
         Evidence::new("exists", "true"),
-        Evidence::new("risk_features", "network_execution_bridge, temporary_path"),
+        Evidence::new("behavior_profile_new_remote_ports", "3333, 4444"),
+        Evidence::new(
+            "behavior_profile_public_fanout_drift",
+            "true",
+        ),
+        Evidence::new(
+            "risk_features",
+            "network_execution_bridge, temporary_path, local_behavior_new_remote_ports",
+        ),
         Evidence::new(
             "risk_reasons",
-            "network shell bridge; temporary executable path",
+            "network shell bridge; temporary executable path; local behavior profile observed remote ports not seen in the matured process profile",
         ),
         Evidence::new("content_markers", "system_call, base64_decode"),
     ]);
@@ -217,11 +225,16 @@ fn localizes_common_evidence_keys_and_values() {
     assert!(body.contains("变化类型: 文件修改"));
     assert!(body.contains("方式: 密码认证"));
     assert!(body.contains("是否存在: 是"));
-    assert!(body.contains("风险特征: 网络命令执行桥接，临时路径"));
-    assert!(body.contains("风险原因: 网络 Shell 桥接，临时目录可执行文件"));
+    assert!(body.contains("行为画像新增远端端口: 3333，4444"));
+    assert!(body.contains("公网出站 fanout 漂移: 是"));
+    assert!(body.contains("风险特征: 网络命令执行桥接，临时路径，本地行为画像新增远端端口"));
+    assert!(body.contains(
+        "风险原因: 网络 Shell 桥接，临时目录可执行文件，本地成熟行为画像中未见过这些远端端口"
+    ));
     assert!(body.contains("内容特征: system 调用，base64 解码"));
     assert!(!body.contains("file_modified"));
     assert!(!body.contains("network_execution_bridge"));
+    assert!(!body.contains("behavior_profile_new_remote_ports"));
 }
 
 #[test]
