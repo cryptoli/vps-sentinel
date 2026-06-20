@@ -4,12 +4,17 @@ use sentinel_agent::detectors::external_rules::{
     validate_external_rule_paths, ExternalRuleValidationReport,
 };
 use sentinel_agent::rules::engine::{builtin_rules, find_rule};
+use sentinel_agent::rules::packs::list_rule_packs;
 use std::path::PathBuf;
 
 #[derive(Debug, Subcommand)]
 pub enum RulesCommand {
     List,
     Matrix {
+        #[arg(long)]
+        json: bool,
+    },
+    Packs {
         #[arg(long)]
         json: bool,
     },
@@ -53,6 +58,27 @@ pub fn run_rules(command: RulesCommand) -> Result<()> {
                         rule.response_scope,
                         rule.evidence_keys.join(",")
                     );
+                }
+            }
+        }
+        RulesCommand::Packs { json } => {
+            let packs = list_rule_packs();
+            if json {
+                println!("{}", serde_json::to_string_pretty(&packs)?);
+            } else {
+                for pack in packs {
+                    println!(
+                        "{} version={} source={} rules={}",
+                        pack.id, pack.version, pack.source, pack.rule_count
+                    );
+                    for owner in pack.owners {
+                        println!(
+                            "- owner={} rules={} ids={}",
+                            owner.owner,
+                            owner.rule_count,
+                            owner.rules.join(",")
+                        );
+                    }
                 }
             }
         }

@@ -19,6 +19,7 @@ max_stored_field_bytes = 4096
 
 [resource_budget]
 enabled = true
+max_raw_events_per_scan = 20000
 max_findings_per_scan = 500
 max_evidence_items_per_finding = 64
 max_evidence_value_bytes = 2048

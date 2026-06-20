@@ -1,52 +1,31 @@
-const API_BASE = "/api/v1";
-const BUILTIN_PAGES = [
-  { id: "overview", label: "Overview", render: renderOverview },
-  { id: "findings", label: "Findings", render: (ctx) => renderDataset(ctx, "findings") },
-  { id: "incidents", label: "Incidents", render: (ctx) => renderDataset(ctx, "incidents") },
-  { id: "drifts", label: "Baseline Drift", render: (ctx) => renderDataset(ctx, "baseline_drifts") },
-  { id: "blocks", label: "Active Blocks", render: (ctx) => renderDataset(ctx, "active_blocks") },
-  { id: "nodes", label: "Nodes", render: (ctx) => renderDataset(ctx, "nodes") },
-];
+import { createView, formatTemplate, rangeInfo } from "./components.js";
+import { DATASETS } from "./datasets.js";
+import { createTranslator, selectedLanguage } from "./i18n.js";
 
-const DATASETS = {
-  findings: {
-    title: "Recent findings",
-    description: "Risk-scored alerts received from fleet nodes.",
-    endpoint: "/findings",
-    columns: ["timestamp", "node_id", "severity", "rule_id", "category", "subject", "title"],
-  },
-  incidents: {
-    title: "Recent incidents",
-    description: "Correlated attack chains and repeated signal groups.",
-    endpoint: "/incidents",
-    columns: ["last_seen", "node_id", "severity", "score", "title", "summary"],
-  },
-  baseline_drifts: {
-    title: "Baseline drift",
-    description: "Changes that need operator review before baseline refresh.",
-    endpoint: "/baseline-drifts",
-    columns: ["timestamp", "node_id", "severity", "rule_id", "tier", "subject", "review_action"],
-  },
-  active_blocks: {
-    title: "Active blocks",
-    description: "Firewall blocks that are still active on reporting nodes.",
-    endpoint: "/active-blocks",
-    columns: ["blocked_at", "node_id", "ip", "rule_id", "backend", "reason", "expires_at"],
-  },
-  nodes: {
-    title: "Fleet nodes",
-    description: "Hosts that recently pushed security telemetry.",
-    endpoint: "/nodes",
-    columns: ["last_seen_at", "node_id", "node_name", "hostname", "agent_version", "privacy_mode"],
-  },
-};
+const API_BASE = "/api/v1";
+const DEFAULT_LIMIT = 25;
+const OVERVIEW_LIMIT = 12;
+const TOKEN_STORAGE_KEY = "vps-sentinel-panel-token";
+
+const BUILTIN_PAGES = [
+  { id: "overview", labelKey: "overview", render: renderOverview },
+  { id: "findings", labelKey: "findings", render: (ctx) => renderDatasetPage(ctx, "findings") },
+  { id: "incidents", labelKey: "incidents", render: (ctx) => renderDatasetPage(ctx, "incidents") },
+  { id: "drifts", labelKey: "drifts", render: (ctx) => renderDatasetPage(ctx, "baseline_drifts") },
+  { id: "blocks", labelKey: "blocks", render: (ctx) => renderDatasetPage(ctx, "active_blocks") },
+  { id: "audit", labelKey: "auditLogs", render: (ctx) => renderDatasetPage(ctx, "audit_logs") },
+  { id: "nodes", labelKey: "nodes", render: (ctx) => renderDatasetPage(ctx, "nodes") },
+];
 
 const state = {
   currentPage: "overview",
   pages: [],
   datasets: {},
+  datasetState: {},
   settings: {},
+  summary: {},
   theme: null,
+  language: selectedLanguage(),
   manifest: null,
 };
 
@@ -54,6 +33,7 @@ const app = document.querySelector("#app");
 const nav = document.querySelector("#nav");
 const refreshButton = document.querySelector("#refresh-button");
 const themeSelect = document.querySelector("#theme-select");
+const languageSelect = document.querySelector("#language-select");
 
 init().catch((error) => renderError(error));
 
@@ -63,31 +43,41 @@ async function init() {
   state.manifest = await loadTheme(state.theme);
   state.pages = await buildPages(state.manifest);
   bindToolbar();
+  applyLanguage();
+  if (state.settings.auth_required && !panelToken()) {
+    renderNav();
+    renderAccessGate();
+    return;
+  }
   await refresh();
 }
 
 function bindToolbar() {
+  const { option } = view();
   const themes = new Set(["default", state.theme]);
   for (const theme of state.manifest.available_themes || []) themes.add(theme.id || theme);
-  themeSelect.replaceChildren(
-    ...[...themes].map((theme) => {
-      const option = document.createElement("option");
-      option.value = theme;
-      option.textContent = theme;
-      option.selected = theme === state.theme;
-      return option;
-    }),
-  );
+  themeSelect.replaceChildren(...[...themes].map((theme) => option(theme, theme, theme === state.theme)));
   themeSelect.addEventListener("change", () => {
     localStorage.setItem("vps-sentinel-theme", themeSelect.value);
     location.reload();
+  });
+  languageSelect.replaceChildren(option("zh", "中文", state.language === "zh"), option("en", "English", state.language === "en"));
+  languageSelect.addEventListener("change", async () => {
+    state.language = languageSelect.value;
+    localStorage.setItem("vps-sentinel-language", state.language);
+    applyLanguage();
+    renderNav();
+    await renderCurrentPage();
   });
   refreshButton.addEventListener("click", () => refresh());
 }
 
 async function refresh() {
   renderNav();
-  await loadDatasets();
+  state.summary = await fetchJson(`${API_BASE}/summary`);
+  if (state.currentPage === "overview") {
+    await loadOverviewDatasets();
+  }
   await renderCurrentPage();
 }
 
@@ -125,19 +115,12 @@ async function buildPages(manifest) {
     if (typeof mod.render !== "function") continue;
     pages.push({
       id: page.id,
+      labelKey: null,
       label: page.label,
       render: (ctx) => mod.render({ ...ctx, page, manifest }),
     });
   }
   return pages;
-}
-
-async function loadDatasets() {
-  const entries = await Promise.all(
-    Object.entries(DATASETS).map(async ([key, meta]) => [key, await fetchJson(`${API_BASE}${meta.endpoint}`)]),
-  );
-  state.datasets = Object.fromEntries(entries);
-  state.summary = await fetchJson(`${API_BASE}/summary`);
 }
 
 function renderNav() {
@@ -146,7 +129,7 @@ function renderNav() {
       const button = document.createElement("button");
       button.type = "button";
       button.className = `nav-button${page.id === state.currentPage ? " active" : ""}`;
-      button.textContent = page.label;
+      button.textContent = page.labelKey ? t(page.labelKey) : page.label;
       button.addEventListener("click", async () => {
         state.currentPage = page.id;
         renderNav();
@@ -159,135 +142,360 @@ function renderNav() {
 
 async function renderCurrentPage() {
   const page = state.pages.find((item) => item.id === state.currentPage) || state.pages[0];
-  app.replaceChildren();
-  await page.render(context());
+  app.replaceChildren(view().loading());
+  try {
+    app.replaceChildren();
+    await page.render(context());
+  } catch (error) {
+    if (isAuthError(error)) {
+      renderAccessGate(error.message);
+      return;
+    }
+    renderError(error);
+  }
 }
 
 function context() {
+  const ui = view();
   return {
     api: (path) => fetchJson(`${API_BASE}${path}`),
     app,
-    datasets: state.datasets,
+    datasets: datasetItemsMap(),
+    datasetPages: state.datasets,
     manifest: state.manifest,
-    renderTable,
+    renderTable: ui.renderTable,
     state,
+    t,
+    ui,
   };
 }
 
-function renderOverview(ctx) {
-  const summary = ctx.state.summary || {};
-  app.append(
-    header("Overview", "Fleet-level signal summary from pushed agent telemetry."),
-    metrics([
-      ["Nodes", summary.nodes],
-      ["Findings", summary.findings],
-      ["Incidents", summary.incidents],
-      ["Drifts", summary.baseline_drifts],
-      ["Blocks", summary.active_blocks],
-    ]),
-    panel("Severity distribution", renderTable(summary.by_severity || [], ["severity", "count"])),
-    panel("Newest findings", renderTable((ctx.datasets.findings || []).slice(0, 10), DATASETS.findings.columns)),
+function datasetItemsMap() {
+  return Object.fromEntries(
+    Object.entries(state.datasets).map(([key, value]) => [key, Array.isArray(value) ? value : value?.items || []]),
   );
 }
 
-function renderDataset(ctx, datasetKey) {
+async function loadOverviewDatasets() {
+  const entries = await Promise.all(
+    Object.entries(DATASETS).map(async ([key, meta]) => [key, await loadDataset(meta, { limit: OVERVIEW_LIMIT, offset: 0 })]),
+  );
+  state.datasets = Object.fromEntries(entries);
+}
+
+async function renderOverview(ctx) {
+  if (Object.keys(DATASETS).some((key) => !state.datasets[key]?.items)) {
+    await loadOverviewDatasets();
+  }
+  const ui = view();
+  const summary = ctx.state.summary || {};
+  app.append(
+    ui.sectionHeader(t("overviewTitle"), t("overviewDescription"), ui.freshnessBadge(ctx.state.datasets.nodes?.items || [])),
+    ui.metrics([
+      [t("nodesMetric"), summary.nodes, "nodes"],
+      [t("findingsMetric"), summary.findings, "findings"],
+      [t("incidentsMetric"), summary.incidents, "incidents"],
+      [t("driftsMetric"), summary.baseline_drifts, "drifts"],
+      [t("blocksMetric"), summary.active_blocks, "blocks"],
+    ]),
+    ui.chartsGrid([
+      ui.panel(t("severityDistribution"), ui.barChart(summary.by_severity || [], "severity", "count")),
+      ui.panel(t("activityMix"), ui.donutChart([
+        { label: t("findingsMetric"), value: summary.findings || 0, className: "chart-high" },
+        { label: t("incidentsMetric"), value: summary.incidents || 0, className: "chart-critical" },
+        { label: t("driftsMetric"), value: summary.baseline_drifts || 0, className: "chart-medium" },
+        { label: t("blocksMetric"), value: summary.active_blocks || 0, className: "chart-low" },
+      ])),
+      ui.panel(t("fleetFreshness"), ui.nodeFreshness(ctx.state.datasets.nodes?.items || [])),
+    ]),
+    ui.panel(t("latestFindings"), ui.renderTable(ctx.state.datasets.findings?.items || [], DATASETS.findings.columns)),
+    ui.panel(t("latestIncidents"), ui.renderTable(ctx.state.datasets.incidents?.items || [], DATASETS.incidents.columns)),
+  );
+}
+
+async function renderDatasetPage(ctx, datasetKey) {
   const meta = DATASETS[datasetKey];
-  app.append(header(meta.title, meta.description), panel(meta.title, renderTable(ctx.datasets[datasetKey] || [], meta.columns)));
+  const pageState = datasetPageState(datasetKey);
+  const page = await loadDataset(meta, pageState);
+  const ui = view();
+  state.datasets[datasetKey] = page;
+  app.append(
+    ui.sectionHeader(t(meta.titleKey), t(meta.descriptionKey), ui.span("record-count", formatTemplate(t("pageInfo"), rangeInfo(page)))),
+    filters(datasetKey, pageState),
+    ui.panel(
+      t(meta.titleKey),
+      ui.fragment(
+        ui.renderTable(page.items, meta.columns, tableOptions(datasetKey)),
+        pagination(datasetKey, page),
+      ),
+    ),
+  );
 }
 
-function header(title, description) {
+function tableOptions(datasetKey) {
+  if (!["findings", "incidents"].includes(datasetKey)) return {};
+  return {
+    actionHeader: t("actions"),
+    actionLabel: t("details"),
+    onRowAction: (row) => openDetail(datasetKey, row),
+  };
+}
+
+async function openDetail(datasetKey, row) {
+  if (!row?.id) return;
+  const endpoint = datasetKey === "findings" ? "/finding" : "/incident";
+  const detail = await fetchJson(`${API_BASE}${endpoint}?id=${encodeURIComponent(row.id)}`);
+  const ui = view();
+  const overlay = document.createElement("div");
+  overlay.className = "detail-overlay";
+  const panel = document.createElement("section");
+  panel.className = "detail-drawer";
+  const close = ui.button(t("close"), "button", "secondary compact");
+  close.addEventListener("click", () => overlay.remove());
+  panel.append(ui.sectionHeader(t("details"), detail.title || detail.id, close));
+  panel.append(datasetKey === "findings" ? findingDetailContent(detail) : incidentDetailContent(detail));
+  overlay.append(panel);
+  overlay.addEventListener("click", (event) => {
+    if (event.target === overlay) overlay.remove();
+  });
+  document.body.append(overlay);
+}
+
+function findingDetailContent(detail) {
+  const ui = view();
   const wrapper = document.createElement("div");
-  wrapper.className = "section-head";
-  const text = document.createElement("div");
-  const heading = document.createElement("h2");
-  heading.textContent = title;
-  const body = document.createElement("p");
-  body.textContent = description;
-  text.append(heading, body);
-  wrapper.append(text);
+  wrapper.className = "detail-content";
+  wrapper.append(
+    ui.detailList([
+      [t("node_id"), detail.node_id],
+      [t("severity"), detail.severity],
+      [t("rule_id"), detail.rule_id],
+      [t("category"), detail.category],
+      [t("subject"), detail.subject],
+      [t("timestamp"), detail.timestamp],
+      [t("reviewStatus"), detail.review?.verdict ? t(detail.review.verdict) : t("unreviewed")],
+    ]),
+    ui.panel(t("evidence"), ui.jsonBlock(detail.evidence || [])),
+    ui.panel(t("impact"), ui.jsonBlock(detail.impact || [])),
+    ui.panel(t("recommendations"), ui.jsonBlock(detail.recommendations || [])),
+    reviewForm(detail),
+  );
   return wrapper;
 }
 
-function metrics(items) {
+function incidentDetailContent(detail) {
+  const ui = view();
   const wrapper = document.createElement("div");
-  wrapper.className = "grid metrics";
-  for (const [label, value] of items) {
-    const item = document.createElement("div");
-    item.className = "metric";
-    item.append(span("label", label), span("value", String(value ?? 0)));
-    wrapper.append(item);
-  }
+  wrapper.className = "detail-content";
+  wrapper.append(
+    ui.detailList([
+      [t("node_id"), detail.node_id],
+      [t("severity"), detail.severity],
+      [t("score"), detail.score],
+      [t("first_seen"), detail.first_seen],
+      [t("last_seen"), detail.last_seen],
+      [t("summary"), detail.summary],
+    ]),
+    ui.panel(t("payload"), ui.jsonBlock(detail.payload || {})),
+  );
   return wrapper;
 }
 
-function panel(title, content) {
-  const wrapper = document.createElement("section");
-  wrapper.className = "panel";
-  const head = document.createElement("div");
-  head.className = "panel-title";
-  const heading = document.createElement("h3");
-  heading.textContent = title;
-  head.append(heading);
-  wrapper.append(head, content);
-  return wrapper;
-}
-
-function renderTable(rows, columns) {
-  if (!rows || rows.length === 0) {
-    const empty = document.createElement("div");
-    empty.className = "empty";
-    empty.textContent = "No data in the selected range.";
-    return empty;
+function reviewForm(detail) {
+  const ui = view();
+  const form = document.createElement("form");
+  form.className = "review-form";
+  const verdict = document.createElement("select");
+  verdict.name = "verdict";
+  for (const value of ["needs_review", "confirmed", "false_positive"]) {
+    verdict.append(ui.option(value, t(value), detail.review?.verdict === value));
   }
-  const wrap = document.createElement("div");
-  wrap.className = "table-wrap";
-  const table = document.createElement("table");
-  const thead = document.createElement("thead");
-  const headerRow = document.createElement("tr");
-  for (const column of columns) {
-    const th = document.createElement("th");
-    th.textContent = column.replaceAll("_", " ");
-    headerRow.append(th);
-  }
-  thead.append(headerRow);
-  const tbody = document.createElement("tbody");
-  for (const row of rows) {
-    const tr = document.createElement("tr");
-    for (const column of columns) {
-      const td = document.createElement("td");
-      td.append(formatValue(column, row[column]));
-      tr.append(td);
+  const note = document.createElement("textarea");
+  note.name = "note";
+  note.rows = 3;
+  note.value = detail.review?.note || "";
+  const status = ui.span("review-status", "");
+  form.append(
+    ui.sectionHeader(t("reviewFinding"), t("reviewDescription")),
+    ui.labelControl(t("reviewStatus"), verdict),
+    ui.labelControl(t("reviewNote"), note),
+    ui.button(t("saveReview"), "submit", "primary"),
+    status,
+  );
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const values = new FormData(form);
+    try {
+      await postJson(`${API_BASE}/finding-review`, {
+        finding_id: detail.id,
+        verdict: String(values.get("verdict") || "needs_review"),
+        note: String(values.get("note") || ""),
+        reviewer: "panel",
+      });
+      await renderCurrentPage();
+      form.querySelector("button").textContent = t("saved");
+      status.textContent = t("saved");
+    } catch (error) {
+      status.textContent = `${t("errorPrefix")}: ${error?.message || String(error)}`;
     }
-    tbody.append(tr);
-  }
-  table.append(thead, tbody);
-  wrap.append(table);
-  return wrap;
+  });
+  return form;
 }
 
-function formatValue(column, value) {
-  if (column === "severity") {
-    const badge = span(`badge severity-${String(value || "").toLowerCase()}`, value || "unknown");
-    return badge;
-  }
-  if (value === null || value === undefined || value === "") return span("muted", "-");
-  if (column.includes("_at") || column.includes("time") || column === "timestamp" || column === "last_seen") {
-    const date = new Date(value);
-    if (!Number.isNaN(date.getTime())) return document.createTextNode(date.toLocaleString());
-  }
-  return document.createTextNode(String(value));
+function datasetPageState(datasetKey) {
+  state.datasetState[datasetKey] ||= {
+    from: "",
+    to: "",
+    limit: DEFAULT_LIMIT,
+    offset: 0,
+  };
+  return state.datasetState[datasetKey];
 }
 
-function span(className, text) {
-  const item = document.createElement("span");
-  item.className = className;
-  item.textContent = text;
-  return item;
+async function loadDataset(meta, request) {
+  const params = new URLSearchParams();
+  params.set("limit", String(request.limit || DEFAULT_LIMIT));
+  params.set("offset", String(request.offset || 0));
+  if (request.from) params.set("from", toApiTime(request.from));
+  if (request.to) params.set("to", toApiTime(request.to));
+  const payload = await fetchJson(`${API_BASE}${meta.endpoint}?${params.toString()}`);
+  return Array.isArray(payload)
+    ? { items: payload, total: payload.length, limit: request.limit || DEFAULT_LIMIT, offset: request.offset || 0 }
+    : payload;
 }
 
-async function fetchJson(url) {
-  const response = await fetch(url, { headers: { accept: "application/json" } });
-  if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`);
+function filters(datasetKey, pageState) {
+  const ui = view();
+  const form = document.createElement("form");
+  form.className = "filters";
+  form.append(
+    ui.labelControl(t("from"), ui.input("datetime-local", "from", pageState.from)),
+    ui.labelControl(t("to"), ui.input("datetime-local", "to", pageState.to)),
+    ui.labelControl(t("pageSize"), ui.select("limit", [10, 25, 50, 100, 200], pageState.limit)),
+    ui.button(t("apply"), "submit", "primary"),
+    ui.button(t("reset"), "button", "secondary"),
+  );
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const values = new FormData(form);
+    Object.assign(pageState, {
+      from: String(values.get("from") || ""),
+      to: String(values.get("to") || ""),
+      limit: Number(values.get("limit") || DEFAULT_LIMIT),
+      offset: 0,
+    });
+    await renderCurrentPage();
+  });
+  form.querySelector(".secondary").addEventListener("click", async () => {
+    Object.assign(pageState, { from: "", to: "", limit: DEFAULT_LIMIT, offset: 0 });
+    await renderCurrentPage();
+  });
+  return form;
+}
+
+function pagination(datasetKey, page) {
+  const ui = view();
+  const pageState = datasetPageState(datasetKey);
+  const wrapper = document.createElement("div");
+  wrapper.className = "pagination";
+  const info = ui.span("muted", formatTemplate(t("pageInfo"), rangeInfo(page)));
+  const prev = ui.button(t("previous"), "button", "secondary");
+  const next = ui.button(t("next"), "button", "secondary");
+  prev.disabled = page.offset <= 0;
+  next.disabled = page.offset + page.limit >= page.total;
+  prev.addEventListener("click", async () => {
+    pageState.offset = Math.max(0, pageState.offset - page.limit);
+    await renderCurrentPage();
+  });
+  next.addEventListener("click", async () => {
+    pageState.offset += page.limit;
+    await renderCurrentPage();
+  });
+  wrapper.append(info, prev, next);
+  return wrapper;
+}
+
+function applyLanguage() {
+  document.documentElement.lang = state.language === "zh" ? "zh-CN" : "en";
+  const subtitle = document.querySelector("[data-i18n='subtitle']");
+  if (subtitle) subtitle.textContent = t("appSubtitle");
+  refreshButton.textContent = t("refresh");
+  themeSelect.setAttribute("aria-label", t("theme"));
+  languageSelect.setAttribute("aria-label", t("language"));
+}
+
+function t(key) {
+  return createTranslator(state.language)(key);
+}
+
+function view() {
+  return createView({ t, language: state.language });
+}
+
+function renderAccessGate(message = "") {
+  const ui = view();
+  nav.replaceChildren();
+  const form = document.createElement("form");
+  form.className = "access-gate";
+  const tokenInput = ui.input("password", "token", "");
+  tokenInput.autocomplete = "current-password";
+  form.append(
+    ui.sectionHeader(t("accessTitle"), t(state.settings.auth_configured ? "accessDescription" : "accessNotConfigured")),
+    ui.labelControl(t("accessToken"), tokenInput),
+    ui.button(t("unlock"), "submit", "primary"),
+  );
+  if (message) form.append(ui.span("access-error", t("invalidAccessToken")));
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const token = String(new FormData(form).get("token") || "").trim();
+    if (!token) return;
+    localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    renderNav();
+    await refresh();
+  });
+  app.replaceChildren(form);
+  tokenInput.focus();
+}
+
+function panelToken() {
+  return localStorage.getItem(TOKEN_STORAGE_KEY) || "";
+}
+
+function authHeaders() {
+  const headers = { accept: "application/json" };
+  const token = panelToken();
+  if (token) headers.authorization = `Bearer ${token}`;
+  return headers;
+}
+
+function isAuthError(error) {
+  return error?.status === 401 || error?.status === 403;
+}
+
+function toApiTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toISOString();
+}
+
+async function postJson(url, payload) {
+  return fetchJson(url, {
+    method: "POST",
+    body: JSON.stringify(payload),
+    headers: { "content-type": "application/json" },
+  });
+}
+
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: { ...authHeaders(), ...(options.headers || {}) },
+  });
+  if (!response.ok) {
+    if (response.status === 401) localStorage.removeItem(TOKEN_STORAGE_KEY);
+    const error = new Error(`${url} returned HTTP ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
   return response.json();
 }
 
@@ -295,6 +503,6 @@ function renderError(error) {
   app.replaceChildren();
   const box = document.createElement("div");
   box.className = "error";
-  box.textContent = error?.message || String(error);
+  box.textContent = `${t("errorPrefix")}: ${error?.message || String(error)}`;
   app.append(box);
 }

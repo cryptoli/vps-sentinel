@@ -92,6 +92,7 @@ impl Default for PerformanceConfig {
 #[serde(default)]
 pub struct ResourceBudgetConfig {
     pub enabled: bool,
+    pub max_raw_events_per_scan: usize,
     pub max_findings_per_scan: usize,
     pub max_evidence_items_per_finding: usize,
     pub max_evidence_value_bytes: usize,
@@ -101,6 +102,7 @@ impl Default for ResourceBudgetConfig {
     fn default() -> Self {
         Self {
             enabled: true,
+            max_raw_events_per_scan: 20_000,
             max_findings_per_scan: 500,
             max_evidence_items_per_finding: 64,
             max_evidence_value_bytes: 2048,

@@ -169,7 +169,7 @@ min_severity = "Medium"
 
 ## Fleet Panel
 
-The agent can push signed telemetry to a central panel without exposing SSH or opening inbound ports on monitored VPS nodes. Self-hosted deployments use the Rust binary `vps-sentinel-panel` with SQLite, PostgreSQL, or MySQL. Cloudflare deployments can use the Worker/D1 receiver in `panel/cloudflare` and serve the static UI from `panel/web`.
+The agent can push signed telemetry to a central panel without exposing SSH or opening inbound ports on monitored VPS nodes. Self-hosted deployments use the Rust binary `vps-sentinel-panel` with SQLite, PostgreSQL, or MySQL. Cloudflare deployments can use the Worker/D1 receiver in `panel/cloudflare` and serve the static UI from `panel/web`. Browser read access is protected by a separate panel token, and list APIs return only fixed display fields instead of raw evidence or host storage details.
 
 Agent-side configuration:
 
@@ -514,9 +514,11 @@ Commands:
 | `vps-sentinel storage vacuum --config <path>` | Run SQLite checkpoint/VACUUM/optimize without deleting rows. |
 | `vps-sentinel rules list` | List built-in detection rules, severity, and descriptions. |
 | `vps-sentinel rules matrix --json` | Print the built-in rule ownership matrix, including owner, category, response scope, and evidence keys. |
+| `vps-sentinel rules packs --json` | Print rule-pack summaries grouped by owner and capability. |
 | `vps-sentinel rules test <rule_id>` | Verify that a built-in rule ID exists and can be loaded. |
 | `vps-sentinel rules validate-external <path...>` | Validate external TOML rules before deployment, including parse errors, missing conditions, duplicate IDs, and unknown categories. Add `--json` for CI-friendly output. |
 | `vps-sentinel notify test --config <path>` | Send a synthetic Info finding through enabled notification channels. Use this to verify credentials and routing. |
+| `vps-sentinel wizard --config <path>` | Run a configuration safety wizard that highlights missing notifications, disabled core modules, unsafe resource limits, incomplete panel settings, and active-response review items. Add `--json` for automation. |
 | `vps-sentinel-stop` | Stop the running systemd service while keeping config, data, logs, and binaries in place. |
 
 ## Configuration
@@ -566,12 +568,13 @@ Runtime resource budgets:
 ```toml
 [resource_budget]
 enabled = true
+max_raw_events_per_scan = 20000
 max_findings_per_scan = 500
 max_evidence_items_per_finding = 64
 max_evidence_value_bytes = 2048
 ```
 
-`resource_budget` limits in-memory finding volume after detection. When a scan exceeds `max_findings_per_scan`, findings are ranked by severity, unified risk score, confidence, and timestamp so higher-value evidence is retained first. Evidence item and value limits keep very large findings from bloating memory, notification payloads, or SQLite rows; source IPs, active-response fields, attack fingerprints, paths, process identity, probe families, and risk scores are prioritized before low-value context. `max_evidence_items_per_finding` must stay at 16 or higher so response and notification evidence remains available.
+`resource_budget` limits in-memory raw-event and finding volume. Raw events are capped by `max_raw_events_per_scan` with priority given to SSH, baseline, process, listener, persistence, GPU, and other high-value security facts before noisy Web or outbound-connection rows. When a scan exceeds `max_findings_per_scan`, findings are ranked by severity, unified risk score, confidence, and timestamp so higher-value evidence is retained first. Evidence item and value limits keep very large findings from bloating memory, notification payloads, or SQLite rows. `max_evidence_items_per_finding` must stay at 16 or higher so response and notification evidence remains available.
 
 SSH alert policy:
 

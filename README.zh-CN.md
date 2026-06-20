@@ -169,7 +169,7 @@ min_severity = "Medium"
 
 ## 多 VPS 面板
 
-agent 可以把签名后的遥测主动推送到中心面板，被监控 VPS 不需要开放入站管理端口。自建部署使用 Rust 二进制 `vps-sentinel-panel`，支持 SQLite、PostgreSQL 和 MySQL；Cloudflare 部署可使用 `panel/cloudflare` 中的 Worker/D1 接收端，并把 `panel/web` 作为静态 UI。
+agent 可以把签名后的遥测主动推送到中心面板，被监控 VPS 不需要开放入站管理端口。自建部署使用 Rust 二进制 `vps-sentinel-panel`，支持 SQLite、PostgreSQL 和 MySQL；Cloudflare 部署可使用 `panel/cloudflare` 中的 Worker/D1 接收端，并把 `panel/web` 作为静态 UI。浏览器读取面板需要独立访问令牌，列表 API 只返回固定展示字段，不返回原始证据、完整事件载荷或主机存储细节。
 
 agent 侧配置示例：
 
@@ -510,9 +510,11 @@ sudo journalctl -u vps-sentinel -f
 | `vps-sentinel storage vacuum --config <path>` | 不删除行，只执行 SQLite checkpoint/VACUUM/optimize。 |
 | `vps-sentinel rules list` | 列出内置检测规则、默认等级和描述。 |
 | `vps-sentinel rules matrix --json` | 输出内置规则所有权矩阵，包含 owner、分类、响应范围和 evidence 字段。 |
+| `vps-sentinel rules packs --json` | 按 owner 和能力输出规则包概览。 |
 | `vps-sentinel rules test <rule_id>` | 检查指定内置规则 ID 是否存在并可加载。 |
 | `vps-sentinel rules validate-external <path...>` | 部署前校验外部 TOML 规则，检查解析错误、缺少条件、重复 ID 和未知分类；加 `--json` 可用于 CI。 |
 | `vps-sentinel notify test --config <path>` | 构造一条 Info 级别测试 finding 并发送到已启用通知渠道，用于验证凭据和路由。 |
+| `vps-sentinel wizard --config <path>` | 运行配置安全向导，检查通知、核心模块、资源限制、面板配置和主动响应风险；加 `--json` 可用于自动化。 |
 | `vps-sentinel reload --config <path>` | 校验配置并重载运行中的 systemd 服务。安装后可用 `vs reload` 简写。 |
 | `vps-sentinel-stop` | 停止运行中的 systemd 服务，但保留配置、数据、日志和二进制文件。 |
 
@@ -563,12 +565,13 @@ max_stored_field_bytes = 4096
 ```toml
 [resource_budget]
 enabled = true
+max_raw_events_per_scan = 20000
 max_findings_per_scan = 500
 max_evidence_items_per_finding = 64
 max_evidence_value_bytes = 2048
 ```
 
-`resource_budget` 控制检测后 finding 的内存规模。超过 `max_findings_per_scan` 时，会按严重等级、统一风险评分、置信度和时间排序，优先保留高价值 finding。evidence 数量和值大小限制用于避免单条 finding 过大而拖累内存、通知 payload 或 SQLite 行；来源 IP、主动响应字段、攻击指纹、路径、进程身份、探测家族和风险评分会优先保留。`max_evidence_items_per_finding` 必须保持在 16 或以上，避免裁掉主动响应和通知所需的关键证据。
+`resource_budget` 控制 raw event 和 finding 的内存规模。raw event 受 `max_raw_events_per_scan` 限制，会优先保留 SSH、基线、进程、监听、持久化、GPU 等高价值安全事实，再裁剪普通 Web 访问和出站连接噪声。超过 `max_findings_per_scan` 时，会按严重等级、统一风险评分、置信度和时间排序，优先保留高价值 finding。evidence 数量和值大小限制用于避免单条 finding 过大而拖累内存、通知 payload 或 SQLite 行。`max_evidence_items_per_finding` 必须保持在 16 或以上，避免裁掉主动响应和通知所需的关键证据。
 
 SSH 告警策略：
 

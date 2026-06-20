@@ -24,6 +24,7 @@ use commands::{
     service_profile::{run_service_profile, ServiceProfileCommand},
     status::run_status,
     storage::{run_storage, StorageCommand},
+    wizard::run_wizard,
 };
 use sentinel_core::SentinelConfig;
 use std::io;
@@ -140,6 +141,10 @@ enum Command {
         service_name: String,
     },
     Doctor,
+    Wizard {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -196,6 +201,7 @@ async fn main() -> Result<()> {
             run_reload(path, &service_name)
         }
         Command::Doctor => run_doctor(load_config(cli.config.as_deref())?),
+        Command::Wizard { json } => run_wizard(load_config(cli.config.as_deref())?, json),
     }
 }
 

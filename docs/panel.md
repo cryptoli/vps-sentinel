@@ -15,6 +15,8 @@ Each panel payload contains:
 
 Payload size is bounded by `panel.max_payload_bytes`. If the panel is unavailable, the agent stores a small local outbox in the existing SQLite rule-state store and retries later. The outbox is capped by `panel.outbox_max_items`.
 
+The self-hosted and Worker panels store the signed payload, but read APIs only expose fixed display columns. Raw evidence JSON, incident payload JSON, host IDs, storage details, enabled feature lists, and database timestamps are not returned by the browser-facing list endpoints.
+
 ## Agent Configuration
 
 ```toml
@@ -55,6 +57,8 @@ SQLite example:
 
 ```bash
 PANEL_SHARED_SECRET='replace-with-a-long-random-secret' \
+PANEL_VIEW_TOKEN='replace-with-a-separate-browser-token' \
+PANEL_ADMIN_TOKEN='replace-with-a-separate-admin-token' \
 PANEL_DATABASE_URL='sqlite://panel.db' \
 PANEL_DB_BACKEND='sqlite' \
 PANEL_WEB_DIR='/usr/local/share/vps-sentinel/panel/web' \
@@ -65,6 +69,8 @@ PostgreSQL example:
 
 ```bash
 PANEL_SHARED_SECRET='replace-with-a-long-random-secret' \
+PANEL_VIEW_TOKEN='replace-with-a-separate-browser-token' \
+PANEL_ADMIN_TOKEN='replace-with-a-separate-admin-token' \
 PANEL_DATABASE_URL='postgres://vps_sentinel:password@127.0.0.1:5432/vps_sentinel' \
 PANEL_DB_BACKEND='postgres' \
 PANEL_WEB_DIR='/usr/local/share/vps-sentinel/panel/web' \
@@ -75,6 +81,8 @@ MySQL example:
 
 ```bash
 PANEL_SHARED_SECRET='replace-with-a-long-random-secret' \
+PANEL_VIEW_TOKEN='replace-with-a-separate-browser-token' \
+PANEL_ADMIN_TOKEN='replace-with-a-separate-admin-token' \
 PANEL_DATABASE_URL='mysql://vps_sentinel:password@127.0.0.1:3306/vps_sentinel' \
 PANEL_DB_BACKEND='mysql' \
 PANEL_WEB_DIR='/usr/local/share/vps-sentinel/panel/web' \
@@ -85,7 +93,13 @@ The service initializes the selected database schema on startup. SQLite uses the
 
 The installer and updater copy `panel/` to `/usr/local/share/vps-sentinel/panel` by default. Override `SHARE_DIR` if your package layout uses another directory.
 
-For production, place the panel behind a reverse proxy with HTTPS and keep `PANEL_SHARED_SECRET` or `PANEL_NODE_SECRETS` out of shell history. `PANEL_NODE_SECRETS` accepts JSON such as:
+For production, place the panel behind a reverse proxy with HTTPS and keep `PANEL_SHARED_SECRET`, `PANEL_NODE_SECRETS`, `PANEL_VIEW_TOKEN`, and `PANEL_ADMIN_TOKEN` out of shell history. `PANEL_SHARED_SECRET`/`PANEL_NODE_SECRETS` are only for agent ingest signatures. `PANEL_VIEW_TOKEN` is a browser read token. `PANEL_ADMIN_TOKEN` can also read and is required for review writes such as marking a finding as confirmed or false positive.
+
+If both `PANEL_VIEW_TOKEN` and `PANEL_ADMIN_TOKEN` are missing, read APIs stay locked with `panel_view_token_not_configured`. The static UI can still load, but it will not show telemetry data.
+
+The self-hosted Rust panel does not enable permissive CORS by default. The Worker receiver also requires an exact `PANEL_CORS_ORIGIN` when cross-origin static hosting is used; wildcard origins are intentionally ignored.
+
+`PANEL_NODE_SECRETS` accepts JSON such as:
 
 ```json
 {"prod-web-1":"node-specific-secret","prod-db-1":"another-node-secret"}
@@ -111,9 +125,13 @@ The Worker exposes the same API shape as the Rust panel:
 - `GET /api/v1/summary`
 - `GET /api/v1/nodes`
 - `GET /api/v1/findings`
+- `GET /api/v1/finding?id=<finding-id>`
+- `POST /api/v1/finding-review`
 - `GET /api/v1/incidents`
+- `GET /api/v1/incident?id=<incident-id>`
 - `GET /api/v1/baseline-drifts`
 - `GET /api/v1/active-blocks`
+- `GET /api/v1/audit-logs`
 
 ## Security Model
 

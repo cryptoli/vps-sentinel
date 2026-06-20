@@ -36,6 +36,24 @@ CREATE TABLE IF NOT EXISTS findings (
   received_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS finding_reviews (
+  finding_id TEXT PRIMARY KEY,
+  verdict TEXT NOT NULL,
+  note TEXT NOT NULL,
+  reviewer TEXT NOT NULL,
+  reviewed_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS panel_audit_logs (
+  id TEXT PRIMARY KEY,
+  action TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  detail_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS incidents (
   id TEXT PRIMARY KEY,
   node_id TEXT NOT NULL,
@@ -88,6 +106,8 @@ CREATE TABLE IF NOT EXISTS ingest_nonces (
 CREATE INDEX IF NOT EXISTS idx_nodes_last_seen ON nodes(last_seen_at);
 CREATE INDEX IF NOT EXISTS idx_findings_node_time ON findings(node_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_findings_severity_time ON findings(severity, timestamp);
+CREATE INDEX IF NOT EXISTS idx_finding_reviews_verdict ON finding_reviews(verdict, reviewed_at);
+CREATE INDEX IF NOT EXISTS idx_panel_audit_logs_created ON panel_audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_incidents_node_time ON incidents(node_id, last_seen);
 CREATE INDEX IF NOT EXISTS idx_baseline_node_time ON baseline_drifts(node_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_blocks_node ON active_blocks(node_id);

@@ -4,38 +4,93 @@ const JSON_HEADERS = {
 };
 
 const SIGNATURE_WINDOW_SECONDS = 300;
+const DEFAULT_PAGE_LIMIT = 50;
+const MAX_PAGE_LIMIT = 200;
+
+const DATASETS = {
+  "/api/v1/nodes": {
+    table: "nodes",
+    orderColumn: "last_seen_at",
+    columns: ["last_seen_at", "node_id", "node_name", "agent_version", "privacy_mode"],
+  },
+  "/api/v1/findings": {
+    table: "findings",
+    orderColumn: "timestamp",
+    columns: ["id", "timestamp", "node_id", "severity", "rule_id", "category", "subject", "title"],
+  },
+  "/api/v1/incidents": {
+    table: "incidents",
+    orderColumn: "last_seen",
+    columns: ["id", "last_seen", "node_id", "severity", "score", "title", "summary"],
+  },
+  "/api/v1/baseline-drifts": {
+    table: "baseline_drifts",
+    orderColumn: "timestamp",
+    columns: ["timestamp", "node_id", "severity", "rule_id", "tier", "subject", "review_action"],
+  },
+  "/api/v1/active-blocks": {
+    table: "active_blocks",
+    orderColumn: "blocked_at",
+    activeFilter: "expired = 0",
+    columns: ["blocked_at", "node_id", "ip", "rule_id", "backend", "reason", "expires_at"],
+  },
+  "/api/v1/audit-logs": {
+    table: "panel_audit_logs",
+    orderColumn: "created_at",
+    columns: ["created_at", "action", "actor", "target_type", "target_id"],
+  },
+};
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
       if (request.method === "OPTIONS") {
-        return withCors(new Response(null, { status: 204 }));
+        return withCors(new Response(null, { status: 204 }), request, env);
       }
       if (request.method === "POST" && url.pathname === "/api/v1/ingest") {
-        return withCors(await ingest(request, env));
+        return withCors(await ingest(request, env), request, env);
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/settings") {
+        return withCors(json({
+          theme: env.PANEL_THEME || "default",
+          auth_required: true,
+          auth_configured: Boolean(viewToken(env) || adminToken(env)),
+          admin_configured: Boolean(adminToken(env)),
+        }), request, env);
       }
       if (request.method === "GET" && url.pathname === "/api/v1/summary") {
-        return withCors(json(await summary(env)));
+        const authError = viewAuthError(request, env);
+        if (authError) return withCors(authError, request, env);
+        return withCors(json(await summary(env)), request, env);
       }
-      if (request.method === "GET" && url.pathname === "/api/v1/nodes") {
-        return withCors(json(await queryAll(env, "SELECT * FROM nodes ORDER BY last_seen_at DESC LIMIT 200")));
+      if (request.method === "GET" && DATASETS[url.pathname]) {
+        const authError = viewAuthError(request, env);
+        if (authError) return withCors(authError, request, env);
+        return withCors(json(await queryPage(env, DATASETS[url.pathname], url)), request, env);
       }
-      if (request.method === "GET" && url.pathname === "/api/v1/findings") {
-        return withCors(json(await queryAll(env, "SELECT * FROM findings ORDER BY timestamp DESC LIMIT 300")));
+      if (request.method === "GET" && url.pathname === "/api/v1/finding") {
+        const authError = viewAuthError(request, env);
+        if (authError) return withCors(authError, request, env);
+        return withCors(json(await findingDetail(env, url)), request, env);
       }
-      if (request.method === "GET" && url.pathname === "/api/v1/incidents") {
-        return withCors(json(await queryAll(env, "SELECT * FROM incidents ORDER BY last_seen DESC LIMIT 200")));
+      if (request.method === "GET" && url.pathname === "/api/v1/incident") {
+        const authError = viewAuthError(request, env);
+        if (authError) return withCors(authError, request, env);
+        return withCors(json(await incidentDetail(env, url)), request, env);
       }
-      if (request.method === "GET" && url.pathname === "/api/v1/baseline-drifts") {
-        return withCors(json(await queryAll(env, "SELECT * FROM baseline_drifts ORDER BY timestamp DESC LIMIT 300")));
+      if (request.method === "POST" && url.pathname === "/api/v1/finding-review") {
+        const authError = adminAuthError(request, env);
+        if (authError) return withCors(authError, request, env);
+        return withCors(json(await findingReview(request, env)), request, env);
       }
-      if (request.method === "GET" && url.pathname === "/api/v1/active-blocks") {
-        return withCors(json(await queryAll(env, "SELECT * FROM active_blocks WHERE expired = 0 ORDER BY blocked_at DESC LIMIT 300")));
-      }
-      return withCors(json({ error: "not_found" }, 404));
+      return withCors(json({ error: "not_found" }, 404), request, env);
     } catch (error) {
-      return withCors(json({ error: "internal_error", detail: String(error?.message || error) }, 500));
+      console.error(error);
+      if (error?.status && error?.code) {
+        return withCors(json({ error: error.code, detail: error.code }, error.status), request, env);
+      }
+      return withCors(json({ error: "internal_error", detail: "internal_error" }, 500), request, env);
     }
   },
 };
@@ -219,6 +274,159 @@ async function summary(env) {
   return { nodes, findings, incidents, baseline_drifts: drifts, active_blocks: blocks, by_severity: bySeverity };
 }
 
+async function queryPage(env, dataset, url) {
+  const page = pageRequest(url);
+  const values = [];
+  const parts = [];
+  if (dataset.activeFilter) parts.push(dataset.activeFilter);
+  if (page.from) {
+    values.push(page.from);
+    parts.push(`${dataset.orderColumn} >= ?`);
+  }
+  if (page.to) {
+    values.push(page.to);
+    parts.push(`${dataset.orderColumn} <= ?`);
+  }
+  const whereSql = parts.length ? ` WHERE ${parts.join(" AND ")}` : "";
+  const countRow = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${dataset.table}${whereSql}`)
+    .bind(...values)
+    .first();
+  const result = await env.DB.prepare(
+    `SELECT ${dataset.columns.join(", ")} FROM ${dataset.table}${whereSql} ORDER BY ${dataset.orderColumn} DESC LIMIT ? OFFSET ?`,
+  ).bind(...values, page.limit, page.offset).all();
+  return {
+    items: result.results || [],
+    total: Number(countRow?.count || 0),
+    limit: page.limit,
+    offset: page.offset,
+  };
+}
+
+async function findingDetail(env, url) {
+  const id = requiredQuery(url, "id");
+  const row = await env.DB.prepare(`
+    SELECT id, node_id, rule_id, title, severity, confidence, category, subject, timestamp, dedup_key,
+           evidence_json, impact_json, recommendations_json, received_at
+    FROM findings
+    WHERE id = ?
+  `).bind(id).first();
+  if (!row) throwHttp(404, "finding_not_found");
+  row.evidence = parseJsonField(row.evidence_json, []);
+  row.impact = parseJsonField(row.impact_json, []);
+  row.recommendations = parseJsonField(row.recommendations_json, []);
+  delete row.evidence_json;
+  delete row.impact_json;
+  delete row.recommendations_json;
+  row.review = await env.DB.prepare(
+    "SELECT finding_id, verdict, note, reviewer, reviewed_at FROM finding_reviews WHERE finding_id = ?",
+  ).bind(id).first();
+  return row;
+}
+
+async function incidentDetail(env, url) {
+  const id = requiredQuery(url, "id");
+  const row = await env.DB.prepare(`
+    SELECT id, node_id, title, severity, score, first_seen, last_seen, summary, payload_json, received_at
+    FROM incidents
+    WHERE id = ?
+  `).bind(id).first();
+  if (!row) throwHttp(404, "incident_not_found");
+  row.payload = parseJsonField(row.payload_json, null);
+  delete row.payload_json;
+  return row;
+}
+
+async function findingReview(request, env) {
+  const payload = await request.json();
+  const review = normalizeFindingReview(payload);
+  const exists = await env.DB.prepare("SELECT id FROM findings WHERE id = ?").bind(review.finding_id).first();
+  if (!exists) throwHttp(404, "finding_not_found");
+  await env.DB.prepare(`
+    INSERT INTO finding_reviews (finding_id, verdict, note, reviewer, reviewed_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(finding_id) DO UPDATE SET
+      verdict = excluded.verdict,
+      note = excluded.note,
+      reviewer = excluded.reviewer,
+      reviewed_at = excluded.reviewed_at
+  `).bind(review.finding_id, review.verdict, review.note, review.reviewer, review.reviewed_at).run();
+  await env.DB.prepare(`
+    INSERT INTO panel_audit_logs (id, action, actor, target_type, target_id, detail_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    `finding_review:finding:${review.finding_id}:${crypto.randomUUID()}`,
+    "finding_review",
+    review.reviewer || "panel",
+    "finding",
+    review.finding_id,
+    JSON.stringify({ verdict: review.verdict, note_present: Boolean(review.note) }),
+    review.reviewed_at,
+  ).run();
+  return { ok: true, finding_id: review.finding_id };
+}
+
+function normalizeFindingReview(payload) {
+  const findingId = String(payload?.finding_id || "").trim();
+  if (!findingId || findingId.length > 191) throwHttp(400, "invalid_finding_id");
+  const verdict = String(payload?.verdict || "").trim();
+  if (!["false_positive", "confirmed", "needs_review"].includes(verdict)) {
+    throwHttp(400, "invalid_review_verdict");
+  }
+  return {
+    finding_id: findingId,
+    verdict,
+    note: String(payload?.note || "").trim().slice(0, 1000),
+    reviewer: String(payload?.reviewer || "").trim().slice(0, 128),
+    reviewed_at: new Date().toISOString(),
+  };
+}
+
+function parseJsonField(value, fallback) {
+  try {
+    return JSON.parse(String(value || ""));
+  } catch {
+    return fallback;
+  }
+}
+
+function requiredQuery(url, name) {
+  const value = url.searchParams.get(name);
+  if (!value) throwHttp(400, `missing_${name}`);
+  return value;
+}
+
+function pageRequest(url) {
+  const from = parsePanelTime(url.searchParams.get("from"));
+  const to = parsePanelTime(url.searchParams.get("to"));
+  if (from && to && from > to) throwHttp(400, "invalid_time_range");
+  return {
+    from,
+    to,
+    limit: clamp(Number(url.searchParams.get("limit") || DEFAULT_PAGE_LIMIT), 1, MAX_PAGE_LIMIT),
+    offset: Math.max(0, Number(url.searchParams.get("offset") || 0) || 0),
+  };
+}
+
+function parsePanelTime(value) {
+  if (!value) return null;
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00:00.000Z` : value;
+  const timestamp = new Date(dateOnly);
+  if (Number.isNaN(timestamp.getTime())) throwHttp(400, "invalid_time");
+  return timestamp.toISOString();
+}
+
+function throwHttp(status, code) {
+  const error = new Error(code);
+  error.status = status;
+  error.code = code;
+  throw error;
+}
+
+function clamp(value, min, max) {
+  if (!Number.isFinite(value)) return DEFAULT_PAGE_LIMIT;
+  return Math.max(min, Math.min(max, Math.trunc(value)));
+}
+
 async function count(env, table) {
   const row = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table}`).first();
   return Number(row?.count || 0);
@@ -242,9 +450,42 @@ function secretForNode(env, nodeId) {
   return env.PANEL_SHARED_SECRET || "";
 }
 
+function viewToken(env) {
+  return String(env.PANEL_VIEW_TOKEN || "").trim();
+}
+
+function adminToken(env) {
+  return String(env.PANEL_ADMIN_TOKEN || "").trim();
+}
+
+function viewAuthError(request, env) {
+  const expectedView = viewToken(env);
+  const expectedAdmin = adminToken(env);
+  if (!expectedView && !expectedAdmin) return json({ error: "panel_view_token_not_configured", detail: "panel_view_token_not_configured" }, 403);
+  const actual = bearerToken(request.headers.get("authorization") || "") || String(request.headers.get("x-vps-sentinel-view-token") || "").trim();
+  if (!actual) return json({ error: "missing_view_token", detail: "missing_view_token" }, 401);
+  if (!timingSafeEqual(expectedView, actual) && !timingSafeEqual(expectedAdmin, actual)) return json({ error: "invalid_view_token", detail: "invalid_view_token" }, 401);
+  return null;
+}
+
+function adminAuthError(request, env) {
+  const expected = adminToken(env);
+  if (!expected) return json({ error: "panel_admin_token_not_configured", detail: "panel_admin_token_not_configured" }, 403);
+  const actual = bearerToken(request.headers.get("authorization") || "") || String(request.headers.get("x-vps-sentinel-view-token") || "").trim();
+  if (!actual) return json({ error: "missing_admin_token", detail: "missing_admin_token" }, 401);
+  if (!timingSafeEqual(expected, actual)) return json({ error: "invalid_admin_token", detail: "invalid_admin_token" }, 401);
+  return null;
+}
+
+function bearerToken(value) {
+  const [scheme, ...rest] = value.split(" ");
+  const token = rest.join(" ").trim();
+  return scheme?.toLowerCase() === "bearer" && token ? token : "";
+}
+
 function requiredHeader(request, name) {
   const value = request.headers.get(name);
-  if (!value) throw new Error(`missing header ${name}`);
+  if (!value) throwHttp(401, `missing_header:${name}`);
   return value;
 }
 
@@ -283,10 +524,19 @@ function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: JSON_HEADERS });
 }
 
-function withCors(response) {
+function withCors(response, request, env) {
   const headers = new Headers(response.headers);
-  headers.set("access-control-allow-origin", "*");
-  headers.set("access-control-allow-methods", "GET,POST,OPTIONS");
-  headers.set("access-control-allow-headers", "content-type,x-vps-sentinel-node,x-vps-sentinel-timestamp,x-vps-sentinel-nonce,x-vps-sentinel-body-sha256,x-vps-sentinel-signature");
+  const origin = request.headers.get("origin") || "";
+  const allowedOrigin = String(env.PANEL_CORS_ORIGIN || "").trim();
+  if (allowedOrigin && allowedOrigin !== "*" && allowedOrigin === origin) {
+    headers.set("access-control-allow-origin", origin);
+    headers.set("vary", "Origin");
+    headers.set("access-control-allow-methods", "GET,POST,OPTIONS");
+    headers.set("access-control-allow-headers", "authorization,content-type,x-vps-sentinel-node,x-vps-sentinel-timestamp,x-vps-sentinel-nonce,x-vps-sentinel-body-sha256,x-vps-sentinel-signature,x-vps-sentinel-view-token");
+  }
+  headers.set("x-content-type-options", "nosniff");
+  headers.set("referrer-policy", "no-referrer");
+  headers.set("cache-control", "no-store");
+  headers.set("content-security-policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }

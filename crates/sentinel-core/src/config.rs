@@ -501,6 +501,11 @@ fn validate_reports(config: &ReportsConfig) -> SentinelResult<()> {
 }
 
 fn validate_resource_budget(config: &ResourceBudgetConfig) -> SentinelResult<()> {
+    if config.max_raw_events_per_scan < 100 {
+        return Err(SentinelError::Config(
+            "resource_budget.max_raw_events_per_scan must be at least 100".to_string(),
+        ));
+    }
     if config.max_findings_per_scan == 0 {
         return Err(SentinelError::Config(
             "resource_budget.max_findings_per_scan must be greater than 0".to_string(),
@@ -862,6 +867,10 @@ mod tests {
 
     #[test]
     fn invalid_resource_budget_is_rejected() {
+        let mut config = SentinelConfig::default();
+        config.resource_budget.max_raw_events_per_scan = 99;
+        assert!(config.validate().is_err());
+
         let mut config = SentinelConfig::default();
         config.resource_budget.max_findings_per_scan = 0;
         assert!(config.validate().is_err());

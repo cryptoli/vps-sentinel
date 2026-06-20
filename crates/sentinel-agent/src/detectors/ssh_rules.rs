@@ -237,13 +237,7 @@ fn successful_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
         login_subject(&user, &ip, event),
     )
     .with_evidence_deduped_by(
-        vec![
-            evidence("user", user),
-            evidence("source_ip", ip),
-            evidence("port", string_field(event, "port")),
-            evidence("method", string_field(event, "method")),
-            evidence("log_source", string_field(event, "log_source")),
-        ],
+        ssh_success_evidence(event, &user, &ip, &string_field(event, "method")),
         &["user", "source_ip", "method"],
     )
     .with_recommendations(vec![
@@ -273,13 +267,7 @@ fn root_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
         login_subject("root", &ip, event),
     )
     .with_evidence_deduped_by(
-        vec![
-            evidence("user", "root"),
-            evidence("source_ip", ip),
-            evidence("port", string_field(event, "port")),
-            evidence("method", string_field(event, "method")),
-            evidence("log_source", string_field(event, "log_source")),
-        ],
+        ssh_success_evidence(event, "root", &ip, &string_field(event, "method")),
         &["user", "source_ip", "method"],
     )
     .with_impact(vec![
@@ -316,13 +304,7 @@ fn password_login_finding(event: &RawEvent, ctx: &DetectContext) -> Finding {
         login_subject(&user, &ip, event),
     )
     .with_evidence_deduped_by(
-        vec![
-            evidence("user", user),
-            evidence("source_ip", ip),
-            evidence("port", string_field(event, "port")),
-            evidence("method", "password"),
-            evidence("log_source", string_field(event, "log_source")),
-        ],
+        ssh_success_evidence(event, &user, &ip, "password"),
         &["user", "source_ip", "method"],
     )
     .with_impact(vec![
@@ -371,6 +353,33 @@ fn bruteforce_finding(
     ])
 }
 
+fn ssh_success_evidence(
+    event: &RawEvent,
+    user: &str,
+    ip: &str,
+    method: &str,
+) -> Vec<sentinel_core::Evidence> {
+    let mut evidence_items = vec![
+        evidence("user", user),
+        evidence("source_ip", ip),
+        evidence("port", string_field(event, "port")),
+        evidence("method", method),
+        evidence("log_source", string_field(event, "log_source")),
+    ];
+    push_event_evidence(&mut evidence_items, event, "auth_time");
+    evidence_items
+}
+
+fn push_event_evidence(
+    evidence_items: &mut Vec<sentinel_core::Evidence>,
+    event: &RawEvent,
+    key: &str,
+) {
+    if let Some(value) = event.field(key).filter(|value| !value.trim().is_empty()) {
+        evidence_items.push(evidence(key, value));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::SshDetector;
@@ -386,6 +395,22 @@ mod tests {
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].rule_id, "SSH-004");
         assert_eq!(findings[0].subject, "deploy@203.0.113.10");
+    }
+
+    #[test]
+    fn successful_login_evidence_preserves_auth_time() {
+        let detector = SshDetector;
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event =
+            success_event("root", "publickey").with_field("auth_time", "2026-06-20T16:39:30+08:00");
+
+        let findings = detector.detect(&[event], &ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|item| { item.key == "auth_time" && item.value == "2026-06-20T16:39:30+08:00" }));
     }
 
     #[test]

@@ -19,3 +19,4 @@ pub mod scan;
 pub mod service_profile;
 pub mod status;
 pub mod storage;
+pub mod wizard;

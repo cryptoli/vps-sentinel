@@ -33,6 +33,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
+mod event_budget;
+
 const PROCESS_START_STATE_RULE_ID: &str = "process_start_times";
 const LOG_INTEGRITY_STATE_RULE_ID: &str = "log_integrity_state";
 
@@ -80,6 +82,7 @@ pub struct ScanReport {
     pub active_response_expired_count: usize,
     pub attack_fingerprint_observation_count: usize,
     pub attack_fingerprint_action_hint_count: usize,
+    pub resource_budget_dropped_raw_events: usize,
     pub resource_budget_dropped_findings: usize,
     pub resource_budget_truncated_evidence_items: usize,
     pub resource_budget_truncated_evidence_values: usize,
@@ -129,6 +132,16 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
                 collector_errors.push(format!("{}: {err}", collector.name()));
             }
         }
+    }
+
+    let raw_event_budget_report =
+        event_budget::apply_raw_event_budget(&mut raw_events, config.as_ref());
+    if raw_event_budget_report.dropped_events > 0 {
+        warn!(
+            dropped_raw_events = raw_event_budget_report.dropped_events,
+            retained_raw_events = raw_events.len(),
+            "resource budget applied to raw events"
+        );
     }
 
     let current_snapshot = BaselineSnapshot::from_events(&raw_events);
@@ -502,6 +515,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         active_response_expired = active_response_report.expired_blocks,
         attack_fingerprint_observations = attack_fingerprint_observation_count,
         attack_fingerprint_action_hints = attack_fingerprint_action_hint_count,
+        resource_budget_dropped_raw_events = raw_event_budget_report.dropped_events,
         resource_budget_dropped_findings = budget_report.dropped_findings,
         resource_budget_truncated_evidence_items = budget_report.truncated_evidence_items,
         resource_budget_truncated_evidence_values = budget_report.truncated_evidence_values,
@@ -531,6 +545,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         active_response_expired_count: active_response_report.expired_blocks,
         attack_fingerprint_observation_count,
         attack_fingerprint_action_hint_count,
+        resource_budget_dropped_raw_events: raw_event_budget_report.dropped_events,
         resource_budget_dropped_findings: budget_report.dropped_findings,
         resource_budget_truncated_evidence_items: budget_report.truncated_evidence_items,
         resource_budget_truncated_evidence_values: budget_report.truncated_evidence_values,

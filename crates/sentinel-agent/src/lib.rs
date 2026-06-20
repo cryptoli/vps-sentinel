@@ -20,6 +20,7 @@ pub mod resource_budget;
 pub mod risk_score;
 pub mod rules;
 pub mod scanner;
+pub mod security_wizard;
 pub mod service_profile;
 pub mod storage;
 pub mod threat_intel;

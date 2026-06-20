@@ -1,0 +1,350 @@
+export function createView({ t, language }) {
+  function sectionHeader(title, description, action) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "section-head";
+    const text = document.createElement("div");
+    const heading = document.createElement("h2");
+    heading.textContent = title;
+    const body = document.createElement("p");
+    body.textContent = description;
+    text.append(heading, body);
+    wrapper.append(text);
+    if (action) wrapper.append(action);
+    return wrapper;
+  }
+
+  function metrics(items) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "grid metrics";
+    for (const [label, value, tone] of items) {
+      const item = document.createElement("div");
+      item.className = `metric metric-${tone}`;
+      item.append(span("label", label), span("value", number(value)));
+      wrapper.append(item);
+    }
+    return wrapper;
+  }
+
+  function chartsGrid(items) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "charts-grid";
+    wrapper.append(...items);
+    return wrapper;
+  }
+
+  function panel(title, content) {
+    const wrapper = document.createElement("section");
+    wrapper.className = "panel";
+    const head = document.createElement("div");
+    head.className = "panel-title";
+    const heading = document.createElement("h3");
+    heading.textContent = title;
+    head.append(heading);
+    wrapper.append(head, content);
+    return wrapper;
+  }
+
+  function renderTable(rows, columns, options = {}) {
+    if (!rows || rows.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.textContent = t("noData");
+      return empty;
+    }
+    const wrap = document.createElement("div");
+    wrap.className = "table-wrap";
+    const table = document.createElement("table");
+    const thead = document.createElement("thead");
+    const headerRow = document.createElement("tr");
+    for (const column of columns) {
+      const th = document.createElement("th");
+      th.textContent = columnLabel(column);
+      headerRow.append(th);
+    }
+    if (typeof options.onRowAction === "function") {
+      const th = document.createElement("th");
+      th.textContent = options.actionHeader || t("actions");
+      headerRow.append(th);
+    }
+    thead.append(headerRow);
+    const tbody = document.createElement("tbody");
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+      for (const column of columns) {
+        const td = document.createElement("td");
+        td.append(formatValue(column, row[column]));
+        tr.append(td);
+      }
+      if (typeof options.onRowAction === "function") {
+        const td = document.createElement("td");
+        const action = button(options.actionLabel || t("details"), "button", "secondary compact");
+        action.addEventListener("click", () => options.onRowAction(row));
+        td.append(action);
+        tr.append(td);
+      }
+      tbody.append(tr);
+    }
+    table.append(thead, tbody);
+    wrap.append(table);
+    return wrap;
+  }
+
+  function barChart(rows, labelKey, valueKey) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "bar-chart";
+    const max = Math.max(1, ...rows.map((row) => Number(row[valueKey] || 0)));
+    if (!rows.length) return emptyChart();
+    for (const row of rows) {
+      const severity = String(row[labelKey] || "unknown").toLowerCase();
+      const value = Number(row[valueKey] || 0);
+      const item = document.createElement("div");
+      item.className = "bar-row";
+      item.append(span("bar-label", translateValue("severity", severity)));
+      const track = document.createElement("div");
+      track.className = "bar-track";
+      const fill = document.createElement("div");
+      fill.className = `bar-fill severity-${severity}`;
+      fill.style.width = `${Math.max(4, (value / max) * 100)}%`;
+      track.append(fill);
+      item.append(track, span("bar-value", number(value)));
+      wrapper.append(item);
+    }
+    return wrapper;
+  }
+
+  function donutChart(items) {
+    const total = items.reduce((sum, item) => sum + Number(item.value || 0), 0);
+    if (total === 0) return emptyChart();
+    const wrapper = document.createElement("div");
+    wrapper.className = "donut-card";
+    const donut = document.createElement("div");
+    donut.className = "donut";
+    donut.style.background = donutGradient(items);
+    donut.append(span("donut-value", number(total)));
+    const legend = document.createElement("div");
+    legend.className = "legend";
+    for (const item of items) {
+      const row = document.createElement("div");
+      row.className = "legend-row";
+      row.append(
+        span(`legend-dot ${item.className}`, ""),
+        span("legend-label", item.label),
+        span("legend-value", number(item.value)),
+      );
+      legend.append(row);
+    }
+    wrapper.append(donut, legend);
+    return wrapper;
+  }
+
+  function donutGradient(items) {
+    const colors = {
+      "chart-critical": "var(--critical)",
+      "chart-high": "var(--high)",
+      "chart-medium": "var(--medium)",
+      "chart-low": "var(--low)",
+    };
+    const total = items.reduce((sum, item) => sum + Number(item.value || 0), 0);
+    let start = 0;
+    const segments = items
+      .filter((item) => Number(item.value || 0) > 0)
+      .map((item) => {
+        const pct = (Number(item.value) / total) * 100;
+        const segment = `${colors[item.className] || "var(--accent)"} ${start}% ${start + pct}%`;
+        start += pct;
+        return segment;
+      });
+    return `conic-gradient(${segments.join(", ")})`;
+  }
+
+  function nodeFreshness(nodes) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "node-freshness";
+    if (!nodes.length) return emptyChart();
+    for (const node of nodes.slice(0, 8)) {
+      const age = ageMinutes(node.last_seen_at);
+      const row = document.createElement("div");
+      row.className = "freshness-row";
+      row.append(
+        span(`status-dot ${age <= 10 ? "fresh" : "stale"}`, ""),
+        span("freshness-name", node.node_name || node.node_id || "-"),
+        span("freshness-age", relativeAge(age)),
+      );
+      wrapper.append(row);
+    }
+    return wrapper;
+  }
+
+  function freshnessBadge(nodes) {
+    const stale = nodes.filter((node) => ageMinutes(node.last_seen_at) > 10).length;
+    return span(`freshness-badge ${stale ? "stale" : "fresh"}`, stale ? t("stale") : t("fresh"));
+  }
+
+  function emptyChart() {
+    const empty = document.createElement("div");
+    empty.className = "empty chart-empty";
+    empty.textContent = t("noData");
+    return empty;
+  }
+
+  function formatValue(column, value) {
+    if (column === "severity") {
+      return span(`badge severity-${String(value || "").toLowerCase()}`, translateValue("severity", value));
+    }
+    if (column === "privacy_mode") {
+      return document.createTextNode(translateValue("privacy_mode", value));
+    }
+    if (value === null || value === undefined || value === "") return span("muted", "-");
+    if (isTimeColumn(column)) {
+      const date = new Date(value);
+      if (!Number.isNaN(date.getTime())) {
+        return document.createTextNode(date.toLocaleString(language === "zh" ? "zh-CN" : "en-US"));
+      }
+    }
+    return document.createTextNode(String(value));
+  }
+
+  function columnLabel(column) {
+    return t(column) || column.replaceAll("_", " ");
+  }
+
+  function translateValue(column, value) {
+    const normalized = String(value || "unknown").toLowerCase();
+    if (column === "severity" || column === "privacy_mode") return t(normalized) || value || t("unknown");
+    return value || t("unknown");
+  }
+
+  function isTimeColumn(column) {
+    return column.includes("_at") || column.includes("time") || column === "timestamp" || column === "last_seen" || column === "first_seen";
+  }
+
+  function ageMinutes(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return Number.POSITIVE_INFINITY;
+    return Math.max(0, Math.floor((Date.now() - date.getTime()) / 60000));
+  }
+
+  function relativeAge(minutes) {
+    if (!Number.isFinite(minutes)) return "-";
+    if (minutes < 60) return formatTemplate(t("minutesAgo"), { value: minutes });
+    return formatTemplate(t("hoursAgo"), { value: Math.floor(minutes / 60) });
+  }
+
+  function option(value, label, selected) {
+    const item = document.createElement("option");
+    item.value = value;
+    item.textContent = label;
+    item.selected = selected;
+    return item;
+  }
+
+  function input(type, name, value) {
+    const item = document.createElement("input");
+    item.type = type;
+    item.name = name;
+    item.value = value || "";
+    return item;
+  }
+
+  function select(name, values, selectedValue) {
+    const item = document.createElement("select");
+    item.name = name;
+    item.replaceChildren(...values.map((value) => option(String(value), String(value), Number(value) === Number(selectedValue))));
+    return item;
+  }
+
+  function labelControl(label, control) {
+    const wrapper = document.createElement("label");
+    wrapper.className = "field";
+    wrapper.append(span("field-label", label), control);
+    return wrapper;
+  }
+
+  function detailList(items) {
+    const wrapper = document.createElement("dl");
+    wrapper.className = "detail-list";
+    for (const [label, value] of items) {
+      const dt = document.createElement("dt");
+      dt.textContent = label;
+      const dd = document.createElement("dd");
+      dd.append(value instanceof Node ? value : document.createTextNode(String(value || "-")));
+      wrapper.append(dt, dd);
+    }
+    return wrapper;
+  }
+
+  function jsonBlock(value) {
+    const pre = document.createElement("pre");
+    pre.className = "json-block";
+    pre.textContent = JSON.stringify(value ?? null, null, 2);
+    return pre;
+  }
+
+  function button(label, type, variant) {
+    const item = document.createElement("button");
+    item.type = type;
+    item.className = `button ${variant}`;
+    item.textContent = label;
+    return item;
+  }
+
+  function span(className, text) {
+    const item = document.createElement("span");
+    item.className = className;
+    item.textContent = text;
+    return item;
+  }
+
+  function fragment(...children) {
+    const item = document.createDocumentFragment();
+    item.append(...children);
+    return item;
+  }
+
+  function loading() {
+    const item = document.createElement("div");
+    item.className = "empty";
+    item.textContent = t("loading");
+    return item;
+  }
+
+  function number(value) {
+    return new Intl.NumberFormat(language === "zh" ? "zh-CN" : "en-US").format(Number(value || 0));
+  }
+
+  return {
+    barChart,
+    button,
+    chartsGrid,
+    detailList,
+    donutChart,
+    fragment,
+    freshnessBadge,
+    input,
+    labelControl,
+    loading,
+    metrics,
+    nodeFreshness,
+    option,
+    panel,
+    renderTable,
+    jsonBlock,
+    sectionHeader,
+    select,
+    span,
+  };
+}
+
+export function formatTemplate(template, values) {
+  return template.replace(/\{(\w+)\}/g, (_, key) => values[key] ?? "");
+}
+
+export function rangeInfo(page) {
+  const total = page.total || 0;
+  if (total === 0) return { from: 0, to: 0, total };
+  return {
+    from: page.offset + 1,
+    to: Math.min(page.offset + page.limit, total),
+    total,
+  };
+}
