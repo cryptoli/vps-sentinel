@@ -12,4 +12,11 @@
   --accent: #2563eb;
   --accent-soft: rgba(37, 99, 235, 0.1);
   --accent-contrast: #ffffff;
+  --critical: #dc2626;
+  --high: #ea580c;
+  --medium: #d97706;
+  --low: #2563eb;
+  --success: #16a34a;
+  --retired: #7c3aed;
+  --neutral: #64748b;
 }

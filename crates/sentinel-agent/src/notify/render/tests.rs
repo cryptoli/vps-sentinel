@@ -186,6 +186,41 @@ fn renders_unknown_rule_in_chinese_without_raw_english_message() {
 }
 
 #[test]
+fn renders_service_profile_rule_in_chinese() {
+    let finding = Finding::new(
+        "host",
+        "New service profile entry detected",
+        "A listening service was not present in the previous service profile baseline.",
+        Severity::Low,
+        Category::Network,
+        "SERVICE-001",
+        "0.0.0.0:24409/udp",
+    )
+    .with_evidence(vec![
+        Evidence::new("protocol", "udp"),
+        Evidence::new("local_addr", "0.0.0.0"),
+        Evidence::new("local_port", "24409"),
+        Evidence::new("dynamic_udp_listener", "true"),
+        Evidence::new(
+            "dynamic_udp_reason",
+            "same_service_identity_udp_port_change",
+        ),
+    ]);
+
+    let body = render_finding_with_language(
+        &finding,
+        NotificationFormat::PlainText,
+        NotificationLanguage::ZhCn,
+    );
+
+    assert!(body.contains("发现新的监听服务画像"));
+    assert!(body.contains("动态 UDP 监听: 是"));
+    assert!(body.contains("动态 UDP 判定原因: 同一服务身份发生非特权 UDP 端口变化"));
+    assert!(!body.contains("该规则尚未配置中文消息模板"));
+    assert!(!body.contains("same_service_identity_udp_port_change"));
+}
+
+#[test]
 fn localizes_common_evidence_keys_and_values() {
     let finding = Finding::new(
         "host",

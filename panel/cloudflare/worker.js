@@ -7,6 +7,7 @@ const SIGNATURE_WINDOW_SECONDS = 300;
 const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 200;
 const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
+const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES = 720;
 
 const DATASETS = {
   "/api/v1/nodes": {
@@ -59,6 +60,7 @@ export default {
           auth_configured: Boolean(viewToken(env) || adminToken(env)),
           admin_configured: Boolean(adminToken(env)),
           freshness_threshold_minutes: DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
+          node_retired_threshold_minutes: DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
           server_time: new Date().toISOString(),
         }), request, env);
       }

@@ -1,10 +1,14 @@
 export const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
+export const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES = 720;
 
 export function createView({ t, language, freshness = {} }) {
   const freshnessThresholdMinutes = Number.isFinite(Number(freshness.thresholdMinutes))
     ? Math.max(1, Number(freshness.thresholdMinutes))
     : DEFAULT_FRESHNESS_THRESHOLD_MINUTES;
   const offlineThresholdMinutes = freshnessThresholdMinutes * 6;
+  const retiredThresholdMinutes = Number.isFinite(Number(freshness.retiredThresholdMinutes))
+    ? Math.max(offlineThresholdMinutes + 1, Number(freshness.retiredThresholdMinutes))
+    : DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES;
   const nowMs = Number.isFinite(Number(freshness.nowMs)) ? Number(freshness.nowMs) : Date.now();
 
   function sectionHeader(title, description, action) {
@@ -171,13 +175,14 @@ export function createView({ t, language, freshness = {} }) {
     if (!nodes.length) return emptyChart();
     for (const node of nodes.slice(0, 8)) {
       const age = ageMinutes(node.last_seen_at);
-      const status = freshnessStatus(age);
+      const status = freshnessStatus(age, node);
       const row = document.createElement("div");
       row.className = `freshness-row ${status}`;
       row.title = formatTemplate(t(`${status}Reason`), {
         age: relativeAge(age),
         threshold: freshnessThresholdMinutes,
         offlineThreshold: offlineThresholdMinutes,
+        retiredThreshold: retiredThresholdMinutes,
       });
       row.append(
         span(`status-dot ${status}`, ""),
@@ -193,17 +198,19 @@ export function createView({ t, language, freshness = {} }) {
   function freshnessBadge(nodes) {
     const counts = nodes.reduce(
       (acc, node) => {
-        acc[freshnessStatus(ageMinutes(node.last_seen_at))] += 1;
+        acc[freshnessStatus(ageMinutes(node.last_seen_at), node)] += 1;
         return acc;
       },
-      { fresh: 0, stale: 0, offline: 0 },
+      { fresh: 0, stale: 0, offline: 0, retired: 0 },
     );
-    const status = counts.offline > 0 ? "offline" : counts.stale > 0 ? "stale" : "fresh";
+    const status = counts.offline > 0 ? "offline" : counts.stale > 0 ? "stale" : counts.retired > 0 ? "retired" : "fresh";
     const text =
       status === "offline"
         ? formatTemplate(t("offlineCount"), { count: counts.offline })
         : status === "stale"
           ? formatTemplate(t("staleCount"), { count: counts.stale })
+          : status === "retired"
+            ? formatTemplate(t("retiredCount"), { count: counts.retired })
           : t("fresh");
     const badge = span(
       `freshness-badge ${status}`,
@@ -212,6 +219,7 @@ export function createView({ t, language, freshness = {} }) {
     badge.title = formatTemplate(t("freshnessThreshold"), {
       threshold: freshnessThresholdMinutes,
       offlineThreshold: offlineThresholdMinutes,
+      retiredThreshold: retiredThresholdMinutes,
     });
     return badge;
   }
@@ -260,10 +268,19 @@ export function createView({ t, language, freshness = {} }) {
     return Math.max(0, Math.floor((nowMs - date.getTime()) / 60000));
   }
 
-  function freshnessStatus(minutes) {
-    if (!Number.isFinite(minutes) || minutes > offlineThresholdMinutes) return "offline";
+  function freshnessStatus(minutes, node = {}) {
+    if (placeholderNode(node) || !Number.isFinite(minutes) || minutes > retiredThresholdMinutes) return "retired";
+    if (minutes > offlineThresholdMinutes) return "offline";
     if (minutes > freshnessThresholdMinutes) return "stale";
     return "fresh";
+  }
+
+  function placeholderNode(node) {
+    const id = String(node.node_id || "").trim().toLowerCase();
+    const name = String(node.node_name || "").trim().toLowerCase();
+    const hostname = String(node.hostname || "").trim();
+    const version = String(node.agent_version || "").trim().toLowerCase();
+    return version.includes("smoke") || (id === "local-host" && !hostname && (!name || name === "local-host"));
   }
 
   function relativeAge(minutes) {

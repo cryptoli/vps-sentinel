@@ -131,6 +131,8 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "current_semantic_features" => "current semantic traits",
             "current_semantic_summary" => "current semantic summary",
             "cwd" => "working directory",
+            "dynamic_udp_listener" => "dynamic UDP listener",
+            "dynamic_udp_reason" => "dynamic UDP reason",
             "entries" => "entries",
             "error_count" => "error count",
             "ephemeral_event" => "short-lived event",
@@ -288,6 +290,8 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "current_semantic_features" => "当前语义特征",
             "current_semantic_summary" => "当前语义摘要",
             "cwd" => "工作目录",
+            "dynamic_udp_listener" => "动态 UDP 监听",
+            "dynamic_udp_reason" => "动态 UDP 判定原因",
             "entries" => "条目",
             "error_count" => "错误次数",
             "ephemeral_event" => "短生命周期事件",
@@ -575,28 +579,42 @@ fn direct_value_label(
             | "behavior_profile_public_fanout_drift",
             "true",
             NotificationLanguage::En,
-        ) => Some("yes"),
+        )
+        | ("dynamic_udp_listener", "true", NotificationLanguage::En) => Some("yes"),
         (
             "behavior_profile_drift"
             | "behavior_profile_first_seen"
             | "behavior_profile_public_fanout_drift",
             "true",
             NotificationLanguage::ZhCn,
-        ) => Some("是"),
+        )
+        | ("dynamic_udp_listener", "true", NotificationLanguage::ZhCn) => Some("是"),
         (
             "behavior_profile_drift"
             | "behavior_profile_first_seen"
             | "behavior_profile_public_fanout_drift",
             "false",
             NotificationLanguage::En,
-        ) => Some("no"),
+        )
+        | ("dynamic_udp_listener", "false", NotificationLanguage::En) => Some("no"),
         (
             "behavior_profile_drift"
             | "behavior_profile_first_seen"
             | "behavior_profile_public_fanout_drift",
             "false",
             NotificationLanguage::ZhCn,
-        ) => Some("否"),
+        )
+        | ("dynamic_udp_listener", "false", NotificationLanguage::ZhCn) => Some("否"),
+        (
+            "dynamic_udp_reason",
+            "same_service_identity_udp_port_change",
+            NotificationLanguage::En,
+        ) => Some("same service identity changed unprivileged UDP port"),
+        (
+            "dynamic_udp_reason",
+            "same_service_identity_udp_port_change",
+            NotificationLanguage::ZhCn,
+        ) => Some("同一服务身份发生非特权 UDP 端口变化"),
         ("baseline_drift_tier", "routine", NotificationLanguage::En) => Some("routine"),
         ("baseline_drift_tier", "routine", NotificationLanguage::ZhCn) => Some("常规变更"),
         ("baseline_drift_tier", "review", NotificationLanguage::En) => Some("needs review"),

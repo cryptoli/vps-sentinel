@@ -34,6 +34,7 @@ const DEFAULT_WEB_DIR: &str = "panel/web";
 const DEFAULT_PAGE_LIMIT: usize = 50;
 const MAX_PAGE_LIMIT: usize = 200;
 const DEFAULT_FRESHNESS_THRESHOLD_MINUTES: u64 = 30;
+const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES: u64 = 720;
 
 #[derive(Debug, Parser)]
 #[command(name = "vps-sentinel-panel", version)]
@@ -350,6 +351,7 @@ async fn settings(State(state): State<AppState>) -> Json<Value> {
         "auth_configured": state.view_token.is_some() || state.admin_token.is_some(),
         "admin_configured": state.admin_token.is_some(),
         "freshness_threshold_minutes": DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
+        "node_retired_threshold_minutes": DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
         "server_time": Utc::now().to_rfc3339()
     }))
 }

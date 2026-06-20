@@ -1,4 +1,10 @@
-import { DEFAULT_FRESHNESS_THRESHOLD_MINUTES, createView, formatTemplate, rangeInfo } from "./components.js";
+import {
+  DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
+  DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
+  createView,
+  formatTemplate,
+  rangeInfo,
+} from "./components.js";
 import { DATASETS } from "./datasets.js";
 import { createTranslator, selectedLanguage } from "./i18n.js";
 
@@ -6,6 +12,7 @@ const API_BASE = "/api/v1";
 const DEFAULT_LIMIT = 25;
 const OVERVIEW_LIMIT = 12;
 const TOKEN_STORAGE_KEY = "vps-sentinel-panel-token";
+const TIME_PRESETS = ["1h", "6h", "24h", "today", "7d"];
 const BUILTIN_PAGES = [
   { id: "overview", labelKey: "overview", render: renderOverview },
   { id: "findings", labelKey: "findings", render: (ctx) => renderDatasetPage(ctx, "findings") },
@@ -349,6 +356,7 @@ function datasetPageState(datasetKey) {
     to: "",
     limit: DEFAULT_LIMIT,
     offset: 0,
+    preset: "",
   };
   return state.datasetState[datasetKey];
 }
@@ -369,12 +377,29 @@ function filters(datasetKey, pageState) {
   const ui = view();
   const form = document.createElement("form");
   form.className = "filters";
+  const quickRanges = document.createElement("div");
+  quickRanges.className = "quick-ranges";
+  for (const preset of TIME_PRESETS) {
+    const button = ui.button(
+      t(`range_${preset}`),
+      "button",
+      `secondary compact${pageState.preset === preset ? " active" : ""}`,
+    );
+    button.addEventListener("click", async () => {
+      Object.assign(pageState, rangePreset(preset), { preset, offset: 0 });
+      await renderCurrentPage();
+    });
+    quickRanges.append(button);
+  }
+  const applyButton = ui.button(t("apply"), "submit", "primary");
+  const resetButton = ui.button(t("reset"), "button", "secondary");
   form.append(
+    quickRanges,
     ui.labelControl(t("from"), ui.input("datetime-local", "from", pageState.from)),
     ui.labelControl(t("to"), ui.input("datetime-local", "to", pageState.to)),
     ui.labelControl(t("pageSize"), ui.select("limit", [10, 25, 50, 100, 200], pageState.limit)),
-    ui.button(t("apply"), "submit", "primary"),
-    ui.button(t("reset"), "button", "secondary"),
+    applyButton,
+    resetButton,
   );
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -384,14 +409,45 @@ function filters(datasetKey, pageState) {
       to: String(values.get("to") || ""),
       limit: Number(values.get("limit") || DEFAULT_LIMIT),
       offset: 0,
+      preset: "",
     });
     await renderCurrentPage();
   });
-  form.querySelector(".secondary").addEventListener("click", async () => {
-    Object.assign(pageState, { from: "", to: "", limit: DEFAULT_LIMIT, offset: 0 });
+  resetButton.addEventListener("click", async () => {
+    Object.assign(pageState, { from: "", to: "", limit: DEFAULT_LIMIT, offset: 0, preset: "" });
     await renderCurrentPage();
   });
   return form;
+}
+
+function rangePreset(preset) {
+  const now = new Date();
+  const from = new Date(now);
+  switch (preset) {
+    case "1h":
+      from.setHours(from.getHours() - 1);
+      break;
+    case "6h":
+      from.setHours(from.getHours() - 6);
+      break;
+    case "24h":
+      from.setDate(from.getDate() - 1);
+      break;
+    case "today":
+      from.setHours(0, 0, 0, 0);
+      break;
+    case "7d":
+      from.setDate(from.getDate() - 7);
+      break;
+    default:
+      return { from: "", to: "" };
+  }
+  return { from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(now) };
+}
+
+function toDatetimeLocalValue(date) {
+  const offsetMs = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
 }
 
 function pagination(datasetKey, page) {
@@ -435,6 +491,7 @@ function view() {
     language: state.language,
     freshness: {
       thresholdMinutes: state.settings.freshness_threshold_minutes || DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
+      retiredThresholdMinutes: state.settings.node_retired_threshold_minutes || DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
       nowMs: Date.now() - state.panelClockOffsetMs,
     },
   });

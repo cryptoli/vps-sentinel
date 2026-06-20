@@ -18,6 +18,7 @@
   --medium: #d97706;
   --low: #2563eb;
   --success: #16a34a;
+  --retired: #7c3aed;
   --neutral: #64748b;
   --code-bg: #111827;
   --code-text: #e5edf6;
@@ -42,7 +43,9 @@ html {
 body {
   margin: 0;
   background:
-    linear-gradient(180deg, var(--bg-strong) 0, var(--bg) 220px, var(--bg) 100%);
+    radial-gradient(circle at 14% 8%, rgba(37, 99, 235, 0.12), transparent 28%),
+    radial-gradient(circle at 86% 0%, rgba(22, 163, 74, 0.08), transparent 24%),
+    linear-gradient(180deg, var(--bg-strong) 0, var(--bg) 260px, var(--bg) 100%);
   color: var(--text);
 }
 
@@ -67,6 +70,7 @@ button:disabled {
   align-items: center;
   background: rgba(255, 255, 255, 0.94);
   border-bottom: 1px solid var(--border);
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.06);
   display: flex;
   gap: 24px;
   justify-content: space-between;
@@ -87,7 +91,7 @@ button:disabled {
 
 .brand-mark {
   align-items: center;
-  background: #111827;
+  background: linear-gradient(135deg, #111827 0%, #2563eb 100%);
   border-radius: var(--radius);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
   color: #f8fafc;
@@ -179,6 +183,12 @@ button:disabled {
 .button.secondary:hover {
   background: var(--surface-muted);
   color: var(--text);
+}
+
+.button.secondary.active {
+  background: var(--accent-soft);
+  border-color: rgba(37, 99, 235, 0.24);
+  color: var(--accent);
 }
 
 .button.compact {
@@ -285,6 +295,8 @@ button:disabled {
 }
 
 .metric {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.94));
   min-height: 104px;
   overflow: hidden;
   padding: 16px;
@@ -361,7 +373,7 @@ button:disabled {
 
 .panel-title {
   align-items: center;
-  background: var(--surface-muted);
+  background: linear-gradient(180deg, #fbfdff, var(--surface-muted));
   border-bottom: 1px solid var(--border);
   display: flex;
   justify-content: space-between;
@@ -382,6 +394,14 @@ button:disabled {
   grid-template-columns: repeat(3, minmax(180px, 1fr)) auto auto;
   margin-bottom: 16px;
   padding: 14px;
+}
+
+.quick-ranges {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  grid-column: 1 / -1;
 }
 
 .field {
@@ -491,6 +511,12 @@ tr:last-child td {
   background: rgba(220, 38, 38, 0.1);
   border-color: rgba(220, 38, 38, 0.18);
   color: var(--critical);
+}
+
+.freshness-badge.retired {
+  background: rgba(124, 58, 237, 0.1);
+  border-color: rgba(124, 58, 237, 0.18);
+  color: var(--retired);
 }
 
 .muted,
@@ -630,6 +656,11 @@ tr:last-child td {
   border-color: rgba(220, 38, 38, 0.16);
 }
 
+.freshness-row.retired {
+  background: rgba(124, 58, 237, 0.08);
+  border-color: rgba(124, 58, 237, 0.16);
+}
+
 .legend-label,
 .freshness-name {
   overflow: hidden;
@@ -653,6 +684,10 @@ tr:last-child td {
   color: var(--critical);
 }
 
+.freshness-row.retired .freshness-state {
+  color: var(--retired);
+}
+
 .legend-dot,
 .status-dot {
   border-radius: 50%;
@@ -664,7 +699,8 @@ tr:last-child td {
 
 .status-dot.stale::after,
 .status-dot.fresh::after,
-.status-dot.offline::after {
+.status-dot.offline::after,
+.status-dot.retired::after {
   animation: pulse-dot 1.8s ease-out infinite;
   border-radius: inherit;
   content: "";
@@ -699,6 +735,11 @@ tr:last-child td {
 .status-dot.offline,
 .status-dot.offline::after {
   background: var(--critical);
+}
+
+.status-dot.retired,
+.status-dot.retired::after {
+  background: var(--retired);
 }
 
 @keyframes pulse-dot {

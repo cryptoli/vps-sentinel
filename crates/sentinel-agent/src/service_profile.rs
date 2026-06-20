@@ -6,9 +6,10 @@ use sentinel_core::{
     Category, Evidence, Finding, RawEvent, SentinelConfig, SentinelResult, Severity,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const STATE_RULE_ID: &str = "service_profile";
+const UNPRIVILEGED_PORT_START: u16 = 1024;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServiceProfile {
@@ -94,10 +95,16 @@ fn diff_profiles(
             continue;
         }
         let Some(previous_record) = previous.services.get(key) else {
+            let udp_change =
+                udp_profile_change(previous, &current.services, current_record, config);
+            if matches!(udp_change, UdpProfileChange::PortChurn) {
+                continue;
+            }
             findings.push(new_service_finding(
                 current_record,
                 package_activity.as_deref(),
                 config,
+                matches!(udp_change, UdpProfileChange::IdentitySeen),
             ));
             continue;
         };
@@ -117,8 +124,23 @@ fn new_service_finding(
     record: &ServiceRecord,
     package_activity: Option<&str>,
     config: &SentinelConfig,
+    identity_seen_dynamic_udp: bool,
 ) -> Finding {
     let mut evidence = service_evidence(record);
+    let dynamic_udp = is_dynamic_udp_service(record, config) || identity_seen_dynamic_udp;
+    if dynamic_udp {
+        evidence.push(Evidence::new("dynamic_udp_listener", "true"));
+        evidence.push(Evidence::new(
+            "service_profile_identity",
+            dynamic_udp_identity(record),
+        ));
+        if identity_seen_dynamic_udp && !is_dynamic_udp_service(record, config) {
+            evidence.push(Evidence::new(
+                "dynamic_udp_reason",
+                "same_service_identity_udp_port_change",
+            ));
+        }
+    }
     if let Some(package_activity) = package_activity {
         evidence.push(Evidence::new("package_activity_recent", "true"));
         evidence.push(Evidence::new("package_activity_sources", package_activity));
@@ -127,7 +149,11 @@ fn new_service_finding(
         config.host_id(),
         "New service profile entry detected",
         "A listening service was not present in the previous service profile baseline.",
-        if record.public_exposure { Severity::Medium } else { Severity::Low },
+        if record.public_exposure && !dynamic_udp {
+            Severity::Medium
+        } else {
+            Severity::Low
+        },
         Category::Network,
         SERVICE_PROFILE_NEW_RULE_ID,
         format!("{}:{}/{}", record.local_addr, record.local_port, record.protocol),
@@ -196,7 +222,7 @@ fn service_key(record: &ServiceRecord, config: &SentinelConfig) -> String {
             "{}:{}:dynamic:{}",
             record.protocol,
             record.local_addr,
-            normalized_identity(record)
+            dynamic_udp_identity(record)
         );
     }
     format!(
@@ -210,7 +236,85 @@ fn is_dynamic_udp_service(record: &ServiceRecord, config: &SentinelConfig) -> bo
         && record.public_exposure
         && is_udp_protocol(&record.protocol)
         && record.local_port >= config.service_profile.dynamic_udp_min_port
-        && !normalized_identity(record).trim_matches('|').is_empty()
+}
+
+fn dynamic_udp_identity(record: &ServiceRecord) -> String {
+    let identity = normalized_identity(record);
+    if identity.trim_matches('|').is_empty() {
+        "unknown-owner".to_string()
+    } else {
+        identity
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UdpProfileChange {
+    None,
+    IdentitySeen,
+    PortChurn,
+}
+
+fn udp_profile_change(
+    previous: &ServiceProfile,
+    current: &BTreeMap<String, ServiceRecord>,
+    record: &ServiceRecord,
+    config: &SentinelConfig,
+) -> UdpProfileChange {
+    if !identity_stable_dynamic_udp_candidate(record, config) {
+        return UdpProfileChange::None;
+    }
+    let previous_ports = same_udp_identity_ports(previous.services.values(), record);
+    if previous_ports.is_empty() || previous_ports.contains(&record.local_port) {
+        return UdpProfileChange::None;
+    }
+    let current_ports = same_udp_identity_ports(current.values(), record);
+    if current_ports.is_empty() {
+        return UdpProfileChange::None;
+    }
+    if current_ports.len() <= previous_ports.len()
+        && current_ports
+            .iter()
+            .all(|port| *port >= UNPRIVILEGED_PORT_START)
+        && previous_ports
+            .iter()
+            .all(|port| *port >= UNPRIVILEGED_PORT_START)
+    {
+        UdpProfileChange::PortChurn
+    } else {
+        UdpProfileChange::IdentitySeen
+    }
+}
+
+fn identity_stable_dynamic_udp_candidate(record: &ServiceRecord, config: &SentinelConfig) -> bool {
+    config.service_profile.dynamic_udp_enabled
+        && record.public_exposure
+        && is_udp_protocol(&record.protocol)
+        && record.local_port >= UNPRIVILEGED_PORT_START
+        && stable_service_identity(record).is_some()
+}
+
+fn same_udp_identity_ports<'a>(
+    records: impl Iterator<Item = &'a ServiceRecord>,
+    target: &ServiceRecord,
+) -> BTreeSet<u16> {
+    let Some(target_identity) = stable_service_identity(target) else {
+        return BTreeSet::new();
+    };
+    records
+        .filter(|record| {
+            record.public_exposure
+                && is_udp_protocol(&record.protocol)
+                && record.protocol.eq_ignore_ascii_case(&target.protocol)
+                && record.local_addr == target.local_addr
+                && stable_service_identity(record).as_deref() == Some(target_identity.as_str())
+        })
+        .map(|record| record.local_port)
+        .collect()
+}
+
+fn stable_service_identity(record: &ServiceRecord) -> Option<String> {
+    let identity = normalized_identity(record);
+    (!identity.trim_matches('|').is_empty()).then_some(identity)
 }
 
 fn ignored_service_profile_record(record: &ServiceRecord, config: &SentinelConfig) -> bool {
@@ -352,6 +456,106 @@ mod tests {
 
         assert!(evaluate_service_profile(&first, &config, Some(&store))?.is_empty());
         assert!(evaluate_service_profile(&second, &config, Some(&store))?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn dynamic_public_udp_without_owner_is_grouped_as_low_signal(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let config = SentinelConfig::default();
+        let first = vec![udp_socket("0.0.0.0", 42549, "", "")];
+        let second = vec![udp_socket("0.0.0.0", 59737, "", "")];
+
+        assert!(evaluate_service_profile(&first, &config, Some(&store))?.is_empty());
+        let findings = evaluate_service_profile(&second, &config, Some(&store))?;
+
+        assert!(findings.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn new_dynamic_public_udp_identity_is_low_severity() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let config = SentinelConfig::default();
+        let first = vec![socket("0.0.0.0", 22, "sshd", "/usr/sbin/sshd")];
+        let second = vec![
+            socket("0.0.0.0", 22, "sshd", "/usr/sbin/sshd"),
+            udp_socket("0.0.0.0", 59737, "relay", "/usr/bin/relay"),
+        ];
+
+        assert!(evaluate_service_profile(&first, &config, Some(&store))?.is_empty());
+        let findings = evaluate_service_profile(&second, &config, Some(&store))?;
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, sentinel_core::Severity::Low);
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|item| item.key == "dynamic_udp_listener" && item.value == "true"));
+        Ok(())
+    }
+
+    #[test]
+    fn unprivileged_udp_port_churn_for_same_identity_is_suppressed(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let config = SentinelConfig::default();
+        let first = vec![udp_socket("0.0.0.0", 24409, "relay", "/usr/bin/relay")];
+        let second = vec![udp_socket("0.0.0.0", 24410, "relay", "/usr/bin/relay")];
+
+        assert!(evaluate_service_profile(&first, &config, Some(&store))?.is_empty());
+        let findings = evaluate_service_profile(&second, &config, Some(&store))?;
+
+        assert!(findings.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn unprivileged_udp_extra_port_for_seen_identity_is_low_signal(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let config = SentinelConfig::default();
+        let first = vec![udp_socket("0.0.0.0", 24409, "relay", "/usr/bin/relay")];
+        let second = vec![
+            udp_socket("0.0.0.0", 24409, "relay", "/usr/bin/relay"),
+            udp_socket("0.0.0.0", 24410, "relay", "/usr/bin/relay"),
+        ];
+
+        assert!(evaluate_service_profile(&first, &config, Some(&store))?.is_empty());
+        let findings = evaluate_service_profile(&second, &config, Some(&store))?;
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, sentinel_core::Severity::Low);
+        assert!(findings[0].evidence.iter().any(|item| {
+            item.key == "dynamic_udp_reason"
+                && item.value == "same_service_identity_udp_port_change"
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn privileged_udp_port_change_still_requires_review() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let config = SentinelConfig::default();
+        let first = vec![udp_socket("0.0.0.0", 53, "dnsd", "/usr/bin/dnsd")];
+        let second = vec![udp_socket("0.0.0.0", 54, "dnsd", "/usr/bin/dnsd")];
+
+        assert!(evaluate_service_profile(&first, &config, Some(&store))?.is_empty());
+        let findings = evaluate_service_profile(&second, &config, Some(&store))?;
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, sentinel_core::Severity::Medium);
+        assert!(!findings[0]
+            .evidence
+            .iter()
+            .any(|item| item.key == "dynamic_udp_listener"));
         Ok(())
     }
 

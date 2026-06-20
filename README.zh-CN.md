@@ -809,7 +809,7 @@ scheduled_hour = 8
 scheduled_period = "today"
 ```
 
-`incidents` 控制本地攻击链聚合；`service_profile` 控制监听服务 owner 漂移检测。启用动态 UDP/UDP6 建模后，高于 `dynamic_udp_min_port` 的公网 UDP 监听会按进程身份建模，因此 VPN/转发类软件更换高位 UDP 端口不会每次都告警。`behavior_profile` 控制本地进程行为画像，用有界身份数、单身份样本上限和过期清理来提供新远端端口、公网出站 fanout 漂移等辅助证据。定时报表默认开启，会让 daemon 通过已启用通知渠道发送每日安全报告，并用 `min_interval_seconds` 避免重启后重复发送；如果没有配置任何通知渠道，daemon 会直接跳过定时报表，不构建也不发送。
+`incidents` 控制本地攻击链聚合；`service_profile` 控制监听服务 owner 漂移检测。启用动态 UDP/UDP6 建模后，高于 `dynamic_udp_min_port` 的公网 UDP 监听会按进程身份建模；同时，非特权 UDP 端口会结合上一轮服务身份画像判断是否只是同一服务的端口迁移。因此 VPN/转发类软件更换 UDP 端口不会每次都告警，但特权 UDP 端口变化、新服务身份和服务 owner 漂移仍会保留风险提示。`behavior_profile` 控制本地进程行为画像，用有界身份数、单身份样本上限和过期清理来提供新远端端口、公网出站 fanout 漂移等辅助证据。定时报表默认开启，会让 daemon 通过已启用通知渠道发送每日安全报告，并用 `min_interval_seconds` 避免重启后重复发送；如果没有配置任何通知渠道，daemon 会直接跳过定时报表，不构建也不发送。
 
 高级采集和外部规则：
 

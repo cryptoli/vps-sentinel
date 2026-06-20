@@ -305,6 +305,9 @@ fn finding_signals(finding: &Finding, assessment: &mut DriftBuilder) {
         if evidence_value(&finding.evidence, "public_exposure") == Some("false") {
             assessment.add_downgrade(18, "not publicly exposed");
         }
+        if dynamic_udp_finding(finding) {
+            assessment.add_downgrade(40, "dynamic UDP listener");
+        }
         if evidence_value(&finding.evidence, "firewall_status").is_some_and(|value| {
             value.contains("protected") || value.contains("active") || value.contains("observed")
         }) {
@@ -388,6 +391,14 @@ fn is_udp_protocol(protocol: &str) -> bool {
 fn public_listener_evidence(finding: &Finding) -> bool {
     evidence_value(&finding.evidence, "local_addr")
         .is_some_and(crate::utils::ip::is_public_listener_addr)
+}
+
+fn dynamic_udp_finding(finding: &Finding) -> bool {
+    evidence_value(&finding.evidence, "dynamic_udp_listener") == Some("true")
+        || (evidence_value(&finding.evidence, "protocol").is_some_and(is_udp_protocol)
+            && evidence_value(&finding.evidence, "local_port")
+                .and_then(|value| value.parse::<u16>().ok())
+                .is_some_and(|port| port >= DEFAULT_DYNAMIC_UDP_MIN_PORT))
 }
 
 fn large_file_size_change(event: &RawEvent) -> bool {
@@ -672,6 +683,34 @@ mod tests {
         assert!(!assessment
             .downgrades
             .contains(&"dynamic UDP listener".to_string()));
+    }
+
+    #[test]
+    fn dynamic_udp_service_profile_finding_stays_routine() {
+        let mut findings = vec![Finding::new(
+            "host",
+            "service",
+            "service",
+            Severity::Medium,
+            Category::Network,
+            "SERVICE-001",
+            "0.0.0.0:51659/udp",
+        )
+        .with_evidence(vec![
+            Evidence::new("protocol", "udp"),
+            Evidence::new("local_addr", "0.0.0.0"),
+            Evidence::new("local_port", "51659"),
+            Evidence::new("public_exposure", "true"),
+            Evidence::new("dynamic_udp_listener", "true"),
+        ])];
+
+        enrich_findings(&mut findings);
+
+        assert_eq!(findings[0].severity, Severity::Low);
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|item| item.key == "baseline_drift_tier" && item.value == "routine"));
     }
 
     #[test]

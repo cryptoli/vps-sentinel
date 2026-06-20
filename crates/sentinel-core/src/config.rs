@@ -4,8 +4,7 @@ mod sections;
 use crate::error::{SentinelError, SentinelResult};
 use crate::MinuteWindow;
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::Path;
+use std::{env, fs, path::Path, process::Command, sync::OnceLock};
 
 pub use notifications::{
     BarkConfig, EmailConfig, EmailTlsMode, GotifyConfig, NotificationLanguage,
@@ -313,7 +312,7 @@ impl SentinelConfig {
         if !self.agent.hostname.trim().is_empty() {
             return self.agent.hostname.trim().to_string();
         }
-        "local-host".to_string()
+        runtime_hostname().unwrap_or_else(|| "local-host".to_string())
     }
 
     /// Resolve the human-readable VPS name shown in alerts.
@@ -325,6 +324,48 @@ impl SentinelConfig {
             return self.agent.hostname.trim().to_string();
         }
         self.host_id()
+    }
+}
+
+fn runtime_hostname() -> Option<String> {
+    static HOSTNAME: OnceLock<Option<String>> = OnceLock::new();
+    HOSTNAME
+        .get_or_init(|| {
+            hostname_from_env()
+                .or_else(hostname_from_system_files)
+                .or_else(hostname_from_command)
+        })
+        .clone()
+}
+
+fn hostname_from_env() -> Option<String> {
+    env::var("HOSTNAME")
+        .ok()
+        .or_else(|| env::var("COMPUTERNAME").ok())
+        .and_then(sanitize_hostname)
+}
+
+fn hostname_from_system_files() -> Option<String> {
+    ["/proc/sys/kernel/hostname", "/etc/hostname"]
+        .into_iter()
+        .find_map(|path| fs::read_to_string(path).ok().and_then(sanitize_hostname))
+}
+
+fn hostname_from_command() -> Option<String> {
+    Command::new("hostname")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(sanitize_hostname)
+}
+
+fn sanitize_hostname(value: String) -> Option<String> {
+    let value = value.trim().trim_end_matches('.').to_string();
+    if value.is_empty() || value.eq_ignore_ascii_case("localhost") {
+        None
+    } else {
+        Some(value)
     }
 }
 
@@ -961,6 +1002,15 @@ mod tests {
         config.agent.display_name = "prod-web-1".to_string();
         assert_eq!(config.host_id(), "host-001");
         assert_eq!(config.display_name(), "prod-web-1");
+    }
+
+    #[test]
+    fn host_id_prefers_configured_hostname_before_runtime_fallback() {
+        let mut config = SentinelConfig::default();
+        config.agent.hostname = "configured-host".to_string();
+
+        assert_eq!(config.host_id(), "configured-host");
+        assert_eq!(config.display_name(), "configured-host");
     }
 
     #[test]
