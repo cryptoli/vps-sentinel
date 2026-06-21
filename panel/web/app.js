@@ -12,7 +12,7 @@ import { createTranslator, selectedLanguage } from "./i18n.js";
 const API_BASE = "/api/v1";
 const DEFAULT_LIMIT = 25;
 const OVERVIEW_LIMIT = 12;
-const OVERVIEW_NODE_LIMIT = 100;
+const OVERVIEW_NODE_PAGE_LIMIT = 200;
 const TOKEN_STORAGE_KEY = "vps-sentinel-panel-token";
 const TIME_PRESETS = ["1h", "6h", "24h", "today", "7d"];
 const BUILTIN_PAGES = [
@@ -228,10 +228,26 @@ async function loadOverviewDatasets() {
   const entries = await Promise.all(
     Object.entries(DATASETS).map(async ([key, meta]) => [
       key,
-      await loadDataset(meta, { limit: key === "nodes" ? OVERVIEW_NODE_LIMIT : OVERVIEW_LIMIT, offset: 0 }),
+      key === "nodes"
+        ? await loadAllDatasetPages(meta, OVERVIEW_NODE_PAGE_LIMIT)
+        : await loadDataset(meta, { limit: OVERVIEW_LIMIT, offset: 0 }),
     ]),
   );
   state.datasets = Object.fromEntries(entries);
+}
+
+async function loadAllDatasetPages(meta, pageLimit) {
+  const first = await loadDataset(meta, { limit: pageLimit, offset: 0 });
+  const items = [...(first.items || [])];
+  let offset = items.length;
+  while (offset < first.total) {
+    const page = await loadDataset(meta, { limit: pageLimit, offset });
+    const pageItems = page.items || [];
+    if (pageItems.length === 0) break;
+    items.push(...pageItems);
+    offset += pageItems.length;
+  }
+  return { ...first, items, limit: pageLimit, offset: 0 };
 }
 
 async function renderOverview(ctx) {
