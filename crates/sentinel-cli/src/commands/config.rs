@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use clap::Subcommand;
-use sentinel_core::SentinelConfig;
+use sentinel_core::{SentinelConfig, DEFAULT_DYNAMIC_UDP_MIN_PORT};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -14,9 +14,11 @@ const LEGACY_DEFAULT_LANGUAGE_KEY: &str = "notifications.language";
 const LEGACY_SSH_RESPONSE_POLICY_KEY: &str = "response_policy.policies.ssh_bruteforce.rule_ids";
 const LEGACY_EMPTY_EBPF_EVENT_PATHS_KEY: &str = "advanced_collectors.ebpf_event_paths";
 const LEGACY_SSH_FAILED_LOGIN_THRESHOLD: usize = 10;
+const LEGACY_DYNAMIC_UDP_MIN_PORT: usize = 32768;
 const SSH_FAILED_LOGIN_THRESHOLD_KEY: &str = "ssh.failed_login_threshold";
 const ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD_KEY: &str =
     "active_response.ssh_failed_login_block_threshold";
+const SERVICE_PROFILE_DYNAMIC_UDP_MIN_PORT_KEY: &str = "service_profile.dynamic_udp_min_port";
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
@@ -135,11 +137,13 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
     let legacy_default_language = contains_legacy_default_language(&text);
     let legacy_ssh_response_policy = contains_legacy_ssh_response_policy(&text);
     let legacy_empty_ebpf_event_paths = contains_legacy_empty_ebpf_event_paths(&text);
+    let legacy_dynamic_udp_min_port = contains_legacy_dynamic_udp_min_port(&text);
     let threshold_migration = legacy_ssh_threshold_migration(&text)?;
     if deprecated.is_empty()
         && !legacy_default_language
         && !legacy_ssh_response_policy
         && !legacy_empty_ebpf_event_paths
+        && !legacy_dynamic_udp_min_port
         && threshold_migration.changes.is_empty()
     {
         println!(
@@ -148,12 +152,11 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
         );
         return Ok(());
     }
-    let migrated = migrate_legacy_ssh_response_policy(&migrate_legacy_default_language(
-        &migrate_legacy_empty_ebpf_event_paths(&migrate_legacy_ssh_thresholds(
-            &remove_deprecated_keys(&text),
-            &threshold_migration,
-        )?)?,
-    ));
+    let migrated = migrate_legacy_dynamic_udp_min_port(&migrate_legacy_ssh_response_policy(
+        &migrate_legacy_default_language(&migrate_legacy_empty_ebpf_event_paths(
+            &migrate_legacy_ssh_thresholds(&remove_deprecated_keys(&text), &threshold_migration)?,
+        )?),
+    ))?;
     let _: SentinelConfig = toml::from_str(&migrated)?;
     if dry_run {
         if !deprecated.is_empty() {
@@ -175,6 +178,12 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
             println!(
                 "- {LEGACY_EMPTY_EBPF_EVENT_PATHS_KEY}: [] -> {}",
                 default_ebpf_event_paths_text()?
+            );
+        }
+        if legacy_dynamic_udp_min_port {
+            println!("legacy defaults that would be updated:");
+            println!(
+                "- {SERVICE_PROFILE_DYNAMIC_UDP_MIN_PORT_KEY}: {LEGACY_DYNAMIC_UDP_MIN_PORT} -> {DEFAULT_DYNAMIC_UDP_MIN_PORT}"
             );
         }
         if !threshold_migration.changes.is_empty() {
@@ -199,11 +208,14 @@ fn sync_config_defaults(path: &Path, dry_run: bool) -> Result<()> {
     let normalized_thresholds = migrate_legacy_ssh_thresholds(&text, &threshold_migration)?;
     let legacy_empty_ebpf_event_paths =
         contains_legacy_empty_ebpf_event_paths(&normalized_thresholds);
-    let normalized = migrate_legacy_empty_ebpf_event_paths(&normalized_thresholds)?;
+    let normalized_paths = migrate_legacy_empty_ebpf_event_paths(&normalized_thresholds)?;
+    let legacy_dynamic_udp_min_port = contains_legacy_dynamic_udp_min_port(&normalized_paths);
+    let normalized = migrate_legacy_dynamic_udp_min_port(&normalized_paths)?;
     let missing = missing_default_entries(&normalized)?;
     if missing.is_empty()
         && threshold_migration.changes.is_empty()
         && !legacy_empty_ebpf_event_paths
+        && !legacy_dynamic_udp_min_port
     {
         println!(
             "configuration already contains all default keys: {}",
@@ -228,6 +240,12 @@ fn sync_config_defaults(path: &Path, dry_run: bool) -> Result<()> {
             println!(
                 "- {LEGACY_EMPTY_EBPF_EVENT_PATHS_KEY}: [] -> {}",
                 default_ebpf_event_paths_text()?
+            );
+        }
+        if legacy_dynamic_udp_min_port {
+            println!("legacy defaults that would be updated:");
+            println!(
+                "- {SERVICE_PROFILE_DYNAMIC_UDP_MIN_PORT_KEY}: {LEGACY_DYNAMIC_UDP_MIN_PORT} -> {DEFAULT_DYNAMIC_UDP_MIN_PORT}"
             );
         }
         if !missing.is_empty() {
@@ -459,6 +477,26 @@ fn default_ebpf_event_paths_value() -> toml::Value {
             .iter()
             .map(|path| toml::Value::String(path.to_string_lossy().into_owned()))
             .collect(),
+    )
+}
+
+fn contains_legacy_dynamic_udp_min_port(text: &str) -> bool {
+    let Ok(value) = toml::from_str::<toml::Value>(text) else {
+        return false;
+    };
+    toml_usize_at_path(&value, SERVICE_PROFILE_DYNAMIC_UDP_MIN_PORT_KEY)
+        == Some(LEGACY_DYNAMIC_UDP_MIN_PORT)
+}
+
+fn migrate_legacy_dynamic_udp_min_port(text: &str) -> Result<String> {
+    if !contains_legacy_dynamic_udp_min_port(text) {
+        return Ok(text.to_string());
+    }
+    replace_toml_usize_value(
+        text,
+        SERVICE_PROFILE_DYNAMIC_UDP_MIN_PORT_KEY,
+        LEGACY_DYNAMIC_UDP_MIN_PORT,
+        DEFAULT_DYNAMIC_UDP_MIN_PORT as usize,
     )
 }
 
@@ -835,10 +873,11 @@ fn flatten_value(prefix: &str, value: &toml::Value, keys: &mut BTreeSet<String>)
 #[cfg(test)]
 mod tests {
     use super::{
-        contains_legacy_default_language, contains_legacy_empty_ebpf_event_paths,
-        contains_legacy_ssh_response_policy, deprecated_keys_in_text, flatten_toml_keys,
-        insert_missing_default_keys, legacy_ssh_threshold_migration,
-        migrate_legacy_default_language, migrate_legacy_empty_ebpf_event_paths,
+        contains_legacy_default_language, contains_legacy_dynamic_udp_min_port,
+        contains_legacy_empty_ebpf_event_paths, contains_legacy_ssh_response_policy,
+        deprecated_keys_in_text, flatten_toml_keys, insert_missing_default_keys,
+        legacy_ssh_threshold_migration, migrate_legacy_default_language,
+        migrate_legacy_dynamic_udp_min_port, migrate_legacy_empty_ebpf_event_paths,
         migrate_legacy_ssh_response_policy, migrate_legacy_ssh_thresholds, missing_default_entries,
         next_backup_path, remove_deprecated_keys,
     };
@@ -957,6 +996,26 @@ mod tests {
             migrate_legacy_ssh_thresholds(text, &migration).unwrap(),
             text
         );
+    }
+
+    #[test]
+    fn migrates_legacy_dynamic_udp_min_port_default() {
+        let text = "[service_profile]\ndynamic_udp_min_port = 32768 # old default\n";
+
+        assert!(contains_legacy_dynamic_udp_min_port(text));
+        let migrated = migrate_legacy_dynamic_udp_min_port(text).unwrap();
+
+        assert!(migrated.contains("dynamic_udp_min_port = 1024 # old default"));
+        let config: SentinelConfig = toml::from_str(&migrated).unwrap();
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn preserves_custom_dynamic_udp_min_port() {
+        let text = "[service_profile]\ndynamic_udp_min_port = 2048\n";
+
+        assert!(!contains_legacy_dynamic_udp_min_port(text));
+        assert_eq!(migrate_legacy_dynamic_udp_min_port(text).unwrap(), text);
     }
 
     #[test]
