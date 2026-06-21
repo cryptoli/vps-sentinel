@@ -371,6 +371,9 @@ export function createView({ t, language, freshness = {} }) {
     if (column === "score" && value !== null && value !== undefined && value !== "") {
       return span("score-pill", number(value));
     }
+    if (column === "reason") {
+      return document.createTextNode(reasonText(value));
+    }
     if (column === "privacy_mode") {
       return document.createTextNode(translateValue("privacy_mode", value));
     }
@@ -397,6 +400,15 @@ export function createView({ t, language, freshness = {} }) {
     const normalized = String(value || "unknown").toLowerCase();
     if (column === "severity" || column === "privacy_mode") return t(normalized) || value || t("unknown");
     return value || t("unknown");
+  }
+
+  function reasonText(value) {
+    const reason = String(value || "").toLowerCase();
+    if (!reason) return t("noReason");
+    if (reason.includes("web") || reason.includes("http")) return t("webBlockReason");
+    if (reason.includes("ssh")) return t("sshBlockReason");
+    if (reason.includes("repeated") || reason.includes("permanent")) return t("repeatedBlockReason");
+    return t("activeBlockReason");
   }
 
   function isTimeColumn(column) {
@@ -543,6 +555,7 @@ export function createView({ t, language, freshness = {} }) {
     nodeFreshness,
     option,
     panel,
+    reasonText,
     renderTable,
     jsonBlock,
     sectionHeader,

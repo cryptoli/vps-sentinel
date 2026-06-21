@@ -64,7 +64,7 @@ export function renderOverviewDashboard(ctx) {
           meta: t("fleetFreshnessMeta"),
           tone: "fleet",
         }),
-        ui.panel(t("activeBlocksSnapshot"), ui.compactRecords(blocks, blockRecord(t)), {
+        ui.panel(t("activeBlocksSnapshot"), ui.compactRecords(blocks, blockRecord(t, ui)), {
           meta: t("activeBlocksSnapshotMeta"),
           tone: "response",
         }),
@@ -154,11 +154,11 @@ function highRiskCount(rows) {
     .reduce((sum, row) => sum + Number(row.count || 0), 0);
 }
 
-function blockRecord(t) {
+function blockRecord(t, ui) {
   return (block) => ({
     title: block.rule_id || t("activeResponse"),
     meta: [block.node_name, block.rule_id].filter(Boolean).join(" / "),
-    detail: block.reason || t("noReason"),
+    detail: ui.reasonText(block.reason),
     tone: "blocked",
   });
 }
