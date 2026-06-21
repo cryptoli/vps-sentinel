@@ -1810,6 +1810,12 @@ fn redact_panel_value(value: &mut Value) {
                     || normalized_key.contains("addr")
                 {
                     *value = Value::String(panel_redacted_ip_value());
+                } else if normalized_key == "node_name" {
+                    if let Some(text) = value.as_str() {
+                        *value = Value::String(public_node_name(text));
+                    } else {
+                        redact_panel_value(value);
+                    }
                 } else {
                     redact_panel_value(value);
                 }
@@ -1817,6 +1823,26 @@ fn redact_panel_value(value: &mut Value) {
         }
         _ => {}
     }
+}
+
+fn public_node_name(value: &str) -> String {
+    let redacted = redact_ip_text(value).trim().to_string();
+    if redacted.is_empty() || redacted == "redacted" {
+        return "unnamed-node".to_string();
+    }
+    if generated_panel_identity(&redacted) {
+        return "legacy-node".to_string();
+    }
+    redacted
+}
+
+fn generated_panel_identity(value: &str) -> bool {
+    let Some((prefix, suffix)) = value.split_once('-') else {
+        return false;
+    };
+    matches!(prefix, "node" | "host")
+        && suffix.len() == 16
+        && suffix.chars().all(|ch| ch.is_ascii_hexdigit())
 }
 
 fn redact_ip_text(value: &str) -> String {
@@ -2164,6 +2190,7 @@ mod tests {
     fn redacts_ipv4_and_ipv6_from_panel_values() {
         let mut value = serde_json::json!({
             "source_ip": "203.0.113.44",
+            "node_name": "node-0123456789abcdef",
             "subject": "root@198.51.100.8 and [2001:db8::1]:443",
             "items": ["fe80::1%eth0", "no network identity"]
         });
@@ -2175,6 +2202,8 @@ mod tests {
         assert!(!text.contains("198.51.100"));
         assert!(!text.contains("2001:db8"));
         assert!(!text.contains("fe80::1"));
+        assert!(!text.contains("0123456789abcdef"));
+        assert_eq!(value["node_name"], "legacy-node");
         assert!(text.contains("redacted"));
     }
 

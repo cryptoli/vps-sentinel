@@ -424,7 +424,9 @@ function redactPanelValue(value) {
   if (Array.isArray(value)) return value.map((item) => redactPanelValue(item));
   if (typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => {
-      return [key, sensitiveNetworkKey(key) ? redactedIp() : redactPanelValue(item)];
+      if (sensitiveNetworkKey(key)) return [key, redactedIp()];
+      if (String(key || "").toLowerCase() === "node_name") return [key, publicNodeName(item)];
+      return [key, redactPanelValue(item)];
     }));
   }
   return value;
@@ -448,6 +450,17 @@ function redactIpText(value) {
     .split(/(\s+)/)
     .map((token) => redactIpToken(token))
     .join("");
+}
+
+function publicNodeName(value) {
+  const text = redactIpText(value).trim();
+  if (!text || text === redactedIp()) return "unnamed-node";
+  return generatedPanelIdentity(text) ? "legacy-node" : text;
+}
+
+function generatedPanelIdentity(value) {
+  const match = String(value || "").match(/^(node|host)-([0-9a-fA-F]{16})$/);
+  return Boolean(match);
 }
 
 function redactIpToken(token) {
