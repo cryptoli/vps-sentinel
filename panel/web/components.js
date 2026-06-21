@@ -365,7 +365,7 @@ export function createView({ t, language, freshness = {} }) {
     if (column === "severity") {
       return span(`badge severity-${String(value || "").toLowerCase()}`, translateValue("severity", value));
     }
-    if (["rule_id", "backend", "tier"].includes(column) && value) {
+    if (["rule_id", "tier"].includes(column) && value) {
       return span(`code-pill code-pill-${column}`, String(value));
     }
     if (column === "score" && value !== null && value !== undefined && value !== "") {

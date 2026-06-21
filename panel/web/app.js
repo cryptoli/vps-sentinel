@@ -15,6 +15,24 @@ const OVERVIEW_LIMIT = 12;
 const OVERVIEW_NODE_PAGE_LIMIT = 200;
 const TOKEN_STORAGE_KEY = "vps-sentinel-panel-token";
 const TIME_PRESETS = ["1h", "6h", "24h", "today", "7d"];
+const PANEL_HIDDEN_KEYS = new Set([
+  "active_response_backend",
+  "backend",
+  "dedup_id",
+  "event_id",
+  "firewall_backend",
+  "host_id",
+  "idempotency_key",
+  "local_addr",
+  "local_ip",
+  "node_id",
+  "raw_ip",
+  "remote_addr",
+  "remote_ip",
+  "response_backend",
+  "source_ip",
+  "target_ip",
+]);
 const BUILTIN_PAGES = [
   { id: "overview", labelKey: "overview", render: renderOverview },
   { id: "findings", labelKey: "findings", render: (ctx) => renderDatasetPage(ctx, "findings") },
@@ -641,12 +659,21 @@ function sanitizePanelValue(value) {
   if (typeof value === "string") return redactIpText(value);
   if (Array.isArray(value)) return value.map((item) => sanitizePanelValue(item));
   if (typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => {
-      const lower = key.toLowerCase();
-      return [key, lower === "ip" || lower.includes("_ip") || lower.includes("addr") ? "redacted" : sanitizePanelValue(item)];
-    }));
+    return Object.fromEntries(
+      Object.entries(value).flatMap(([key, item]) => {
+        const lower = key.toLowerCase();
+        if (shouldHidePanelField(lower)) return [];
+        return [lower === "ip" || lower.includes("_ip") || lower.includes("addr")
+          ? [key, "redacted"]
+          : [key, sanitizePanelValue(item)]];
+      }),
+    );
   }
   return value;
+}
+
+function shouldHidePanelField(key) {
+  return PANEL_HIDDEN_KEYS.has(key) || key.endsWith("_backend");
 }
 
 function redactIpText(value) {
