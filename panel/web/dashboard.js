@@ -84,7 +84,11 @@ export function renderOverviewDashboard(ctx) {
 }
 
 function canonicalNodes(nodes, settings) {
-  const retiredThresholdMinutes = Number(settings.node_retired_threshold_minutes || 720);
+  const freshnessThresholdMinutes = positiveNumber(settings.freshness_threshold_minutes, 30);
+  const retiredThresholdMinutes = Math.max(
+    freshnessThresholdMinutes + 1,
+    positiveNumber(settings.node_retired_threshold_minutes, 720),
+  );
   const groups = new Map();
   for (const node of nodes) {
     const key = String(node.node_name || node.node_id || "").trim() || String(node.node_id || "");
@@ -97,11 +101,21 @@ function canonicalNodes(nodes, settings) {
   const merged = [];
   for (const group of groups.values()) {
     const ordered = group.sort((left, right) => lastSeenMs(right) - lastSeenMs(left));
-    const liveNodes = ordered.filter((node) => ageMinutes(node.last_seen_at) <= retiredThresholdMinutes);
-    merged.push(...(liveNodes.length ? liveNodes : ordered.slice(0, 1)));
+    const freshNodes = ordered.filter((node) => ageMinutes(node.last_seen_at) <= freshnessThresholdMinutes);
+    if (freshNodes.length) {
+      merged.push(...freshNodes);
+      continue;
+    }
+    const retainedNodes = ordered.filter((node) => ageMinutes(node.last_seen_at) <= retiredThresholdMinutes);
+    merged.push(...(retainedNodes.length ? retainedNodes : ordered.slice(0, 1)));
   }
 
   return merged.sort((left, right) => lastSeenMs(right) - lastSeenMs(left));
+}
+
+function positiveNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
 }
 
 function ageMinutes(value) {
