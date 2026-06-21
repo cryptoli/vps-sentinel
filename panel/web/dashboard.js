@@ -8,7 +8,7 @@ export function renderOverviewDashboard(ctx) {
   const { app, state, t, ui } = ctx;
   const summary = state.summary || {};
   const datasets = state.datasets || {};
-  const nodes = datasets.nodes?.items || [];
+  const nodes = canonicalNodes(datasets.nodes?.items || [], state.settings || {});
   const findings = datasets.findings?.items || [];
   const incidents = datasets.incidents?.items || [];
   const drifts = datasets.baseline_drifts?.items || [];
@@ -46,7 +46,7 @@ export function renderOverviewDashboard(ctx) {
         },
       ]),
       ui.metrics([
-        metric(t("nodesMetric"), summary.nodes, "nodes", t("nodesMetricHint")),
+        metric(t("nodesMetric"), nodes.length || summary.nodes, "nodes", t("nodesMetricHint")),
         metric(t("findingsMetric"), summary.findings, "findings", t("findingsMetricHint")),
         metric(t("incidentsMetric"), summary.incidents, "incidents", t("incidentsMetricHint")),
         metric(t("driftsMetric"), summary.baseline_drifts, "drifts", t("driftsMetricHint")),
@@ -81,6 +81,38 @@ export function renderOverviewDashboard(ctx) {
       }),
     ),
   );
+}
+
+function canonicalNodes(nodes, settings) {
+  const retiredThresholdMinutes = Number(settings.node_retired_threshold_minutes || 720);
+  const groups = new Map();
+  for (const node of nodes) {
+    const key = String(node.node_name || node.node_id || "").trim() || String(node.node_id || "");
+    if (!groups.has(key)) {
+      groups.set(key, []);
+    }
+    groups.get(key).push(node);
+  }
+
+  const merged = [];
+  for (const group of groups.values()) {
+    const ordered = group.sort((left, right) => lastSeenMs(right) - lastSeenMs(left));
+    const liveNodes = ordered.filter((node) => ageMinutes(node.last_seen_at) <= retiredThresholdMinutes);
+    merged.push(...(liveNodes.length ? liveNodes : ordered.slice(0, 1)));
+  }
+
+  return merged.sort((left, right) => lastSeenMs(right) - lastSeenMs(left));
+}
+
+function ageMinutes(value) {
+  const timestamp = lastSeenMs(value);
+  if (!Number.isFinite(timestamp)) return Number.POSITIVE_INFINITY;
+  return Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
+}
+
+function lastSeenMs(value) {
+  const timestamp = new Date(value).getTime();
+  return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
 function metric(label, value, tone, caption) {
