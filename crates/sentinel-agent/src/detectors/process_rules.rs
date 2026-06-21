@@ -893,9 +893,13 @@ fn behavior_cluster_assessment(
             "systemd ExecStart does not appear to match the running process identity",
         );
     }
+    let shell_or_scheduler_parent =
+        behavior_profile::is_shell_or_scheduler_parent(&string_field(event, "parent_name"));
+    let low_risk_interactive_network_operation =
+        low_risk_interactive_network_operation(event, ctx);
     if string_field(event, "package_owner_state") == "unowned"
         && public_outbound_count > 0
-        && (behavior_profile::is_shell_or_scheduler_parent(&string_field(event, "parent_name"))
+        && ((shell_or_scheduler_parent && !low_risk_interactive_network_operation)
             || high_cpu_signal(event, ctx).is_some()
             || behavior_profile::hidden_basename(&exe_path)
             || behavior_profile::execstart_mismatch(event)
@@ -907,7 +911,8 @@ fn behavior_cluster_assessment(
             "network-active process executable has no package owner and additional suspicious context",
         );
     }
-    if behavior_profile::is_shell_or_scheduler_parent(&string_field(event, "parent_name"))
+    if shell_or_scheduler_parent
+        && !low_risk_interactive_network_operation
         && (public_outbound_count > 0 || behavior_profile::hidden_basename(&exe_path))
     {
         assessment.add_signal(
@@ -964,6 +969,53 @@ fn behavior_cluster_assessment(
     } else {
         Some(assessment)
     }
+}
+
+fn low_risk_interactive_network_operation(event: &RawEvent, ctx: &DetectContext) -> bool {
+    if !behavior_profile::is_shell_or_scheduler_parent(&string_field(event, "parent_name")) {
+        return false;
+    }
+
+    let public_outbound_count = string_field(event, "public_outbound_count")
+        .parse::<usize>()
+        .unwrap_or(0);
+    if public_outbound_count == 0 || public_outbound_count > 2 {
+        return false;
+    }
+
+    let socket_fd_count = string_field(event, "socket_fd_count")
+        .parse::<usize>()
+        .unwrap_or(0);
+    if socket_fd_count >= ctx.config.process.suspicious_socket_fd_threshold {
+        return false;
+    }
+
+    let Some(age_seconds) = string_field(event, "process_age_seconds")
+        .parse::<f64>()
+        .ok()
+    else {
+        return false;
+    };
+    let operation_window_seconds = ctx.config.agent.scan_interval_seconds.max(60) as f64 * 2.0;
+    if age_seconds > operation_window_seconds {
+        return false;
+    }
+
+    let exe_path = string_field(event, "exe_path");
+    if exe_path.trim().is_empty()
+        || behavior_profile::hidden_basename(&exe_path)
+        || behavior_profile::execstart_mismatch(event)
+        || looks_like_kernel_thread_name(&string_field(event, "name"))
+        || is_deleted_executable_path(&exe_path)
+        || is_memfd_or_anonymous_path(&normalize_deleted_executable_path(&exe_path))
+        || path_in_suspicious_dirs(&exe_path, &ctx.config.process.suspicious_dirs)
+        || path_in_web_roots(&exe_path, ctx)
+        || high_cpu_signal(event, ctx).is_some()
+    {
+        return false;
+    }
+
+    true
 }
 
 fn gpu_mining_assessment(event: &RawEvent, ctx: &DetectContext) -> Option<RiskAssessment> {
@@ -2188,6 +2240,77 @@ mod tests {
         let findings = ProcessDetector.detect(&[event], &ctx);
 
         assert!(findings.iter().all(|finding| finding.rule_id != "PROC-005"));
+    }
+
+    #[test]
+    fn behavior_cluster_ignores_short_lived_operator_network_push() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event(
+            "/usr/local/bin/vps-sentinel",
+            "vps-sentinel",
+            "vps-sentinel --config /etc/vps-sentinel/config.toml panel push",
+        )
+        .with_field("cwd", "/root")
+        .with_field("euid", "0")
+        .with_field("parent_name", "bash")
+        .with_field("socket_fd_count", "4")
+        .with_field("public_outbound_count", "1")
+        .with_field("process_age_seconds", "0.4")
+        .with_field("package_owner_state", "unowned");
+
+        let assessment = behavior_cluster_assessment(&event, &ctx);
+
+        assert!(assessment.is_none());
+    }
+
+    #[test]
+    fn behavior_cluster_detects_long_lived_unowned_shell_network_process() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event(
+            "/usr/local/bin/sync-agent",
+            "sync-agent",
+            "/usr/local/bin/sync-agent --worker",
+        )
+        .with_field("cwd", "/root")
+        .with_field("euid", "0")
+        .with_field("parent_name", "bash")
+        .with_field("socket_fd_count", "4")
+        .with_field("public_outbound_count", "1")
+        .with_field("process_age_seconds", "180.0")
+        .with_field("package_owner_state", "unowned");
+
+        let assessment = behavior_cluster_assessment(&event, &ctx);
+
+        assert!(assessment.is_some_and(|assessment| {
+            assessment.is_suspicious(70)
+                && assessment.has_feature("unpackaged_network_process")
+                && assessment.has_feature("shell_or_scheduler_parent")
+        }));
+    }
+
+    #[test]
+    fn behavior_cluster_detects_short_lived_hidden_network_process() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event(
+            "/usr/local/bin/.sync-agent",
+            ".sync-agent",
+            "/usr/local/bin/.sync-agent --worker",
+        )
+        .with_field("cwd", "/root")
+        .with_field("euid", "0")
+        .with_field("parent_name", "bash")
+        .with_field("socket_fd_count", "4")
+        .with_field("public_outbound_count", "1")
+        .with_field("process_age_seconds", "0.4")
+        .with_field("package_owner_state", "unowned");
+
+        let assessment = behavior_cluster_assessment(&event, &ctx);
+
+        assert!(assessment.is_some_and(|assessment| {
+            assessment.is_suspicious(70)
+                && assessment.has_feature("hidden_executable_name")
+                && assessment.has_feature("unpackaged_network_process")
+        }));
     }
 
     #[test]
