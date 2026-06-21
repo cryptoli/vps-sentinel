@@ -49,6 +49,7 @@ async function init() {
   state.settings = await fetchJson(`${API_BASE}/settings`).catch(() => ({ theme: "default" }));
   state.panelClockOffsetMs = panelClockOffsetMs(state.settings.server_time);
   state.theme = selectedTheme(state.settings.theme || "default");
+  applyThemeScope(state.theme);
   state.manifest = await loadTheme(state.theme);
   state.pages = await buildPages(state.manifest);
   bindToolbar();
@@ -96,31 +97,55 @@ function selectedTheme(defaultTheme) {
 }
 
 async function loadTheme(theme) {
-  const manifest = await fetchJson(`/themes/${encodeURIComponent(theme)}/theme.json`).catch(() => ({
-    name: "default",
-    styles: ["theme.css"],
-    pages: [],
-    available_themes: ["default"],
-  }));
-  for (const style of manifest.styles || []) {
+  const loaded = await fetchJson(`/themes/${encodeURIComponent(theme)}/theme.json`).catch(() => fallbackThemeManifest());
+  const manifest = loaded && typeof loaded === "object" && !Array.isArray(loaded) ? loaded : fallbackThemeManifest();
+  if (!Array.isArray(manifest.styles)) manifest.styles = [];
+  if (!Array.isArray(manifest.pages)) manifest.pages = [];
+  if (!Array.isArray(manifest.available_themes)) manifest.available_themes = ["default"];
+  for (const style of manifest.styles) {
+    const href = themeAsset(theme, style);
+    if (!href) continue;
     const link = document.createElement("link");
     link.rel = "stylesheet";
-    link.href = themeAsset(theme, style);
+    link.dataset.panelTheme = theme;
+    link.href = href;
     document.head.appendChild(link);
   }
   return manifest;
 }
 
+function fallbackThemeManifest() {
+  return {
+    name: "default",
+    styles: ["theme.css"],
+    pages: [],
+    available_themes: ["default"],
+  };
+}
+
 function themeAsset(theme, assetPath) {
-  if (/^https?:\/\//i.test(assetPath) || assetPath.startsWith("/")) return assetPath;
-  return `/themes/${encodeURIComponent(theme)}/${assetPath}`;
+  const asset = String(assetPath || "").trim();
+  if (!asset || asset.includes("..") || asset.startsWith("//") || /^[a-z][a-z0-9+.-]*:/i.test(asset)) {
+    return "";
+  }
+  if (asset.startsWith("/")) return asset;
+  const encoded = asset.split("/").map(encodeURIComponent).join("/");
+  return `/themes/${encodeURIComponent(theme)}/${encoded}`;
 }
 
 async function buildPages(manifest) {
   const pages = [...BUILTIN_PAGES];
   for (const page of manifest.pages || []) {
     if (!page.id || !page.label || !page.module) continue;
-    const mod = await import(themeAsset(state.theme, page.module));
+    const moduleUrl = themeAsset(state.theme, page.module);
+    if (!moduleUrl) continue;
+    let mod;
+    try {
+      mod = await import(moduleUrl);
+    } catch (error) {
+      console.warn(`failed to load panel theme page '${page.id}'`, error);
+      continue;
+    }
     if (typeof mod.render !== "function") continue;
     pages.push({
       id: page.id,
@@ -158,6 +183,7 @@ function renderNav() {
 
 async function renderCurrentPage() {
   const page = state.pages.find((item) => item.id === state.currentPage) || state.pages[0];
+  document.body.dataset.page = page?.id || "overview";
   app.replaceChildren(view().loading());
   try {
     app.replaceChildren();
@@ -169,6 +195,11 @@ async function renderCurrentPage() {
     }
     renderError(error);
   }
+}
+
+function applyThemeScope(theme) {
+  document.documentElement.dataset.theme = theme;
+  document.body.dataset.theme = theme;
 }
 
 function context() {

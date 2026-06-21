@@ -567,8 +567,7 @@ async fn finding_detail(
     Query(query): Query<DetailQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
     verify_view_auth(&state, &headers)?;
-    let mut detail = state.repo.finding_detail(&query.id).await?;
-    redact_panel_value(&mut detail);
+    let detail = state.repo.finding_detail(&query.id).await?;
     Ok(Json(detail))
 }
 
@@ -616,8 +615,7 @@ async fn incident_detail(
     Query(query): Query<DetailQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
     verify_view_auth(&state, &headers)?;
-    let mut detail = state.repo.incident_detail(&query.id).await?;
-    redact_panel_value(&mut detail);
+    let detail = state.repo.incident_detail(&query.id).await?;
     Ok(Json(detail))
 }
 
@@ -699,8 +697,7 @@ async fn paginated_dataset(
     dataset: PanelDataset,
 ) -> Result<Json<Value>, PanelApiError> {
     let request = PageRequest::try_from(query)?;
-    let (mut items, total) = state.repo.query_page(dataset, &request).await?;
-    redact_panel_value(&mut items);
+    let (items, total) = state.repo.query_page(dataset, &request).await?;
     Ok(Json(json!({
         "items": items,
         "total": total,
@@ -1015,7 +1012,8 @@ impl Repository {
             "SELECT {columns} FROM {}{where_sql} ORDER BY {} DESC LIMIT {limit_placeholder} OFFSET {offset_placeholder}",
             dataset.table, dataset.order_column
         );
-        let items = self.query_all_with_values(&sql, &values).await?;
+        let mut items = self.query_all_with_values(&sql, &values).await?;
+        redact_panel_value(&mut items);
         Ok((items, total))
     }
 
@@ -1054,6 +1052,7 @@ impl Repository {
         expand_json_column(&mut detail, "impact_json", "impact");
         expand_json_column(&mut detail, "recommendations_json", "recommendations");
         detail["review"] = self.finding_review_value(id).await?.unwrap_or(Value::Null);
+        redact_panel_value(&mut detail);
         Ok(detail)
     }
 
@@ -1085,6 +1084,7 @@ impl Repository {
             ));
         };
         expand_json_column(&mut detail, "payload_json", "payload");
+        redact_panel_value(&mut detail);
         Ok(detail)
     }
 
@@ -2096,10 +2096,11 @@ impl From<rusqlite::Error> for PanelApiError {
 mod tests {
     use super::{
         redact_ip_text, redact_panel_value, verify_admin_auth, verify_view_auth,
-        view_token_from_headers, AppState, FindingReview, FindingReviewRequest, PageQuery,
-        PageRequest, Repository, RepositoryDriver, SecretResolver, MAX_PAGE_LIMIT,
+        view_token_from_headers, AppState, DbValue, FindingReview, FindingReviewRequest, PageQuery,
+        PageRequest, PanelDataset, Repository, RepositoryDriver, SecretResolver, MAX_PAGE_LIMIT,
     };
     use axum::http::{header, HeaderMap, HeaderValue};
+    use chrono::Utc;
     use rusqlite::Connection;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
@@ -2161,6 +2162,110 @@ mod tests {
             redact_ip_text("normal service event"),
             "normal service event"
         );
+    }
+
+    #[tokio::test]
+    async fn repository_read_paths_redact_legacy_raw_ip_rows() {
+        let repo = test_repo();
+        repo.init_schema().await.expect("schema");
+        let now = Utc::now().to_rfc3339();
+        repo.execute_write(
+            "INSERT INTO findings
+             (id, node_id, rule_id, title, severity, confidence, category, subject, timestamp,
+              dedup_key, evidence_json, impact_json, recommendations_json, received_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            &[
+                DbValue::Text("finding-raw".to_string()),
+                DbValue::Text("node-a".to_string()),
+                DbValue::Text("SSH-001".to_string()),
+                DbValue::Text("source 203.0.113.44".to_string()),
+                DbValue::Text("High".to_string()),
+                DbValue::Text("high".to_string()),
+                DbValue::Text("ssh".to_string()),
+                DbValue::Text("root@203.0.113.44".to_string()),
+                DbValue::Text(now.clone()),
+                DbValue::Text("ssh:203.0.113.44".to_string()),
+                DbValue::Text(r#"[{"key":"source_ip","value":"203.0.113.44"}]"#.to_string()),
+                DbValue::Text(r#"["203.0.113.44 attempted login"]"#.to_string()),
+                DbValue::Text(r#"["review 203.0.113.44"]"#.to_string()),
+                DbValue::Text(now.clone()),
+            ],
+        )
+        .await
+        .expect("insert finding");
+        repo.execute_write(
+            "INSERT INTO finding_reviews (finding_id, verdict, note, reviewer, reviewed_at)
+             VALUES (?, ?, ?, ?, ?)",
+            &[
+                DbValue::Text("finding-raw".to_string()),
+                DbValue::Text("needs_review".to_string()),
+                DbValue::Text("note with 203.0.113.44".to_string()),
+                DbValue::Text("panel".to_string()),
+                DbValue::Text(now.clone()),
+            ],
+        )
+        .await
+        .expect("insert review");
+        repo.execute_write(
+            "INSERT INTO incidents
+             (id, node_id, title, severity, score, first_seen, last_seen, summary, payload_json, received_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            &[
+                DbValue::Text("incident-raw".to_string()),
+                DbValue::Text("node-a".to_string()),
+                DbValue::Text("incident 198.51.100.8".to_string()),
+                DbValue::Text("High".to_string()),
+                DbValue::Integer(90),
+                DbValue::Text(now.clone()),
+                DbValue::Text(now.clone()),
+                DbValue::Text("summary 198.51.100.8".to_string()),
+                DbValue::Text(r#"{"source_ip":"198.51.100.8"}"#.to_string()),
+                DbValue::Text(now),
+            ],
+        )
+        .await
+        .expect("insert incident");
+
+        let (page, total) = repo
+            .query_page(
+                PanelDataset {
+                    table: "findings",
+                    order_column: "timestamp",
+                    active_filter: None,
+                    columns: &[
+                        "id",
+                        "timestamp",
+                        "node_id",
+                        "severity",
+                        "rule_id",
+                        "category",
+                        "subject",
+                        "title",
+                    ],
+                },
+                &PageRequest {
+                    from: None,
+                    to: None,
+                    limit: 10,
+                    offset: 0,
+                },
+            )
+            .await
+            .expect("page query");
+        let finding_detail = repo
+            .finding_detail("finding-raw")
+            .await
+            .expect("finding detail");
+        let incident_detail = repo
+            .incident_detail("incident-raw")
+            .await
+            .expect("incident detail");
+        let output = serde_json::to_string(&(page, finding_detail, incident_detail)).expect("json");
+
+        assert_eq!(total, 1);
+        assert!(!output.contains("203.0.113"));
+        assert!(!output.contains("198.51.100"));
+        assert!(output.contains("redacted"));
     }
 
     #[test]
@@ -2250,12 +2355,7 @@ mod tests {
 
     fn test_state(view_token: Option<&str>, admin_token: Option<&str>) -> AppState {
         AppState {
-            repo: Arc::new(Repository {
-                backend: super::DatabaseBackend::Sqlite,
-                driver: RepositoryDriver::Sqlite(Arc::new(Mutex::new(
-                    Connection::open_in_memory().expect("memory sqlite"),
-                ))),
-            }),
+            repo: Arc::new(test_repo()),
             secrets: Arc::new(SecretResolver {
                 shared_secret: Some("shared".to_string()),
                 node_secrets: BTreeMap::new(),
@@ -2264,6 +2364,15 @@ mod tests {
             admin_token: admin_token.map(str::to_string),
             theme: "default".to_string(),
             max_body_bytes: 1024,
+        }
+    }
+
+    fn test_repo() -> Repository {
+        Repository {
+            backend: super::DatabaseBackend::Sqlite,
+            driver: RepositoryDriver::Sqlite(Arc::new(Mutex::new(
+                Connection::open_in_memory().expect("memory sqlite"),
+            ))),
         }
     }
 }

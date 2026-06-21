@@ -177,6 +177,7 @@ export function createView({ t, language, freshness = {} }) {
     const tbody = document.createElement("tbody");
     for (const row of rows) {
       const tr = document.createElement("tr");
+      tr.className = tableRowClass(row);
       for (const column of columns) {
         const td = document.createElement("td");
         td.append(formatValue(column, row[column]));
@@ -334,6 +335,12 @@ export function createView({ t, language, freshness = {} }) {
     if (column === "severity") {
       return span(`badge severity-${String(value || "").toLowerCase()}`, translateValue("severity", value));
     }
+    if (["node_id", "rule_id", "backend", "tier"].includes(column) && value) {
+      return span(`code-pill code-pill-${column}`, String(value));
+    }
+    if (column === "score" && value !== null && value !== undefined && value !== "") {
+      return span("score-pill", number(value));
+    }
     if (column === "privacy_mode") {
       return document.createTextNode(translateValue("privacy_mode", value));
     }
@@ -345,6 +352,11 @@ export function createView({ t, language, freshness = {} }) {
       }
     }
     return document.createTextNode(String(value));
+  }
+
+  function tableRowClass(row) {
+    const severity = String(row?.severity || "").toLowerCase();
+    return ["critical", "high", "medium", "low"].includes(severity) ? `row-${severity}` : "";
   }
 
   function columnLabel(column) {

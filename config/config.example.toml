@@ -330,8 +330,8 @@ export_path = "/var/lib/vps-sentinel/fleet-node.json"
 [panel]
 enabled = false
 url = "" # Example: https://panel.example.com/api/v1/ingest
-node_id = "" # Empty falls back to agent.host_id
-node_name = "" # Empty falls back to agent.display_name
+node_id = "" # Empty derives a stable privacy-safe node ID from the local host identity
+node_name = "" # Empty uses agent.display_name; strict mode falls back to the privacy-safe node ID when needed
 secret = ""
 min_severity = "Medium"
 batch_size = 100

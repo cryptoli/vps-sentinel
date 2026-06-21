@@ -23,8 +23,8 @@ The self-hosted and Worker panels store the signed payload after a second server
 [panel]
 enabled = true
 url = "https://panel.example.com/api/v1/ingest"
-node_id = ""       # empty falls back to agent.host_id
-node_name = ""     # empty falls back to agent.display_name
+node_id = ""       # empty derives a stable privacy-safe node ID from the local host identity
+node_name = ""     # empty uses agent.display_name; strict mode falls back to the privacy-safe node ID when needed
 secret = "replace-with-a-long-random-secret"
 min_severity = "Medium"
 batch_size = 100
@@ -107,6 +107,8 @@ The self-hosted Rust panel does not enable permissive CORS by default. The Worke
 
 Node-specific secrets override the shared secret.
 
+When using node-specific secrets with `privacy_mode = "strict"`, set `panel.node_id` to a stable privacy-safe value and use the same value in `PANEL_NODE_SECRETS`. If `panel.node_id` is empty, the agent derives an anonymous stable node ID locally instead of sending the raw host identity.
+
 ## Cloudflare Worker/D1
 
 The Worker receiver is in `panel/cloudflare/worker.js`; the D1 schema is in `panel/cloudflare/schema.sql`.
@@ -174,6 +176,15 @@ Minimum theme:
 ```
 
 CSS files are loaded relative to the theme directory. Themes can override the CSS variables declared in `panel/web/styles.css`.
+Remote theme assets are intentionally ignored; keep theme CSS and page modules under `panel/web/themes/<theme-name>/` so the panel remains static-hosting friendly and does not leak browser traffic to third-party CDNs. The app also sets `data-theme="<theme-name>"` on `<html>` and `<body>`, and `data-page="<page-id>"` on `<body>`, so a theme can safely scope page-specific overrides.
+
+Useful theme variables include:
+
+- layout: `--topbar-height`, `--sidebar-width`, `--radius`, `--radius-sm`;
+- surfaces: `--app-bg`, `--app-bg-strong`, `--app-bg-grid`, `--surface`, `--surface-muted`, `--surface-hover`, `--panel-title-bg`;
+- text and borders: `--text`, `--muted`, `--muted-strong`, `--border`, `--border-strong`;
+- security tones: `--critical`, `--high`, `--medium`, `--low`, `--success`, `--retired`;
+- effects: `--shadow`, `--shadow-soft`, `--shadow-hover`, `--ring-shadow`, `--focus-ring`.
 
 Custom pages can be added through the theme manifest:
 
@@ -195,4 +206,4 @@ The page module must export `render(context)`. The context includes:
 - `context.renderTable(rows, columns)`;
 - `context.state` and the loaded theme manifest.
 
-This keeps visual customization separate from the Rust API and avoids hardcoding dashboard pages in the backend.
+If a custom page module fails to load or does not export `render(context)`, the built-in pages still load. This keeps visual customization separate from the Rust API and avoids hardcoding dashboard pages in the backend.

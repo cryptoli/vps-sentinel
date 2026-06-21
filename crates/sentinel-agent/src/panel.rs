@@ -347,7 +347,7 @@ fn node_snapshot(
     Ok(PanelNodeSnapshot {
         node_id: panel_node_id(config),
         node_name: redact_text(config, &panel_node_name(config)),
-        host_id: config.host_id(),
+        host_id: panel_host_id(config),
         hostname,
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
         privacy_mode: config.panel.privacy_mode.clone(),
@@ -389,6 +389,7 @@ async fn retry_outbox(
         if max_successful_retries.map_or(true, |limit| sent < limit) {
             match serde_json::from_str::<PanelEnvelope>(&item.payload_json)
                 .map_err(|err| SentinelError::Notify(err.to_string()))
+                .map(|payload| sanitize_panel_envelope(config, payload))
                 .and_then(|payload| validate_payload_size(config, &payload).map(|_| payload))
             {
                 Ok(payload) => match send_envelope(config, &payload).await {
@@ -480,6 +481,7 @@ fn enqueue_payload(
     payload: PanelEnvelope,
     error: String,
 ) -> SentinelResult<()> {
+    let payload = sanitize_panel_envelope(config, payload);
     let payload_json =
         serde_json::to_string(&payload).map_err(|err| SentinelError::Notify(err.to_string()))?;
     state.items.push(PanelOutboxItem {
@@ -727,18 +729,120 @@ fn validate_payload_size(config: &SentinelConfig, payload: &PanelEnvelope) -> Se
     Ok(())
 }
 
+fn sanitize_panel_envelope(config: &SentinelConfig, mut payload: PanelEnvelope) -> PanelEnvelope {
+    payload.node.node_id = panel_node_id(config);
+    payload.node.node_name = redact_text(config, &panel_node_name(config));
+    payload.node.host_id = panel_host_id(config);
+    payload.node.hostname = if config.panel.privacy_mode == "strict" {
+        String::new()
+    } else {
+        redact_text(config, &payload.node.hostname)
+    };
+    payload.node.agent_version = env!("CARGO_PKG_VERSION").to_string();
+    payload.node.privacy_mode = config.panel.privacy_mode.clone();
+    payload.node.enabled_features = enabled_features(config);
+
+    for finding in &mut payload.findings {
+        sanitize_panel_finding(config, finding);
+    }
+    for incident in &mut payload.incidents {
+        sanitize_panel_incident(config, incident);
+    }
+    for drift in &mut payload.baseline_drifts {
+        sanitize_panel_baseline_drift(config, drift);
+    }
+    for block in &mut payload.active_blocks {
+        sanitize_panel_active_block(config, block);
+    }
+
+    payload
+}
+
+fn sanitize_panel_finding(config: &SentinelConfig, finding: &mut PanelFinding) {
+    finding.title = redact_text(config, &finding.title);
+    finding.subject = redact_subject(config, &finding.subject);
+    finding.dedup_key = redact_text(config, &finding.dedup_key);
+    finding.evidence = panel_evidence(config, &finding.evidence);
+    finding.impact = finding
+        .impact
+        .iter()
+        .map(|item| redact_text(config, item))
+        .collect();
+    finding.recommendations = finding
+        .recommendations
+        .iter()
+        .map(|item| redact_text(config, item))
+        .collect();
+}
+
+fn sanitize_panel_incident(config: &SentinelConfig, incident: &mut PanelIncident) {
+    incident.title = redact_text(config, &incident.title);
+    incident.summary = redact_text(config, &incident.summary);
+}
+
+fn sanitize_panel_baseline_drift(config: &SentinelConfig, drift: &mut PanelBaselineDrift) {
+    drift.subject = redact_subject(config, &drift.subject);
+    drift.review_action = redact_text(config, &drift.review_action);
+    drift.reasons = drift
+        .reasons
+        .iter()
+        .map(|item| redact_text(config, item))
+        .collect();
+}
+
+fn sanitize_panel_active_block(config: &SentinelConfig, block: &mut PanelActiveBlock) {
+    block.reason = redact_text(config, &block.reason);
+    block.backend = redact_text(config, &block.backend);
+}
+
 fn panel_node_id(config: &SentinelConfig) -> String {
     if !config.panel.node_id.trim().is_empty() {
-        return config.panel.node_id.trim().to_string();
+        let configured = config.panel.node_id.trim();
+        if contains_network_identity(configured) {
+            return stable_panel_identifier("node", configured);
+        }
+        return configured.to_string();
     }
-    config.host_id()
+    let host_id = config.host_id();
+    if config.panel.privacy_mode == "strict" || contains_network_identity(&host_id) {
+        return stable_panel_identifier("node", &host_id);
+    }
+    host_id
 }
 
 fn panel_node_name(config: &SentinelConfig) -> String {
     if !config.panel.node_name.trim().is_empty() {
-        return config.panel.node_name.trim().to_string();
+        let configured = config.panel.node_name.trim();
+        if contains_network_identity(configured) {
+            return stable_panel_identifier("node", configured);
+        }
+        return configured.to_string();
     }
-    config.display_name()
+    if config.panel.privacy_mode == "strict" && config.agent.display_name.trim().is_empty() {
+        return panel_node_id(config);
+    }
+    let display_name = config.display_name();
+    if contains_network_identity(&display_name) {
+        return panel_node_id(config);
+    }
+    display_name
+}
+
+fn panel_host_id(config: &SentinelConfig) -> String {
+    let host_id = config.host_id();
+    if config.panel.privacy_mode == "strict" || contains_network_identity(&host_id) {
+        return stable_panel_identifier("host", &host_id);
+    }
+    host_id
+}
+
+fn stable_panel_identifier(prefix: &str, value: &str) -> String {
+    let hash = blake3::hash(value.as_bytes()).to_hex().to_string();
+    format!("{prefix}-{}", &hash[..16])
+}
+
+fn contains_network_identity(value: &str) -> bool {
+    remove_ips_in_text(value) != value
 }
 
 fn enabled_features(config: &SentinelConfig) -> Vec<String> {
@@ -806,7 +910,8 @@ fn duration_seconds(seconds: u64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        enqueue_payload, panel_envelope, sign_request, summary_from_state, PanelOutboxState,
+        enqueue_payload, panel_envelope, sanitize_panel_envelope, sign_request, summary_from_state,
+        PanelActiveBlock, PanelBaselineDrift, PanelFinding, PanelIncident, PanelOutboxState,
         PanelScanSummary,
     };
     use crate::active_response::BlockEntry;
@@ -908,6 +1013,147 @@ mod tests {
         assert_eq!(panel.subject, "root@redacted");
         assert_eq!(panel.evidence[0].value, "redacted");
         assert_eq!(panel.evidence[1].value, "/bin/bash [args masked]");
+    }
+
+    #[test]
+    fn strict_panel_identity_is_privacy_safe() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let mut config = SentinelConfig::default();
+        config.panel.privacy_mode = "strict".to_string();
+        config.agent.hostname = "203.0.113.10".to_string();
+        config.agent.host_id = String::new();
+        config.agent.display_name = String::new();
+        config.panel.node_id = String::new();
+        config.panel.node_name = String::new();
+        let scan = PanelScanSummary {
+            finished_at: Utc::now(),
+            raw_events: 0,
+            diff_events: 0,
+            findings: 0,
+            incidents: 0,
+            suppressed_duplicates: 0,
+            maintenance_suppressed: 0,
+            active_response_applied: 0,
+            active_response_failed: 0,
+            collector_errors: 0,
+            event_count_by_source: BTreeMap::new(),
+        };
+
+        let payload = panel_envelope(
+            &config,
+            &store,
+            scan,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )?;
+        let json = serde_json::to_string(&payload.node)?;
+
+        assert!(payload.node.node_id.starts_with("node-"));
+        assert!(payload.node.host_id.starts_with("host-"));
+        assert_eq!(payload.node.node_name, payload.node.node_id);
+        assert!(payload.node.hostname.is_empty());
+        assert!(!json.contains("203.0.113"));
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_panel_outbox_payload_is_sanitized() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let mut config = SentinelConfig::default();
+        config.panel.privacy_mode = "strict".to_string();
+        config.agent.hostname = "203.0.113.20".to_string();
+        config.agent.host_id = String::new();
+        config.agent.display_name = String::new();
+        let scan = PanelScanSummary {
+            finished_at: Utc::now(),
+            raw_events: 0,
+            diff_events: 0,
+            findings: 0,
+            incidents: 0,
+            suppressed_duplicates: 0,
+            maintenance_suppressed: 0,
+            active_response_applied: 0,
+            active_response_failed: 0,
+            collector_errors: 0,
+            event_count_by_source: BTreeMap::new(),
+        };
+        let mut payload = panel_envelope(
+            &config,
+            &store,
+            scan,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )?;
+        payload.node.node_id = "203.0.113.20".to_string();
+        payload.node.node_name = "203.0.113.20".to_string();
+        payload.node.host_id = "203.0.113.20".to_string();
+        payload.node.hostname = "203.0.113.20".to_string();
+        payload.findings.push(PanelFinding {
+            id: "finding-1".to_string(),
+            rule_id: "SSH-001".to_string(),
+            title: "source 198.51.100.8 attempted login".to_string(),
+            severity: Severity::High,
+            confidence: "high".to_string(),
+            category: "ssh".to_string(),
+            subject: "root@198.51.100.8".to_string(),
+            timestamp: Utc::now(),
+            dedup_key: "ssh:198.51.100.8".to_string(),
+            evidence: vec![
+                Evidence::new("source_ip", "198.51.100.8"),
+                Evidence::new("command_line", "/bin/bash -c curl 198.51.100.8"),
+            ],
+            impact: vec!["remote 198.51.100.8 may be probing SSH".to_string()],
+            recommendations: vec!["review traffic from 198.51.100.8".to_string()],
+        });
+        payload.incidents.push(PanelIncident {
+            id: "incident-1".to_string(),
+            title: "incident from 198.51.100.8".to_string(),
+            severity: Severity::High,
+            score: 90,
+            first_seen: Utc::now(),
+            last_seen: Utc::now(),
+            summary: "198.51.100.8 correlated across events".to_string(),
+        });
+        payload.baseline_drifts.push(PanelBaselineDrift {
+            finding_id: "finding-2".to_string(),
+            rule_id: "SERVICE-001".to_string(),
+            severity: Severity::Medium,
+            subject: "0.0.0.0:24409/udp".to_string(),
+            timestamp: Utc::now(),
+            tier: "suspicious".to_string(),
+            score: Some(67),
+            review_action: "review 198.51.100.8 before refresh".to_string(),
+            reasons: vec!["public listener on 0.0.0.0".to_string()],
+        });
+        payload.active_blocks.push(PanelActiveBlock {
+            rule_id: "SSH-001".to_string(),
+            finding_id: "finding-1".to_string(),
+            reason: "blocked 198.51.100.8".to_string(),
+            backend: "nftables".to_string(),
+            blocked_at: Utc::now(),
+            expires_at: None,
+            expired: false,
+            firewall_present: Some(true),
+        });
+
+        let sanitized = sanitize_panel_envelope(&config, payload);
+        let json = serde_json::to_string(&sanitized)?;
+
+        assert!(sanitized.node.node_id.starts_with("node-"));
+        assert!(sanitized.node.host_id.starts_with("host-"));
+        assert!(sanitized.node.hostname.is_empty());
+        assert!(!json.contains("203.0.113"));
+        assert!(!json.contains("198.51.100"));
+        assert!(!json.contains("0.0.0.0"));
+        assert!(!json.contains("/bin/bash -c"));
+        assert!(json.contains("/bin/bash [args masked]"));
+        Ok(())
     }
 
     #[test]
