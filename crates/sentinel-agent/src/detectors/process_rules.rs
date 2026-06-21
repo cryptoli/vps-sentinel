@@ -895,8 +895,7 @@ fn behavior_cluster_assessment(
     }
     let shell_or_scheduler_parent =
         behavior_profile::is_shell_or_scheduler_parent(&string_field(event, "parent_name"));
-    let low_risk_interactive_network_operation =
-        low_risk_interactive_network_operation(event, ctx);
+    let low_risk_interactive_network_operation = low_risk_interactive_network_operation(event, ctx);
     if string_field(event, "package_owner_state") == "unowned"
         && public_outbound_count > 0
         && ((shell_or_scheduler_parent && !low_risk_interactive_network_operation)

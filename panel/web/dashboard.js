@@ -27,10 +27,10 @@ export function renderOverviewDashboard(ctx) {
       }),
       ui.insightStrip([
         {
-          label: t("privacyTelemetry"),
-          value: t("strict"),
-          detail: t("privacyTelemetryDetail"),
-          tone: "privacy",
+          label: t("attentionQueue"),
+          value: queueCount(summary),
+          detail: t("attentionQueueDetail"),
+          tone: "attention",
         },
         {
           label: t("fleetFreshness"),
@@ -144,6 +144,10 @@ function signalMix(summary, t, ui) {
   ]);
 }
 
+function queueCount(summary) {
+  return Number(summary.findings || 0) + Number(summary.baseline_drifts || 0);
+}
+
 function highRiskCount(rows) {
   return rows
     .filter((row) => ["critical", "high"].includes(String(row.severity || "").toLowerCase()))
@@ -153,7 +157,7 @@ function highRiskCount(rows) {
 function blockRecord(t) {
   return (block) => ({
     title: block.rule_id || t("activeResponse"),
-    meta: [block.node_name, block.rule_id, block.backend].filter(Boolean).join(" / "),
+    meta: [block.node_name, block.rule_id].filter(Boolean).join(" / "),
     detail: block.reason || t("noReason"),
     tone: "blocked",
   });

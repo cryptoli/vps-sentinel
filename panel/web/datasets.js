@@ -25,7 +25,7 @@ export const DATASETS = {
     titleKey: "blocksTitle",
     descriptionKey: "blocksDescription",
     endpoint: "/active-blocks",
-    columns: ["blocked_at", "node_name", "rule_id", "backend", "reason", "expires_at"],
+    columns: ["blocked_at", "node_name", "rule_id", "reason", "expires_at"],
   },
   audit_logs: {
     navKey: "auditLogs",
@@ -39,6 +39,6 @@ export const DATASETS = {
     titleKey: "nodesTitle",
     descriptionKey: "nodesDescription",
     endpoint: "/nodes",
-    columns: ["last_seen_at", "node_name", "agent_version", "privacy_mode"],
+    columns: ["last_seen_at", "node_name"],
   },
 };

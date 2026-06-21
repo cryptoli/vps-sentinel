@@ -378,7 +378,7 @@ button:disabled {
   pointer-events: none;
 }
 
-.insight-card.privacy::before {
+.insight-card.attention::before {
   background: linear-gradient(135deg, var(--success), transparent 46%);
 }
 
@@ -656,6 +656,23 @@ button:disabled {
   line-height: 1;
 }
 
+.metric-visual {
+  background: rgba(15, 23, 42, 0.07);
+  border-radius: 999px;
+  height: 8px;
+  overflow: hidden;
+  position: relative;
+}
+
+.metric-bar {
+  background: currentColor;
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  opacity: 0.88;
+  width: var(--metric-ratio, 20%);
+}
+
 .metric-caption {
   color: var(--muted);
   display: block;
@@ -820,14 +837,17 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px;
   grid-column: 1 / -1;
+  overflow-x: auto;
   padding: 8px;
+  scrollbar-width: thin;
 }
 
 .quick-ranges .button {
   border-color: transparent;
+  flex: 0 0 auto;
   min-height: 32px;
 }
 
@@ -1152,6 +1172,13 @@ tr:last-child td {
   padding: 0 2px 0 0;
   scrollbar-color: var(--border-strong) transparent;
   scrollbar-width: thin;
+}
+
+.node-overflow-note {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 4px 2px 0;
 }
 
 .bar-row {
@@ -1565,13 +1592,17 @@ tr:last-child td {
   }
 
   .toolbar {
-    justify-content: flex-start;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+    justify-content: stretch;
     width: 100%;
   }
 
   .toolbar select,
   .toolbar button {
-    flex: 1 1 120px;
+    min-width: 0;
+    width: 100%;
   }
 
   .layout {
@@ -1643,6 +1674,10 @@ tr:last-child td {
     grid-template-columns: 1fr;
   }
 
+  .filters {
+    align-items: stretch;
+  }
+
   .panel-response .compact-records {
     grid-template-columns: 1fr;
   }
@@ -1675,9 +1710,17 @@ tr:last-child td {
     font-size: 11px;
   }
 
+  .toolbar {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .toolbar button {
+    grid-column: 1 / -1;
+  }
+
   .toolbar select,
   .toolbar button {
-    min-height: 40px;
+    min-height: 42px;
   }
 
   .sidebar {
@@ -1800,6 +1843,10 @@ tr:last-child td {
     padding: 12px;
   }
 
+  .filters > .button {
+    width: 100%;
+  }
+
   .range-control {
     grid-template-columns: 1fr;
   }
@@ -1809,8 +1856,13 @@ tr:last-child td {
     border-top: 1px solid var(--border);
   }
 
+  .quick-ranges {
+    margin: -2px;
+    padding: 7px;
+  }
+
   .quick-ranges .button {
-    flex: 1 1 92px;
+    min-width: max-content;
   }
 
   table {
@@ -1838,15 +1890,6 @@ tr:last-child td {
 }
 
 @media (max-width: 420px) {
-  .toolbar {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .toolbar button {
-    grid-column: 1 / -1;
-  }
-
   .nav-button {
     grid-template-columns: 26px minmax(54px, auto);
     min-width: 92px;

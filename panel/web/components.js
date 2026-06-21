@@ -28,16 +28,25 @@ export function createView({ t, language, freshness = {} }) {
   function metrics(items) {
     const wrapper = document.createElement("div");
     wrapper.className = "grid metrics";
+    const max = Math.max(
+      1,
+      ...items.map((itemConfig) => Number((Array.isArray(itemConfig) ? itemConfig[1] : itemConfig.value) || 0)),
+    );
     for (const itemConfig of items) {
       const { label, value, tone, caption } = Array.isArray(itemConfig)
         ? { label: itemConfig[0], value: itemConfig[1], tone: itemConfig[2], caption: "" }
         : itemConfig;
+      const ratio = Math.max(8, Math.min(100, (Number(value || 0) / max) * 100));
       const item = document.createElement("div");
       item.className = `metric metric-${tone}`;
+      item.style.setProperty("--metric-ratio", `${ratio}%`);
       const head = document.createElement("div");
       head.className = "metric-head";
       head.append(span("label", label), span("metric-signal", ""));
-      item.append(head, span("value", number(value)));
+      const visual = document.createElement("div");
+      visual.className = "metric-visual";
+      visual.append(span("metric-bar", ""));
+      item.append(head, span("value", number(value)), visual);
       if (caption) item.append(span("metric-caption", caption));
       wrapper.append(item);
     }
@@ -282,7 +291,8 @@ export function createView({ t, language, freshness = {} }) {
 
     const list = document.createElement("div");
     list.className = "node-freshness";
-    for (const node of nodes) {
+    const visibleNodes = nodes.slice(0, 8);
+    for (const node of visibleNodes) {
       const age = ageMinutes(node.last_seen_at);
       const status = freshnessStatus(age, node);
       const row = document.createElement("div");
@@ -300,6 +310,12 @@ export function createView({ t, language, freshness = {} }) {
         span("freshness-age", relativeAge(age)),
       );
       list.append(row);
+    }
+    if (nodes.length > visibleNodes.length) {
+      const note = document.createElement("div");
+      note.className = "node-overflow-note";
+      note.textContent = formatTemplate(t("moreNodes"), { count: nodes.length - visibleNodes.length });
+      list.append(note);
     }
     wrapper.append(summary, list);
     return wrapper;
