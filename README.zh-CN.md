@@ -40,7 +40,7 @@
 | 事件关联 | 按来源 IP、路径、进程、分类和时间窗口把相关 finding 聚合为 incident，并生成扫描窗口内的攻击时间线。 |
 | 攻击指纹 | 从 Web、SSH、进程和持久化 finding 中提取归一化攻击指纹；保存精确 hash 和 SimHash 近似键；即使攻击源 IP 变化，也能按攻击手法聚合，并提供指纹时间线、解释和人工判定。 |
 | 证据和规则治理 | 统一归一化来源 IP、用户、路径、计数和探测家族等常见 evidence 字段，并维护内置规则 owner、分类、响应范围和证据契约矩阵。 |
-| 服务画像 | 维护监听服务 owner 画像，发现新增服务或已知监听端口背后的可执行文件漂移；支持按进程身份建模动态 UDP/UDP6 高位端口，并忽略可配置的客户端临时 UDP 与本地 SSH 转发监听。 |
+| 服务画像 | 维护监听服务 owner 画像，发现新增服务或已知监听端口背后的可执行文件漂移；支持按服务身份族建模公网非特权动态 UDP/UDP6 监听，并忽略可配置的客户端临时 UDP 与本地 SSH 转发监听。 |
 | 高级采集 | 默认启用 auditd 日志采集和 eBPF JSONL/命令桥接入口；可生成轻量 bpftrace runtime probe 脚本，用于捕捉短生命周期 exec 和可选的文件变更事件。auditd/eBPF 事件可识别 procfs 快照可能错过的短生命周期行为。 |
 | 外部规则 | 支持 Sigma-like TOML 事件规则、外部规则校验和可选 YARA CLI 扫描；规则引擎默认启用，但只有配置了规则路径或扫描根目录后才会实际运行。 |
 | 威胁情报 | 可选用本地或远程 indicator 对 IP、路径、域名、哈希做证据增强；命中只是辅助证据，不会单独触发封禁。 |
@@ -247,7 +247,7 @@ CI 中使用的 Docker 容器只用于构建和兼容性测试，不代表推荐
 | 规则所有权矩阵 | 每条内置规则声明 owner、分类、响应范围和预期 evidence 字段，并通过测试校验 owner/category 和 canonical 字段。 | 让规则按模块清晰归属，避免重复、混乱或作用范围不明的规则进入代码。 |
 | 资源预算 | 按严重等级、统一评分、置信度和时间排序保留高价值 finding，并限制 finding 数量、evidence 数量和 evidence 值大小。 | 控制内存、通知量和存储体积，同时优先保留关键安全证据。 |
 | Incident 与时间线 | 按 IP、路径、进程、可执行文件 hash、systemd unit、分类和时间窗口聚合相关 finding，提供 `incidents list/show/timeline`，并为多阶段链路生成按攻击阶段排序的扫描窗口时间线 finding。 | 把孤立 finding 组织成可读攻击链，同时保留原始 finding。 |
-| 服务画像 | 保存监听服务的地址、端口、协议、进程名、可执行文件、命令行和暴露分类；动态 UDP/UDP6 高位端口可按进程身份建模，并忽略可配置的客户端临时 UDP 与本地 SSH 转发监听。 | 不盲信 80/443，也能发现常见端口背后的服务 owner 漂移，同时避免合法动态 UDP 端口每次变化都告警。 |
+| 服务画像 | 保存监听服务的地址、端口、协议、进程名、可执行文件、命令行、systemd、容器、包归属、可执行文件 hash 和暴露分类；公网非特权 UDP/UDP6 监听会按服务身份族建模，并忽略可配置的客户端临时 UDP 与本地 SSH 转发监听。 | 不盲信 80/443，也能发现常见端口背后的服务 owner 漂移，同时避免合法动态 UDP 服务每次换端口都告警。 |
 | 高级证据 | 可选 auditd、eBPF JSONL bridge、Sigma-like TOML 规则、外部规则校验、YARA CLI 和威胁情报 indicator 都进入同一 RawEvent/Finding 模型。 | 平台支持时可增加更深证据，默认安装仍保持轻量兼容。 |
 | 维护与多 VPS 运维 | 在本地 rule state 中保存有界维护状态和 fleet 节点快照；也可推送带签名的 panel envelope，内容包含有上限的 finding、incident、基线漂移、主动封禁、存储统计和启用功能元数据。 | 计划升级时压制低/中危漂移和预期的交互式 SSH 登录噪声，同时保留 SSH 爆破和攻击链信号；多台 VPS 可集中到自建或 Cloudflare 托管面板里查看。 |
 
@@ -789,7 +789,9 @@ max_findings_per_incident = 50
 enabled = true
 drift_requires_public_exposure = false
 dynamic_udp_enabled = true
-dynamic_udp_min_port = 32768
+dynamic_udp_min_port = 1024
+dynamic_udp_max_port_samples = 32
+unknown_owner_grace_observations = 3
 ignored_dynamic_udp_process_names = ["systemd-timesyncd", "chronyd", "ntpd"]
 ignore_loopback_ssh_forwarding = true
 
@@ -809,7 +811,7 @@ scheduled_hour = 8
 scheduled_period = "today"
 ```
 
-`incidents` 控制本地攻击链聚合；`service_profile` 控制监听服务 owner 漂移检测。启用动态 UDP/UDP6 建模后，高于 `dynamic_udp_min_port` 的公网 UDP 监听会按进程身份建模；同时，非特权 UDP 端口会结合上一轮服务身份画像判断是否只是同一服务的端口迁移。因此 VPN/转发类软件更换 UDP 端口不会每次都告警，但特权 UDP 端口变化、新服务身份和服务 owner 漂移仍会保留风险提示。`behavior_profile` 控制本地进程行为画像，用有界身份数、单身份样本上限和过期清理来提供新远端端口、公网出站 fanout 漂移等辅助证据。定时报表默认开启，会让 daemon 通过已启用通知渠道发送每日安全报告，并用 `min_interval_seconds` 避免重启后重复发送；如果没有配置任何通知渠道，daemon 会直接跳过定时报表，不构建也不发送。
+`incidents` 控制本地攻击链聚合；`service_profile` 控制监听服务 owner 漂移检测。启用动态 UDP/UDP6 建模后，公网非特权 UDP 监听会按服务身份族分组，而不是按易变化的端口号分组。服务身份会尽量结合进程名、可执行文件、命令模板、systemd、容器、包归属和可执行文件 hash 等上下文；端口样本有固定上限。因此 VPN/转发类软件更换 UDP 端口不会每次都告警，但特权 UDP 端口变化、新服务身份、可疑动态监听、重复确认后的未知 owner 监听和服务 owner 漂移仍会保留风险提示。`behavior_profile` 控制本地进程行为画像，用有界身份数、单身份样本上限和过期清理来提供新远端端口、公网出站 fanout 漂移等辅助证据。定时报表默认开启，会让 daemon 通过已启用通知渠道发送每日安全报告，并用 `min_interval_seconds` 避免重启后重复发送；如果没有配置任何通知渠道，daemon 会直接跳过定时报表，不构建也不发送。
 
 高级采集和外部规则：
 

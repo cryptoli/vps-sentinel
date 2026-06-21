@@ -248,13 +248,13 @@ fn metadata_gid(metadata: &fs::Metadata) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ContainerMetadata {
-    runtime: String,
-    id: Option<String>,
-    scope: Option<String>,
+pub(crate) struct ContainerMetadata {
+    pub(crate) runtime: String,
+    pub(crate) id: Option<String>,
+    pub(crate) scope: Option<String>,
 }
 
-fn container_metadata_from_cgroup(cgroup: &str) -> Option<ContainerMetadata> {
+pub(crate) fn container_metadata_from_cgroup(cgroup: &str) -> Option<ContainerMetadata> {
     let lowered = cgroup.to_ascii_lowercase();
     let runtime = if lowered.contains("kubepods") {
         "kubernetes"
@@ -287,7 +287,7 @@ fn extract_container_id(cgroup: &str) -> Option<String> {
     None
 }
 
-fn systemd_unit_from_cgroup(cgroup: &str) -> Option<String> {
+pub(crate) fn systemd_unit_from_cgroup(cgroup: &str) -> Option<String> {
     cgroup
         .lines()
         .flat_map(|line| line.split('/'))

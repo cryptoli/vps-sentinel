@@ -703,11 +703,13 @@ pub struct ServiceProfileConfig {
     pub baseline_refresh_after_package_activity: bool,
     pub dynamic_udp_enabled: bool,
     pub dynamic_udp_min_port: u16,
+    pub dynamic_udp_max_port_samples: usize,
+    pub unknown_owner_grace_observations: u32,
     pub ignored_dynamic_udp_process_names: Vec<String>,
     pub ignore_loopback_ssh_forwarding: bool,
 }
 
-pub const DEFAULT_DYNAMIC_UDP_MIN_PORT: u16 = 32768;
+pub const DEFAULT_DYNAMIC_UDP_MIN_PORT: u16 = 1024;
 
 impl Default for ServiceProfileConfig {
     fn default() -> Self {
@@ -717,6 +719,8 @@ impl Default for ServiceProfileConfig {
             baseline_refresh_after_package_activity: false,
             dynamic_udp_enabled: true,
             dynamic_udp_min_port: DEFAULT_DYNAMIC_UDP_MIN_PORT,
+            dynamic_udp_max_port_samples: 32,
+            unknown_owner_grace_observations: 3,
             ignored_dynamic_udp_process_names: default_ignored_dynamic_udp_process_names(),
             ignore_loopback_ssh_forwarding: true,
         }

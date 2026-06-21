@@ -504,9 +504,19 @@ fn validate_attack_fingerprints(config: &AttackFingerprintConfig) -> SentinelRes
 }
 
 fn validate_service_profile(config: &ServiceProfileConfig) -> SentinelResult<()> {
-    if config.dynamic_udp_enabled && config.dynamic_udp_min_port == 0 {
+    if config.dynamic_udp_enabled && config.dynamic_udp_min_port < 1024 {
         return Err(SentinelError::Config(
-            "service_profile.dynamic_udp_min_port must be greater than 0".to_string(),
+            "service_profile.dynamic_udp_min_port must be at least 1024".to_string(),
+        ));
+    }
+    if config.dynamic_udp_max_port_samples == 0 {
+        return Err(SentinelError::Config(
+            "service_profile.dynamic_udp_max_port_samples must be greater than 0".to_string(),
+        ));
+    }
+    if config.unknown_owner_grace_observations == 0 {
+        return Err(SentinelError::Config(
+            "service_profile.unknown_owner_grace_observations must be greater than 0".to_string(),
         ));
     }
     if config
@@ -1126,6 +1136,21 @@ mod tests {
 
         let mut config = SentinelConfig::default();
         config.package_manager.max_log_tail_bytes = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_service_profile_settings_are_rejected() {
+        let mut config = SentinelConfig::default();
+        config.service_profile.dynamic_udp_min_port = 1023;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.service_profile.dynamic_udp_max_port_samples = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.service_profile.unknown_owner_grace_observations = 0;
         assert!(config.validate().is_err());
     }
 

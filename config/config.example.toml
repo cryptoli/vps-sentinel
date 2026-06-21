@@ -271,7 +271,9 @@ enabled = true
 drift_requires_public_exposure = false
 baseline_refresh_after_package_activity = false
 dynamic_udp_enabled = true
-dynamic_udp_min_port = 32768
+dynamic_udp_min_port = 1024
+dynamic_udp_max_port_samples = 32
+unknown_owner_grace_observations = 3
 ignored_dynamic_udp_process_names = ["systemd-timesyncd", "chronyd", "ntpd"]
 ignore_loopback_ssh_forwarding = true
 

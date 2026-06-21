@@ -605,16 +605,12 @@ fn direct_value_label(
             NotificationLanguage::ZhCn,
         )
         | ("dynamic_udp_listener", "false", NotificationLanguage::ZhCn) => Some("否"),
-        (
-            "dynamic_udp_reason",
-            "same_service_identity_udp_port_change",
-            NotificationLanguage::En,
-        ) => Some("same service identity changed unprivileged UDP port"),
-        (
-            "dynamic_udp_reason",
-            "same_service_identity_udp_port_change",
-            NotificationLanguage::ZhCn,
-        ) => Some("同一服务身份发生非特权 UDP 端口变化"),
+        ("dynamic_udp_reason", "new_dynamic_service_identity", NotificationLanguage::En) => {
+            Some("new dynamic service identity")
+        }
+        ("dynamic_udp_reason", "new_dynamic_service_identity", NotificationLanguage::ZhCn) => {
+            Some("出现新的动态服务身份")
+        }
         ("baseline_drift_tier", "routine", NotificationLanguage::En) => Some("routine"),
         ("baseline_drift_tier", "routine", NotificationLanguage::ZhCn) => Some("常规变更"),
         ("baseline_drift_tier", "review", NotificationLanguage::En) => Some("needs review"),

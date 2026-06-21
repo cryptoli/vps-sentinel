@@ -1,6 +1,5 @@
 use sentinel_core::{
     evidence_value, Category, Confidence, Evidence, Finding, RawEvent, SentinelConfig, Severity,
-    DEFAULT_DYNAMIC_UDP_MIN_PORT,
 };
 use std::collections::BTreeSet;
 
@@ -9,6 +8,7 @@ const DRIFT_TIER_KEY: &str = "baseline_drift_tier";
 const REVIEW_ACTION_KEY: &str = "baseline_review_action";
 const REASONS_KEY: &str = "baseline_drift_reasons";
 const DOWNGRADES_KEY: &str = "baseline_drift_downgrades";
+const UNPRIVILEGED_PORT_START: u16 = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BaselineDriftAssessment {
@@ -24,14 +24,13 @@ pub struct BaselineDriftAssessment {
 pub struct DriftPolicy {
     dynamic_udp_enabled: bool,
     dynamic_udp_min_port: u16,
+    high_risk_public_ports: BTreeSet<u16>,
 }
 
 impl Default for DriftPolicy {
     fn default() -> Self {
-        Self {
-            dynamic_udp_enabled: true,
-            dynamic_udp_min_port: DEFAULT_DYNAMIC_UDP_MIN_PORT,
-        }
+        let config = SentinelConfig::default();
+        Self::from(&config)
     }
 }
 
@@ -40,6 +39,12 @@ impl From<&SentinelConfig> for DriftPolicy {
         Self {
             dynamic_udp_enabled: config.service_profile.dynamic_udp_enabled,
             dynamic_udp_min_port: config.service_profile.dynamic_udp_min_port,
+            high_risk_public_ports: config
+                .network
+                .high_risk_public_ports
+                .iter()
+                .copied()
+                .collect(),
         }
     }
 }
@@ -372,16 +377,23 @@ fn non_public_listener_event(event: &RawEvent) -> bool {
 }
 
 fn dynamic_udp_listener_event(event: &RawEvent, policy: &DriftPolicy) -> bool {
-    policy.dynamic_udp_enabled
-        && matches!(
+    if !policy.dynamic_udp_enabled
+        || !matches!(
             event.kind.as_str(),
             "listening_socket" | "listening_socket_owner_changed"
         )
-        && event.field("protocol").is_some_and(is_udp_protocol)
-        && event
-            .field("local_port")
-            .and_then(|value| value.parse::<u16>().ok())
-            .is_some_and(|port| port >= policy.dynamic_udp_min_port)
+        || !event.field("protocol").is_some_and(is_udp_protocol)
+        || !public_listener_event(event)
+    {
+        return false;
+    }
+    event
+        .field("local_port")
+        .and_then(|value| value.parse::<u16>().ok())
+        .is_some_and(|port| {
+            port >= policy.dynamic_udp_min_port.max(UNPRIVILEGED_PORT_START)
+                && !policy.high_risk_public_ports.contains(&port)
+        })
 }
 
 fn is_udp_protocol(protocol: &str) -> bool {
@@ -395,10 +407,6 @@ fn public_listener_evidence(finding: &Finding) -> bool {
 
 fn dynamic_udp_finding(finding: &Finding) -> bool {
     evidence_value(&finding.evidence, "dynamic_udp_listener") == Some("true")
-        || (evidence_value(&finding.evidence, "protocol").is_some_and(is_udp_protocol)
-            && evidence_value(&finding.evidence, "local_port")
-                .and_then(|value| value.parse::<u16>().ok())
-                .is_some_and(|port| port >= DEFAULT_DYNAMIC_UDP_MIN_PORT))
 }
 
 fn large_file_size_change(event: &RawEvent) -> bool {
@@ -663,6 +671,23 @@ mod tests {
         assert!(assessment
             .reasons
             .contains(&"public listener exposure".to_string()));
+        assert!(assessment
+            .downgrades
+            .contains(&"dynamic UDP listener".to_string()));
+    }
+
+    #[test]
+    fn approval_event_downgrades_low_non_privileged_udp6_listener_drift() {
+        let event = RawEvent::new("baseline", "listening_socket")
+            .with_field("protocol", "udp6")
+            .with_field("local_addr", "::")
+            .with_field("local_port", "12545")
+            .with_field("process_name", "v2ray")
+            .with_field("executable", "/usr/bin/v2ray/v2ray");
+
+        let assessment = assess_event(&event).expect("assessment");
+
+        assert_eq!(assessment.tier, "routine");
         assert!(assessment
             .downgrades
             .contains(&"dynamic UDP listener".to_string()));

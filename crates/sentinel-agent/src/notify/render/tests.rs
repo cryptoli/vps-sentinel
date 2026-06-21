@@ -201,10 +201,7 @@ fn renders_service_profile_rule_in_chinese() {
         Evidence::new("local_addr", "0.0.0.0"),
         Evidence::new("local_port", "24409"),
         Evidence::new("dynamic_udp_listener", "true"),
-        Evidence::new(
-            "dynamic_udp_reason",
-            "same_service_identity_udp_port_change",
-        ),
+        Evidence::new("dynamic_udp_reason", "new_dynamic_service_identity"),
     ]);
 
     let body = render_finding_with_language(
@@ -215,9 +212,9 @@ fn renders_service_profile_rule_in_chinese() {
 
     assert!(body.contains("发现新的监听服务画像"));
     assert!(body.contains("动态 UDP 监听: 是"));
-    assert!(body.contains("动态 UDP 判定原因: 同一服务身份发生非特权 UDP 端口变化"));
+    assert!(body.contains("动态 UDP 判定原因: 出现新的动态服务身份"));
     assert!(!body.contains("该规则尚未配置中文消息模板"));
-    assert!(!body.contains("same_service_identity_udp_port_change"));
+    assert!(!body.contains("new_dynamic_service_identity"));
 }
 
 #[test]

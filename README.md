@@ -247,7 +247,7 @@ The Docker containers used in CI are build and compatibility test environments o
 | Rule ownership matrix | Each built-in rule declares an owner, category, response scope, and expected evidence keys; tests enforce compatibility and canonical fields. | Keeps rule families organized and catches duplicated, ambiguous, or poorly scoped rules during development. |
 | Resource budgets | Ranks findings by severity, unified score, confidence, and timestamp; limits finding count, evidence count, and evidence value length with UTF-8-safe truncation. | Keeps memory, notification volume, and stored finding size bounded while preserving the highest-value security evidence. |
 | Incidents and timeline | Groups related findings by IP, path, process, executable hash, systemd unit, category, and time window, stores a bounded incident index, and emits scan-window timeline findings with ordered kill-chain phases. | Turns isolated findings into a readable attack-chain view while keeping raw findings available. |
-| Service profile | Stores listener owner profiles with address, port, protocol, process name, executable, command line, and exposure classification; dynamic UDP/UDP6 high ports can be keyed by process identity, and configurable transient clients plus loopback SSH forwarding listeners are ignored. | Detects service drift on common ports and new listeners without blindly trusting 80/443 or alerting every time a legitimate dynamic UDP port changes. |
+| Service profile | Stores listener owner profiles with address, port, protocol, process name, executable, command line, systemd/container/package/hash context, and exposure classification; public non-privileged UDP/UDP6 listeners are keyed by service identity family, and configurable transient clients plus loopback SSH forwarding listeners are ignored. | Detects service drift on common ports and new listeners without blindly trusting 80/443 or alerting every time a legitimate dynamic UDP service changes ports. |
 | Advanced evidence | Optional auditd, eBPF JSONL bridge, Sigma-like TOML rules, external-rule validation, YARA CLI scans, and threat-intel indicators feed the same RawEvent/Finding model. | Adds deeper host signals when the platform supports them while keeping default installs lightweight and compatible. |
 | Maintenance and fleet operations | Stores bounded maintenance state and fleet node snapshots in local rule state; optionally pushes signed panel envelopes with capped findings, incidents, baseline drift, active blocks, storage stats, and enabled-feature metadata. | Suppresses planned low/medium drift and expected interactive SSH login noise during upgrades, while keeping SSH brute-force and attack-chain signals visible; several VPS nodes can be reviewed in one self-hosted or Cloudflare-backed panel. |
 
@@ -792,7 +792,9 @@ max_findings_per_incident = 50
 enabled = true
 drift_requires_public_exposure = false
 dynamic_udp_enabled = true
-dynamic_udp_min_port = 32768
+dynamic_udp_min_port = 1024
+dynamic_udp_max_port_samples = 32
+unknown_owner_grace_observations = 3
 ignored_dynamic_udp_process_names = ["systemd-timesyncd", "chronyd", "ntpd"]
 ignore_loopback_ssh_forwarding = true
 
@@ -812,7 +814,7 @@ scheduled_hour = 8
 scheduled_period = "today"
 ```
 
-`incidents` controls local attack-chain grouping. `service_profile` controls listener owner drift detection. Dynamic UDP/UDP6 services above `dynamic_udp_min_port` are keyed by process identity when enabled, and unprivileged UDP port churn is also evaluated against the previous service identity profile. This avoids repeated alerts from VPN/relay software that moves UDP ports while still reporting privileged UDP changes, new identities, and service owner drift. `behavior_profile` controls a bounded local process behavior profile used as supporting evidence for new remote ports and outbound fanout drift; it is capped by identity count, per-identity sample limits, and age-based pruning. Scheduled reports are enabled by default and send the configured daily report from the daemon through enabled notification channels, with `min_interval_seconds` preventing duplicate sends after restarts. If no notification channel is configured, scheduled reports are skipped without building or sending a report.
+`incidents` controls local attack-chain grouping. `service_profile` controls listener owner drift detection. When dynamic UDP/UDP6 modeling is enabled, public non-privileged UDP listeners are grouped by service identity family instead of volatile port numbers. The identity combines process, executable, command template, systemd, container, package owner, and executable hash context when available; observed ports are sampled with a fixed cap. This avoids repeated alerts from VPN/relay software that moves UDP ports while still reporting privileged UDP changes, new service identities, suspicious dynamic listeners, unknown-owner listeners after repeated confirmation, and service owner drift. `behavior_profile` controls a bounded local process behavior profile used as supporting evidence for new remote ports and outbound fanout drift; it is capped by identity count, per-identity sample limits, and age-based pruning. Scheduled reports are enabled by default and send the configured daily report from the daemon through enabled notification channels, with `min_interval_seconds` preventing duplicate sends after restarts. If no notification channel is configured, scheduled reports are skipped without building or sending a report.
 
 Advanced collectors and external rules:
 
