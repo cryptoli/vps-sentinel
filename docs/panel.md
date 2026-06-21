@@ -6,7 +6,7 @@ The fleet panel is an optional push-mode dashboard for multiple VPS nodes. Agent
 
 Each panel payload contains:
 
-- node identity, display name, agent version, privacy mode, enabled features, and storage stats;
+- non-sensitive node name, agent version, privacy mode, enabled features, and storage stats;
 - scan summary counters;
 - recent findings at or above `panel.min_severity`;
 - recent incidents;
@@ -15,7 +15,7 @@ Each panel payload contains:
 
 Payload size is bounded by `panel.max_payload_bytes`. If the panel is unavailable, the agent stores a small local outbox in the existing SQLite rule-state store and retries later. The outbox is capped by `panel.outbox_max_items`.
 
-The self-hosted and Worker panels store the signed payload after a second server-side redaction pass, and read APIs only expose fixed display columns. Raw IP addresses, raw evidence JSON, incident payload JSON, host IDs, storage details, enabled feature lists, and database timestamps are not returned by the browser-facing list endpoints.
+The self-hosted and Worker panels store the signed payload after a second server-side redaction pass, and read APIs only expose fixed display columns. New uploads use `node_name` for signing and display, and do not serialize node IDs, host IDs, or hostnames. Raw IP addresses, raw evidence JSON, incident payload JSON, storage details, enabled feature lists, and database timestamps are not returned by the browser-facing list endpoints.
 
 ## Agent Configuration
 
@@ -23,8 +23,8 @@ The self-hosted and Worker panels store the signed payload after a second server
 [panel]
 enabled = true
 url = "https://panel.example.com/api/v1/ingest"
-node_id = ""       # empty derives a stable privacy-safe node ID from the local host identity
-node_name = ""     # empty uses agent.display_name; strict mode falls back to the privacy-safe node ID when needed
+node_id = ""       # deprecated compatibility field; new uploads do not send node IDs
+node_name = "prod-web-1" # required for clear fleet display; never use public IPs or private hostnames
 secret = "replace-with-a-long-random-secret"
 min_severity = "Medium"
 batch_size = 100
@@ -107,7 +107,7 @@ The self-hosted Rust panel does not enable permissive CORS by default. The Worke
 
 Node-specific secrets override the shared secret.
 
-When using node-specific secrets with `privacy_mode = "strict"`, set `panel.node_id` to a stable privacy-safe value and use the same value in `PANEL_NODE_SECRETS`. If `panel.node_id` is empty, the agent derives an anonymous stable node ID locally instead of sending the raw host identity.
+When using node-specific secrets with `privacy_mode = "strict"`, key `PANEL_NODE_SECRETS` by the non-sensitive `panel.node_name`. New agents sign uploads with `x-vps-sentinel-node-name` and do not serialize `node_id`, `host_id`, or `hostname` in the panel payload. The legacy `panel.node_id` field is accepted only for compatibility with older deployments.
 
 ## Cloudflare Worker/D1
 
@@ -180,7 +180,7 @@ Remote theme assets are intentionally ignored; keep theme CSS and page modules u
 
 Useful theme variables include:
 
-- layout: `--topbar-height`, `--sidebar-width`, `--radius`, `--radius-sm`;
+- layout: `--topbar-height`, `--sidebar-width`, `--radius`, `--radius-sm`, `--panel-body-min`, `--node-list-max-height`;
 - surfaces: `--app-bg`, `--app-bg-strong`, `--app-bg-grid`, `--surface`, `--surface-muted`, `--surface-hover`, `--panel-title-bg`;
 - text and borders: `--text`, `--muted`, `--muted-strong`, `--border`, `--border-strong`;
 - security tones: `--critical`, `--high`, `--medium`, `--low`, `--success`, `--retired`;

@@ -39,6 +39,8 @@
   --shadow-hover: 0 18px 42px rgba(15, 23, 42, 0.12);
   --ring-shadow: 0 0 0 1px rgba(15, 23, 42, 0.035), 0 10px 22px rgba(15, 23, 42, 0.055);
   --focus-ring: 0 0 0 3px rgba(21, 112, 239, 0.16);
+  --panel-body-min: 250px;
+  --node-list-max-height: 232px;
   --ease: 160ms ease;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
@@ -160,7 +162,7 @@ button:disabled {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   color: var(--text);
-  min-height: 36px;
+  min-height: 38px;
   outline: 0;
   padding: 0 12px;
   transition:
@@ -242,7 +244,7 @@ button:disabled {
 
 .button.compact {
   font-size: 12px;
-  min-height: 32px;
+  min-height: 34px;
   padding: 6px 10px;
 }
 
@@ -345,7 +347,7 @@ button:disabled {
 
 .dashboard-shell {
   display: grid;
-  gap: 16px;
+  gap: 18px;
 }
 
 .insight-strip {
@@ -714,8 +716,8 @@ button:disabled {
 }
 
 .dashboard-grid {
-  align-items: stretch;
-  grid-template-columns: minmax(300px, 1.12fr) minmax(260px, 0.88fr) minmax(300px, 1fr);
+  align-items: start;
+  grid-template-columns: minmax(300px, 1.08fr) minmax(280px, 0.92fr) minmax(320px, 1fr);
 }
 
 .panel-wide {
@@ -744,6 +746,19 @@ button:disabled {
   margin: 0;
   min-width: 0;
   overflow: hidden;
+}
+
+.dashboard-grid > .panel:not(.panel-response) {
+  min-height: var(--panel-body-min);
+}
+
+.panel-fleet {
+  max-height: 368px;
+}
+
+.panel-fleet .panel-title {
+  position: relative;
+  z-index: 1;
 }
 
 .panel-title {
@@ -1064,11 +1079,79 @@ tr:last-child td {
 }
 
 .bar-chart,
+.node-health-widget,
 .node-freshness,
 .compact-records {
   display: grid;
   gap: 10px;
   padding: 16px;
+}
+
+.bar-chart,
+.donut-card {
+  min-height: 218px;
+}
+
+.node-health-widget {
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: 218px;
+}
+
+.freshness-summary-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.freshness-summary {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), var(--surface-muted));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 8px;
+}
+
+.freshness-summary-value {
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 950;
+  line-height: 1;
+}
+
+.freshness-summary-label {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 850;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.freshness-summary.fresh {
+  border-color: rgba(5, 150, 105, 0.2);
+}
+
+.freshness-summary.stale {
+  border-color: rgba(201, 137, 14, 0.22);
+}
+
+.freshness-summary.offline {
+  border-color: rgba(217, 45, 58, 0.2);
+}
+
+.freshness-summary.retired {
+  border-color: rgba(115, 87, 216, 0.2);
+}
+
+.node-freshness {
+  max-height: var(--node-list-max-height);
+  overflow: auto;
+  padding: 0 2px 0 0;
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-width: thin;
 }
 
 .bar-row {
@@ -1594,7 +1677,7 @@ tr:last-child td {
 
   .toolbar select,
   .toolbar button {
-    min-height: 34px;
+    min-height: 40px;
   }
 
   .sidebar {
@@ -1669,10 +1752,19 @@ tr:last-child td {
   }
 
   .bar-chart,
+  .node-health-widget,
   .node-freshness,
   .compact-records,
   .donut-card {
     padding: 13px;
+  }
+
+  .node-freshness {
+    padding: 0 2px 0 0;
+  }
+
+  .freshness-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .bar-row {

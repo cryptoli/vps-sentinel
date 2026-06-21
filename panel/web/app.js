@@ -12,6 +12,7 @@ import { createTranslator, selectedLanguage } from "./i18n.js";
 const API_BASE = "/api/v1";
 const DEFAULT_LIMIT = 25;
 const OVERVIEW_LIMIT = 12;
+const OVERVIEW_NODE_LIMIT = 100;
 const TOKEN_STORAGE_KEY = "vps-sentinel-panel-token";
 const TIME_PRESETS = ["1h", "6h", "24h", "today", "7d"];
 const BUILTIN_PAGES = [
@@ -225,7 +226,10 @@ function datasetItemsMap() {
 
 async function loadOverviewDatasets() {
   const entries = await Promise.all(
-    Object.entries(DATASETS).map(async ([key, meta]) => [key, await loadDataset(meta, { limit: OVERVIEW_LIMIT, offset: 0 })]),
+    Object.entries(DATASETS).map(async ([key, meta]) => [
+      key,
+      await loadDataset(meta, { limit: key === "nodes" ? OVERVIEW_NODE_LIMIT : OVERVIEW_LIMIT, offset: 0 }),
+    ]),
   );
   state.datasets = Object.fromEntries(entries);
 }
@@ -291,7 +295,7 @@ function findingDetailContent(detail) {
   wrapper.className = "detail-content";
   wrapper.append(
     ui.detailList([
-      [t("node_id"), detail.node_id],
+      [t("node_name"), detail.node_name],
       [t("severity"), detail.severity],
       [t("rule_id"), detail.rule_id],
       [t("category"), detail.category],
@@ -313,7 +317,7 @@ function incidentDetailContent(detail) {
   wrapper.className = "detail-content";
   wrapper.append(
     ui.detailList([
-      [t("node_id"), detail.node_id],
+      [t("node_name"), detail.node_name],
       [t("severity"), detail.severity],
       [t("score"), detail.score],
       [t("first_seen"), detail.first_seen],

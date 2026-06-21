@@ -19,7 +19,7 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 const PANEL_OUTBOX_RULE_ID: &str = "panel_outbox";
-const PANEL_SCHEMA_VERSION: u16 = 1;
+const PANEL_SCHEMA_VERSION: u16 = 2;
 const MAX_RETRY_PER_SCAN: usize = 3;
 const MAX_PANEL_EVIDENCE_ITEMS: usize = 24;
 const MAX_PANEL_EVIDENCE_VALUE_BYTES: usize = 512;
@@ -39,9 +39,12 @@ pub struct PanelEnvelope {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PanelNodeSnapshot {
+    #[serde(default, skip_serializing)]
     pub node_id: String,
     pub node_name: String,
+    #[serde(default, skip_serializing)]
     pub host_id: String,
+    #[serde(default, skip_serializing)]
     pub hostname: String,
     pub agent_version: String,
     pub privacy_mode: String,
@@ -339,16 +342,12 @@ fn node_snapshot(
     config: &SentinelConfig,
     store: &SqliteStore,
 ) -> SentinelResult<PanelNodeSnapshot> {
-    let hostname = if config.panel.privacy_mode == "strict" {
-        String::new()
-    } else {
-        config.agent.hostname.clone()
-    };
+    let node_name = panel_node_name(config);
     Ok(PanelNodeSnapshot {
-        node_id: panel_node_id(config),
-        node_name: redact_text(config, &panel_node_name(config)),
-        host_id: panel_host_id(config),
-        hostname,
+        node_id: node_name.clone(),
+        node_name,
+        host_id: String::new(),
+        hostname: String::new(),
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
         privacy_mode: config.panel.privacy_mode.clone(),
         enabled_features: enabled_features(config),
@@ -423,12 +422,18 @@ async fn send_envelope(config: &SentinelConfig, payload: &PanelEnvelope) -> Sent
             config.panel.max_payload_bytes
         )));
     }
+    let node_name = payload.node.node_name.trim();
+    if node_name.is_empty() {
+        return Err(SentinelError::Notify(
+            "panel node_name cannot be empty".to_string(),
+        ));
+    }
     let signed = sign_request(
         "POST",
         PANEL_INGEST_PATH,
         &body,
         &config.panel.secret,
-        &payload.node.node_id,
+        node_name,
     )?;
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(config.panel.request_timeout_seconds))
@@ -437,7 +442,7 @@ async fn send_envelope(config: &SentinelConfig, payload: &PanelEnvelope) -> Sent
     let response = client
         .post(config.panel.url.trim())
         .header("content-type", "application/json")
-        .header("x-vps-sentinel-node", &payload.node.node_id)
+        .header("x-vps-sentinel-node-name", node_name)
         .header("x-vps-sentinel-timestamp", signed.timestamp.to_string())
         .header("x-vps-sentinel-nonce", signed.nonce)
         .header("x-vps-sentinel-body-sha256", signed.body_hash)
@@ -461,10 +466,10 @@ fn sign_request(
     path: &str,
     body: &[u8],
     secret: &str,
-    node_id: &str,
+    node_name: &str,
 ) -> SentinelResult<SignedRequest> {
     let timestamp = Utc::now().timestamp();
-    let nonce = panel_header_nonce(node_id, &Uuid::new_v4().to_string());
+    let nonce = panel_header_nonce(node_name, &Uuid::new_v4().to_string());
     let body_hash = panel_body_sha256_hex(body);
     let signature = panel_signature_hex(secret, method, path, timestamp, &nonce, &body_hash);
     Ok(SignedRequest {
@@ -730,14 +735,12 @@ fn validate_payload_size(config: &SentinelConfig, payload: &PanelEnvelope) -> Se
 }
 
 fn sanitize_panel_envelope(config: &SentinelConfig, mut payload: PanelEnvelope) -> PanelEnvelope {
-    payload.node.node_id = panel_node_id(config);
-    payload.node.node_name = redact_text(config, &panel_node_name(config));
-    payload.node.host_id = panel_host_id(config);
-    payload.node.hostname = if config.panel.privacy_mode == "strict" {
-        String::new()
-    } else {
-        redact_text(config, &payload.node.hostname)
-    };
+    let node_name = panel_node_name(config);
+    payload.schema_version = PANEL_SCHEMA_VERSION;
+    payload.node.node_id = node_name.clone();
+    payload.node.node_name = node_name;
+    payload.node.host_id.clear();
+    payload.node.hostname.clear();
     payload.node.agent_version = env!("CARGO_PKG_VERSION").to_string();
     payload.node.privacy_mode = config.panel.privacy_mode.clone();
     payload.node.enabled_features = enabled_features(config);
@@ -795,54 +798,37 @@ fn sanitize_panel_active_block(config: &SentinelConfig, block: &mut PanelActiveB
     block.backend = redact_text(config, &block.backend);
 }
 
-fn panel_node_id(config: &SentinelConfig) -> String {
-    if !config.panel.node_id.trim().is_empty() {
-        let configured = config.panel.node_id.trim();
-        if contains_network_identity(configured) {
-            return stable_panel_identifier("node", configured);
-        }
-        return configured.to_string();
-    }
-    let host_id = config.host_id();
-    if config.panel.privacy_mode == "strict" || contains_network_identity(&host_id) {
-        return stable_panel_identifier("node", &host_id);
-    }
-    host_id
-}
-
 fn panel_node_name(config: &SentinelConfig) -> String {
-    if !config.panel.node_name.trim().is_empty() {
-        let configured = config.panel.node_name.trim();
-        if contains_network_identity(configured) {
-            return stable_panel_identifier("node", configured);
+    for candidate in [
+        config.panel.node_name.trim(),
+        config.agent.display_name.trim(),
+        config.fleet.node_name.trim(),
+    ] {
+        if let Some(name) = safe_node_name(candidate) {
+            return name;
         }
-        return configured.to_string();
     }
-    if config.panel.privacy_mode == "strict" && config.agent.display_name.trim().is_empty() {
-        return panel_node_id(config);
-    }
-    let display_name = config.display_name();
-    if contains_network_identity(&display_name) {
-        return panel_node_id(config);
-    }
-    display_name
+    "unnamed-node".to_string()
 }
 
-fn panel_host_id(config: &SentinelConfig) -> String {
-    let host_id = config.host_id();
-    if config.panel.privacy_mode == "strict" || contains_network_identity(&host_id) {
-        return stable_panel_identifier("host", &host_id);
+fn safe_node_name(value: &str) -> Option<String> {
+    let sanitized = remove_ips_in_text(value).trim().to_string();
+    if sanitized.is_empty() || sanitized == "redacted" || sanitized.contains("redacted") {
+        return None;
     }
-    host_id
+    Some(truncate_node_name(&sanitized))
 }
 
-fn stable_panel_identifier(prefix: &str, value: &str) -> String {
-    let hash = blake3::hash(value.as_bytes()).to_hex().to_string();
-    format!("{prefix}-{}", &hash[..16])
-}
-
-fn contains_network_identity(value: &str) -> bool {
-    remove_ips_in_text(value) != value
+fn truncate_node_name(value: &str) -> String {
+    const MAX_NODE_NAME_BYTES: usize = 96;
+    if value.len() <= MAX_NODE_NAME_BYTES {
+        return value.to_string();
+    }
+    let mut end = MAX_NODE_NAME_BYTES;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }
 
 fn enabled_features(config: &SentinelConfig) -> Vec<String> {
@@ -1051,11 +1037,15 @@ mod tests {
         )?;
         let json = serde_json::to_string(&payload.node)?;
 
-        assert!(payload.node.node_id.starts_with("node-"));
-        assert!(payload.node.host_id.starts_with("host-"));
-        assert_eq!(payload.node.node_name, payload.node.node_id);
+        assert_eq!(payload.schema_version, 2);
+        assert_eq!(payload.node.node_name, "unnamed-node");
+        assert_eq!(payload.node.node_id, "unnamed-node");
+        assert!(payload.node.host_id.is_empty());
         assert!(payload.node.hostname.is_empty());
         assert!(!json.contains("203.0.113"));
+        assert!(!json.contains("node_id"));
+        assert!(!json.contains("host_id"));
+        assert!(!json.contains("hostname"));
         Ok(())
     }
 
@@ -1145,12 +1135,17 @@ mod tests {
         let sanitized = sanitize_panel_envelope(&config, payload);
         let json = serde_json::to_string(&sanitized)?;
 
-        assert!(sanitized.node.node_id.starts_with("node-"));
-        assert!(sanitized.node.host_id.starts_with("host-"));
+        assert_eq!(sanitized.schema_version, 2);
+        assert_eq!(sanitized.node.node_name, "unnamed-node");
+        assert_eq!(sanitized.node.node_id, "unnamed-node");
+        assert!(sanitized.node.host_id.is_empty());
         assert!(sanitized.node.hostname.is_empty());
         assert!(!json.contains("203.0.113"));
         assert!(!json.contains("198.51.100"));
         assert!(!json.contains("0.0.0.0"));
+        assert!(!json.contains("node_id"));
+        assert!(!json.contains("host_id"));
+        assert!(!json.contains("hostname"));
         assert!(!json.contains("/bin/bash -c"));
         assert!(json.contains("/bin/bash [args masked]"));
         Ok(())

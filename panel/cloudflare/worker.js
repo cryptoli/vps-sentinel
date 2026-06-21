@@ -13,28 +13,28 @@ const DATASETS = {
   "/api/v1/nodes": {
     table: "nodes",
     orderColumn: "last_seen_at",
-    columns: ["last_seen_at", "node_id", "node_name", "agent_version", "privacy_mode"],
+    columns: ["last_seen_at", "node_name", "agent_version", "privacy_mode"],
   },
   "/api/v1/findings": {
     table: "findings",
     orderColumn: "timestamp",
-    columns: ["id", "timestamp", "node_id", "severity", "rule_id", "category", "subject", "title"],
+    columns: ["id", "timestamp", "node_id AS node_name", "severity", "rule_id", "category", "subject", "title"],
   },
   "/api/v1/incidents": {
     table: "incidents",
     orderColumn: "last_seen",
-    columns: ["id", "last_seen", "node_id", "severity", "score", "title", "summary"],
+    columns: ["id", "last_seen", "node_id AS node_name", "severity", "score", "title", "summary"],
   },
   "/api/v1/baseline-drifts": {
     table: "baseline_drifts",
     orderColumn: "timestamp",
-    columns: ["timestamp", "node_id", "severity", "rule_id", "tier", "subject", "review_action"],
+    columns: ["timestamp", "node_id AS node_name", "severity", "rule_id", "tier", "subject", "review_action"],
   },
   "/api/v1/active-blocks": {
     table: "active_blocks",
     orderColumn: "blocked_at",
     activeFilter: "expired = 0",
-    columns: ["blocked_at", "node_id", "rule_id", "backend", "reason", "expires_at"],
+    columns: ["blocked_at", "node_id AS node_name", "rule_id", "backend", "reason", "expires_at"],
   },
   "/api/v1/audit-logs": {
     table: "panel_audit_logs",
@@ -105,7 +105,7 @@ async function ingest(request, env) {
   if (body.byteLength > Number(env.PANEL_MAX_BODY_BYTES || 1048576)) {
     return json({ error: "body_too_large" }, 413);
   }
-  const nodeId = requiredHeader(request, "x-vps-sentinel-node");
+  const nodeName = ingestNodeName(request);
   const timestamp = Number(requiredHeader(request, "x-vps-sentinel-timestamp"));
   const nonce = requiredHeader(request, "x-vps-sentinel-nonce");
   const bodyHash = requiredHeader(request, "x-vps-sentinel-body-sha256");
@@ -114,14 +114,14 @@ async function ingest(request, env) {
   if (!Number.isFinite(timestamp) || Math.abs(now - timestamp) > SIGNATURE_WINDOW_SECONDS) {
     return json({ error: "signature_timestamp_out_of_window" }, 401);
   }
-  if (!nonce.startsWith(`${nodeId}:`)) {
+  if (!nonce.startsWith(`${nodeName}:`)) {
     return json({ error: "nonce_node_mismatch" }, 401);
   }
   const actualHash = await sha256Hex(body);
   if (!timingSafeEqual(actualHash, bodyHash)) {
     return json({ error: "body_hash_mismatch" }, 401);
   }
-  const secret = secretForNode(env, nodeId);
+  const secret = secretForNode(env, nodeName);
   if (!secret) {
     return json({ error: "unknown_node_secret" }, 401);
   }
@@ -136,20 +136,37 @@ async function ingest(request, env) {
     return json({ error: "nonce_replay" }, 409);
   }
   await env.DB.prepare("INSERT INTO ingest_nonces (nonce, node_id, expires_at) VALUES (?, ?, ?)")
-    .bind(nonce, nodeId, now + SIGNATURE_WINDOW_SECONDS)
+    .bind(nonce, nodeName, now + SIGNATURE_WINDOW_SECONDS)
     .run();
 
   const payload = JSON.parse(new TextDecoder().decode(body));
-  if (payload?.schema_version !== 1 || payload?.node?.node_id !== nodeId) {
+  if (!validPanelPayloadIdentity(payload, nodeName)) {
     return json({ error: "invalid_payload" }, 400);
   }
-  await persistPayload(env, payload);
+  await persistPayload(env, payload, nodeName);
   return json({ ok: true, message_id: payload.message_id });
 }
 
-async function persistPayload(env, payload) {
+function ingestNodeName(request) {
+  try {
+    return requiredHeader(request, "x-vps-sentinel-node-name");
+  } catch {
+    return requiredHeader(request, "x-vps-sentinel-node");
+  }
+}
+
+function validPanelPayloadIdentity(payload, nodeName) {
+  if (payload?.schema_version === 2) return payload?.node?.node_name === nodeName;
+  if (payload?.schema_version === 1) {
+    return payload?.node?.node_id === nodeName || payload?.node?.node_name === nodeName;
+  }
+  return false;
+}
+
+async function persistPayload(env, payload, signedNodeName) {
   const receivedAt = new Date().toISOString();
   const node = payload.node;
+  const nodeName = redactIpText(signedNodeName || node.node_name || "");
   await env.DB.prepare(`
     INSERT INTO nodes
       (node_id, node_name, host_id, hostname, agent_version, privacy_mode, enabled_features_json, storage_json, last_seen_at, updated_at)
@@ -165,10 +182,10 @@ async function persistPayload(env, payload) {
       last_seen_at = excluded.last_seen_at,
       updated_at = excluded.updated_at
   `).bind(
-    node.node_id,
-    redactIpText(node.node_name || ""),
-    redactIpText(node.host_id || ""),
-    redactIpText(node.hostname || ""),
+    nodeName,
+    nodeName,
+    "",
+    "",
     node.agent_version,
     node.privacy_mode,
     JSON.stringify(node.enabled_features || []),
@@ -177,7 +194,7 @@ async function persistPayload(env, payload) {
     receivedAt,
   ).run();
   await env.DB.prepare("INSERT OR REPLACE INTO heartbeats (message_id, node_id, sent_at, received_at, scan_json) VALUES (?, ?, ?, ?, ?)")
-    .bind(payload.message_id, node.node_id, payload.sent_at, receivedAt, JSON.stringify(redactPanelValue(payload.scan || {})))
+    .bind(payload.message_id, nodeName, payload.sent_at, receivedAt, JSON.stringify(redactPanelValue(payload.scan || {})))
     .run();
 
   for (const finding of payload.findings || []) {
@@ -190,7 +207,7 @@ async function persistPayload(env, payload) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       finding.id,
-      node.node_id,
+      nodeName,
       finding.rule_id,
       redactIpText(finding.title || ""),
       finding.severity,
@@ -214,7 +231,7 @@ async function persistPayload(env, payload) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       incident.id,
-      node.node_id,
+      nodeName,
       redactIpText(incident.title || ""),
       incident.severity,
       Number(incident.score || 0),
@@ -228,14 +245,14 @@ async function persistPayload(env, payload) {
 
   for (const drift of payload.baseline_drifts || []) {
     const subject = redactIpText(drift.subject || "");
-    const id = `${node.node_id}:${drift.finding_id || drift.rule_id}:${subject}:${drift.timestamp}`;
+    const id = `${nodeName}:${drift.finding_id || drift.rule_id}:${subject}:${drift.timestamp}`;
     await env.DB.prepare(`
       INSERT OR REPLACE INTO baseline_drifts
         (id, node_id, finding_id, rule_id, severity, subject, timestamp, tier, score, review_action, reasons_json, received_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       id,
-      node.node_id,
+      nodeName,
       drift.finding_id || "",
       drift.rule_id,
       drift.severity,
@@ -250,14 +267,14 @@ async function persistPayload(env, payload) {
   }
 
   for (const block of payload.active_blocks || []) {
-    const id = panelBlockStorageId(node.node_id, block);
+    const id = panelBlockStorageId(nodeName, block);
     await env.DB.prepare(`
       INSERT OR REPLACE INTO active_blocks
         (id, node_id, ip, rule_id, finding_id, reason, backend, blocked_at, expires_at, expired, firewall_present, received_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       id,
-      node.node_id,
+      nodeName,
       redactedIp(),
       block.rule_id,
       block.finding_id,
@@ -274,7 +291,7 @@ async function persistPayload(env, payload) {
 
 async function summary(env) {
   const [nodes, findings, incidents, drifts, blocks] = await Promise.all([
-    count(env, "nodes"),
+    countDistinct(env, "nodes", "node_name"),
     count(env, "findings"),
     count(env, "incidents"),
     count(env, "baseline_drifts"),
@@ -315,7 +332,7 @@ async function queryPage(env, dataset, url) {
 async function findingDetail(env, url) {
   const id = requiredQuery(url, "id");
   const row = await env.DB.prepare(`
-    SELECT id, node_id, rule_id, title, severity, confidence, category, subject, timestamp, dedup_key,
+    SELECT id, node_id AS node_name, rule_id, title, severity, confidence, category, subject, timestamp, dedup_key,
            evidence_json, impact_json, recommendations_json, received_at
     FROM findings
     WHERE id = ?
@@ -336,7 +353,7 @@ async function findingDetail(env, url) {
 async function incidentDetail(env, url) {
   const id = requiredQuery(url, "id");
   const row = await env.DB.prepare(`
-    SELECT id, node_id, title, severity, score, first_seen, last_seen, summary, payload_json, received_at
+    SELECT id, node_id AS node_name, title, severity, score, first_seen, last_seen, summary, payload_json, received_at
     FROM incidents
     WHERE id = ?
   `).bind(id).first();
@@ -503,6 +520,11 @@ async function count(env, table) {
   return Number(row?.count || 0);
 }
 
+async function countDistinct(env, table, column) {
+  const row = await env.DB.prepare(`SELECT COUNT(DISTINCT ${column}) AS count FROM ${table}`).first();
+  return Number(row?.count || 0);
+}
+
 async function countWhere(env, table, whereClause) {
   const row = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${whereClause}`).first();
   return Number(row?.count || 0);
@@ -603,7 +625,7 @@ function withCors(response, request, env) {
     headers.set("access-control-allow-origin", origin);
     headers.set("vary", "Origin");
     headers.set("access-control-allow-methods", "GET,POST,OPTIONS");
-    headers.set("access-control-allow-headers", "authorization,content-type,x-vps-sentinel-node,x-vps-sentinel-timestamp,x-vps-sentinel-nonce,x-vps-sentinel-body-sha256,x-vps-sentinel-signature,x-vps-sentinel-view-token");
+    headers.set("access-control-allow-headers", "authorization,content-type,x-vps-sentinel-node-name,x-vps-sentinel-node,x-vps-sentinel-timestamp,x-vps-sentinel-nonce,x-vps-sentinel-body-sha256,x-vps-sentinel-signature,x-vps-sentinel-view-token");
   }
   headers.set("x-content-type-options", "nosniff");
   headers.set("referrer-policy", "no-referrer");

@@ -38,5 +38,7 @@
   --shadow-hover: 0 18px 42px rgba(15, 23, 42, 0.12);
   --ring-shadow: 0 0 0 1px rgba(15, 23, 42, 0.035), 0 10px 22px rgba(15, 23, 42, 0.055);
   --focus-ring: 0 0 0 3px rgba(21, 112, 239, 0.16);
+  --panel-body-min: 250px;
+  --node-list-max-height: 232px;
   --ease: 160ms ease;
 }

@@ -171,10 +171,9 @@ struct PanelEnvelope {
 
 #[derive(Debug, Deserialize)]
 struct PanelNode {
+    #[serde(default)]
     node_id: String,
     node_name: String,
-    host_id: String,
-    hostname: String,
     agent_version: String,
     privacy_mode: String,
     #[serde(default)]
@@ -472,21 +471,33 @@ async fn ingest(
             "body_too_large",
         ));
     }
-    let node_id = header(&headers, "x-vps-sentinel-node")?;
-    verify_signature(&state, &headers, &body, &node_id).await?;
+    let node_name = ingest_node_name(&headers)?;
+    verify_signature(&state, &headers, &body, &node_name).await?;
     let payload: PanelEnvelope = serde_json::from_slice(&body)
         .map_err(|err| PanelApiError::detail(StatusCode::BAD_REQUEST, "invalid_json", err))?;
-    if payload.schema_version != 1 || payload.node.node_id != node_id {
+    if !valid_panel_payload_identity(&payload, &node_name) {
         return Err(PanelApiError::new(
             StatusCode::BAD_REQUEST,
             "invalid_payload",
         ));
     }
-    state.repo.insert_nonce(&headers, &node_id).await?;
-    state.repo.persist_payload(&payload).await?;
+    state.repo.insert_nonce(&headers, &node_name).await?;
+    state.repo.persist_payload(&payload, &node_name).await?;
     Ok(Json(
         json!({ "ok": true, "message_id": payload.message_id }),
     ))
+}
+
+fn ingest_node_name(headers: &HeaderMap) -> Result<String, PanelApiError> {
+    header(headers, "x-vps-sentinel-node-name").or_else(|_| header(headers, "x-vps-sentinel-node"))
+}
+
+fn valid_panel_payload_identity(payload: &PanelEnvelope, signed_node_name: &str) -> bool {
+    match payload.schema_version {
+        2 => payload.node.node_name == signed_node_name,
+        1 => payload.node.node_id == signed_node_name || payload.node.node_name == signed_node_name,
+        _ => false,
+    }
 }
 
 async fn summary(
@@ -499,7 +510,7 @@ async fn summary(
         .query_all("SELECT severity, COUNT(*) AS count FROM findings GROUP BY severity")
         .await?;
     Ok(Json(json!({
-        "nodes": state.repo.count("nodes", None).await?,
+        "nodes": state.repo.count_distinct("nodes", "node_name", None).await?,
         "findings": state.repo.count("findings", None).await?,
         "incidents": state.repo.count("incidents", None).await?,
         "baseline_drifts": state.repo.count("baseline_drifts", None).await?,
@@ -521,13 +532,7 @@ async fn nodes(
             table: "nodes",
             order_column: "last_seen_at",
             active_filter: None,
-            columns: &[
-                "last_seen_at",
-                "node_id",
-                "node_name",
-                "agent_version",
-                "privacy_mode",
-            ],
+            columns: &["last_seen_at", "node_name", "agent_version", "privacy_mode"],
         },
     )
     .await
@@ -549,7 +554,7 @@ async fn findings(
             columns: &[
                 "id",
                 "timestamp",
-                "node_id",
+                "node_id AS node_name",
                 "severity",
                 "rule_id",
                 "category",
@@ -598,7 +603,7 @@ async fn incidents(
             columns: &[
                 "id",
                 "last_seen",
-                "node_id",
+                "node_id AS node_name",
                 "severity",
                 "score",
                 "title",
@@ -634,7 +639,7 @@ async fn baseline_drifts(
             active_filter: None,
             columns: &[
                 "timestamp",
-                "node_id",
+                "node_id AS node_name",
                 "severity",
                 "rule_id",
                 "tier",
@@ -661,7 +666,7 @@ async fn active_blocks(
             active_filter: Some("expired = 0"),
             columns: &[
                 "blocked_at",
-                "node_id",
+                "node_id AS node_name",
                 "rule_id",
                 "backend",
                 "reason",
@@ -1020,7 +1025,7 @@ impl Repository {
     async fn finding_detail(&self, id: &str) -> Result<Value, PanelApiError> {
         let columns = [
             "id",
-            "node_id",
+            "node_id AS node_name",
             "rule_id",
             "title",
             "severity",
@@ -1059,7 +1064,7 @@ impl Repository {
     async fn incident_detail(&self, id: &str) -> Result<Value, PanelApiError> {
         let columns = [
             "id",
-            "node_id",
+            "node_id AS node_name",
             "title",
             "severity",
             "score",
@@ -1248,6 +1253,21 @@ impl Repository {
         self.count_sql(&sql, &[]).await
     }
 
+    async fn count_distinct(
+        &self,
+        table: &str,
+        column: &str,
+        where_clause: Option<&str>,
+    ) -> Result<i64, PanelApiError> {
+        let sql = match where_clause {
+            Some(where_clause) => format!(
+                "SELECT COUNT(DISTINCT {column}) AS count FROM {table} WHERE {where_clause}"
+            ),
+            None => format!("SELECT COUNT(DISTINCT {column}) AS count FROM {table}"),
+        };
+        self.count_sql(&sql, &[]).await
+    }
+
     async fn count_sql(&self, sql: &str, values: &[DbValue]) -> Result<i64, PanelApiError> {
         match &self.driver {
             RepositoryDriver::Sqlite(connection) => {
@@ -1374,33 +1394,38 @@ impl Repository {
         Ok(())
     }
 
-    async fn persist_payload(&self, payload: &PanelEnvelope) -> Result<(), PanelApiError> {
+    async fn persist_payload(
+        &self,
+        payload: &PanelEnvelope,
+        node_name: &str,
+    ) -> Result<(), PanelApiError> {
         let received_at = Utc::now().to_rfc3339();
         let node = &payload.node;
-        self.upsert_node(node, payload.sent_at, &received_at)
+        let node_name = redact_ip_text(node_name);
+        self.upsert_node(&node_name, node, payload.sent_at, &received_at)
             .await?;
-        self.upsert_heartbeat(payload, &received_at).await?;
+        self.upsert_heartbeat(&node_name, payload, &received_at)
+            .await?;
         for finding in &payload.findings {
-            self.upsert_finding(&node.node_id, finding, &received_at)
+            self.upsert_finding(&node_name, finding, &received_at)
                 .await?;
         }
         for incident in &payload.incidents {
-            self.upsert_incident(&node.node_id, incident, &received_at)
+            self.upsert_incident(&node_name, incident, &received_at)
                 .await?;
         }
         for drift in &payload.baseline_drifts {
-            self.upsert_drift(&node.node_id, drift, &received_at)
-                .await?;
+            self.upsert_drift(&node_name, drift, &received_at).await?;
         }
         for block in &payload.active_blocks {
-            self.upsert_block(&node.node_id, block, &received_at)
-                .await?;
+            self.upsert_block(&node_name, block, &received_at).await?;
         }
         Ok(())
     }
 
     async fn upsert_node(
         &self,
+        node_name: &str,
         node: &PanelNode,
         sent_at: DateTime<Utc>,
         received_at: &str,
@@ -1435,10 +1460,10 @@ impl Repository {
         self.execute_write(
             &sql,
             &[
-                DbValue::Text(node.node_id.clone()),
-                DbValue::Text(redact_ip_text(&node.node_name)),
-                DbValue::Text(redact_ip_text(&node.host_id)),
-                DbValue::Text(redact_ip_text(&node.hostname)),
+                DbValue::Text(node_name.to_string()),
+                DbValue::Text(node_name.to_string()),
+                DbValue::Text(String::new()),
+                DbValue::Text(String::new()),
                 DbValue::Text(node.agent_version.clone()),
                 DbValue::Text(node.privacy_mode.clone()),
                 DbValue::Text(json_string(&node.enabled_features)?),
@@ -1453,6 +1478,7 @@ impl Repository {
 
     async fn upsert_heartbeat(
         &self,
+        node_name: &str,
         payload: &PanelEnvelope,
         received_at: &str,
     ) -> Result<(), PanelApiError> {
@@ -1474,7 +1500,7 @@ impl Repository {
             &sql,
             &[
                 DbValue::Text(payload.message_id.clone()),
-                DbValue::Text(payload.node.node_id.clone()),
+                DbValue::Text(node_name.to_string()),
                 DbValue::Text(payload.sent_at.to_rfc3339()),
                 DbValue::Text(received_at.to_string()),
                 DbValue::Text(json_string(&scan)?),

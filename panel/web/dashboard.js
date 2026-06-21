@@ -1,8 +1,8 @@
 import { formatTemplate } from "./components.js";
 
-const OVERVIEW_FINDING_COLUMNS = ["timestamp", "node_id", "severity", "rule_id", "subject"];
-const OVERVIEW_INCIDENT_COLUMNS = ["last_seen", "node_id", "severity", "score", "title"];
-const OVERVIEW_DRIFT_COLUMNS = ["timestamp", "node_id", "severity", "rule_id", "tier", "subject"];
+const OVERVIEW_FINDING_COLUMNS = ["timestamp", "node_name", "severity", "rule_id", "subject"];
+const OVERVIEW_INCIDENT_COLUMNS = ["last_seen", "node_name", "severity", "score", "title"];
+const OVERVIEW_DRIFT_COLUMNS = ["timestamp", "node_name", "severity", "rule_id", "tier", "subject"];
 
 export function renderOverviewDashboard(ctx) {
   const { app, state, t, ui } = ctx;
@@ -46,7 +46,7 @@ export function renderOverviewDashboard(ctx) {
         },
       ]),
       ui.metrics([
-        metric(t("nodesMetric"), nodes.length || summary.nodes, "nodes", t("nodesMetricHint")),
+        metric(t("nodesMetric"), summary.nodes ?? nodes.length, "nodes", t("nodesMetricHint")),
         metric(t("findingsMetric"), summary.findings, "findings", t("findingsMetricHint")),
         metric(t("incidentsMetric"), summary.incidents, "incidents", t("incidentsMetricHint")),
         metric(t("driftsMetric"), summary.baseline_drifts, "drifts", t("driftsMetricHint")),
@@ -62,6 +62,7 @@ export function renderOverviewDashboard(ctx) {
         }),
         ui.panel(t("fleetFreshness"), ui.nodeFreshness(nodes), {
           meta: t("fleetFreshnessMeta"),
+          tone: "fleet",
         }),
         ui.panel(t("activeBlocksSnapshot"), ui.compactRecords(blocks, blockRecord(t)), {
           meta: t("activeBlocksSnapshotMeta"),
@@ -91,7 +92,8 @@ function canonicalNodes(nodes, settings) {
   );
   const groups = new Map();
   for (const node of nodes) {
-    const key = String(node.node_name || node.node_id || "").trim() || String(node.node_id || "");
+    const key = String(node.node_name || "").trim();
+    if (!key) continue;
     if (!groups.has(key)) {
       groups.set(key, []);
     }
@@ -151,7 +153,7 @@ function highRiskCount(rows) {
 function blockRecord(t) {
   return (block) => ({
     title: block.rule_id || t("activeResponse"),
-    meta: [block.node_id, block.rule_id, block.backend].filter(Boolean).join(" / "),
+    meta: [block.node_name, block.rule_id, block.backend].filter(Boolean).join(" / "),
     detail: block.reason || t("noReason"),
     tone: "blocked",
   });

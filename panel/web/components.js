@@ -267,9 +267,22 @@ export function createView({ t, language, freshness = {} }) {
 
   function nodeFreshness(nodes) {
     const wrapper = document.createElement("div");
-    wrapper.className = "node-freshness";
+    wrapper.className = "node-health-widget";
     if (!nodes.length) return emptyChart();
-    for (const node of nodes.slice(0, 8)) {
+
+    const counts = freshnessCounts(nodes);
+    const summary = document.createElement("div");
+    summary.className = "freshness-summary-grid";
+    for (const status of ["fresh", "stale", "offline", "retired"]) {
+      const item = document.createElement("div");
+      item.className = `freshness-summary ${status}`;
+      item.append(span("freshness-summary-value", number(counts[status])), span("freshness-summary-label", t(status)));
+      summary.append(item);
+    }
+
+    const list = document.createElement("div");
+    list.className = "node-freshness";
+    for (const node of nodes) {
       const age = ageMinutes(node.last_seen_at);
       const status = freshnessStatus(age, node);
       const row = document.createElement("div");
@@ -282,12 +295,13 @@ export function createView({ t, language, freshness = {} }) {
       });
       row.append(
         span(`status-dot ${status}`, ""),
-        span("freshness-name", node.node_name || node.node_id || "-"),
+        span("freshness-name", node.node_name || "-"),
         span("freshness-state", t(status)),
         span("freshness-age", relativeAge(age)),
       );
-      wrapper.append(row);
+      list.append(row);
     }
+    wrapper.append(summary, list);
     return wrapper;
   }
 
@@ -335,7 +349,7 @@ export function createView({ t, language, freshness = {} }) {
     if (column === "severity") {
       return span(`badge severity-${String(value || "").toLowerCase()}`, translateValue("severity", value));
     }
-    if (["node_id", "rule_id", "backend", "tier"].includes(column) && value) {
+    if (["rule_id", "backend", "tier"].includes(column) && value) {
       return span(`code-pill code-pill-${column}`, String(value));
     }
     if (column === "score" && value !== null && value !== undefined && value !== "") {
@@ -387,11 +401,9 @@ export function createView({ t, language, freshness = {} }) {
   }
 
   function placeholderNode(node) {
-    const id = String(node.node_id || "").trim().toLowerCase();
     const name = String(node.node_name || "").trim().toLowerCase();
-    const hostname = String(node.hostname || "").trim();
     const version = String(node.agent_version || "").trim().toLowerCase();
-    return version.includes("smoke") || (id === "local-host" && !hostname && (!name || name === "local-host"));
+    return version.includes("smoke") || !name || name === "local-host";
   }
 
   function relativeAge(minutes) {
