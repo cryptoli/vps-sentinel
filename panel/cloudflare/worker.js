@@ -235,7 +235,8 @@ async function persistPayload(env, payload, signedNodeName) {
   const receivedAt = new Date().toISOString();
   const node = payload.node;
   const nodeName = redactIpText(signedNodeName || node.node_name || "");
-  await env.DB.prepare(`
+  const statements = [];
+  statements.push(env.DB.prepare(`
     INSERT INTO nodes
       (node_id, node_name, host_id, hostname, agent_version, privacy_mode, enabled_features_json, storage_json, last_seen_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -260,16 +261,16 @@ async function persistPayload(env, payload, signedNodeName) {
     JSON.stringify(redactPanelValue(node.storage || {})),
     payload.sent_at,
     receivedAt,
-  ).run();
-  await env.DB.prepare("INSERT OR REPLACE INTO heartbeats (message_id, node_id, sent_at, received_at, scan_json) VALUES (?, ?, ?, ?, ?)")
+  ));
+  statements.push(env.DB.prepare("INSERT OR REPLACE INTO heartbeats (message_id, node_id, sent_at, received_at, scan_json) VALUES (?, ?, ?, ?, ?)")
     .bind(payload.message_id, nodeName, payload.sent_at, receivedAt, JSON.stringify(redactPanelValue(payload.scan || {})))
-    .run();
+  );
 
   for (const finding of payload.findings || []) {
     const evidence = redactPanelValue(finding.evidence || []);
     const impact = redactPanelValue(finding.impact || []);
     const recommendations = redactPanelValue(finding.recommendations || []);
-    await env.DB.prepare(`
+    statements.push(env.DB.prepare(`
       INSERT OR REPLACE INTO findings
         (id, node_id, rule_id, title, severity, confidence, category, subject, timestamp, dedup_key, evidence_json, impact_json, recommendations_json, received_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -288,12 +289,12 @@ async function persistPayload(env, payload, signedNodeName) {
       JSON.stringify(impact),
       JSON.stringify(recommendations),
       receivedAt,
-    ).run();
+    ));
   }
 
   for (const incident of payload.incidents || []) {
     const incidentPayload = redactPanelValue(incident);
-    await env.DB.prepare(`
+    statements.push(env.DB.prepare(`
       INSERT OR REPLACE INTO incidents
         (id, node_id, title, severity, score, first_seen, last_seen, summary, payload_json, received_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -308,13 +309,13 @@ async function persistPayload(env, payload, signedNodeName) {
       redactIpText(incident.summary || ""),
       JSON.stringify(incidentPayload),
       receivedAt,
-    ).run();
+    ));
   }
 
   for (const drift of payload.baseline_drifts || []) {
     const subject = redactIpText(drift.subject || "");
     const id = `${nodeName}:${drift.finding_id || drift.rule_id}:${subject}:${drift.timestamp}`;
-    await env.DB.prepare(`
+    statements.push(env.DB.prepare(`
       INSERT OR REPLACE INTO baseline_drifts
         (id, node_id, finding_id, rule_id, severity, subject, timestamp, tier, score, review_action, reasons_json, received_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -331,12 +332,12 @@ async function persistPayload(env, payload, signedNodeName) {
       drift.review_action,
       JSON.stringify(redactPanelValue(drift.reasons || [])),
       receivedAt,
-    ).run();
+    ));
   }
 
   for (const block of payload.active_blocks || []) {
     const id = panelBlockStorageId(nodeName, block);
-    await env.DB.prepare(`
+    statements.push(env.DB.prepare(`
       INSERT OR REPLACE INTO active_blocks
         (id, node_id, ip, rule_id, finding_id, reason, backend, blocked_at, expires_at, expired, firewall_present, received_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -353,36 +354,58 @@ async function persistPayload(env, payload, signedNodeName) {
       block.expired ? 1 : 0,
       block.firewall_present === null || block.firewall_present === undefined ? null : (block.firewall_present ? 1 : 0),
       receivedAt,
-    ).run();
+    ));
   }
 
+  await runD1Batch(env, statements);
+  const probeStatements = [];
   for (const source of payload.probe_sources || []) {
-    try {
-      await upsertProbeSource(env, nodeName, source, receivedAt);
-    } catch (error) {
-      if (missingTableError(error, "probe_sources")) {
-        console.warn("probe_sources table is missing; apply panel/cloudflare/schema.sql to enable probe-source blacklist storage");
-        break;
-      }
+    const statement = probeSourceStatement(env, nodeName, source, receivedAt);
+    if (statement) probeStatements.push(statement);
+  }
+  try {
+    await runD1Batch(env, probeStatements);
+  } catch (error) {
+    if (missingTableError(error, "probe_sources")) {
+      console.warn("probe_sources table is missing; apply panel/cloudflare/schema.sql to enable probe-source blacklist storage");
+    } else {
       throw error;
     }
   }
 }
 
-async function upsertProbeSource(env, nodeName, source, receivedAt) {
+function probeSourceStatement(env, nodeName, source, receivedAt) {
   const sourceIp = String(source?.source_ip || "").trim();
-  if (!sourceIp) return;
+  if (!sourceIp) return null;
   const id = `${nodeName}:${sourceIp}`;
-  const existing = await env.DB.prepare(
-    "SELECT first_seen, last_seen, seen_count, categories_json, rule_ids_json FROM probe_sources WHERE id = ?",
-  ).bind(id).first();
-  const merged = mergeProbeSource(existing, source, receivedAt);
-  await env.DB.prepare(`
-    INSERT OR REPLACE INTO probe_sources
+  const firstSeen = String(source.first_seen || receivedAt);
+  const lastSeen = String(source.last_seen || firstSeen);
+  const seenCount = Math.max(1, Number(source.seen_count || 1) || 1);
+  return env.DB.prepare(`
+    INSERT INTO probe_sources
       (id, node_id, source_ip, ip_version, network_prefix, country, asn, organization,
        first_seen, last_seen, seen_count, categories_json, rule_ids_json, latest_reason,
        block_status, block_reason, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      country = excluded.country,
+      asn = excluded.asn,
+      organization = excluded.organization,
+      first_seen = CASE
+        WHEN probe_sources.first_seen <= excluded.first_seen THEN probe_sources.first_seen
+        ELSE excluded.first_seen
+      END,
+      last_seen = CASE
+        WHEN probe_sources.last_seen >= excluded.last_seen THEN probe_sources.last_seen
+        ELSE excluded.last_seen
+      END,
+      seen_count = probe_sources.seen_count + excluded.seen_count,
+      categories_json = excluded.categories_json,
+      rule_ids_json = excluded.rule_ids_json,
+      latest_reason = excluded.latest_reason,
+      block_status = excluded.block_status,
+      block_reason = excluded.block_reason,
+      updated_at = excluded.updated_at
   `).bind(
     id,
     nodeName,
@@ -392,30 +415,16 @@ async function upsertProbeSource(env, nodeName, source, receivedAt) {
     String(source.country || "unknown"),
     String(source.asn || "unknown"),
     redactIpText(source.organization || "unknown"),
-    merged.first_seen,
-    merged.last_seen,
-    merged.seen_count,
-    JSON.stringify(merged.categories),
-    JSON.stringify(merged.rule_ids),
+    firstSeen,
+    lastSeen,
+    seenCount,
+    JSON.stringify((source.categories || []).map((item) => String(item || "")).filter(Boolean)),
+    JSON.stringify((source.rule_ids || []).map((item) => String(item || "")).filter(Boolean)),
     redactIpText(source.latest_reason || ""),
     String(source.block_status || "observed"),
     redactIpText(source.block_reason || ""),
     receivedAt,
-  ).run();
-}
-
-function mergeProbeSource(existing, source, fallbackTime) {
-  const firstSeen = String(source.first_seen || fallbackTime);
-  const lastSeen = String(source.last_seen || firstSeen);
-  const existingFirst = existing?.first_seen ? String(existing.first_seen) : firstSeen;
-  const existingLast = existing?.last_seen ? String(existing.last_seen) : lastSeen;
-  return {
-    first_seen: minTimeString(existingFirst, firstSeen),
-    last_seen: maxTimeString(existingLast, lastSeen),
-    seen_count: Number(existing?.seen_count || 0) + Math.max(1, Number(source.seen_count || 1) || 1),
-    categories: mergeStringSets(parseJsonField(existing?.categories_json, []), source.categories || []),
-    rule_ids: mergeStringSets(parseJsonField(existing?.rule_ids_json, []), source.rule_ids || []),
-  };
+  );
 }
 
 async function summary(env, role = "public") {
@@ -603,19 +612,19 @@ function panelNodeStatus(lastSeenAt, now) {
   return "fresh";
 }
 
-function mergeStringSets(left, right) {
-  return [...new Set([...(left || []), ...(right || [])]
-    .map((item) => String(item || "").trim())
-    .filter(Boolean))]
-    .sort((a, b) => a.localeCompare(b));
-}
-
-function minTimeString(left, right) {
-  return new Date(left).getTime() <= new Date(right).getTime() ? left : right;
-}
-
-function maxTimeString(left, right) {
-  return new Date(left).getTime() >= new Date(right).getTime() ? left : right;
+async function runD1Batch(env, statements) {
+  const chunkSize = 50;
+  for (let index = 0; index < statements.length; index += chunkSize) {
+    const chunk = statements.slice(index, index + chunkSize);
+    if (!chunk.length) continue;
+    if (typeof env.DB.batch === "function") {
+      await env.DB.batch(chunk);
+    } else {
+      for (const statement of chunk) {
+        await statement.run();
+      }
+    }
+  }
 }
 
 function redactedIp() {
