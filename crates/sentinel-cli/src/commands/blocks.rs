@@ -60,11 +60,13 @@ pub fn run_blocks(config: SentinelConfig, command: BlocksCommand) -> Result<()> 
         BlocksCommand::Cleanup => {
             let report = cleanup_active_blocks(&config, &store)?;
             println!(
-                "cleanup complete: expired={} stale={} failed_expirations={} failed_state_checks={}",
+                "cleanup complete: expired={} stale={} legacy_port_guards_removed={} failed_expirations={} failed_state_checks={} failed_legacy_port_guard_cleanups={}",
                 report.expired_blocks,
                 report.stale_blocks,
+                report.legacy_port_guards_removed,
                 report.failed_expirations,
-                report.failed_state_checks
+                report.failed_state_checks,
+                report.failed_legacy_port_guard_cleanups
             );
         }
         BlocksCommand::Unblock { ip } => {

@@ -518,11 +518,18 @@ maybe_sync_config_defaults() {
   fi
 }
 
+cleanup_active_response_state() {
+  config_path="$CONFIG_DIR/config.toml"
+  "$PREFIX/bin/vps-sentinel" --config "$config_path" blocks cleanup || \
+    echo "active-response cleanup failed; continuing install" >&2
+}
+
 post_install_setup() {
   config_path="$CONFIG_DIR/config.toml"
   maybe_migrate_config
   maybe_sync_config_defaults
   "$PREFIX/bin/vps-sentinel" --config "$config_path" config validate
+  cleanup_active_response_state
   if yes_enabled "$RUN_DOCTOR"; then
     "$PREFIX/bin/vps-sentinel" --config "$config_path" doctor
   fi

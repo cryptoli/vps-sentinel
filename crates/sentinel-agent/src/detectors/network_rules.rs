@@ -113,6 +113,9 @@ fn detect_network_events(index: &EventIndex<'_>, ctx: &DetectContext) -> Vec<Fin
                 ));
             }
         } else if let Some(service_name) = high_risk_service {
+            if policy.is_expected_public(port) {
+                continue;
+            }
             if firewall
                 .as_ref()
                 .is_some_and(|firewall| firewall.protects_tcp_port(port) && is_tcp_protocol(event))

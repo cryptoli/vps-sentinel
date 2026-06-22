@@ -86,6 +86,8 @@ pub struct BlockMaintenanceReport {
     pub stale_blocks: usize,
     pub failed_expirations: usize,
     pub failed_state_checks: usize,
+    pub legacy_port_guards_removed: usize,
+    pub failed_legacy_port_guard_cleanups: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -593,6 +595,11 @@ fn synchronize_block_state(
     now: DateTime<Utc>,
 ) -> BlockMaintenanceReport {
     let mut report = BlockMaintenanceReport::default();
+    if config.active_response.cleanup_legacy_port_guards {
+        let legacy = cleanup_legacy_port_guards(config);
+        report.legacy_port_guards_removed = legacy.removed;
+        report.failed_legacy_port_guard_cleanups = legacy.failed;
+    }
     let expired = state
         .blocks
         .iter()
@@ -652,6 +659,157 @@ fn synchronize_block_state(
         }
     }
     report
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct LegacyPortGuardCleanupReport {
+    removed: usize,
+    failed: usize,
+}
+
+fn cleanup_legacy_port_guards(config: &SentinelConfig) -> LegacyPortGuardCleanupReport {
+    let timeout = Duration::from_secs(config.active_response.command_timeout_seconds);
+    let mut report = LegacyPortGuardCleanupReport::default();
+    let nft = cleanup_legacy_nft_port_guard(timeout);
+    report.removed += nft.removed;
+    report.failed += nft.failed;
+    for program in ["iptables", "ip6tables"] {
+        let cleaned = cleanup_legacy_iptables_port_guards(program, timeout);
+        report.removed += cleaned.removed;
+        report.failed += cleaned.failed;
+    }
+    report
+}
+
+fn cleanup_legacy_nft_port_guard(timeout: Duration) -> LegacyPortGuardCleanupReport {
+    let mut report = LegacyPortGuardCleanupReport::default();
+    if !command_available("nft", timeout) {
+        return report;
+    }
+    let Some(output) = command_output(
+        "nft",
+        &["list", "table", "inet", "vps_sentinel_exposure_guard"],
+        timeout,
+    ) else {
+        report.failed += 1;
+        return report;
+    };
+    if !output.status_success {
+        return report;
+    }
+    match run_command_status_owned(
+        "nft",
+        &[
+            "delete".to_string(),
+            "table".to_string(),
+            "inet".to_string(),
+            "vps_sentinel_exposure_guard".to_string(),
+        ],
+        timeout,
+    ) {
+        Ok(true) => {
+            report.removed += 1;
+            warn!("removed legacy vps-sentinel port guard nftables table");
+        }
+        Ok(false) => report.failed += 1,
+        Err(err) => {
+            report.failed += 1;
+            warn!(error = %err, "failed to remove legacy vps-sentinel port guard nftables table");
+        }
+    }
+    report
+}
+
+fn cleanup_legacy_iptables_port_guards(
+    program: &str,
+    timeout: Duration,
+) -> LegacyPortGuardCleanupReport {
+    let mut report = LegacyPortGuardCleanupReport::default();
+    if !command_available(program, timeout) {
+        return report;
+    }
+    let Some(output) = command_output(program, &["-S"], timeout) else {
+        report.failed += 1;
+        return report;
+    };
+    if !output.status_success {
+        return report;
+    }
+    for line in output
+        .stdout
+        .lines()
+        .filter(|line| is_legacy_port_guard_rule(line) && line.trim_start().starts_with("-A "))
+    {
+        let mut args = split_iptables_rule(line);
+        if args.first().map(String::as_str) != Some("-A") || args.len() < 3 {
+            continue;
+        }
+        args[0] = "-D".to_string();
+        match run_command_status_owned(program, &args, timeout) {
+            Ok(true) => {
+                report.removed += 1;
+                warn!(
+                    backend = program,
+                    "removed legacy vps-sentinel port guard iptables rule"
+                );
+            }
+            Ok(false) => report.failed += 1,
+            Err(err) => {
+                report.failed += 1;
+                warn!(backend = program, error = %err, "failed to remove legacy vps-sentinel port guard iptables rule");
+            }
+        }
+    }
+    report
+}
+
+fn is_legacy_port_guard_rule(line: &str) -> bool {
+    let lowered = line.to_ascii_lowercase();
+    lowered.contains("vps-sentinel exposure guard")
+        && lowered.contains(" -p tcp ")
+        && (lowered.contains(" --dport ") || lowered.contains(" --dports "))
+        && (lowered.contains(" -j drop") || lowered.contains(" -j reject"))
+}
+
+fn split_iptables_rule(line: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for ch in line.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(quote_ch) = quote {
+            if ch == quote_ch {
+                quote = None;
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+        if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !current.is_empty() {
+                args.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
 }
 
 fn block_candidates(findings: &[Finding], config: &SentinelConfig) -> Vec<BlockCandidate> {
@@ -2184,6 +2342,31 @@ mod tests {
         assert_eq!(entries[0].firewall_present, None);
         assert!(!entries[0].expired);
         Ok(())
+    }
+
+    #[test]
+    fn legacy_port_guard_rule_detection_is_narrow() {
+        assert!(super::is_legacy_port_guard_rule(
+            r#"-A INPUT -p tcp -m multiport --dports 3306,6379 -m comment --comment "vps-sentinel exposure guard" -j DROP"#
+        ));
+        assert!(!super::is_legacy_port_guard_rule(
+            "-A INPUT -s 8.8.8.8/32 -m comment --comment vps-sentinel -j DROP"
+        ));
+        assert!(!super::is_legacy_port_guard_rule(
+            r#"-A INPUT -p tcp --dport 6379 -m comment --comment "custom exposure guard" -j DROP"#
+        ));
+    }
+
+    #[test]
+    fn split_iptables_rule_preserves_quoted_comment() {
+        let args = super::split_iptables_rule(
+            r#"-A INPUT -p tcp --dport 6379 -m comment --comment "vps-sentinel exposure guard" -j DROP"#,
+        );
+
+        assert_eq!(args[0], "-A");
+        assert_eq!(args[1], "INPUT");
+        assert!(args.contains(&"6379".to_string()));
+        assert!(args.contains(&"vps-sentinel exposure guard".to_string()));
     }
 
     fn web_finding(

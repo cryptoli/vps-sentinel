@@ -214,6 +214,7 @@ quiet_hours = [] # Example: ["22:00-07:00"]
 enabled = true
 strategy = "balanced" # observe, balanced, or strict
 firewall_backend = "auto" # auto, nftables, or iptables
+cleanup_legacy_port_guards = true
 block_ttl_seconds = 3600
 command_timeout_seconds = 3
 max_blocks_per_scan = 20

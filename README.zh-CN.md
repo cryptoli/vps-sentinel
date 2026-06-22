@@ -655,11 +655,11 @@ high_risk_public_ports = [2375, 2376, 3306, 5432, 6379, 9200, 27017]
 public_listen_allowlist = [22, 80, 443]
 ```
 
-- `expected_public_ports` 用于压制 SSH、HTTP、HTTPS 等正常公网服务的通用监听噪音。
+- `expected_public_ports` 用于压制业务上预期对外开放端口的通用监听噪音，例如 SSH、HTTP、HTTPS，或者确实需要公网访问的 Redis。
 - 预期端口不会被无脑信任。程序仍会检查持有端口的进程、可执行文件路径、命令行和基线 owner 漂移，因此伪装在 80/443 后面的可疑进程仍会触发 `NET-002` 或 `NET-003`。
-- `high_risk_public_ports` 是可配置的高风险服务端口列表；除非显式加入 `[allowlist].listening_ports`，否则会从当前 socket 状态直接告警。如果端口 owner 同时具备可疑进程特征，`NET-003` 会优先发送并附带服务画像，而不是再额外发送一条普通 `CONFIG-003` 告警。
+- `high_risk_public_ports` 是可配置的高风险服务端口列表；除非该端口已明确写入预期公网端口，或已有本机防火墙保护证据，否则会从当前 socket 状态直接告警。如果端口 owner 同时具备可疑进程特征，`NET-003` 会优先发送并附带服务画像，而不是再额外发送一条普通 `CONFIG-003` 告警。
 - 公网暴露判断会识别监听地址：`0.0.0.0`、`::` 和明确的公网可路由地址会按公网处理；loopback、RFC1918 IPv4、IPv6 ULA 和 link-local 地址不会按公网监听规则处理。
-- `public_listen_allowlist` 作为旧配置兼容项处理，语义等同预期公网端口。只有 `[allowlist].listening_ports` 表示你明确希望压制该端口的所有网络告警。
+- `public_listen_allowlist` 作为旧配置兼容项处理，语义等同预期公网端口。只有 `[allowlist].listening_ports` 表示你明确希望压制该端口的所有网络告警，包括可疑 owner 检查。
 - `NET-001` 只会在普通 TCP/TCP6 公网端口相对已保存基线新增时触发，不会对每次扫描都存在的稳定监听端口重复告警。普通 UDP 高端口默认视为动态流量，除非命中高风险服务端口或可疑监听进程规则。
 
 进程指标策略：
@@ -727,6 +727,7 @@ suppress_unresolved_trusted_proxy = true
 enabled = true
 strategy = "balanced"
 firewall_backend = "auto"
+cleanup_legacy_port_guards = true
 block_ttl_seconds = 3600
 max_blocks_per_scan = 20
 notification_detail_limit = 3
@@ -738,7 +739,7 @@ web_exploit_block_threshold = 5
 ssh_failed_login_block_threshold = 6
 ```
 
-主动响应对新安装默认开启。升级时不会覆盖已有配置，因此已经显式写了 `active_response.enabled = false` 的主机会保持关闭，直到管理员手动修改。`strategy = "observe"` 只记录候选不写防火墙，`balanced` 是默认策略，`strict` 会对被拒绝的 Web 探测和 SSH 爆破要求更强证据。扫描器会在扫描内合并/去重之后、跨扫描通知去重之前执行封禁，因此同一来源计数升高时，即使重复通知会被压制，也仍能触发封禁。SSH 封禁覆盖 `SSH-003` 爆破 finding 和 `SSH-007` 爆破后成功登录 finding，默认扫描窗口内 6 次失败触发封禁。Web 封禁覆盖敏感路径成功响应、高置信 RCE 风格探测、重复低置信 exploit 探测、多家族扫描聚合和高频错误爆发，但标记为 `proxy_source_unresolved` 的 Web finding 不会进入封禁候选。响应分层会标注强信号，例如已确认 Web 暴露、爆破后成功登录、重复攻击指纹和人工标记恶意指纹；分层可以延长临时封禁 TTL、降低永久升级阈值，但显式配置的 `[response_policy]` 仍然可以覆盖 TTL 和永久阈值。安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。普通封禁是临时封禁；如果同一个公网来源 IP 在 `permanent_block_window_seconds` 窗口内至少 `permanent_block_threshold` 次成为封禁候选，则升级为无到期时间的永久封禁。永久升级仍然遵守 `[allowlist].ips`、可信代理归因安全、`strategy = "observe"` 和 `max_blocks_per_scan`，可以通过 `vs blocks unblock <ip>` 或 `vs blocks unblock-all --yes` 解除。只有公网可路由来源 IP 才会被考虑。
+主动响应对新安装默认开启。升级时不会覆盖已有配置，因此已经显式写了 `active_response.enabled = false` 的主机会保持关闭，直到管理员手动修改。`strategy = "observe"` 只记录候选不写防火墙，`balanced` 是默认策略，`strict` 会对被拒绝的 Web 探测和 SSH 爆破要求更强证据。扫描器会在扫描内合并/去重之后、跨扫描通知去重之前执行封禁，因此同一来源计数升高时，即使重复通知会被压制，也仍能触发封禁。SSH 封禁覆盖 `SSH-003` 爆破 finding 和 `SSH-007` 爆破后成功登录 finding，默认扫描窗口内 6 次失败触发封禁。Web 封禁覆盖敏感路径成功响应、高置信 RCE 风格探测、重复低置信 exploit 探测、多家族扫描聚合和高频错误爆发，但标记为 `proxy_source_unresolved` 的 Web finding 不会进入封禁候选。响应分层会标注强信号，例如已确认 Web 暴露、爆破后成功登录、重复攻击指纹和人工标记恶意指纹；分层可以延长临时封禁 TTL、降低永久升级阈值，但显式配置的 `[response_policy]` 仍然可以覆盖 TTL 和永久阈值。安静时段和通知限流不会阻止封禁。后端优先使用 nftables，不可用时回退到 iptables/ip6tables。当前主动响应只写来源 IP 封禁；`cleanup_legacy_port_guards = true` 会清理早期构建留下的 vps-sentinel 端口级 guard 表/规则，避免升级后继续误挡业务端口。普通封禁是临时封禁；如果同一个公网来源 IP 在 `permanent_block_window_seconds` 窗口内至少 `permanent_block_threshold` 次成为封禁候选，则升级为无到期时间的永久封禁。永久升级仍然遵守 `[allowlist].ips`、可信代理归因安全、`strategy = "observe"` 和 `max_blocks_per_scan`，可以通过 `vs blocks unblock <ip>` 或 `vs blocks unblock-all --yes` 解除。只有公网可路由来源 IP 才会被考虑。
 
 每次扫描都会先把主动响应状态和真实防火墙规则同步，再判断某个来源是否已经封禁。如果规则已过期、被 firewalld/ufw reload 清掉，或者被人工修改，程序会移除失效状态；如果该来源仍然满足高置信封禁条件，后续可以再次封禁。iptables 后端在插入前会用 `-C` 检查规则是否已存在，避免重复 DROP 规则；手动解除封禁会删除重复匹配规则。日常运维可以使用 `vs blocks list`、`vs blocks cleanup`、`vs blocks unblock <ip>` 和 `vs blocks unblock-all --yes`。
 

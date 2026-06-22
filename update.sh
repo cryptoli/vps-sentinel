@@ -378,6 +378,11 @@ sync_config_defaults() {
   fi
 }
 
+cleanup_active_response_state() {
+  "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" blocks cleanup || \
+    echo "active-response cleanup failed; continuing update" >&2
+}
+
 install_binary_aliases() {
   ln -sf vps-sentinel "$PREFIX/bin/vs"
   rm -f "$PREFIX/bin/vps-sentinel-reload"
@@ -497,6 +502,7 @@ post_update() {
       ;;
   esac
 
+  cleanup_active_response_state
   install_systemd_unit_file
   refresh_baseline
   post_update_scan
