@@ -5,6 +5,7 @@ use crate::scanner::ScanReport;
 use crate::storage::{SqliteStore, StorageStats};
 use crate::utils::ip::{ip_in_cidr, is_public_remote_ip};
 use crate::utils::redact::{mask_command_args, remove_ip, remove_ips_in_text};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use sentinel_core::panel_auth::{
     panel_body_sha256_hex, panel_header_nonce, panel_signature_hex, PANEL_INGEST_PATH,
@@ -26,6 +27,7 @@ const PANEL_SCHEMA_VERSION: u16 = 2;
 const MAX_RETRY_PER_SCAN: usize = 3;
 const MAX_PANEL_EVIDENCE_ITEMS: usize = 24;
 const MAX_PANEL_EVIDENCE_VALUE_BYTES: usize = 512;
+const PANEL_TRANSPORT_ENCODING: &str = "json-base64";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PanelEnvelope {
@@ -183,6 +185,12 @@ struct SignedRequest {
     nonce: String,
     body_hash: String,
     signature: String,
+}
+
+#[derive(Serialize)]
+struct PanelTransportBody {
+    encoding: &'static str,
+    payload: String,
 }
 
 pub async fn publish_scan(
@@ -460,7 +468,7 @@ async fn retry_outbox(
 }
 
 async fn send_envelope(config: &SentinelConfig, payload: &PanelEnvelope) -> SentinelResult<()> {
-    let body = serde_json::to_vec(payload).map_err(|err| SentinelError::Notify(err.to_string()))?;
+    let body = panel_transport_body(payload)?;
     if body.len() > config.panel.max_payload_bytes {
         return Err(SentinelError::Notify(format!(
             "panel payload exceeds panel.max_payload_bytes: {} > {}",
@@ -488,6 +496,7 @@ async fn send_envelope(config: &SentinelConfig, payload: &PanelEnvelope) -> Sent
     let response = client
         .post(config.panel.url.trim())
         .header("content-type", "application/json")
+        .header("x-vps-sentinel-payload-encoding", PANEL_TRANSPORT_ENCODING)
         .header("x-vps-sentinel-node-name", node_name)
         .header("x-vps-sentinel-timestamp", signed.timestamp.to_string())
         .header("x-vps-sentinel-nonce", signed.nonce)
@@ -1080,9 +1089,7 @@ fn limited_payload(
 }
 
 fn validate_payload_size(config: &SentinelConfig, payload: &PanelEnvelope) -> SentinelResult<()> {
-    let size = serde_json::to_vec(payload)
-        .map_err(|err| SentinelError::Notify(err.to_string()))?
-        .len();
+    let size = panel_transport_body_len(payload)?;
     if size > config.panel.max_payload_bytes {
         return Err(SentinelError::Notify(format!(
             "panel payload is too large: {size} > {} bytes",
@@ -1090,6 +1097,19 @@ fn validate_payload_size(config: &SentinelConfig, payload: &PanelEnvelope) -> Se
         )));
     }
     Ok(())
+}
+
+fn panel_transport_body(payload: &PanelEnvelope) -> SentinelResult<Vec<u8>> {
+    let raw = serde_json::to_vec(payload).map_err(|err| SentinelError::Notify(err.to_string()))?;
+    let body = PanelTransportBody {
+        encoding: PANEL_TRANSPORT_ENCODING,
+        payload: BASE64_STANDARD.encode(raw),
+    };
+    serde_json::to_vec(&body).map_err(|err| SentinelError::Notify(err.to_string()))
+}
+
+fn panel_transport_body_len(payload: &PanelEnvelope) -> SentinelResult<usize> {
+    panel_transport_body(payload).map(|body| body.len())
 }
 
 fn sanitize_panel_envelope(config: &SentinelConfig, mut payload: PanelEnvelope) -> PanelEnvelope {
@@ -1263,12 +1283,13 @@ fn duration_seconds(seconds: u64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        enqueue_payload, panel_envelope, sanitize_panel_envelope, sign_request, summary_from_state,
-        PanelActiveBlock, PanelBaselineDrift, PanelEnvelopeParts, PanelFinding, PanelIncident,
-        PanelOutboxState, PanelScanSummary,
+        enqueue_payload, panel_envelope, panel_transport_body, sanitize_panel_envelope,
+        sign_request, summary_from_state, PanelActiveBlock, PanelBaselineDrift, PanelEnvelopeParts,
+        PanelFinding, PanelIncident, PanelOutboxState, PanelScanSummary, PANEL_TRANSPORT_ENCODING,
     };
     use crate::active_response::BlockEntry;
     use crate::storage::SqliteStore;
+    use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
     use chrono::{Duration as ChronoDuration, Utc};
     use sentinel_core::panel_auth::{panel_signature_hex, PANEL_INGEST_METHOD, PANEL_INGEST_PATH};
     use sentinel_core::{Category, Evidence, Finding, SentinelConfig, Severity};
@@ -1299,6 +1320,65 @@ mod tests {
                 &signed.body_hash,
             )
         );
+    }
+
+    #[test]
+    fn panel_transport_body_hides_attack_text_until_decoded(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let mut config = SentinelConfig::default();
+        config.panel.node_name = "node-a".to_string();
+        let payload = panel_envelope(
+            &config,
+            &store,
+            PanelEnvelopeParts {
+                scan: PanelScanSummary {
+                    finished_at: Utc::now(),
+                    raw_events: 0,
+                    diff_events: 0,
+                    findings: 1,
+                    incidents: 0,
+                    suppressed_duplicates: 0,
+                    maintenance_suppressed: 0,
+                    active_response_applied: 0,
+                    active_response_failed: 0,
+                    collector_errors: 0,
+                    event_count_by_source: BTreeMap::new(),
+                },
+                findings: vec![PanelFinding {
+                    id: "finding-1".to_string(),
+                    rule_id: "WEB-001".to_string(),
+                    title: "command_injection probe".to_string(),
+                    severity: Severity::High,
+                    confidence: "high".to_string(),
+                    category: "web".to_string(),
+                    subject: "redacted".to_string(),
+                    timestamp: Utc::now(),
+                    dedup_key: "dedup".to_string(),
+                    evidence: Vec::new(),
+                    impact: Vec::new(),
+                    recommendations: Vec::new(),
+                }],
+                incidents: Vec::new(),
+                baseline_drifts: Vec::new(),
+                active_blocks: Vec::new(),
+                probe_sources: Vec::new(),
+            },
+        )?;
+
+        let body = panel_transport_body(&payload)?;
+        let text = String::from_utf8(body)?;
+        assert!(!text.contains("command_injection"));
+        let wrapper: serde_json::Value = serde_json::from_str(&text)?;
+        assert_eq!(wrapper["encoding"], PANEL_TRANSPORT_ENCODING);
+        let decoded = BASE64_STANDARD.decode(wrapper["payload"].as_str().unwrap())?;
+        let decoded_payload: serde_json::Value = serde_json::from_slice(&decoded)?;
+        assert_eq!(
+            decoded_payload["findings"][0]["title"],
+            "command_injection probe"
+        );
+        Ok(())
     }
 
     #[test]

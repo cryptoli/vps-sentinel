@@ -8,6 +8,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use chrono::{DateTime, NaiveDate, Utc};
 use clap::{Parser, ValueEnum};
 use rusqlite::{Connection, OptionalExtension};
@@ -42,6 +43,7 @@ const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES: u64 = 720;
 const STREAM_TICKET_TTL_SECONDS: i64 = 60;
 const STREAM_HEARTBEAT_SECONDS: u64 = 30;
 const STREAM_RETRY_SECONDS: u64 = 5;
+const PANEL_TRANSPORT_ENCODING: &str = "json-base64";
 
 #[derive(Debug, Parser)]
 #[command(name = "vps-sentinel-panel", version)]
@@ -229,6 +231,12 @@ struct PanelEnvelope {
     active_blocks: Vec<PanelActiveBlock>,
     #[serde(default)]
     probe_sources: Vec<PanelProbeSource>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PanelTransportBody {
+    encoding: String,
+    payload: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -703,7 +711,8 @@ async fn ingest(
     }
     let node_name = ingest_node_name(&headers)?;
     verify_signature(&state, &headers, &body, &node_name).await?;
-    let payload: PanelEnvelope = serde_json::from_slice(&body)
+    let payload_body = decode_ingest_body(&headers, &body)?;
+    let payload: PanelEnvelope = serde_json::from_slice(&payload_body)
         .map_err(|err| PanelApiError::detail(StatusCode::BAD_REQUEST, "invalid_json", err))?;
     if !valid_panel_payload_identity(&payload, &node_name) {
         return Err(PanelApiError::new(
@@ -723,6 +732,31 @@ async fn ingest(
 
 fn ingest_node_name(headers: &HeaderMap) -> Result<String, PanelApiError> {
     header(headers, "x-vps-sentinel-node-name").or_else(|_| header(headers, "x-vps-sentinel-node"))
+}
+
+fn decode_ingest_body(headers: &HeaderMap, body: &[u8]) -> Result<Vec<u8>, PanelApiError> {
+    let encoding = optional_header(headers, "x-vps-sentinel-payload-encoding").unwrap_or_default();
+    if encoding.is_empty() {
+        return Ok(body.to_vec());
+    }
+    if encoding != PANEL_TRANSPORT_ENCODING {
+        return Err(PanelApiError::new(
+            StatusCode::BAD_REQUEST,
+            "unsupported_payload_encoding",
+        ));
+    }
+    let wrapper: PanelTransportBody = serde_json::from_slice(body).map_err(|err| {
+        PanelApiError::detail(StatusCode::BAD_REQUEST, "invalid_transport_json", err)
+    })?;
+    if wrapper.encoding != PANEL_TRANSPORT_ENCODING {
+        return Err(PanelApiError::new(
+            StatusCode::BAD_REQUEST,
+            "payload_encoding_mismatch",
+        ));
+    }
+    BASE64_STANDARD.decode(wrapper.payload).map_err(|err| {
+        PanelApiError::detail(StatusCode::BAD_REQUEST, "invalid_payload_base64", err)
+    })
 }
 
 fn valid_panel_payload_identity(payload: &PanelEnvelope, signed_node_name: &str) -> bool {
@@ -2830,6 +2864,13 @@ fn header(headers: &HeaderMap, name: &str) -> Result<String, PanelApiError> {
         .ok_or_else(|| {
             PanelApiError::new(StatusCode::UNAUTHORIZED, format!("missing_header:{name}"))
         })
+}
+
+fn optional_header(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
 }
 
 fn json_string(value: impl Serialize) -> Result<String, PanelApiError> {

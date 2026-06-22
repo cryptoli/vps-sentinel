@@ -9,6 +9,7 @@ const MAX_PAGE_LIMIT = 200;
 const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
 const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES = 720;
 const ROLE_LEVELS = { public: 0, operator: 1, admin: 2 };
+const PANEL_TRANSPORT_ENCODING = "json-base64";
 
 const DATASETS = {
   "/api/v1/nodes": {
@@ -181,7 +182,8 @@ async function ingest(request, env) {
     .bind(nonce, nodeName, now + SIGNATURE_WINDOW_SECONDS)
     .run();
 
-  const payload = JSON.parse(new TextDecoder().decode(body));
+  const payloadBody = decodePanelPayloadBody(request, body);
+  const payload = JSON.parse(new TextDecoder().decode(payloadBody));
   if (!validPanelPayloadIdentity(payload, nodeName)) {
     return json({ error: "invalid_payload" }, 400);
   }
@@ -194,6 +196,30 @@ function ingestNodeName(request) {
     return requiredHeader(request, "x-vps-sentinel-node-name");
   } catch {
     return requiredHeader(request, "x-vps-sentinel-node");
+  }
+}
+
+function decodePanelPayloadBody(request, body) {
+  const encoding = String(request.headers.get("x-vps-sentinel-payload-encoding") || "").trim();
+  if (!encoding) return body;
+  if (encoding !== PANEL_TRANSPORT_ENCODING) throwHttp(400, "unsupported_payload_encoding");
+  const wrapper = JSON.parse(new TextDecoder().decode(body));
+  if (wrapper?.encoding !== PANEL_TRANSPORT_ENCODING || typeof wrapper?.payload !== "string") {
+    throwHttp(400, "payload_encoding_mismatch");
+  }
+  return base64ToBytes(wrapper.payload);
+}
+
+function base64ToBytes(value) {
+  try {
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  } catch {
+    throwHttp(400, "invalid_payload_base64");
   }
 }
 
@@ -865,7 +891,7 @@ function withCors(response, request, env) {
     headers.set("access-control-allow-origin", origin);
     headers.set("vary", "Origin");
     headers.set("access-control-allow-methods", "GET,POST,OPTIONS");
-    headers.set("access-control-allow-headers", "authorization,content-type,x-vps-sentinel-node-name,x-vps-sentinel-node,x-vps-sentinel-timestamp,x-vps-sentinel-nonce,x-vps-sentinel-body-sha256,x-vps-sentinel-signature,x-vps-sentinel-view-token");
+    headers.set("access-control-allow-headers", "authorization,content-type,x-vps-sentinel-node-name,x-vps-sentinel-node,x-vps-sentinel-payload-encoding,x-vps-sentinel-timestamp,x-vps-sentinel-nonce,x-vps-sentinel-body-sha256,x-vps-sentinel-signature,x-vps-sentinel-view-token");
   }
   headers.set("x-content-type-options", "nosniff");
   headers.set("referrer-policy", "no-referrer");

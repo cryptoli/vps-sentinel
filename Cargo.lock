@@ -1773,6 +1773,7 @@ name = "sentinel-agent"
 version = "0.2.0"
 dependencies = [
  "async-trait",
+ "base64",
  "blake3",
  "chrono",
  "glob",
@@ -1831,6 +1832,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "axum",
+ "base64",
  "chrono",
  "clap",
  "rusqlite",
