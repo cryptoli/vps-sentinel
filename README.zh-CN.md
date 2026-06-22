@@ -186,7 +186,7 @@ privacy_mode = "strict"
 ip_intel_paths = [] # 可选 CSV: cidr,country,asn,organization
 ```
 
-常用命令是 `vs panel push`、`vs panel flush` 和 `vs panel outbox`。可选的 `panel.ip_intel_paths` CSV 会在本地按最长 CIDR 前缀匹配，为管理层黑名单补充国家、ASN 和组织信息，不会默认调用外部 API。Cloudflare 部署可使用 `scripts/deploy-cloudflare-panel.sh` 复用或创建 D1、部署 Worker API，并把 `panel/web` 作为 Worker 静态资源一并发布。Rust 面板服务、Cloudflare Worker/D1、MySQL/PostgreSQL 注意事项和第三方主题/页面开发见 [docs/panel.md](docs/panel.md)。
+常用命令是 `vs panel push`、`vs panel flush` 和 `vs panel outbox`。可选的 `panel.ip_intel_paths` CSV 会在本地按最长 CIDR 前缀匹配，为管理层黑名单补充国家、ASN 和组织信息，不会默认调用外部 API。Cloudflare 部署可使用 `scripts/deploy-cloudflare-panel.sh` 复用或创建 D1、部署 Worker API，并把 `panel/web` 作为 Worker 静态资源一并发布。Rust 面板服务、Cloudflare Worker/D1、MySQL/PostgreSQL 注意事项和第三方主题/页面开发见 [docs/panel.md](docs/panel.md)；从零部署 Cloudflare 面板和 VPS 自建面板的详细教程见 [docs/panel-deployment.zh-CN.md](docs/panel-deployment.zh-CN.md)。
 
 ## 架构
 

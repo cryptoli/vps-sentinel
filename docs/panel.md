@@ -45,10 +45,12 @@ Use HTTPS for remote panel URLs. Plain HTTP is accepted only for `localhost` or 
 Useful commands:
 
 ```bash
-vs panel push --config /etc/vps-sentinel/config.toml
-vs panel flush --config /etc/vps-sentinel/config.toml
-vs panel outbox --config /etc/vps-sentinel/config.toml
+vs --config /etc/vps-sentinel/config.toml panel push
+vs --config /etc/vps-sentinel/config.toml panel flush
+vs --config /etc/vps-sentinel/config.toml panel outbox
 ```
+
+For a step-by-step deployment guide covering Cloudflare Worker/D1 and a self-hosted VPS panel, see [面板部署教程](panel-deployment.zh-CN.md).
 
 ## Self-Hosted Rust Panel
 

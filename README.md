@@ -186,7 +186,7 @@ privacy_mode = "strict"
 ip_intel_paths = [] # Optional CSV files: cidr,country,asn,organization
 ```
 
-Useful commands are `vs panel push`, `vs panel flush`, and `vs panel outbox`. Optional `panel.ip_intel_paths` CSV files are matched locally by longest CIDR prefix to enrich admin-only probe-source blacklists with country, ASN, and organization without calling an external API. Cloudflare deployments can use `scripts/deploy-cloudflare-panel.sh` to provision/reuse D1, deploy the Worker API, and serve `panel/web` as Worker assets. See [docs/panel.md](docs/panel.md) for the Rust panel service, Cloudflare Worker/D1 setup, MySQL/PostgreSQL notes, and third-party theme/page development.
+Useful commands are `vs panel push`, `vs panel flush`, and `vs panel outbox`. Optional `panel.ip_intel_paths` CSV files are matched locally by longest CIDR prefix to enrich admin-only probe-source blacklists with country, ASN, and organization without calling an external API. Cloudflare deployments can use `scripts/deploy-cloudflare-panel.sh` to provision/reuse D1, deploy the Worker API, and serve `panel/web` as Worker assets. See [docs/panel.md](docs/panel.md) for the Rust panel service, Cloudflare Worker/D1 setup, MySQL/PostgreSQL notes, and third-party theme/page development; see [docs/panel-deployment.zh-CN.md](docs/panel-deployment.zh-CN.md) for the detailed Cloudflare and VPS deployment tutorial.
 
 ## Architecture
 
