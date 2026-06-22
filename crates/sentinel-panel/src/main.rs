@@ -2117,7 +2117,7 @@ impl Repository {
                 DbValue::Text(json_string(&node.enabled_features)?),
                 DbValue::Text(json_string(&node.storage)?),
                 DbValue::Text(json_string(
-                    &node.metrics.clone().unwrap_or_else(|| json!({})),
+                    node.metrics.clone().unwrap_or_else(|| json!({})),
                 )?),
                 DbValue::Text(sent_at.to_rfc3339()),
                 DbValue::Text(received_at.to_string()),

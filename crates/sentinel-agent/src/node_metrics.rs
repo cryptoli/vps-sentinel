@@ -187,11 +187,7 @@ fn network_rates(
 }
 
 fn bytes_per_second(bytes: u64, seconds: u64) -> u64 {
-    if seconds == 0 {
-        0
-    } else {
-        bytes / seconds
-    }
+    bytes.checked_div(seconds).unwrap_or(0)
 }
 
 fn memory_used_percent(memory: MemoryStats) -> Option<f64> {
