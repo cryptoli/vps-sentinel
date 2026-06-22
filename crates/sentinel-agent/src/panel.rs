@@ -496,6 +496,11 @@ async fn send_envelope(config: &SentinelConfig, payload: &PanelEnvelope) -> Sent
     let response = client
         .post(config.panel.url.trim())
         .header("content-type", "application/json")
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("vps-sentinel-agent/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .header(reqwest::header::ACCEPT, "application/json")
         .header("x-vps-sentinel-payload-encoding", PANEL_TRANSPORT_ENCODING)
         .header("x-vps-sentinel-node-name", node_name)
         .header("x-vps-sentinel-timestamp", signed.timestamp.to_string())
@@ -506,14 +511,34 @@ async fn send_envelope(config: &SentinelConfig, payload: &PanelEnvelope) -> Sent
         .send()
         .await
         .map_err(|err| SentinelError::Notify(err.to_string()))?;
-    if !response.status().is_success() {
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        let detail = panel_error_detail(&body);
         return Err(SentinelError::Notify(format!(
-            "panel returned HTTP {}",
-            response.status()
+            "panel returned HTTP {}{}",
+            status, detail
         )));
     }
     debug!("panel payload delivered");
     Ok(())
+}
+
+fn panel_error_detail(body: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return String::new();
+    };
+    let detail = value
+        .get("detail")
+        .and_then(|item| item.as_str())
+        .or_else(|| value.get("error").and_then(|item| item.as_str()))
+        .unwrap_or("")
+        .trim();
+    if detail.is_empty() {
+        String::new()
+    } else {
+        format!(" ({detail})")
+    }
 }
 
 fn sign_request(

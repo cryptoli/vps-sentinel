@@ -138,7 +138,7 @@ export default {
       if (error?.status && error?.code) {
         return withCors(json({ error: error.code, detail: error.code }, error.status), request, env);
       }
-      return withCors(json({ error: "internal_error", detail: "internal_error" }, 500), request, env);
+      return withCors(json({ error: "internal_error", detail: safeInternalErrorCode(error) }, 500), request, env);
     }
   },
 };
@@ -772,6 +772,18 @@ async function queryAllOptional(env, sql, table) {
 
 function missingTableError(error, table) {
   return String(error?.message || error || "").toLowerCase().includes(`no such table: ${table.toLowerCase()}`);
+}
+
+function safeInternalErrorCode(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  if (error instanceof SyntaxError || message.includes("json")) return "payload_parse_error";
+  if (message.includes("no such table")) return "storage_schema_missing";
+  if (message.includes("no such column")) return "storage_schema_mismatch";
+  if (message.includes("constraint")) return "storage_constraint_error";
+  if (message.includes("bind") || message.includes("d1_type_error")) return "storage_bind_error";
+  if (message.includes("d1") || message.includes("sqlite")) return "storage_error";
+  if (message.includes("fetch")) return "network_error";
+  return "runtime_error";
 }
 
 function secretForNode(env, nodeId) {
