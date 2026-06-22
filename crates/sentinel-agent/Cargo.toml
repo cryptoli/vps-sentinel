@@ -10,6 +10,7 @@ description = "Collectors, detectors, storage, notification, and scan orchestrat
 async-trait.workspace = true
 blake3.workspace = true
 chrono.workspace = true
+frankenstein.workspace = true
 glob.workspace = true
 lettre.workspace = true
 libc.workspace = true

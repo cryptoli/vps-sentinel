@@ -1,24 +1,32 @@
-use crate::notify::{http_client, transport_error, MessageTemplate, Notifier, NotifyContext};
+use crate::notify::{MessageTemplate, Notifier, NotifyContext};
 use async_trait::async_trait;
+use frankenstein::client_reqwest::Bot;
+use frankenstein::methods::SendMessageParams;
+use frankenstein::types::{ChatId, LinkPreviewOptions};
+use frankenstein::{AsyncTelegramApi, ParseMode};
 use sentinel_core::{SentinelError, SentinelResult, Severity, TelegramConfig};
-use serde::Deserialize;
-use serde_json::json;
+use std::time::Duration;
 
 pub struct TelegramNotifier {
     config: TelegramConfig,
-    client: reqwest::Client,
-}
-
-#[derive(Debug, Deserialize)]
-struct TelegramErrorResponse {
-    description: Option<String>,
+    bot: Bot,
 }
 
 impl TelegramNotifier {
     pub fn new(config: TelegramConfig, timeout_seconds: u64) -> Self {
-        Self {
-            config,
-            client: http_client(timeout_seconds),
+        let client = frankenstein::reqwest::Client::builder()
+            .timeout(Duration::from_secs(timeout_seconds))
+            .build()
+            .unwrap_or_default();
+        let api_url = format!("{}{}", frankenstein::BASE_API_URL, config.bot_token);
+        let bot = Bot { api_url, client };
+        Self { config, bot }
+    }
+
+    fn chat_id(&self) -> ChatId {
+        match self.config.chat_id.trim().parse::<i64>() {
+            Ok(id) => ChatId::Integer(id),
+            Err(_) => ChatId::String(self.config.chat_id.clone()),
         }
     }
 }
@@ -43,37 +51,34 @@ impl Notifier for TelegramNotifier {
                 "telegram bot_token and chat_id are required when telegram is enabled".to_string(),
             ));
         }
-        let url = format!(
-            "https://api.telegram.org/bot{}/sendMessage",
-            self.config.bot_token
-        );
         let message = MessageTemplate::TelegramHtml.render(finding, ctx);
-        let body = json!({
-            "chat_id": self.config.chat_id,
-            "text": message.body,
-            "parse_mode": message.parse_mode,
-            "disable_web_page_preview": true
-        });
-        let response = self
-            .client
-            .post(url)
-            .json(&body)
-            .send()
+        let params = SendMessageParams::builder()
+            .chat_id(self.chat_id())
+            .text(message.body)
+            .parse_mode(ParseMode::Html)
+            .link_preview_options(LinkPreviewOptions::builder().is_disabled(true).build())
+            .build();
+        self.bot
+            .send_message(&params)
             .await
-            .map_err(|err| transport_error(self.name(), err))?;
-        let status = response.status();
-        if !status.is_success() {
-            let description = response
-                .json::<TelegramErrorResponse>()
-                .await
-                .ok()
-                .and_then(|body| body.description)
-                .filter(|text| !text.trim().is_empty())
-                .unwrap_or_else(|| "no response description".to_string());
-            return Err(SentinelError::Notify(format!(
-                "telegram returned HTTP {status}: {description}"
-            )));
-        }
+            .map_err(telegram_error)?;
         Ok(())
+    }
+}
+
+fn telegram_error(err: frankenstein::Error) -> SentinelError {
+    match err {
+        frankenstein::Error::Api(response) => {
+            let description = if response.description.trim().is_empty() {
+                "no response description".to_string()
+            } else {
+                response.description
+            };
+            SentinelError::Notify(format!(
+                "telegram returned API error {}: {description}",
+                response.error_code
+            ))
+        }
+        other => SentinelError::Notify(format!("telegram request failed: {other}")),
     }
 }
