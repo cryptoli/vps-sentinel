@@ -3,6 +3,7 @@ use crate::baseline::assess_baseline_event;
 use crate::incident::{list_incidents, Incident};
 use crate::scanner::ScanReport;
 use crate::storage::{SqliteStore, StorageStats};
+use crate::utils::ip::{ip_in_cidr, is_public_remote_ip};
 use crate::utils::redact::{mask_command_args, remove_ip, remove_ips_in_text};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use sentinel_core::panel_auth::{
@@ -13,7 +14,9 @@ use sentinel_core::{
     Severity,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -35,6 +38,8 @@ pub struct PanelEnvelope {
     pub incidents: Vec<PanelIncident>,
     pub baseline_drifts: Vec<PanelBaselineDrift>,
     pub active_blocks: Vec<PanelActiveBlock>,
+    #[serde(default)]
+    pub probe_sources: Vec<PanelProbeSource>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +114,7 @@ pub struct PanelBaselineDrift {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PanelActiveBlock {
+    pub ip: String,
     pub rule_id: String,
     pub finding_id: String,
     pub reason: String,
@@ -117,6 +123,24 @@ pub struct PanelActiveBlock {
     pub expires_at: Option<DateTime<Utc>>,
     pub expired: bool,
     pub firewall_present: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PanelProbeSource {
+    pub source_ip: String,
+    pub ip_version: String,
+    pub network_prefix: String,
+    pub country: String,
+    pub asn: String,
+    pub organization: String,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+    pub seen_count: usize,
+    pub categories: Vec<String>,
+    pub rule_ids: Vec<String>,
+    pub latest_reason: String,
+    pub block_status: String,
+    pub block_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -142,6 +166,15 @@ struct PanelOutboxItem {
     attempts: u32,
     last_error: String,
     payload_json: String,
+}
+
+struct PanelEnvelopeParts {
+    scan: PanelScanSummary,
+    findings: Vec<PanelFinding>,
+    incidents: Vec<PanelIncident>,
+    baseline_drifts: Vec<PanelBaselineDrift>,
+    active_blocks: Vec<PanelActiveBlock>,
+    probe_sources: Vec<PanelProbeSource>,
 }
 
 #[derive(Debug, Clone)]
@@ -230,6 +263,8 @@ fn build_scan_payload(
     report: &ScanReport,
     incidents: &[Incident],
 ) -> SentinelResult<PanelEnvelope> {
+    let block_entries = active_blocks(config, store)?;
+    let probe_sources = panel_probe_sources(config, &report.findings, &block_entries);
     let findings = report
         .findings
         .iter()
@@ -244,7 +279,10 @@ fn build_scan_payload(
         .map(|incident| panel_incident(config, incident))
         .collect::<Vec<_>>();
     let baseline_drifts = baseline_drifts_from_findings(config, &report.findings);
-    let active_blocks = panel_active_blocks(config, store)?;
+    let active_blocks = block_entries
+        .into_iter()
+        .map(|block| panel_active_block(config, block))
+        .collect::<Vec<_>>();
     let scan = PanelScanSummary {
         finished_at: Utc::now(),
         raw_events: report.raw_event_count,
@@ -263,11 +301,14 @@ fn build_scan_payload(
         panel_envelope(
             config,
             store,
-            scan,
-            findings,
-            incidents,
-            baseline_drifts,
-            active_blocks,
+            PanelEnvelopeParts {
+                scan,
+                findings,
+                incidents,
+                baseline_drifts,
+                active_blocks,
+                probe_sources,
+            },
         )?,
     )
 }
@@ -276,8 +317,10 @@ fn build_snapshot_payload(
     config: &SentinelConfig,
     store: &SqliteStore,
 ) -> SentinelResult<PanelEnvelope> {
-    let findings = store
-        .list_findings(config.panel.batch_size)?
+    let stored_findings = store.list_findings(config.panel.batch_size)?;
+    let block_entries = active_blocks(config, store)?;
+    let probe_sources = panel_probe_sources(config, &stored_findings, &block_entries);
+    let findings = stored_findings
         .into_iter()
         .filter(|finding| finding.severity.meets(config.panel.min_severity))
         .map(|finding| panel_finding(config, &finding))
@@ -288,7 +331,10 @@ fn build_snapshot_payload(
         .map(|incident| panel_incident(config, &incident))
         .collect::<Vec<_>>();
     let baseline_drifts = baseline_drifts_from_panel_findings(&findings);
-    let active_blocks = panel_active_blocks(config, store)?;
+    let active_blocks = block_entries
+        .into_iter()
+        .map(|block| panel_active_block(config, block))
+        .collect::<Vec<_>>();
     let scan = PanelScanSummary {
         finished_at: Utc::now(),
         raw_events: 0,
@@ -307,11 +353,14 @@ fn build_snapshot_payload(
         panel_envelope(
             config,
             store,
-            scan,
-            findings,
-            incidents,
-            baseline_drifts,
-            active_blocks,
+            PanelEnvelopeParts {
+                scan,
+                findings,
+                incidents,
+                baseline_drifts,
+                active_blocks,
+                probe_sources,
+            },
         )?,
     )
 }
@@ -319,22 +368,19 @@ fn build_snapshot_payload(
 fn panel_envelope(
     config: &SentinelConfig,
     store: &SqliteStore,
-    scan: PanelScanSummary,
-    findings: Vec<PanelFinding>,
-    incidents: Vec<PanelIncident>,
-    baseline_drifts: Vec<PanelBaselineDrift>,
-    active_blocks: Vec<PanelActiveBlock>,
+    parts: PanelEnvelopeParts,
 ) -> SentinelResult<PanelEnvelope> {
     Ok(PanelEnvelope {
         schema_version: PANEL_SCHEMA_VERSION,
         message_id: Uuid::new_v4().to_string(),
         sent_at: Utc::now(),
         node: node_snapshot(config, store)?,
-        scan,
-        findings,
-        incidents,
-        baseline_drifts,
-        active_blocks,
+        scan: parts.scan,
+        findings: parts.findings,
+        incidents: parts.incidents,
+        baseline_drifts: parts.baseline_drifts,
+        active_blocks: parts.active_blocks,
+        probe_sources: parts.probe_sources,
     })
 }
 
@@ -529,18 +575,9 @@ fn active_blocks(config: &SentinelConfig, store: &SqliteStore) -> SentinelResult
     Ok(blocks)
 }
 
-fn panel_active_blocks(
-    config: &SentinelConfig,
-    store: &SqliteStore,
-) -> SentinelResult<Vec<PanelActiveBlock>> {
-    Ok(active_blocks(config, store)?
-        .into_iter()
-        .map(|block| panel_active_block(config, block))
-        .collect())
-}
-
 fn panel_active_block(config: &SentinelConfig, block: BlockEntry) -> PanelActiveBlock {
     PanelActiveBlock {
+        ip: block.ip,
         rule_id: block.rule_id,
         finding_id: block.finding_id,
         reason: redact_text(config, &block.reason),
@@ -550,6 +587,321 @@ fn panel_active_block(config: &SentinelConfig, block: BlockEntry) -> PanelActive
         expired: block.expired,
         firewall_present: block.firewall_present,
     }
+}
+
+#[derive(Debug)]
+struct ProbeSourceAggregate {
+    ip: IpAddr,
+    first_seen: DateTime<Utc>,
+    last_seen: DateTime<Utc>,
+    seen_count: usize,
+    categories: BTreeSet<String>,
+    rule_ids: BTreeSet<String>,
+    latest_reason: String,
+    block_status: String,
+    block_reason: String,
+}
+
+fn panel_probe_sources(
+    config: &SentinelConfig,
+    findings: &[Finding],
+    blocks: &[BlockEntry],
+) -> Vec<PanelProbeSource> {
+    let ip_intel_catalog = IpIntelCatalog::load(config);
+    let mut sources = BTreeMap::<IpAddr, ProbeSourceAggregate>::new();
+    for finding in findings {
+        let Some(ip) = finding_source_ip(finding) else {
+            continue;
+        };
+        if !is_public_remote_ip(ip) {
+            continue;
+        }
+        let request_count = evidence_value(&finding.evidence, "request_count")
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(1)
+            .max(1);
+        let source = sources.entry(ip).or_insert_with(|| ProbeSourceAggregate {
+            ip,
+            first_seen: finding.timestamp,
+            last_seen: finding.timestamp,
+            seen_count: 0,
+            categories: BTreeSet::new(),
+            rule_ids: BTreeSet::new(),
+            latest_reason: String::new(),
+            block_status: "observed".to_string(),
+            block_reason: String::new(),
+        });
+        if finding.timestamp < source.first_seen {
+            source.first_seen = finding.timestamp;
+        }
+        if finding.timestamp >= source.last_seen {
+            source.last_seen = finding.timestamp;
+            source.latest_reason = probe_source_reason(finding);
+        }
+        source.seen_count = source.seen_count.saturating_add(request_count);
+        source.categories.insert(finding.category.to_string());
+        source.rule_ids.insert(finding.rule_id.clone());
+    }
+
+    for block in blocks {
+        let Ok(ip) = block.ip.parse::<IpAddr>() else {
+            continue;
+        };
+        if !is_public_remote_ip(ip) {
+            continue;
+        }
+        let source = sources.entry(ip).or_insert_with(|| ProbeSourceAggregate {
+            ip,
+            first_seen: block.blocked_at,
+            last_seen: block.blocked_at,
+            seen_count: 1,
+            categories: BTreeSet::new(),
+            rule_ids: BTreeSet::new(),
+            latest_reason: redact_text(config, &block.reason),
+            block_status: String::new(),
+            block_reason: String::new(),
+        });
+        source.rule_ids.insert(block.rule_id.clone());
+        if block.blocked_at < source.first_seen {
+            source.first_seen = block.blocked_at;
+        }
+        if block.blocked_at > source.last_seen {
+            source.last_seen = block.blocked_at;
+        }
+        source.block_status = if block.expires_at.is_none() {
+            "permanent_block".to_string()
+        } else if block.expired {
+            "expired".to_string()
+        } else {
+            "blocked".to_string()
+        };
+        source.block_reason = redact_text(config, &block.reason);
+    }
+
+    let mut items = sources
+        .into_values()
+        .map(|source| {
+            let intel = ip_intel(source.ip, &ip_intel_catalog);
+            PanelProbeSource {
+                source_ip: source.ip.to_string(),
+                ip_version: intel.ip_version,
+                network_prefix: intel.network_prefix,
+                country: intel.country,
+                asn: intel.asn,
+                organization: intel.organization,
+                first_seen: source.first_seen,
+                last_seen: source.last_seen,
+                seen_count: source.seen_count,
+                categories: source.categories.into_iter().collect(),
+                rule_ids: source.rule_ids.into_iter().collect(),
+                latest_reason: redact_text(config, &source.latest_reason),
+                block_status: if source.block_status.is_empty() {
+                    "observed".to_string()
+                } else {
+                    source.block_status
+                },
+                block_reason: redact_text(config, &source.block_reason),
+            }
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|left, right| {
+        right
+            .last_seen
+            .cmp(&left.last_seen)
+            .then_with(|| right.seen_count.cmp(&left.seen_count))
+    });
+    items.truncate(config.panel.batch_size);
+    items
+}
+
+struct ProbeIpIntel {
+    ip_version: String,
+    network_prefix: String,
+    country: String,
+    asn: String,
+    organization: String,
+}
+
+fn ip_intel(ip: IpAddr, catalog: &IpIntelCatalog) -> ProbeIpIntel {
+    let mut intel = ProbeIpIntel {
+        ip_version: match ip {
+            IpAddr::V4(_) => "ipv4".to_string(),
+            IpAddr::V6(_) => "ipv6".to_string(),
+        },
+        network_prefix: network_prefix(ip),
+        country: "unknown".to_string(),
+        asn: "unknown".to_string(),
+        organization: "unknown".to_string(),
+    };
+    if let Some(match_result) = catalog.lookup(ip) {
+        intel.country = match_result.country.clone();
+        intel.asn = match_result.asn.clone();
+        intel.organization = match_result.organization.clone();
+    }
+    intel
+}
+
+#[derive(Debug, Default)]
+struct IpIntelCatalog {
+    entries: Vec<IpIntelEntry>,
+}
+
+impl IpIntelCatalog {
+    fn load(config: &SentinelConfig) -> Self {
+        let mut entries = Vec::new();
+        for path in &config.panel.ip_intel_paths {
+            let Ok(content) = fs::read_to_string(path) else {
+                continue;
+            };
+            for line in content.lines() {
+                if entries.len() >= config.panel.ip_intel_max_entries {
+                    return Self::new(entries);
+                }
+                if let Some(entry) = parse_ip_intel_line(line) {
+                    entries.push(entry);
+                }
+            }
+        }
+        Self::new(entries)
+    }
+
+    fn new(mut entries: Vec<IpIntelEntry>) -> Self {
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.prefix));
+        Self { entries }
+    }
+
+    fn lookup(&self, ip: IpAddr) -> Option<&IpIntelEntry> {
+        self.entries
+            .iter()
+            .find(|entry| ip_in_cidr(ip, entry.network, entry.prefix))
+    }
+}
+
+#[derive(Debug)]
+struct IpIntelEntry {
+    network: IpAddr,
+    prefix: u8,
+    country: String,
+    asn: String,
+    organization: String,
+}
+
+fn parse_ip_intel_line(line: &str) -> Option<IpIntelEntry> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let fields = split_csv_line(line);
+    if fields.len() < 4 || fields[0].eq_ignore_ascii_case("cidr") {
+        return None;
+    }
+    let (network, prefix) = parse_cidr(fields.first()?)?;
+    Some(IpIntelEntry {
+        network,
+        prefix,
+        country: clean_ip_intel_field(fields.get(1)?),
+        asn: clean_ip_intel_field(fields.get(2)?),
+        organization: clean_ip_intel_field(fields.get(3)?),
+    })
+}
+
+fn parse_cidr(value: &str) -> Option<(IpAddr, u8)> {
+    let (network, prefix) = value.trim().split_once('/')?;
+    let network = network.trim().parse::<IpAddr>().ok()?;
+    let prefix = prefix.trim().parse::<u8>().ok()?;
+    let max_prefix = match network {
+        IpAddr::V4(_) => 32,
+        IpAddr::V6(_) => 128,
+    };
+    (prefix <= max_prefix).then_some((network, prefix))
+}
+
+fn split_csv_line(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut current = String::new();
+    let mut quoted = false;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if quoted && chars.peek() == Some(&'"') => {
+                current.push('"');
+                chars.next();
+            }
+            '"' => quoted = !quoted,
+            ',' if !quoted => {
+                fields.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    fields.push(current.trim().to_string());
+    fields
+}
+
+fn clean_ip_intel_field(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() {
+        "unknown".to_string()
+    } else {
+        truncate_panel_value(&remove_ips_in_text(value))
+    }
+}
+
+fn network_prefix(ip: IpAddr) -> String {
+    match ip {
+        IpAddr::V4(value) => ipv4_network_prefix(value),
+        IpAddr::V6(value) => ipv6_network_prefix(value),
+    }
+}
+
+fn ipv4_network_prefix(value: Ipv4Addr) -> String {
+    let octets = value.octets();
+    format!("{}.{}.{}.0/24", octets[0], octets[1], octets[2])
+}
+
+fn ipv6_network_prefix(value: Ipv6Addr) -> String {
+    let segments = value.segments();
+    format!("{:x}:{:x}:{:x}::/48", segments[0], segments[1], segments[2])
+}
+
+fn finding_source_ip(finding: &Finding) -> Option<IpAddr> {
+    for key in [
+        "source_ip",
+        "ip",
+        "remote_ip",
+        "remote_addr",
+        "active_response_ip",
+    ] {
+        let Some(value) = evidence_value(&finding.evidence, key) else {
+            continue;
+        };
+        if let Ok(ip) = value.parse::<IpAddr>() {
+            return Some(ip);
+        }
+    }
+    finding.subject.parse::<IpAddr>().ok()
+}
+
+fn probe_source_reason(finding: &Finding) -> String {
+    let family = evidence_value(&finding.evidence, "probe_family");
+    let response = evidence_value(&finding.evidence, "response_profile");
+    let failures = evidence_value(&finding.evidence, "failure_count");
+    if let Some(family) = family {
+        return format!(
+            "web_probe family={} response={} count={}",
+            family,
+            response.unwrap_or("unknown"),
+            evidence_value(&finding.evidence, "request_count").unwrap_or("1")
+        );
+    }
+    if let Some(failures) = failures {
+        return format!("ssh_bruteforce failure_count={failures}");
+    }
+    if let Some(id) = evidence_value(&finding.evidence, "attack_fingerprint_id") {
+        return format!("attack_fingerprint id={id}");
+    }
+    finding.rule_id.clone()
 }
 
 fn panel_finding(config: &SentinelConfig, finding: &Finding) -> PanelFinding {
@@ -717,6 +1069,12 @@ fn limited_payload(
                 .truncate(payload.active_blocks.len() / 2);
             continue;
         }
+        if payload.probe_sources.len() > 1 {
+            payload
+                .probe_sources
+                .truncate(payload.probe_sources.len() / 2);
+            continue;
+        }
         validate_payload_size(config, &payload)?;
     }
 }
@@ -757,6 +1115,9 @@ fn sanitize_panel_envelope(config: &SentinelConfig, mut payload: PanelEnvelope) 
     for block in &mut payload.active_blocks {
         sanitize_panel_active_block(config, block);
     }
+    for source in &mut payload.probe_sources {
+        sanitize_panel_probe_source(config, source);
+    }
 
     payload
 }
@@ -796,6 +1157,12 @@ fn sanitize_panel_baseline_drift(config: &SentinelConfig, drift: &mut PanelBasel
 fn sanitize_panel_active_block(config: &SentinelConfig, block: &mut PanelActiveBlock) {
     block.reason = redact_text(config, &block.reason);
     block.backend = redact_text(config, &block.backend);
+}
+
+fn sanitize_panel_probe_source(config: &SentinelConfig, source: &mut PanelProbeSource) {
+    source.latest_reason = redact_text(config, &source.latest_reason);
+    source.block_reason = redact_text(config, &source.block_reason);
+    source.organization = truncate_panel_value(&redact_text(config, &source.organization));
 }
 
 fn panel_node_name(config: &SentinelConfig) -> String {
@@ -897,12 +1264,12 @@ fn duration_seconds(seconds: u64) -> i64 {
 mod tests {
     use super::{
         enqueue_payload, panel_envelope, sanitize_panel_envelope, sign_request, summary_from_state,
-        PanelActiveBlock, PanelBaselineDrift, PanelFinding, PanelIncident, PanelOutboxState,
-        PanelScanSummary,
+        PanelActiveBlock, PanelBaselineDrift, PanelEnvelopeParts, PanelFinding, PanelIncident,
+        PanelOutboxState, PanelScanSummary,
     };
     use crate::active_response::BlockEntry;
     use crate::storage::SqliteStore;
-    use chrono::Utc;
+    use chrono::{Duration as ChronoDuration, Utc};
     use sentinel_core::panel_auth::{panel_signature_hex, PANEL_INGEST_METHOD, PANEL_INGEST_PATH};
     use sentinel_core::{Category, Evidence, Finding, SentinelConfig, Severity};
     use std::collections::BTreeMap;
@@ -959,11 +1326,14 @@ mod tests {
         let payload = panel_envelope(
             &config,
             &store,
-            scan,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            PanelEnvelopeParts {
+                scan,
+                findings: Vec::new(),
+                incidents: Vec::new(),
+                baseline_drifts: Vec::new(),
+                active_blocks: Vec::new(),
+                probe_sources: Vec::new(),
+            },
         )?;
         let mut state = PanelOutboxState::default();
 
@@ -1029,11 +1399,14 @@ mod tests {
         let payload = panel_envelope(
             &config,
             &store,
-            scan,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            PanelEnvelopeParts {
+                scan,
+                findings: Vec::new(),
+                incidents: Vec::new(),
+                baseline_drifts: Vec::new(),
+                active_blocks: Vec::new(),
+                probe_sources: Vec::new(),
+            },
         )?;
         let json = serde_json::to_string(&payload.node)?;
 
@@ -1074,11 +1447,14 @@ mod tests {
         let mut payload = panel_envelope(
             &config,
             &store,
-            scan,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
+            PanelEnvelopeParts {
+                scan,
+                findings: Vec::new(),
+                incidents: Vec::new(),
+                baseline_drifts: Vec::new(),
+                active_blocks: Vec::new(),
+                probe_sources: Vec::new(),
+            },
         )?;
         payload.node.node_id = "203.0.113.20".to_string();
         payload.node.node_name = "203.0.113.20".to_string();
@@ -1122,6 +1498,7 @@ mod tests {
             reasons: vec!["public listener on 0.0.0.0".to_string()],
         });
         payload.active_blocks.push(PanelActiveBlock {
+            ip: "198.51.100.8".to_string(),
             rule_id: "SSH-001".to_string(),
             finding_id: "finding-1".to_string(),
             reason: "blocked 198.51.100.8".to_string(),
@@ -1141,18 +1518,18 @@ mod tests {
         assert!(sanitized.node.host_id.is_empty());
         assert!(sanitized.node.hostname.is_empty());
         assert!(!json.contains("203.0.113"));
-        assert!(!json.contains("198.51.100"));
         assert!(!json.contains("0.0.0.0"));
         assert!(!json.contains("node_id"));
         assert!(!json.contains("host_id"));
         assert!(!json.contains("hostname"));
         assert!(!json.contains("/bin/bash -c"));
+        assert!(json.contains(r#""ip":"198.51.100.8""#));
         assert!(json.contains("/bin/bash [args masked]"));
         Ok(())
     }
 
     #[test]
-    fn panel_active_blocks_do_not_report_ip_addresses() {
+    fn panel_active_blocks_keep_admin_source_ip() {
         let mut config = SentinelConfig::default();
         config.panel.privacy_mode = "strict".to_string();
         let block = BlockEntry {
@@ -1170,8 +1547,92 @@ mod tests {
         let panel = super::panel_active_block(&config, block);
         let json = serde_json::to_string(&panel).expect("panel block json");
 
-        assert!(!json.contains("203.0.113"));
-        assert!(!json.contains("\"ip\""));
+        assert!(json.contains("203.0.113.44"));
+        assert!(json.contains("\"ip\""));
         assert!(json.contains("redacted"));
+    }
+
+    #[test]
+    fn panel_probe_sources_aggregate_public_sources() {
+        let mut config = SentinelConfig::default();
+        let temp = tempfile::tempdir().expect("temp dir");
+        let intel_path = temp.path().join("ip-intel.csv");
+        std::fs::write(
+            &intel_path,
+            "cidr,country,asn,organization\n47.242.23.0/24,JP,AS45102,Example Cloud\n47.0.0.0/8,ZZ,AS0,Broad Match\n",
+        )
+        .expect("write ip intel");
+        config.panel.ip_intel_paths = vec![intel_path];
+        let now = Utc::now();
+        let findings = vec![
+            Finding::new(
+                "host",
+                "web",
+                "47.242.23.111",
+                Severity::Medium,
+                Category::Web,
+                "WEB-001",
+                "web probe",
+            )
+            .with_evidence(vec![
+                Evidence::new("ip", "47.242.23.111"),
+                Evidence::new("probe_family", "env_file"),
+                Evidence::new("response_profile", "missing_or_rejected"),
+                Evidence::new("request_count", "3"),
+            ]),
+            Finding::new(
+                "host",
+                "ssh",
+                "47.242.23.111",
+                Severity::High,
+                Category::Ssh,
+                "SSH-003",
+                "ssh brute force",
+            )
+            .with_evidence(vec![
+                Evidence::new("source_ip", "47.242.23.111"),
+                Evidence::new("failure_count", "8"),
+            ]),
+            Finding::new(
+                "host",
+                "ssh",
+                "10.0.0.5",
+                Severity::High,
+                Category::Ssh,
+                "SSH-003",
+                "private ssh brute force",
+            )
+            .with_evidence(vec![
+                Evidence::new("source_ip", "10.0.0.5"),
+                Evidence::new("failure_count", "8"),
+            ]),
+        ];
+        let blocks = vec![BlockEntry {
+            ip: "47.242.23.111".to_string(),
+            rule_id: "SSH-003".to_string(),
+            finding_id: "finding-ssh".to_string(),
+            reason: "ssh brute force failure_count=8".to_string(),
+            backend: "nftables".to_string(),
+            blocked_at: now,
+            expires_at: Some(now + ChronoDuration::hours(1)),
+            expired: false,
+            firewall_present: Some(true),
+        }];
+
+        let sources = super::panel_probe_sources(&config, &findings, &blocks);
+
+        assert_eq!(sources.len(), 1);
+        let source = &sources[0];
+        assert_eq!(source.source_ip, "47.242.23.111");
+        assert_eq!(source.network_prefix, "47.242.23.0/24");
+        assert_eq!(source.country, "JP");
+        assert_eq!(source.asn, "AS45102");
+        assert_eq!(source.organization, "Example Cloud");
+        assert_eq!(source.seen_count, 4);
+        assert_eq!(source.block_status, "blocked");
+        assert!(source.rule_ids.contains(&"WEB-001".to_string()));
+        assert!(source.rule_ids.contains(&"SSH-003".to_string()));
+        assert!(source.latest_reason.contains("ssh_bruteforce"));
+        assert!(source.block_reason.contains("failure_count=8"));
     }
 }

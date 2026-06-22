@@ -8,35 +8,66 @@ const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 200;
 const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
 const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES = 720;
+const ROLE_LEVELS = { public: 0, operator: 1, admin: 2 };
 
 const DATASETS = {
   "/api/v1/nodes": {
+    minRole: "public",
     table: "nodes",
     orderColumn: "last_seen_at",
     columns: ["last_seen_at", "node_name", "agent_version", "privacy_mode"],
   },
   "/api/v1/findings": {
+    minRole: "operator",
     table: "findings",
     orderColumn: "timestamp",
     columns: ["id", "timestamp", "node_id AS node_name", "severity", "rule_id", "category", "subject", "title"],
   },
   "/api/v1/incidents": {
+    minRole: "operator",
     table: "incidents",
     orderColumn: "last_seen",
     columns: ["id", "last_seen", "node_id AS node_name", "severity", "score", "title", "summary"],
   },
   "/api/v1/baseline-drifts": {
+    minRole: "operator",
     table: "baseline_drifts",
     orderColumn: "timestamp",
     columns: ["timestamp", "node_id AS node_name", "severity", "rule_id", "tier", "subject", "review_action"],
   },
   "/api/v1/active-blocks": {
+    minRole: "operator",
+    sensitive: true,
     table: "active_blocks",
     orderColumn: "blocked_at",
     activeFilter: "expired = 0",
-    columns: ["blocked_at", "node_id AS node_name", "rule_id", "backend", "reason", "expires_at"],
+    columns: ["blocked_at", "node_id AS node_name", "ip", "rule_id", "backend", "reason", "expires_at"],
+  },
+  "/api/v1/probe-sources": {
+    minRole: "admin",
+    sensitive: true,
+    optional: true,
+    table: "probe_sources",
+    orderColumn: "last_seen",
+    columns: [
+      "last_seen",
+      "node_id AS node_name",
+      "source_ip",
+      "ip_version",
+      "network_prefix",
+      "seen_count",
+      "block_status",
+      "country",
+      "asn",
+      "organization",
+      "categories_json",
+      "rule_ids_json",
+      "latest_reason",
+      "block_reason",
+    ],
   },
   "/api/v1/audit-logs": {
+    minRole: "admin",
     table: "panel_audit_logs",
     orderColumn: "created_at",
     columns: ["created_at", "action", "actor", "target_type", "target_id"],
@@ -54,25 +85,30 @@ export default {
         return withCors(await ingest(request, env), request, env);
       }
       if (request.method === "GET" && url.pathname === "/api/v1/settings") {
+        const role = resolvePanelRole(request, env, { allowAnonymous: true });
         return withCors(json({
           theme: env.PANEL_THEME || "default",
-          auth_required: true,
+          auth_required: !publicEnabled(env),
           auth_configured: Boolean(viewToken(env) || adminToken(env)),
+          operator_configured: Boolean(viewToken(env)),
           admin_configured: Boolean(adminToken(env)),
+          public_enabled: publicEnabled(env),
+          role,
           freshness_threshold_minutes: DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
           node_retired_threshold_minutes: DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
           server_time: new Date().toISOString(),
         }), request, env);
       }
       if (request.method === "GET" && url.pathname === "/api/v1/summary") {
-        const authError = viewAuthError(request, env);
-        if (authError) return withCors(authError, request, env);
-        return withCors(json(await summary(env)), request, env);
+        const auth = panelAuth(request, env, "public");
+        if (auth.error) return withCors(auth.error, request, env);
+        return withCors(json(await summary(env, auth.role)), request, env);
       }
       if (request.method === "GET" && DATASETS[url.pathname]) {
-        const authError = viewAuthError(request, env);
-        if (authError) return withCors(authError, request, env);
-        return withCors(json(await queryPage(env, DATASETS[url.pathname], url)), request, env);
+        const dataset = DATASETS[url.pathname];
+        const auth = panelAuth(request, env, dataset.minRole || "operator");
+        if (auth.error) return withCors(auth.error, request, env);
+        return withCors(json(await queryPage(env, dataset, url, auth.role)), request, env);
       }
       if (request.method === "GET" && url.pathname === "/api/v1/finding") {
         const authError = viewAuthError(request, env);
@@ -88,6 +124,12 @@ export default {
         const authError = adminAuthError(request, env);
         if (authError) return withCors(authError, request, env);
         return withCors(json(await findingReview(request, env)), request, env);
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/stream-ticket") {
+        return withCors(json({ error: "stream_unavailable", detail: "stream_unavailable" }, 501), request, env);
+      }
+      if (request.method === "GET" && env.ASSETS) {
+        return env.ASSETS.fetch(request);
       }
       return withCors(json({ error: "not_found" }, 404), request, env);
     } catch (error) {
@@ -275,7 +317,7 @@ async function persistPayload(env, payload, signedNodeName) {
     `).bind(
       id,
       nodeName,
-      redactedIp(),
+      String(block.ip || "").trim() || redactedIp(),
       block.rule_id,
       block.finding_id,
       redactIpText(block.reason || ""),
@@ -287,21 +329,98 @@ async function persistPayload(env, payload, signedNodeName) {
       receivedAt,
     ).run();
   }
+
+  for (const source of payload.probe_sources || []) {
+    try {
+      await upsertProbeSource(env, nodeName, source, receivedAt);
+    } catch (error) {
+      if (missingTableError(error, "probe_sources")) {
+        console.warn("probe_sources table is missing; apply panel/cloudflare/schema.sql to enable probe-source blacklist storage");
+        break;
+      }
+      throw error;
+    }
+  }
 }
 
-async function summary(env) {
-  const [nodes, findings, incidents, drifts, blocks] = await Promise.all([
+async function upsertProbeSource(env, nodeName, source, receivedAt) {
+  const sourceIp = String(source?.source_ip || "").trim();
+  if (!sourceIp) return;
+  const id = `${nodeName}:${sourceIp}`;
+  const existing = await env.DB.prepare(
+    "SELECT first_seen, last_seen, seen_count, categories_json, rule_ids_json FROM probe_sources WHERE id = ?",
+  ).bind(id).first();
+  const merged = mergeProbeSource(existing, source, receivedAt);
+  await env.DB.prepare(`
+    INSERT OR REPLACE INTO probe_sources
+      (id, node_id, source_ip, ip_version, network_prefix, country, asn, organization,
+       first_seen, last_seen, seen_count, categories_json, rule_ids_json, latest_reason,
+       block_status, block_reason, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    id,
+    nodeName,
+    sourceIp,
+    String(source.ip_version || "unknown"),
+    String(source.network_prefix || "unknown"),
+    String(source.country || "unknown"),
+    String(source.asn || "unknown"),
+    redactIpText(source.organization || "unknown"),
+    merged.first_seen,
+    merged.last_seen,
+    merged.seen_count,
+    JSON.stringify(merged.categories),
+    JSON.stringify(merged.rule_ids),
+    redactIpText(source.latest_reason || ""),
+    String(source.block_status || "observed"),
+    redactIpText(source.block_reason || ""),
+    receivedAt,
+  ).run();
+}
+
+function mergeProbeSource(existing, source, fallbackTime) {
+  const firstSeen = String(source.first_seen || fallbackTime);
+  const lastSeen = String(source.last_seen || firstSeen);
+  const existingFirst = existing?.first_seen ? String(existing.first_seen) : firstSeen;
+  const existingLast = existing?.last_seen ? String(existing.last_seen) : lastSeen;
+  return {
+    first_seen: minTimeString(existingFirst, firstSeen),
+    last_seen: maxTimeString(existingLast, lastSeen),
+    seen_count: Number(existing?.seen_count || 0) + Math.max(1, Number(source.seen_count || 1) || 1),
+    categories: mergeStringSets(parseJsonField(existing?.categories_json, []), source.categories || []),
+    rule_ids: mergeStringSets(parseJsonField(existing?.rule_ids_json, []), source.rule_ids || []),
+  };
+}
+
+async function summary(env, role = "public") {
+  const [nodes, findings, incidents, drifts, blocks, probeSources, bySeverity, byCategory, byBlockStatus, nodeRows] = await Promise.all([
     countDistinct(env, "nodes", "node_name"),
     count(env, "findings"),
     count(env, "incidents"),
     count(env, "baseline_drifts"),
     countWhere(env, "active_blocks", "expired = 0"),
+    countOptional(env, "probe_sources"),
+    queryAll(env, "SELECT severity, COUNT(*) AS count FROM findings GROUP BY severity"),
+    queryAll(env, "SELECT category, COUNT(*) AS count FROM findings GROUP BY category"),
+    queryAllOptional(env, "SELECT block_status, COUNT(*) AS count FROM probe_sources GROUP BY block_status", "probe_sources"),
+    queryAll(env, "SELECT node_name, agent_version, last_seen_at FROM nodes"),
   ]);
-  const bySeverity = await queryAll(env, "SELECT severity, COUNT(*) AS count FROM findings GROUP BY severity");
-  return { nodes, findings, incidents, baseline_drifts: drifts, active_blocks: blocks, by_severity: bySeverity };
+  const result = {
+    nodes,
+    findings,
+    incidents,
+    baseline_drifts: drifts,
+    active_blocks: blocks,
+    probe_sources: probeSources,
+    by_severity: bySeverity,
+    by_category: byCategory,
+    by_block_status: byBlockStatus,
+    node_status: nodeStatusCounts(nodeRows),
+  };
+  return redactPanelValue(result);
 }
 
-async function queryPage(env, dataset, url) {
+async function queryPage(env, dataset, url, role = "operator") {
   const page = pageRequest(url);
   const values = [];
   const parts = [];
@@ -315,18 +434,26 @@ async function queryPage(env, dataset, url) {
     parts.push(`${dataset.orderColumn} <= ?`);
   }
   const whereSql = parts.length ? ` WHERE ${parts.join(" AND ")}` : "";
-  const countRow = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${dataset.table}${whereSql}`)
-    .bind(...values)
-    .first();
-  const result = await env.DB.prepare(
-    `SELECT ${dataset.columns.join(", ")} FROM ${dataset.table}${whereSql} ORDER BY ${dataset.orderColumn} DESC LIMIT ? OFFSET ?`,
-  ).bind(...values, page.limit, page.offset).all();
-  return {
-    items: redactPanelValue(result.results || []),
-    total: Number(countRow?.count || 0),
-    limit: page.limit,
-    offset: page.offset,
-  };
+  try {
+    const countRow = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${dataset.table}${whereSql}`)
+      .bind(...values)
+      .first();
+    const result = await env.DB.prepare(
+      `SELECT ${dataset.columns.join(", ")} FROM ${dataset.table}${whereSql} ORDER BY ${dataset.orderColumn} DESC LIMIT ? OFFSET ?`,
+    ).bind(...values, page.limit, page.offset).all();
+    const items = expandDatasetJsonColumns(dataset.table, result.results || []);
+    return {
+      items: shouldRedactDataset(dataset, role) ? redactPanelValue(items) : items,
+      total: Number(countRow?.count || 0),
+      limit: page.limit,
+      offset: page.offset,
+    };
+  } catch (error) {
+    if (dataset.optional && missingTableError(error, dataset.table)) {
+      return { items: [], total: 0, limit: page.limit, offset: page.offset };
+    }
+    throw error;
+  }
 }
 
 async function findingDetail(env, url) {
@@ -412,6 +539,57 @@ function panelBlockStorageId(nodeId, block) {
   const source = String(block?.finding_id || "").trim()
     || [block?.rule_id || "", block?.blocked_at || "", block?.backend || ""].join(":");
   return `${nodeId}:${source}`;
+}
+
+function expandDatasetJsonColumns(table, rows) {
+  if (table !== "probe_sources") return rows;
+  return rows.map((row) => {
+    const expanded = { ...row };
+    expanded.categories = parseJsonField(expanded.categories_json, []);
+    expanded.rule_ids = parseJsonField(expanded.rule_ids_json, []);
+    delete expanded.categories_json;
+    delete expanded.rule_ids_json;
+    return expanded;
+  });
+}
+
+function shouldRedactDataset(dataset, role) {
+  return !(dataset.sensitive && role === "admin");
+}
+
+function nodeStatusCounts(nodes) {
+  const counts = { fresh: 0, stale: 0, offline: 0, retired: 0 };
+  const now = new Date();
+  for (const node of nodes || []) {
+    const status = panelNodeStatus(node?.last_seen_at, now);
+    counts[status] = (counts[status] || 0) + 1;
+  }
+  return Object.entries(counts).map(([status, count]) => ({ status, count }));
+}
+
+function panelNodeStatus(lastSeenAt, now) {
+  const seen = new Date(lastSeenAt || "");
+  if (Number.isNaN(seen.getTime())) return "retired";
+  const ageMinutes = Math.max(0, (now.getTime() - seen.getTime()) / 60000);
+  if (ageMinutes > DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES) return "retired";
+  if (ageMinutes > DEFAULT_FRESHNESS_THRESHOLD_MINUTES * 6) return "offline";
+  if (ageMinutes > DEFAULT_FRESHNESS_THRESHOLD_MINUTES) return "stale";
+  return "fresh";
+}
+
+function mergeStringSets(left, right) {
+  return [...new Set([...(left || []), ...(right || [])]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function minTimeString(left, right) {
+  return new Date(left).getTime() <= new Date(right).getTime() ? left : right;
+}
+
+function maxTimeString(left, right) {
+  return new Date(left).getTime() >= new Date(right).getTime() ? left : right;
 }
 
 function redactedIp() {
@@ -548,6 +726,28 @@ async function queryAll(env, sql) {
   return result.results || [];
 }
 
+async function countOptional(env, table) {
+  try {
+    return await count(env, table);
+  } catch (error) {
+    if (missingTableError(error, table)) return 0;
+    throw error;
+  }
+}
+
+async function queryAllOptional(env, sql, table) {
+  try {
+    return await queryAll(env, sql);
+  } catch (error) {
+    if (missingTableError(error, table)) return [];
+    throw error;
+  }
+}
+
+function missingTableError(error, table) {
+  return String(error?.message || error || "").toLowerCase().includes(`no such table: ${table.toLowerCase()}`);
+}
+
 function secretForNode(env, nodeId) {
   if (env.PANEL_NODE_SECRETS) {
     const map = JSON.parse(env.PANEL_NODE_SECRETS);
@@ -564,23 +764,50 @@ function adminToken(env) {
   return String(env.PANEL_ADMIN_TOKEN || "").trim();
 }
 
-function viewAuthError(request, env) {
-  const expectedView = viewToken(env);
-  const expectedAdmin = adminToken(env);
-  if (!expectedView && !expectedAdmin) return json({ error: "panel_view_token_not_configured", detail: "panel_view_token_not_configured" }, 403);
-  const actual = bearerToken(request.headers.get("authorization") || "") || String(request.headers.get("x-vps-sentinel-view-token") || "").trim();
-  if (!actual) return json({ error: "missing_view_token", detail: "missing_view_token" }, 401);
-  if (!timingSafeEqual(expectedView, actual) && !timingSafeEqual(expectedAdmin, actual)) return json({ error: "invalid_view_token", detail: "invalid_view_token" }, 401);
+function publicEnabled(env) {
+  return ["1", "true", "yes", "on"].includes(String(env.PANEL_PUBLIC_ENABLED || "").trim().toLowerCase());
+}
+
+function panelAuth(request, env, minimumRole) {
+  const role = resolvePanelRole(request, env);
+  if (!role) {
+    const hasAnyToken = Boolean(viewToken(env) || adminToken(env));
+    const error = hasAnyToken || publicEnabled(env)
+      ? json({ error: "missing_or_invalid_panel_token", detail: "missing_or_invalid_panel_token" }, 401)
+      : json({ error: "panel_view_token_not_configured", detail: "panel_view_token_not_configured" }, 403);
+    return { error, role: "public" };
+  }
+  if (!roleAllows(role, minimumRole)) {
+    return {
+      error: json({ error: "insufficient_panel_role", detail: "insufficient_panel_role" }, 403),
+      role,
+    };
+  }
+  return { error: null, role };
+}
+
+function resolvePanelRole(request, env, options = {}) {
+  const actual = bearerToken(request.headers.get("authorization") || "")
+    || String(request.headers.get("x-vps-sentinel-view-token") || "").trim();
+  const admin = adminToken(env);
+  const view = viewToken(env);
+  if (admin && actual && timingSafeEqual(admin, actual)) return "admin";
+  if (view && actual && timingSafeEqual(view, actual)) return "operator";
+  if (!actual && (publicEnabled(env) || options.allowAnonymous)) return "public";
   return null;
 }
 
+function roleAllows(role, minimumRole) {
+  return (ROLE_LEVELS[role] ?? 0) >= (ROLE_LEVELS[minimumRole] ?? 0);
+}
+
+function viewAuthError(request, env) {
+  return panelAuth(request, env, "operator").error;
+}
+
 function adminAuthError(request, env) {
-  const expected = adminToken(env);
-  if (!expected) return json({ error: "panel_admin_token_not_configured", detail: "panel_admin_token_not_configured" }, 403);
-  const actual = bearerToken(request.headers.get("authorization") || "") || String(request.headers.get("x-vps-sentinel-view-token") || "").trim();
-  if (!actual) return json({ error: "missing_admin_token", detail: "missing_admin_token" }, 401);
-  if (!timingSafeEqual(expected, actual)) return json({ error: "invalid_admin_token", detail: "invalid_admin_token" }, 401);
-  return null;
+  if (!adminToken(env)) return json({ error: "panel_admin_token_not_configured", detail: "panel_admin_token_not_configured" }, 403);
+  return panelAuth(request, env, "admin").error;
 }
 
 function bearerToken(value) {

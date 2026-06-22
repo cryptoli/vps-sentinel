@@ -740,6 +740,18 @@ fn validate_panel(config: &PanelConfig) -> SentinelResult<()> {
             "panel.max_payload_bytes must be at least 16384".to_string(),
         ));
     }
+    if config.ip_intel_max_entries == 0 {
+        return Err(SentinelError::Config(
+            "panel.ip_intel_max_entries must be greater than 0".to_string(),
+        ));
+    }
+    for path in &config.ip_intel_paths {
+        if path.as_os_str().is_empty() {
+            return Err(SentinelError::Config(
+                "panel.ip_intel_paths entries must not be empty".to_string(),
+            ));
+        }
+    }
     match config.privacy_mode.as_str() {
         "normal" | "strict" => Ok(()),
         other => Err(SentinelError::Config(format!(

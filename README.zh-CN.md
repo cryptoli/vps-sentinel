@@ -44,7 +44,7 @@
 | 高级采集 | 默认启用 auditd 日志采集和 eBPF JSONL/命令桥接入口；可生成轻量 bpftrace runtime probe 脚本，用于捕捉短生命周期 exec 和可选的文件变更事件。auditd/eBPF 事件可识别 procfs 快照可能错过的短生命周期行为。 |
 | 外部规则 | 支持 Sigma-like TOML 事件规则、外部规则校验和可选 YARA CLI 扫描；规则引擎默认启用，但只有配置了规则路径或扫描根目录后才会实际运行。 |
 | 威胁情报 | 可选用本地或远程 indicator 对 IP、路径、域名、哈希做证据增强；命中只是辅助证据，不会单独触发封禁。 |
-| 多 VPS 面板 | 将有签名、有大小上限、隐私安全的遥测推送到 Rust 自建面板或 Cloudflare Worker/D1 接收端；原始 IP 会在远端上报前移除，静态 UI 支持第三方主题和自定义页面。 |
+| 多 VPS 面板 | 将有签名、有大小上限的遥测推送到 Rust 自建面板或 Cloudflare Worker/D1 接收端；节点 ID、主机名、原始证据和通用网络字段会脱敏，管理层专用的主动封禁和外部探查黑名单数据集会保留公网来源 IP、封禁原因和基础网段信息，便于复核处置。自建 UI 使用 WebSocket 变更事件，浏览器 API 按公开、运维、管理三层授权。 |
 | 维护模式 | 支持有时限的维护窗口，在计划升级期间压制低/中危基线漂移和交互式 SSH 登录噪声，但不隐藏爆破或其它攻击信号。 |
 | 本地存储与资源控制 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和自包含通知日志；重复 raw fact 使用稳定存储键，默认不持久化完整原始日志行，普通 Web 访问事件默认不入库，并提供保留期、数据库容量和运行时预算上限，避免无限增长。 |
 | 噪声控制 | 支持白名单、最低告警级别、finding 去重和保留周期。 |
@@ -171,7 +171,7 @@ min_severity = "Medium"
 
 ## 多 VPS 面板
 
-agent 可以把签名后的遥测主动推送到中心面板，被监控 VPS 不需要开放入站管理端口。自建部署使用 Rust 二进制 `vps-sentinel-panel`，支持 SQLite、PostgreSQL 和 MySQL；Cloudflare 部署可使用 `panel/cloudflare` 中的 Worker/D1 接收端，并把 `panel/web` 作为静态 UI。浏览器访问分为公开、运维和管理三层；自建面板支持 WebSocket 自动刷新。本地检测和防火墙响应仍会使用来源 IP，但默认远端面板载荷会在离开被监控主机前移除原始 IP。
+agent 可以把签名后的遥测主动推送到中心面板，被监控 VPS 不需要开放入站管理端口。自建部署使用 Rust 二进制 `vps-sentinel-panel`，支持 SQLite、PostgreSQL 和 MySQL；Cloudflare 部署可使用 `panel/cloudflare` 中的 Worker/D1 接收端，并把 `panel/web` 作为静态 UI。浏览器访问分为公开、运维和管理三层；自建面板使用 WebSocket 变更事件，不再靠定时刷新列表。本地检测和防火墙响应仍会使用来源 IP。远端载荷会移除节点 ID、主机名和原始证据细节，但管理层专用的主动封禁和外部探查来源数据集会保留公网来源 IP、封禁原因、IP 类型和网段，便于复核响应决策。
 
 agent 侧配置示例：
 
@@ -183,9 +183,10 @@ node_name = "prod-web-1"
 secret = "replace-with-a-long-random-secret"
 min_severity = "Medium"
 privacy_mode = "strict"
+ip_intel_paths = [] # 可选 CSV: cidr,country,asn,organization
 ```
 
-常用命令是 `vs panel push`、`vs panel flush` 和 `vs panel outbox`。Rust 面板服务、Cloudflare Worker/D1、MySQL/PostgreSQL 注意事项和第三方主题/页面开发见 [docs/panel.md](docs/panel.md)。
+常用命令是 `vs panel push`、`vs panel flush` 和 `vs panel outbox`。可选的 `panel.ip_intel_paths` CSV 会在本地按最长 CIDR 前缀匹配，为管理层黑名单补充国家、ASN 和组织信息，不会默认调用外部 API。Cloudflare 部署可使用 `scripts/deploy-cloudflare-panel.sh` 复用或创建 D1、部署 Worker API，并把 `panel/web` 作为 Worker 静态资源一并发布。Rust 面板服务、Cloudflare Worker/D1、MySQL/PostgreSQL 注意事项和第三方主题/页面开发见 [docs/panel.md](docs/panel.md)。
 
 ## 架构
 

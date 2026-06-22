@@ -12,9 +12,7 @@ import { createTranslator, selectedLanguage } from "./i18n.js";
 const API_BASE = "/api/v1";
 const DEFAULT_LIMIT = 25;
 const OVERVIEW_LIMIT = 12;
-const OVERVIEW_NODE_PAGE_LIMIT = 200;
 const STREAM_RECONNECT_MS = 5000;
-const FALLBACK_REFRESH_MS = 60000;
 const TOKEN_STORAGE_KEY = "vps-sentinel-panel-token";
 const TIME_PRESETS = ["1h", "6h", "24h", "today", "7d"];
 const ROLE_LEVELS = { public: 0, operator: 1, admin: 2 };
@@ -42,8 +40,9 @@ const BUILTIN_PAGES = [
   { id: "incidents", labelKey: "incidents", minRole: "operator", render: (ctx) => renderDatasetPage(ctx, "incidents") },
   { id: "drifts", labelKey: "drifts", minRole: "operator", render: (ctx) => renderDatasetPage(ctx, "baseline_drifts") },
   { id: "blocks", labelKey: "blocks", minRole: "operator", render: (ctx) => renderDatasetPage(ctx, "active_blocks") },
+  { id: "blacklist", labelKey: "blacklist", minRole: "admin", render: (ctx) => renderDatasetPage(ctx, "probe_sources") },
   { id: "audit", labelKey: "auditLogs", minRole: "admin", render: (ctx) => renderDatasetPage(ctx, "audit_logs") },
-  { id: "nodes", labelKey: "nodes", minRole: "public", render: (ctx) => renderDatasetPage(ctx, "nodes") },
+  { id: "nodes", labelKey: "nodes", minRole: "public", render: renderNodesPage },
 ];
 
 const state = {
@@ -59,7 +58,6 @@ const state = {
   manifest: null,
   role: "public",
   stream: null,
-  fallbackTimer: null,
   refreshInFlight: null,
 };
 
@@ -88,7 +86,6 @@ async function init() {
   }
   await refresh();
   connectStream();
-  startFallbackRefresh();
 }
 
 function bindToolbar() {
@@ -277,38 +274,36 @@ function overviewTrendParams() {
 }
 
 async function loadOverviewDatasets() {
-  const visible = visibleDatasetEntries();
+  const visible = visibleDatasetEntries().filter(([key]) => key !== "nodes" && key !== "probe_sources");
   const entries = await Promise.all(
     visible.map(async ([key, meta]) => [
       key,
-      key === "nodes"
-        ? await loadAllDatasetPages(meta, OVERVIEW_NODE_PAGE_LIMIT)
-        : await loadDataset(meta, { limit: OVERVIEW_LIMIT, offset: 0 }),
+      await loadDataset(meta, { limit: OVERVIEW_LIMIT, offset: 0 }),
     ]),
   );
   const trends = await fetchJson(`${API_BASE}/trends?${overviewTrendParams()}`).catch(() => ({ items: [] }));
   state.datasets = { ...Object.fromEntries(entries), trends };
 }
 
-async function loadAllDatasetPages(meta, pageLimit) {
-  const first = await loadDataset(meta, { limit: pageLimit, offset: 0 });
-  const items = [...(first.items || [])];
-  let offset = items.length;
-  while (offset < first.total) {
-    const page = await loadDataset(meta, { limit: pageLimit, offset });
-    const pageItems = page.items || [];
-    if (pageItems.length === 0) break;
-    items.push(...pageItems);
-    offset += pageItems.length;
-  }
-  return { ...first, items, limit: pageLimit, offset: 0 };
-}
-
 async function renderOverview(ctx) {
-  if (visibleDatasetEntries().some(([key]) => !state.datasets[key]?.items)) {
+  if (visibleDatasetEntries().some(([key]) => key !== "nodes" && key !== "probe_sources" && !state.datasets[key]?.items)) {
     await loadOverviewDatasets();
   }
   renderOverviewDashboard(ctx);
+}
+
+async function renderNodesPage(ctx) {
+  const meta = DATASETS.nodes;
+  const pageState = datasetPageState("nodes");
+  const page = await loadDataset(meta, pageState);
+  const ui = view();
+  state.datasets.nodes = page;
+  app.append(
+    ui.sectionHeader(t(meta.titleKey), t(meta.descriptionKey), ui.span("record-count", formatTemplate(t("pageInfo"), rangeInfo(page)))),
+    filters("nodes", pageState),
+    ui.nodeProbeGrid(page.items || []),
+    pagination("nodes", page),
+  );
 }
 
 async function renderDatasetPage(ctx, datasetKey) {
@@ -656,6 +651,11 @@ function connectStream() {
       });
       socket.addEventListener("message", async (event) => {
         const message = parseStreamMessage(event.data);
+        if (message?.type === "hello") {
+          state.role = selectedRole(message.role || state.role, Boolean(panelToken()));
+          setStreamStatus("live");
+          return;
+        }
         if (message?.type === "refresh") {
           state.role = selectedRole(message.role || state.role, Boolean(panelToken()));
           await refresh().catch((error) => {
@@ -693,16 +693,6 @@ function scheduleStreamReconnect() {
   }, STREAM_RECONNECT_MS);
 }
 
-function startFallbackRefresh() {
-  if (state.fallbackTimer) return;
-  state.fallbackTimer = setInterval(() => {
-    if (state.stream?.status === "live") return;
-    refresh().catch((error) => {
-      if (isAuthError(error)) renderAccessGate(error.message);
-    });
-  }, FALLBACK_REFRESH_MS);
-}
-
 function setStreamStatus(status) {
   state.stream = { ...(state.stream || {}), status };
   refreshButton.textContent = t(`stream_${status}`) || t("stream_idle");
@@ -734,7 +724,6 @@ function renderAccessGate(message = "") {
     renderNav();
     await refresh();
     connectStream();
-    startFallbackRefresh();
   });
   app.replaceChildren(form);
   tokenInput.focus();
@@ -784,14 +773,14 @@ async function fetchJson(url, options = {}) {
 
 function sanitizePanelValue(value) {
   if (value === null || value === undefined) return value;
-  if (typeof value === "string") return redactIpText(value);
+  if (typeof value === "string") return roleAllows("admin") ? value : redactIpText(value);
   if (Array.isArray(value)) return value.map((item) => sanitizePanelValue(item));
   if (typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value).flatMap(([key, item]) => {
         const lower = key.toLowerCase();
         if (shouldHidePanelField(lower)) return [];
-        return [lower === "ip" || lower.includes("_ip") || lower.includes("addr")
+        return [!roleAllows("admin") && (lower === "ip" || lower.includes("_ip") || lower.includes("addr"))
           ? [key, "redacted"]
           : [key, sanitizePanelValue(item)]];
       }),

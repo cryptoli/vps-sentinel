@@ -903,6 +903,8 @@ pub struct PanelConfig {
     pub outbox_max_items: usize,
     pub max_payload_bytes: usize,
     pub privacy_mode: String,
+    pub ip_intel_paths: Vec<PathBuf>,
+    pub ip_intel_max_entries: usize,
 }
 
 impl Default for PanelConfig {
@@ -920,6 +922,8 @@ impl Default for PanelConfig {
             outbox_max_items: 128,
             max_payload_bytes: 512 * 1024,
             privacy_mode: "strict".to_string(),
+            ip_intel_paths: Vec::new(),
+            ip_intel_max_entries: 20_000,
         }
     }
 }

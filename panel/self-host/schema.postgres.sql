@@ -97,6 +97,26 @@ CREATE TABLE IF NOT EXISTS active_blocks (
   received_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS probe_sources (
+  id TEXT PRIMARY KEY,
+  node_id TEXT NOT NULL,
+  source_ip TEXT NOT NULL,
+  ip_version TEXT NOT NULL,
+  network_prefix TEXT NOT NULL,
+  country TEXT NOT NULL,
+  asn TEXT NOT NULL,
+  organization TEXT NOT NULL,
+  first_seen TEXT NOT NULL,
+  last_seen TEXT NOT NULL,
+  seen_count INTEGER NOT NULL,
+  categories_json TEXT NOT NULL,
+  rule_ids_json TEXT NOT NULL,
+  latest_reason TEXT NOT NULL,
+  block_status TEXT NOT NULL,
+  block_reason TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS ingest_nonces (
   nonce TEXT PRIMARY KEY,
   node_id TEXT NOT NULL,
@@ -111,4 +131,6 @@ CREATE INDEX IF NOT EXISTS idx_panel_audit_logs_created ON panel_audit_logs(crea
 CREATE INDEX IF NOT EXISTS idx_incidents_node_time ON incidents(node_id, last_seen);
 CREATE INDEX IF NOT EXISTS idx_baseline_node_time ON baseline_drifts(node_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_blocks_node ON active_blocks(node_id);
+CREATE INDEX IF NOT EXISTS idx_probe_sources_node_seen ON probe_sources(node_id, last_seen);
+CREATE INDEX IF NOT EXISTS idx_probe_sources_ip_seen ON probe_sources(source_ip, last_seen);
 CREATE INDEX IF NOT EXISTS idx_nonces_expires ON ingest_nonces(expires_at);

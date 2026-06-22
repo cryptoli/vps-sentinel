@@ -39,7 +39,7 @@ fn ip_matches_pattern(ip: IpAddr, pattern: &str) -> bool {
         .is_ok_and(|candidate| candidate == ip)
 }
 
-fn ip_in_cidr(ip: IpAddr, network: IpAddr, prefix: u8) -> bool {
+pub(crate) fn ip_in_cidr(ip: IpAddr, network: IpAddr, prefix: u8) -> bool {
     match (ip, network) {
         (IpAddr::V4(ip), IpAddr::V4(network)) if prefix <= 32 => {
             let mask = prefix_mask(prefix, 32);

@@ -1,6 +1,6 @@
 # Fleet Panel
 
-The fleet panel is an optional push-mode dashboard for multiple VPS nodes. Agents keep their normal local-first behavior and only push a bounded, signed summary to the configured receiver. Local detection and active response can still use raw source IPs, but panel telemetry defaults to privacy-safe mode and removes raw IP addresses before it leaves the monitored host.
+The fleet panel is an optional push-mode dashboard for multiple VPS nodes. Agents keep their normal local-first behavior and only push a bounded, signed summary to the configured receiver. Local detection and active response can still use raw source IPs. Panel telemetry removes node IDs, hostnames, raw evidence details, and general network fields before remote storage, while admin-only response datasets intentionally keep external public source IPs for active-block review and probe-source blacklists.
 
 ## What Gets Pushed
 
@@ -11,11 +11,12 @@ Each panel payload contains:
 - recent findings at or above `panel.min_severity`;
 - recent incidents;
 - baseline-drift review items;
-- active-response block status such as rule, backend, reason, and expiry without raw blocked IPs.
+- active-response block status such as source IP, rule, backend, reason, and expiry for admin users, with lower roles receiving redacted network fields;
+- aggregated external probe-source records with source IP, IP version, network prefix, categories, rule IDs, latest reason, and block status for admin blacklist review.
 
 Payload size is bounded by `panel.max_payload_bytes`. If the panel is unavailable, the agent stores a small local outbox in the existing SQLite rule-state store and retries later. The outbox is capped by `panel.outbox_max_items`.
 
-The self-hosted and Worker panels store the signed payload after a second server-side redaction pass, and read APIs only expose fixed display columns. New uploads use `node_name` for signing and display, and do not serialize node IDs, host IDs, or hostnames. Raw IP addresses, raw evidence JSON, incident payload JSON, storage details, enabled feature lists, and database timestamps are not returned by the browser-facing list endpoints.
+The self-hosted and Worker panels store the signed payload after a second server-side redaction pass, and read APIs only expose fixed display columns. New uploads use `node_name` for signing and display, and do not serialize node IDs, host IDs, or hostnames. Raw evidence JSON, incident payload JSON, storage details, enabled feature lists, and database timestamps are not returned by browser-facing list endpoints. External source IPs are only returned from admin-only `active_blocks` and `probe_sources` datasets; public and operator responses keep those fields redacted.
 
 ## Agent Configuration
 
@@ -32,10 +33,14 @@ push_interval_seconds = 60
 request_timeout_seconds = 10
 outbox_max_items = 128
 max_payload_bytes = 524288
-privacy_mode = "strict" # strict avoids sending raw IPs or hostnames to the remote panel
+privacy_mode = "strict" # strict removes node identity details and raw evidence; admin response datasets may still carry external public source IPs
+ip_intel_paths = [] # optional CSV files: cidr,country,asn,organization
+ip_intel_max_entries = 20000
 ```
 
 Use HTTPS for remote panel URLs. Plain HTTP is accepted only for `localhost` or `127.0.0.1` because panel payloads can contain sensitive security context even though they are HMAC signed.
+
+`panel.ip_intel_paths` is optional. When configured, the agent reads bounded local CSV files and enriches admin-only probe-source blacklist rows by longest CIDR prefix match. The panel does not call external ASN or GeoIP services by default, so enrichment does not leak attacker IPs to third parties. Empty, invalid, or missing files degrade to `unknown` country/ASN/organization fields.
 
 Useful commands:
 
@@ -107,7 +112,7 @@ The self-hosted Rust panel has three browser roles enforced by the backend:
 - operator: node name, rule, category, risk summary, action queue, redacted subject, impact, and recommendations;
 - admin: full redacted evidence, active-block implementation detail, review state, false-positive marking, and audit logs.
 
-The UI uses WebSocket auto refresh. It first exchanges the current browser role for a short-lived stream ticket through `GET /api/v1/stream-ticket`, then connects to `GET /api/v1/stream?ticket=<ticket>`. The ticket avoids putting browser tokens in the WebSocket URL. The stream only sends refresh signals and role metadata; all data still comes from role-scoped JSON APIs. If WebSocket is unavailable, the browser falls back to automatic periodic refresh.
+The self-hosted UI uses WebSocket change events. It first exchanges the current browser role for a short-lived stream ticket through `GET /api/v1/stream-ticket`, then connects to `GET /api/v1/stream?ticket=<ticket>`. The ticket avoids putting browser tokens in the WebSocket URL. The stream sends a hello event, heartbeat pings, and refresh signals only after data changes; all data still comes from role-scoped JSON APIs. The Cloudflare Worker receiver currently returns `stream_unavailable`, so static deployments do not poll lists automatically.
 
 The self-hosted Rust panel does not enable permissive CORS by default. The Worker receiver also requires an exact `PANEL_CORS_ORIGIN` when cross-origin static hosting is used; wildcard origins are intentionally ignored.
 
@@ -125,13 +130,33 @@ When using node-specific secrets with `privacy_mode = "strict"`, key `PANEL_NODE
 
 The Worker receiver is in `panel/cloudflare/worker.js`; the D1 schema is in `panel/cloudflare/schema.sql`.
 
-High-level setup:
+One-command deployment uses Wrangler and keeps Cloudflare secrets outside the repository:
+
+```bash
+CLOUDFLARE_ACCOUNT_ID='replace-with-account-id' \
+PANEL_SHARED_SECRET='replace-with-a-long-random-agent-secret' \
+PANEL_OPERATOR_TOKEN='replace-with-a-browser-operator-token' \
+PANEL_ADMIN_TOKEN='replace-with-a-browser-admin-token' \
+scripts/deploy-cloudflare-panel.sh
+```
+
+The script:
+
+- reuses `PANEL_D1_NAME` when it already exists, or creates it when missing;
+- applies `panel/cloudflare/schema.sql`;
+- deploys `panel/cloudflare/worker.js` and `panel/web` as one Cloudflare Worker with static assets;
+- stores `PANEL_SHARED_SECRET`, `PANEL_NODE_SECRETS`, `PANEL_OPERATOR_TOKEN`, `PANEL_VIEW_TOKEN`, and `PANEL_ADMIN_TOKEN` through Wrangler secrets;
+- verifies `GET /api/v1/settings` when a Worker URL can be inferred, or when `PANEL_VERIFY_URL` is set.
+
+No Cloudflare token, account ID, database ID, or panel secret is committed. Use `CLOUDFLARE_API_TOKEN` for non-interactive CI/server deploys, or run `wrangler login` once on an operator workstation. Optional variables include `PANEL_WORKER_NAME`, `PANEL_D1_NAME`, `PANEL_D1_ID`, `PANEL_PUBLIC_ENABLED`, `PANEL_THEME`, `PANEL_CORS_ORIGIN`, `PANEL_MAX_BODY_BYTES`, `WRANGLER_BIN`, and `PANEL_DEPLOY_VERIFY=0`.
+
+Manual setup remains possible:
 
 1. Create a D1 database.
 2. Apply `panel/cloudflare/schema.sql`.
-3. Deploy `panel/cloudflare/worker.js` with binding `DB`.
+3. Deploy `panel/cloudflare/worker.js` with binding `DB` and bind `panel/web` as Worker static assets.
 4. Set `PANEL_SHARED_SECRET` or `PANEL_NODE_SECRETS` as Worker secrets.
-5. Serve `panel/web` as static assets through Cloudflare Pages or another static host.
+5. Set `PANEL_OPERATOR_TOKEN` and `PANEL_ADMIN_TOKEN`, or explicitly enable public mode.
 
 The Worker exposes the same API shape as the Rust panel:
 
@@ -145,7 +170,9 @@ The Worker exposes the same API shape as the Rust panel:
 - `GET /api/v1/incident?id=<incident-id>`
 - `GET /api/v1/baseline-drifts`
 - `GET /api/v1/active-blocks`
+- `GET /api/v1/probe-sources`
 - `GET /api/v1/audit-logs`
+- `GET /api/v1/stream-ticket` returns `stream_unavailable` for the Worker receiver
 
 ## Security Model
 

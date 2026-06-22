@@ -136,6 +136,15 @@ impl PanelStreamEvent {
             retry_after_seconds: STREAM_RETRY_SECONDS,
         }
     }
+
+    fn hello(role: PanelRole) -> Self {
+        Self {
+            kind: "hello",
+            role,
+            server_time: Utc::now(),
+            retry_after_seconds: STREAM_RETRY_SECONDS,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -218,6 +227,8 @@ struct PanelEnvelope {
     baseline_drifts: Vec<PanelBaselineDrift>,
     #[serde(default)]
     active_blocks: Vec<PanelActiveBlock>,
+    #[serde(default)]
+    probe_sources: Vec<PanelProbeSource>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -279,6 +290,8 @@ struct PanelBaselineDrift {
 
 #[derive(Debug, Deserialize)]
 struct PanelActiveBlock {
+    #[serde(default)]
+    ip: String,
     rule_id: String,
     finding_id: String,
     reason: String,
@@ -287,6 +300,26 @@ struct PanelActiveBlock {
     expires_at: Option<DateTime<Utc>>,
     expired: bool,
     firewall_present: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PanelProbeSource {
+    source_ip: String,
+    ip_version: String,
+    network_prefix: String,
+    country: String,
+    asn: String,
+    organization: String,
+    first_seen: DateTime<Utc>,
+    last_seen: DateTime<Utc>,
+    seen_count: usize,
+    #[serde(default)]
+    categories: Vec<String>,
+    #[serde(default)]
+    rule_ids: Vec<String>,
+    latest_reason: String,
+    block_status: String,
+    block_reason: String,
 }
 
 #[derive(Debug, Clone)]
@@ -400,6 +433,7 @@ async fn main() -> Result<()> {
         .route("/api/v1/incident", get(incident_detail))
         .route("/api/v1/baseline-drifts", get(baseline_drifts))
         .route("/api/v1/active-blocks", get(active_blocks))
+        .route("/api/v1/probe-sources", get(probe_sources))
         .route("/api/v1/audit-logs", get(audit_logs))
         .route("/api/v1/ingest", post(ingest))
         .fallback_service(ServeDir::new(web_dir))
@@ -504,7 +538,7 @@ fn consume_stream_ticket(state: &AppState, ticket: &str) -> Result<PanelRole, Pa
 async fn stream_socket(mut socket: WebSocket, state: AppState, role: PanelRole) {
     let mut receiver = state.events.subscribe();
     let mut heartbeat = tokio::time::interval(Duration::from_secs(STREAM_HEARTBEAT_SECONDS));
-    if send_stream_event(&mut socket, PanelStreamEvent::refresh(role))
+    if send_stream_event(&mut socket, PanelStreamEvent::hello(role))
         .await
         .is_err()
     {
@@ -523,7 +557,7 @@ async fn stream_socket(mut socket: WebSocket, state: AppState, role: PanelRole) 
                 }
             }
             _ = heartbeat.tick() => {
-                if send_stream_event(&mut socket, PanelStreamEvent::refresh(role)).await.is_err() {
+                if socket.send(Message::Ping(Vec::new())).await.is_err() {
                     break;
                 }
             }
@@ -708,13 +742,31 @@ async fn summary(
         .repo
         .query_all("SELECT severity, COUNT(*) AS count FROM findings GROUP BY severity")
         .await?;
+    let by_category = state
+        .repo
+        .query_all("SELECT category, COUNT(*) AS count FROM findings GROUP BY category")
+        .await?;
+    let by_block_status = state
+        .repo
+        .query_all(
+            "SELECT block_status, COUNT(*) AS count FROM probe_sources GROUP BY block_status",
+        )
+        .await?;
+    let nodes = state
+        .repo
+        .query_all("SELECT node_name, last_seen_at, agent_version FROM nodes")
+        .await?;
     Ok(Json(json!({
         "nodes": state.repo.count_distinct("nodes", "node_name", None).await?,
         "findings": state.repo.count("findings", None).await?,
         "incidents": state.repo.count("incidents", None).await?,
         "baseline_drifts": state.repo.count("baseline_drifts", None).await?,
         "active_blocks": state.repo.count("active_blocks", Some("expired = 0")).await?,
-        "by_severity": by_severity
+        "probe_sources": state.repo.count("probe_sources", None).await?,
+        "by_severity": by_severity,
+        "by_category": by_category,
+        "by_block_status": by_block_status,
+        "node_status": node_status_counts(&nodes)
     })))
 }
 
@@ -727,6 +779,64 @@ async fn trends(
     let request = PageRequest::try_from(query)?;
     let rows = state.repo.trend_points(&request).await?;
     Ok(Json(json!({ "items": rows })))
+}
+
+fn node_status_counts(nodes: &Value) -> Value {
+    let mut counts = BTreeMap::from([
+        ("fresh".to_string(), 0i64),
+        ("stale".to_string(), 0i64),
+        ("offline".to_string(), 0i64),
+        ("retired".to_string(), 0i64),
+    ]);
+    let Value::Array(items) = nodes else {
+        return json!(counts);
+    };
+    let now = Utc::now();
+    for item in items {
+        let name = item
+            .get("node_name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let version = item
+            .get("agent_version")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let status = panel_node_status(name, version, item.get("last_seen_at"), now);
+        *counts.entry(status.to_string()).or_default() += 1;
+    }
+    json!(counts)
+}
+
+fn panel_node_status(
+    node_name: &str,
+    agent_version: &str,
+    last_seen_at: Option<&Value>,
+    now: DateTime<Utc>,
+) -> &'static str {
+    if node_name.trim().is_empty()
+        || node_name.eq_ignore_ascii_case("local-host")
+        || agent_version.to_ascii_lowercase().contains("smoke")
+    {
+        return "retired";
+    }
+    let Some(last_seen_at) = last_seen_at.and_then(Value::as_str) else {
+        return "retired";
+    };
+    let Ok(last_seen_at) = DateTime::parse_from_rfc3339(last_seen_at) else {
+        return "retired";
+    };
+    let age_minutes = now
+        .signed_duration_since(last_seen_at.with_timezone(&Utc))
+        .num_minutes();
+    if age_minutes < 0 || age_minutes > DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES as i64 {
+        "retired"
+    } else if age_minutes > (DEFAULT_FRESHNESS_THRESHOLD_MINUTES * 6) as i64 {
+        "offline"
+    } else if age_minutes > DEFAULT_FRESHNESS_THRESHOLD_MINUTES as i64 {
+        "stale"
+    } else {
+        "fresh"
+    }
 }
 
 async fn nodes(
@@ -882,6 +992,7 @@ async fn active_blocks(
         PanelRole::Admin => &[
             "blocked_at",
             "node_id AS node_name",
+            "ip",
             "rule_id",
             "backend",
             "reason",
@@ -905,6 +1016,41 @@ async fn active_blocks(
             order_column: "blocked_at",
             active_filter: Some("expired = 0"),
             columns,
+        },
+    )
+    .await
+}
+
+async fn probe_sources(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Value>, PanelApiError> {
+    let role = verify_panel_role(&state, &headers, PanelRole::Admin)?;
+    paginated_dataset(
+        &state,
+        query,
+        role,
+        PanelDataset {
+            table: "probe_sources",
+            order_column: "last_seen",
+            active_filter: None,
+            columns: &[
+                "last_seen",
+                "node_id AS node_name",
+                "source_ip",
+                "ip_version",
+                "network_prefix",
+                "seen_count",
+                "block_status",
+                "country",
+                "asn",
+                "organization",
+                "categories_json",
+                "rule_ids_json",
+                "latest_reason",
+                "block_reason",
+            ],
         },
     )
     .await
@@ -937,7 +1083,7 @@ async fn paginated_dataset(
     dataset: PanelDataset,
 ) -> Result<Json<Value>, PanelApiError> {
     let request = PageRequest::try_from(query)?;
-    let (mut items, total) = state.repo.query_page(dataset, &request).await?;
+    let (mut items, total) = state.repo.query_page(dataset, &request, role).await?;
     scope_panel_value(&mut items, role);
     Ok(Json(json!({
         "items": items,
@@ -1239,6 +1385,7 @@ impl Repository {
         &self,
         dataset: PanelDataset,
         request: &PageRequest,
+        role: PanelRole,
     ) -> Result<(Value, i64), PanelApiError> {
         let (where_sql, mut values) = self.page_where_clause(dataset, request);
         let count_sql = format!("SELECT COUNT(*) AS count FROM {}{where_sql}", dataset.table);
@@ -1254,7 +1401,10 @@ impl Repository {
             dataset.table, dataset.order_column
         );
         let mut items = self.query_all_with_values(&sql, &values).await?;
-        redact_panel_value(&mut items);
+        expand_dataset_json_columns(dataset.table, &mut items);
+        if should_redact_dataset(dataset.table, role) {
+            redact_panel_value(&mut items);
+        }
         Ok((items, total))
     }
 
@@ -1726,6 +1876,10 @@ impl Repository {
         for block in &payload.active_blocks {
             self.upsert_block(&node_name, block, &received_at).await?;
         }
+        for source in &payload.probe_sources {
+            self.upsert_probe_source(&node_name, source, &received_at)
+                .await?;
+        }
         Ok(())
     }
 
@@ -2037,7 +2191,7 @@ impl Repository {
             &[
                 DbValue::Text(id),
                 DbValue::Text(node_id.to_string()),
-                DbValue::Text(panel_redacted_ip_value()),
+                DbValue::Text(block.ip.clone()),
                 DbValue::Text(block.rule_id.clone()),
                 DbValue::Text(block.finding_id.clone()),
                 DbValue::Text(redact_ip_text(&block.reason)),
@@ -2055,6 +2209,138 @@ impl Repository {
         )
         .await?;
         Ok(())
+    }
+
+    async fn upsert_probe_source(
+        &self,
+        node_id: &str,
+        source: &PanelProbeSource,
+        received_at: &str,
+    ) -> Result<(), PanelApiError> {
+        let id = panel_probe_source_id(node_id, &source.source_ip);
+        let merged = self
+            .merge_probe_source(&id, source)
+            .await?
+            .unwrap_or_else(|| MergedProbeSource::from(source));
+        let columns = [
+            "id",
+            "node_id",
+            "source_ip",
+            "ip_version",
+            "network_prefix",
+            "country",
+            "asn",
+            "organization",
+            "first_seen",
+            "last_seen",
+            "seen_count",
+            "categories_json",
+            "rule_ids_json",
+            "latest_reason",
+            "block_status",
+            "block_reason",
+            "updated_at",
+        ];
+        let sql = self.upsert_sql(
+            "probe_sources",
+            &columns,
+            &["id"],
+            &[
+                "node_id",
+                "source_ip",
+                "ip_version",
+                "network_prefix",
+                "country",
+                "asn",
+                "organization",
+                "first_seen",
+                "last_seen",
+                "seen_count",
+                "categories_json",
+                "rule_ids_json",
+                "latest_reason",
+                "block_status",
+                "block_reason",
+                "updated_at",
+            ],
+        );
+        self.execute_write(
+            &sql,
+            &[
+                DbValue::Text(id),
+                DbValue::Text(node_id.to_string()),
+                DbValue::Text(source.source_ip.clone()),
+                DbValue::Text(source.ip_version.clone()),
+                DbValue::Text(source.network_prefix.clone()),
+                DbValue::Text(source.country.clone()),
+                DbValue::Text(source.asn.clone()),
+                DbValue::Text(source.organization.clone()),
+                DbValue::Text(merged.first_seen),
+                DbValue::Text(merged.last_seen),
+                DbValue::Integer(merged.seen_count),
+                DbValue::Text(json_string(&merged.categories)?),
+                DbValue::Text(json_string(&merged.rule_ids)?),
+                DbValue::Text(redact_ip_text(&source.latest_reason)),
+                DbValue::Text(source.block_status.clone()),
+                DbValue::Text(redact_ip_text(&source.block_reason)),
+                DbValue::Text(received_at.to_string()),
+            ],
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn merge_probe_source(
+        &self,
+        id: &str,
+        source: &PanelProbeSource,
+    ) -> Result<Option<MergedProbeSource>, PanelApiError> {
+        let sql = format!(
+            "SELECT first_seen, last_seen, seen_count, categories_json, rule_ids_json FROM probe_sources WHERE id = {}",
+            self.placeholder(1)
+        );
+        let Some(existing) = self
+            .query_one_with_values(&sql, &[DbValue::Text(id.to_string())])
+            .await?
+        else {
+            return Ok(None);
+        };
+        let first_seen = min_time_string(existing.get("first_seen"), source.first_seen);
+        let last_seen = max_time_string(existing.get("last_seen"), source.last_seen);
+        let seen_count = existing
+            .get("seen_count")
+            .and_then(Value::as_i64)
+            .unwrap_or_default()
+            .saturating_add(source.seen_count as i64);
+        let categories = merge_string_sets(existing.get("categories_json"), &source.categories);
+        let rule_ids = merge_string_sets(existing.get("rule_ids_json"), &source.rule_ids);
+        Ok(Some(MergedProbeSource {
+            first_seen,
+            last_seen,
+            seen_count,
+            categories,
+            rule_ids,
+        }))
+    }
+}
+
+struct MergedProbeSource {
+    first_seen: String,
+    last_seen: String,
+    seen_count: i64,
+    categories: Vec<String>,
+    rule_ids: Vec<String>,
+}
+
+impl From<&PanelProbeSource> for MergedProbeSource {
+    fn from(value: &PanelProbeSource) -> Self {
+        Self {
+            first_seen: value.first_seen.to_rfc3339(),
+            last_seen: value.last_seen.to_rfc3339(),
+            seen_count: value.seen_count as i64,
+            categories: sorted_unique(&value.categories),
+            rule_ids: sorted_unique(&value.rule_ids),
+        }
     }
 }
 
@@ -2090,6 +2376,66 @@ fn panel_block_storage_id(node_id: &str, block: &PanelActiveBlock) -> String {
         block.finding_id.clone()
     };
     format!("{node_id}:{source}")
+}
+
+fn panel_probe_source_id(node_id: &str, source_ip: &str) -> String {
+    format!("{node_id}:{}", source_ip.trim())
+}
+
+fn min_time_string(existing: Option<&Value>, candidate: DateTime<Utc>) -> String {
+    let candidate_text = candidate.to_rfc3339();
+    let Some(existing_text) = existing.and_then(Value::as_str) else {
+        return candidate_text;
+    };
+    let Ok(existing_time) = DateTime::parse_from_rfc3339(existing_text) else {
+        return candidate_text;
+    };
+    if existing_time.with_timezone(&Utc) <= candidate {
+        existing_text.to_string()
+    } else {
+        candidate_text
+    }
+}
+
+fn max_time_string(existing: Option<&Value>, candidate: DateTime<Utc>) -> String {
+    let candidate_text = candidate.to_rfc3339();
+    let Some(existing_text) = existing.and_then(Value::as_str) else {
+        return candidate_text;
+    };
+    let Ok(existing_time) = DateTime::parse_from_rfc3339(existing_text) else {
+        return candidate_text;
+    };
+    if existing_time.with_timezone(&Utc) >= candidate {
+        existing_text.to_string()
+    } else {
+        candidate_text
+    }
+}
+
+fn merge_string_sets(existing_json: Option<&Value>, incoming: &[String]) -> Vec<String> {
+    let mut values = existing_json
+        .and_then(Value::as_str)
+        .and_then(|text| serde_json::from_str::<Vec<String>>(text).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .chain(incoming.iter().cloned())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    values
+}
+
+fn sorted_unique(values: &[String]) -> Vec<String> {
+    let mut values = values
+        .iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    values
 }
 
 fn panel_redacted_ip_value() -> String {
@@ -2384,6 +2730,25 @@ fn expand_json_column(row: &mut Value, json_column: &str, output_column: &str) {
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .unwrap_or(Value::Null);
     object.insert(output_column.to_string(), parsed);
+}
+
+fn expand_dataset_json_columns(table: &str, rows: &mut Value) {
+    let Value::Array(items) = rows else {
+        return;
+    };
+    for row in items {
+        if table == "probe_sources" {
+            expand_json_column(row, "categories_json", "categories");
+            expand_json_column(row, "rule_ids_json", "rule_ids");
+        }
+    }
+}
+
+fn should_redact_dataset(table: &str, role: PanelRole) -> bool {
+    if role == PanelRole::Admin && matches!(table, "active_blocks" | "probe_sources") {
+        return false;
+    }
+    true
 }
 
 fn optional_string(value: Option<String>) -> DbValue {
@@ -2703,6 +3068,7 @@ mod tests {
                     limit: 10,
                     offset: 0,
                 },
+                PanelRole::Operator,
             )
             .await
             .expect("page query");
@@ -2720,6 +3086,76 @@ mod tests {
         assert!(!output.contains("203.0.113"));
         assert!(!output.contains("198.51.100"));
         assert!(output.contains("redacted"));
+    }
+
+    #[tokio::test]
+    async fn probe_source_page_preserves_admin_ip_and_redacts_lower_roles() {
+        let repo = test_repo();
+        repo.init_schema().await.expect("schema");
+        let now = Utc::now().to_rfc3339();
+        repo.execute_write(
+            "INSERT INTO probe_sources
+             (id, node_id, source_ip, ip_version, network_prefix, country, asn, organization,
+              first_seen, last_seen, seen_count, categories_json, rule_ids_json, latest_reason,
+              block_status, block_reason, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            &[
+                DbValue::Text("node-a:8.8.8.8".to_string()),
+                DbValue::Text("node-a".to_string()),
+                DbValue::Text("8.8.8.8".to_string()),
+                DbValue::Text("ipv4".to_string()),
+                DbValue::Text("8.8.8.0/24".to_string()),
+                DbValue::Text("unknown".to_string()),
+                DbValue::Text("unknown".to_string()),
+                DbValue::Text("unknown".to_string()),
+                DbValue::Text(now.clone()),
+                DbValue::Text(now.clone()),
+                DbValue::Integer(3),
+                DbValue::Text(r#"["web"]"#.to_string()),
+                DbValue::Text(r#"["WEB-001"]"#.to_string()),
+                DbValue::Text("web_probe family=env_file count=3".to_string()),
+                DbValue::Text("blocked".to_string()),
+                DbValue::Text("web probe request_count=3".to_string()),
+                DbValue::Text(now),
+            ],
+        )
+        .await
+        .expect("insert probe source");
+        let dataset = PanelDataset {
+            table: "probe_sources",
+            order_column: "last_seen",
+            active_filter: None,
+            columns: &[
+                "last_seen",
+                "node_id AS node_name",
+                "source_ip",
+                "categories_json",
+                "rule_ids_json",
+                "latest_reason",
+            ],
+        };
+        let request = PageRequest {
+            from: None,
+            to: None,
+            limit: 10,
+            offset: 0,
+        };
+        let (admin_page, _) = repo
+            .query_page(dataset, &request, PanelRole::Admin)
+            .await
+            .expect("admin query");
+        let (mut operator_page, _) = repo
+            .query_page(dataset, &request, PanelRole::Operator)
+            .await
+            .expect("operator query");
+        scope_panel_value(&mut operator_page, PanelRole::Operator);
+        let admin_text = serde_json::to_string(&admin_page).expect("json");
+        let operator_text = serde_json::to_string(&operator_page).expect("json");
+
+        assert!(admin_text.contains("8.8.8.8"));
+        assert!(admin_text.contains(r#""categories":["web"]"#));
+        assert!(!operator_text.contains("8.8.8.8"));
+        assert!(operator_text.contains("redacted"));
     }
 
     #[test]

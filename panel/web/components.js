@@ -277,6 +277,8 @@ export function createView({ t, language, freshness = {} }) {
       "chart-high": "var(--high)",
       "chart-medium": "var(--medium)",
       "chart-low": "var(--low)",
+      "chart-fresh": "var(--success)",
+      "chart-retired": "var(--retired)",
     };
     const total = items.reduce((sum, item) => sum + Number(item.value || 0), 0);
     let start = 0;
@@ -338,6 +340,56 @@ export function createView({ t, language, freshness = {} }) {
     return wrapper;
   }
 
+  function nodeStatusChart(counts = {}) {
+    return donutChart([
+      { label: t("fresh"), value: counts.fresh || 0, className: "chart-fresh" },
+      { label: t("stale"), value: counts.stale || 0, className: "chart-medium" },
+      { label: t("offline"), value: counts.offline || 0, className: "chart-critical" },
+      { label: t("retired"), value: counts.retired || 0, className: "chart-retired" },
+    ]);
+  }
+
+  function nodeProbeGrid(nodes) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "node-probe-grid";
+    if (!nodes?.length) {
+      wrapper.append(emptyChart());
+      return wrapper;
+    }
+    for (const node of nodes) {
+      const age = ageMinutes(node.last_seen_at);
+      const status = freshnessStatus(age, node);
+      const card = document.createElement("article");
+      card.className = `node-probe-card ${status}`;
+      const head = document.createElement("div");
+      head.className = "node-probe-head";
+      head.append(
+        span(`status-dot ${status}`, ""),
+        span("node-probe-name", node.node_name || "-"),
+        span("node-probe-state", t(status)),
+      );
+      const meta = document.createElement("div");
+      meta.className = "node-probe-meta";
+      meta.append(nodeProbeMeta(t("last_seen_at"), relativeAge(age)));
+      if (node.agent_version) {
+        meta.append(nodeProbeMeta(t("agent_version"), node.agent_version));
+      }
+      if (node.privacy_mode) {
+        meta.append(nodeProbeMeta(t("privacy_mode"), translateValue("privacy_mode", node.privacy_mode)));
+      }
+      card.append(head, meta);
+      wrapper.append(card);
+    }
+    return wrapper;
+  }
+
+  function nodeProbeMeta(label, value) {
+    const item = document.createElement("span");
+    item.className = "node-probe-meta-item";
+    item.append(span("node-probe-meta-label", label), span("node-probe-meta-value", value || "-"));
+    return item;
+  }
+
   function freshnessBadge(nodes) {
     const counts = freshnessCounts(nodes);
     const status = counts.offline > 0 ? "offline" : counts.stale > 0 ? "stale" : counts.retired > 0 ? "retired" : "fresh";
@@ -389,10 +441,16 @@ export function createView({ t, language, freshness = {} }) {
       return span("score-pill", number(value));
     }
     if (column === "reason") {
-      return document.createTextNode(reasonText(value));
+      return document.createTextNode(detailedReasonText(value));
+    }
+    if (column === "block_status") {
+      return span(`badge block-${String(value || "observed").toLowerCase()}`, translateValue("block_status", value));
     }
     if (column === "privacy_mode") {
       return document.createTextNode(translateValue("privacy_mode", value));
+    }
+    if (Array.isArray(value)) {
+      return document.createTextNode(value.length ? value.join(", ") : "-");
     }
     if (value === null || value === undefined || value === "") return span("muted", "-");
     if (isTimeColumn(column)) {
@@ -416,6 +474,7 @@ export function createView({ t, language, freshness = {} }) {
   function translateValue(column, value) {
     const normalized = String(value || "unknown").toLowerCase();
     if (column === "severity" || column === "privacy_mode") return t(normalized) || value || t("unknown");
+    if (column === "block_status") return t(`block_status_${normalized}`) || value || t("unknown");
     return value || t("unknown");
   }
 
@@ -426,6 +485,13 @@ export function createView({ t, language, freshness = {} }) {
     if (reason.includes("ssh")) return t("sshBlockReason");
     if (reason.includes("repeated") || reason.includes("permanent")) return t("repeatedBlockReason");
     return t("activeBlockReason");
+  }
+
+  function detailedReasonText(value) {
+    const text = String(value || "").trim();
+    if (!text) return reasonText(text);
+    if (text.includes("=") || text.includes(" ")) return text;
+    return reasonText(text);
   }
 
   function isTimeColumn(column) {
@@ -570,6 +636,8 @@ export function createView({ t, language, freshness = {} }) {
     loading,
     metrics,
     nodeFreshness,
+    nodeProbeGrid,
+    nodeStatusChart,
     option,
     panel,
     reasonText,
