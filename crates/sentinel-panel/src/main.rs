@@ -790,10 +790,11 @@ async fn summary(
         .await?;
     let nodes = state
         .repo
-        .query_all("SELECT node_name, last_seen_at, agent_version FROM nodes")
+        .latest_node_rows(&["node_name", "last_seen_at", "agent_version"], None)
         .await?;
+    let node_count = nodes.len();
     Ok(Json(json!({
-        "nodes": state.repo.count_distinct("nodes", "node_name", None).await?,
+        "nodes": node_count,
         "findings": state.repo.count("findings", None).await?,
         "incidents": state.repo.count("incidents", None).await?,
         "baseline_drifts": state.repo.count("baseline_drifts", None).await?,
@@ -802,7 +803,7 @@ async fn summary(
         "by_severity": by_severity,
         "by_category": by_category,
         "by_block_status": by_block_status,
-        "node_status": node_status_counts(&nodes)
+        "node_status": node_status_counts(&Value::Array(nodes))
     })))
 }
 
@@ -875,6 +876,23 @@ fn panel_node_status(
     }
 }
 
+fn panel_row_is_newer(candidate: &Value, existing: &Value, time_key: &str) -> bool {
+    panel_row_time(candidate, time_key) > panel_row_time(existing, time_key)
+}
+
+fn panel_row_time(row: &Value, key: &str) -> Option<DateTime<Utc>> {
+    row.get(key)
+        .and_then(Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc))
+}
+
+fn panel_row_name(row: &Value) -> &str {
+    row.get("node_name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
 async fn nodes(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -893,18 +911,18 @@ async fn nodes(
             "metrics_json",
         ][..],
     };
-    paginated_dataset(
-        &state,
-        query,
-        role,
-        PanelDataset {
-            table: "nodes",
-            order_column: "last_seen_at",
-            active_filter: None,
-            columns,
-        },
-    )
-    .await
+    let request = PageRequest::try_from(query)?;
+    let (mut items, total) = state
+        .repo
+        .latest_nodes_page(columns, &request, role)
+        .await?;
+    scope_panel_value(&mut items, role);
+    Ok(Json(json!({
+        "items": items,
+        "total": total,
+        "limit": request.limit,
+        "offset": request.offset
+    })))
 }
 
 async fn findings(
@@ -1511,6 +1529,76 @@ impl Repository {
         Ok((items, total))
     }
 
+    async fn latest_nodes_page(
+        &self,
+        columns: &'static [&'static str],
+        request: &PageRequest,
+        role: PanelRole,
+    ) -> Result<(Value, i64), PanelApiError> {
+        let rows = self.latest_node_rows(columns, Some(request)).await?;
+        let total = rows.len() as i64;
+        let start = request.offset.min(rows.len());
+        let end = (start + request.limit).min(rows.len());
+        let mut items = Value::Array(rows[start..end].to_vec());
+        expand_dataset_json_columns("nodes", &mut items);
+        if should_redact_dataset("nodes", role) {
+            redact_panel_value(&mut items);
+        }
+        Ok((items, total))
+    }
+
+    async fn latest_node_rows(
+        &self,
+        columns: &'static [&'static str],
+        request: Option<&PageRequest>,
+    ) -> Result<Vec<Value>, PanelApiError> {
+        let (where_sql, values) = request
+            .map(|request| {
+                self.page_where_clause(
+                    PanelDataset {
+                        table: "nodes",
+                        order_column: "last_seen_at",
+                        active_filter: None,
+                        columns,
+                    },
+                    request,
+                )
+            })
+            .unwrap_or_else(|| (String::new(), Vec::new()));
+        let sql = format!(
+            "SELECT {} FROM nodes{where_sql} ORDER BY last_seen_at DESC",
+            columns.join(", ")
+        );
+        let rows = self.query_all_with_values(&sql, &values).await?;
+        let Value::Array(rows) = rows else {
+            return Ok(Vec::new());
+        };
+        let mut latest = BTreeMap::<String, Value>::new();
+        for row in rows {
+            let node_name = row
+                .get("node_name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or("unnamed-node")
+                .to_string();
+            let replace = latest
+                .get(&node_name)
+                .map(|existing| panel_row_is_newer(&row, existing, "last_seen_at"))
+                .unwrap_or(true);
+            if replace {
+                latest.insert(node_name, row);
+            }
+        }
+        let mut rows = latest.into_values().collect::<Vec<_>>();
+        rows.sort_by(|left, right| {
+            panel_row_time(right, "last_seen_at")
+                .cmp(&panel_row_time(left, "last_seen_at"))
+                .then_with(|| panel_row_name(left).cmp(panel_row_name(right)))
+        });
+        Ok(rows)
+    }
+
     async fn finding_detail(&self, id: &str, role: PanelRole) -> Result<Value, PanelApiError> {
         let columns = [
             "id",
@@ -1808,21 +1896,6 @@ impl Repository {
                 format!("SELECT COUNT(*) AS count FROM {table} WHERE {where_clause}")
             }
             None => format!("SELECT COUNT(*) AS count FROM {table}"),
-        };
-        self.count_sql(&sql, &[]).await
-    }
-
-    async fn count_distinct(
-        &self,
-        table: &str,
-        column: &str,
-        where_clause: Option<&str>,
-    ) -> Result<i64, PanelApiError> {
-        let sql = match where_clause {
-            Some(where_clause) => format!(
-                "SELECT COUNT(DISTINCT {column}) AS count FROM {table} WHERE {where_clause}"
-            ),
-            None => format!("SELECT COUNT(DISTINCT {column}) AS count FROM {table}"),
         };
         self.count_sql(&sql, &[]).await
     }
@@ -3289,6 +3362,31 @@ mod tests {
         let repo = test_repo();
         repo.init_schema().await.expect("schema");
         let now = Utc::now().to_rfc3339();
+        let old = Utc::now()
+            .checked_sub_signed(chrono::Duration::minutes(10))
+            .expect("old timestamp")
+            .to_rfc3339();
+        repo.execute_write(
+            "INSERT INTO nodes
+             (node_id, node_name, host_id, hostname, agent_version, privacy_mode,
+              enabled_features_json, storage_json, metrics_json, last_seen_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            &[
+                DbValue::Text("legacy-node-a".to_string()),
+                DbValue::Text("node-a".to_string()),
+                DbValue::Text(String::new()),
+                DbValue::Text(String::new()),
+                DbValue::Text("0.1.0".to_string()),
+                DbValue::Text("strict".to_string()),
+                DbValue::Text(r#"["ssh","panel"]"#.to_string()),
+                DbValue::Text("{}".to_string()),
+                DbValue::Text(r#"{"cpu_percent":99.0,"memory_used_percent":99.0}"#.to_string()),
+                DbValue::Text(old.clone()),
+                DbValue::Text(old),
+            ],
+        )
+        .await
+        .expect("insert legacy node");
         repo.execute_write(
             "INSERT INTO nodes
              (node_id, node_name, host_id, hostname, agent_version, privacy_mode,
@@ -3310,12 +3408,6 @@ mod tests {
         )
         .await
         .expect("insert node");
-        let dataset = PanelDataset {
-            table: "nodes",
-            order_column: "last_seen_at",
-            active_filter: None,
-            columns: &["last_seen_at", "node_name", "agent_version", "metrics_json"],
-        };
         let request = PageRequest {
             from: None,
             to: None,
@@ -3324,13 +3416,18 @@ mod tests {
         };
 
         let (mut page, total) = repo
-            .query_page(dataset, &request, PanelRole::Public)
+            .latest_nodes_page(
+                &["last_seen_at", "node_name", "agent_version", "metrics_json"],
+                &request,
+                PanelRole::Public,
+            )
             .await
             .expect("node query");
         scope_panel_value(&mut page, PanelRole::Public);
         let text = serde_json::to_string(&page).expect("json");
 
         assert_eq!(total, 1);
+        assert_eq!(page[0]["agent_version"], "0.2.0");
         assert_eq!(page[0]["metrics"]["cpu_percent"], 12.5);
         assert_eq!(page[0]["metrics"]["memory_used_percent"], 44.0);
         assert!(!text.contains("node_id"));
