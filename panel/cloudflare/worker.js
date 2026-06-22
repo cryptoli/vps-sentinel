@@ -105,6 +105,11 @@ export default {
         if (auth.error) return withCors(auth.error, request, env);
         return withCors(json(await summary(env, auth.role)), request, env);
       }
+      if (request.method === "GET" && url.pathname === "/api/v1/trends") {
+        const auth = panelAuth(request, env, "public");
+        if (auth.error) return withCors(auth.error, request, env);
+        return withCors(json({ items: await trendPoints(env, url) }), request, env);
+      }
       if (request.method === "GET" && DATASETS[url.pathname]) {
         const dataset = DATASETS[url.pathname];
         const auth = panelAuth(request, env, dataset.minRole || "operator");
@@ -494,6 +499,38 @@ async function summary(env, role = "public") {
     node_status: nodeStatusCounts(nodeRows),
   };
   return redactPanelValue(result);
+}
+
+async function trendPoints(env, url) {
+  const page = pageRequest(url);
+  const values = [];
+  const parts = [];
+  if (page.from) {
+    values.push(page.from);
+    parts.push("timestamp >= ?");
+  }
+  if (page.to) {
+    values.push(page.to);
+    parts.push("timestamp <= ?");
+  }
+  const whereSql = parts.length ? ` WHERE ${parts.join(" AND ")}` : "";
+  const result = await env.DB.prepare(
+    `SELECT timestamp, severity FROM findings${whereSql} ORDER BY timestamp DESC LIMIT ?`,
+  ).bind(...values, 5000).all();
+  const buckets = new Map();
+  for (const row of result.results || []) {
+    const bucket = String(row.timestamp || "").slice(0, 13);
+    if (bucket.length !== 13) continue;
+    const severity = String(row.severity || "Unknown");
+    const severities = buckets.get(bucket) || new Map();
+    severities.set(severity, (severities.get(severity) || 0) + 1);
+    buckets.set(bucket, severities);
+  }
+  return [...buckets.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([bucket, severities]) => {
+    const severity = Object.fromEntries(severities);
+    const total = Object.values(severity).reduce((sum, value) => sum + Number(value || 0), 0);
+    return { bucket, total, severity };
+  });
 }
 
 async function queryPage(env, dataset, url, role = "operator") {

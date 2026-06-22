@@ -189,6 +189,7 @@ export function createView({ t, language, freshness = {} }) {
       tr.className = tableRowClass(row);
       for (const column of columns) {
         const td = document.createElement("td");
+        td.dataset.label = columnLabel(column);
         td.append(formatValue(column, row[column]));
         tr.append(td);
       }
@@ -259,18 +260,56 @@ export function createView({ t, language, freshness = {} }) {
   function trendChart(rows) {
     if (!rows?.length) return emptyChart();
     const wrapper = document.createElement("div");
-    wrapper.className = "trend-chart";
-    const max = Math.max(1, ...rows.map((row) => Number(row.total || 0)));
-    for (const row of rows.slice(-24)) {
-      const value = Number(row.total || 0);
-      const item = document.createElement("div");
-      item.className = "trend-column";
-      item.style.setProperty("--trend-ratio", `${Math.max(4, (value / max) * 100)}%`);
-      item.title = `${row.bucket}: ${number(value)}`;
-      item.append(span("trend-bar", ""), span("trend-label", String(row.bucket || "").slice(11, 13) || "-"));
-      wrapper.append(item);
+    wrapper.className = "trend-chart trend-chart-line";
+    const values = rows.slice(-24).map((row) => ({
+      label: String(row.bucket || "").slice(11, 16) || "-",
+      value: Number(row.total || 0),
+    }));
+    const max = Math.max(1, ...values.map((row) => row.value));
+    const width = 360;
+    const height = 180;
+    const padding = { top: 18, right: 14, bottom: 30, left: 18 };
+    const innerWidth = width - padding.left - padding.right;
+    const innerHeight = height - padding.top - padding.bottom;
+    const points = values.map((row, index) => {
+      const x = padding.left + (values.length <= 1 ? 0 : (index / (values.length - 1)) * innerWidth);
+      const y = padding.top + innerHeight - (row.value / max) * innerHeight;
+      return { ...row, x, y };
+    });
+    const linePath = points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(" ");
+    const areaPath = `${linePath} L ${padding.left + innerWidth} ${padding.top + innerHeight} L ${padding.left} ${padding.top + innerHeight} Z`;
+    const svg = svgNode("svg", {
+      class: "trend-svg",
+      viewBox: `0 0 ${width} ${height}`,
+      role: "img",
+      "aria-label": t("activityTrend"),
+      preserveAspectRatio: "none",
+    });
+    for (const ratio of [0, 0.25, 0.5, 0.75, 1]) {
+      const y = padding.top + innerHeight - ratio * innerHeight;
+      svg.append(svgNode("line", { class: "trend-grid-line", x1: padding.left, x2: padding.left + innerWidth, y1: y, y2: y }));
     }
+    svg.append(svgNode("path", { class: "trend-area", d: areaPath }));
+    svg.append(svgNode("path", { class: "trend-line-path", d: linePath }));
+    const last = points.at(-1);
+    if (last) {
+      svg.append(svgNode("circle", { class: "trend-pulse", cx: last.x, cy: last.y, r: 5 }));
+    }
+    const axis = document.createElement("div");
+    axis.className = "trend-axis";
+    for (const point of points.filter((_, index) => index % Math.ceil(points.length / 6) === 0 || index === points.length - 1)) {
+      axis.append(span("trend-axis-label", point.label));
+    }
+    wrapper.append(svg, axis);
     return wrapper;
+  }
+
+  function svgNode(name, attributes = {}) {
+    const node = document.createElementNS("http://www.w3.org/2000/svg", name);
+    for (const [key, value] of Object.entries(attributes)) {
+      node.setAttribute(key, String(value));
+    }
+    return node;
   }
 
   function donutGradient(items) {

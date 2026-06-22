@@ -5,7 +5,7 @@ const OVERVIEW_INCIDENT_COLUMNS = ["last_seen", "node_name", "severity", "score"
 const OVERVIEW_DRIFT_COLUMNS = ["timestamp", "node_name", "severity", "rule_id", "tier", "subject"];
 
 export function renderOverviewDashboard(ctx) {
-  const { app, state, t, ui } = ctx;
+  const { state, t, ui } = ctx;
   const summary = state.summary || {};
   const datasets = state.datasets || {};
   const findings = datasets.findings?.items || [];
@@ -102,7 +102,8 @@ export function renderOverviewDashboard(ctx) {
     );
   }
 
-  app.append(ui.dashboardShell(...sections));
+  const root = ctx.mountPage("overview-page");
+  ctx.replaceRegion(root, "dashboard", ui.dashboardShell(...sections));
 }
 
 function nodeResourceOverview(nodes, t, ui) {

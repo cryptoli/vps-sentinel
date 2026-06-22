@@ -90,12 +90,20 @@ async function init() {
 
 function bindToolbar() {
   const { option } = view();
-  const themes = new Set(["default", state.theme]);
-  for (const theme of state.manifest.available_themes || []) themes.add(theme.id || theme);
-  themeSelect.replaceChildren(...[...themes].map((theme) => option(theme, theme, theme === state.theme)));
-  themeSelect.addEventListener("change", () => {
-    localStorage.setItem("vps-sentinel-theme", themeSelect.value);
-    location.reload();
+  renderThemeOptions();
+  themeSelect.addEventListener("change", async () => {
+    const nextTheme = themeSelect.value;
+    if (!nextTheme || nextTheme === state.theme) return;
+    localStorage.setItem("vps-sentinel-theme", nextTheme);
+    state.theme = nextTheme;
+    applyThemeScope(state.theme);
+    removeThemeStyles();
+    state.manifest = await loadTheme(state.theme);
+    state.pages = await buildPages(state.manifest);
+    if (!state.pages.some((page) => page.id === state.currentPage)) state.currentPage = "overview";
+    renderThemeOptions();
+    renderNav();
+    await renderCurrentPage();
   });
   languageSelect.replaceChildren(option("zh", "中文", state.language === "zh"), option("en", "English", state.language === "en"));
   languageSelect.addEventListener("change", async () => {
@@ -109,15 +117,24 @@ function bindToolbar() {
   refreshButton.classList.add("stream-status");
 }
 
-async function refresh() {
+function renderThemeOptions() {
+  const { option } = view();
+  const themes = new Set(["default", state.theme]);
+  for (const theme of state.manifest.available_themes || []) themes.add(theme.id || theme);
+  themeSelect.replaceChildren(...[...themes].map((theme) => option(theme, theme, theme === state.theme)));
+}
+
+async function refresh(options = {}) {
+  const patch = Boolean(options.patch);
   if (state.refreshInFlight) return state.refreshInFlight;
   state.refreshInFlight = (async () => {
-    renderNav();
+    if (!patch) renderNav();
     state.summary = await fetchJson(`${API_BASE}/summary`);
     if (state.currentPage === "overview") {
       await loadOverviewDatasets();
     }
-    await renderCurrentPage();
+    await renderCurrentPage({ patch });
+    if (patch) markLivePatch();
   })();
   try {
     await state.refreshInFlight;
@@ -147,6 +164,10 @@ async function loadTheme(theme) {
     document.head.appendChild(link);
   }
   return manifest;
+}
+
+function removeThemeStyles() {
+  document.querySelectorAll("link[data-panel-theme]").forEach((link) => link.remove());
 }
 
 function fallbackThemeManifest() {
@@ -217,13 +238,14 @@ function renderNav() {
   );
 }
 
-async function renderCurrentPage() {
+async function renderCurrentPage(options = {}) {
+  const patch = Boolean(options.patch);
   const page = state.pages.find((item) => item.id === state.currentPage) || state.pages[0];
   document.body.dataset.page = page?.id || "overview";
-  app.replaceChildren(view().loading());
+  if (!patch) app.replaceChildren(view().loading());
   try {
-    app.replaceChildren();
-    await page.render(context());
+    if (!patch) app.replaceChildren();
+    await page.render(context({ patch }));
   } catch (error) {
     if (isAuthError(error)) {
       renderAccessGate(error.message);
@@ -238,7 +260,7 @@ function applyThemeScope(theme) {
   document.body.dataset.theme = theme;
 }
 
-function context() {
+function context(options = {}) {
   const ui = view();
   return {
     api: (path) => fetchJson(`${API_BASE}${path}`),
@@ -249,9 +271,49 @@ function context() {
     renderTable: ui.renderTable,
     state,
     role: state.role,
+    patch: Boolean(options.patch),
+    mountPage,
+    replaceRegion,
+    hasRegion,
     t,
     ui,
   };
+}
+
+function mountPage(className = "") {
+  const pageId = state.currentPage || "overview";
+  let root = app.firstElementChild;
+  if (!root || !root.classList.contains("page-shell") || root.dataset.page !== pageId) {
+    root = document.createElement("div");
+    root.dataset.page = pageId;
+    app.replaceChildren(root);
+  }
+  root.className = ["page-shell", className].filter(Boolean).join(" ");
+  return root;
+}
+
+function replaceRegion(root, name, ...children) {
+  const region = ensureRegion(root, name);
+  region.replaceChildren(...children.filter(Boolean));
+  return region;
+}
+
+function hasRegion(root, name) {
+  return Boolean(findRegion(root, name));
+}
+
+function ensureRegion(root, name) {
+  const existing = findRegion(root, name);
+  if (existing) return existing;
+  const region = document.createElement("div");
+  region.dataset.region = name;
+  region.className = `page-region page-region-${name}`;
+  root.append(region);
+  return region;
+}
+
+function findRegion(root, name) {
+  return [...root.children].find((child) => child.dataset?.region === name) || null;
 }
 
 function datasetItemsMap() {
@@ -298,12 +360,17 @@ async function renderNodesPage(ctx) {
   const page = await loadDataset(meta, pageState);
   const ui = view();
   state.datasets.nodes = page;
-  app.append(
+  const root = ctx.mountPage("nodes-page");
+  ctx.replaceRegion(
+    root,
+    "header",
     ui.sectionHeader(t(meta.titleKey), t(meta.descriptionKey), ui.span("record-count", formatTemplate(t("pageInfo"), rangeInfo(page)))),
-    filters("nodes", pageState),
-    ui.nodeProbeGrid(page.items || []),
-    pagination("nodes", page),
   );
+  if (!ctx.patch || !ctx.hasRegion(root, "filters")) {
+    ctx.replaceRegion(root, "filters", filters("nodes", pageState));
+  }
+  ctx.replaceRegion(root, "nodes", ui.nodeProbeGrid(page.items || []));
+  ctx.replaceRegion(root, "pagination", pagination("nodes", page));
 }
 
 async function renderDatasetPage(ctx, datasetKey) {
@@ -312,17 +379,32 @@ async function renderDatasetPage(ctx, datasetKey) {
   const page = await loadDataset(meta, pageState);
   const ui = view();
   state.datasets[datasetKey] = page;
-  app.append(
+  const root = ctx.mountPage(`dataset-page dataset-${datasetKey}`);
+  ctx.replaceRegion(
+    root,
+    "header",
     ui.sectionHeader(t(meta.titleKey), t(meta.descriptionKey), ui.span("record-count", formatTemplate(t("pageInfo"), rangeInfo(page)))),
-    filters(datasetKey, pageState),
+  );
+  if (!ctx.patch || !ctx.hasRegion(root, "filters")) {
+    ctx.replaceRegion(root, "filters", filters(datasetKey, pageState));
+  }
+  ctx.replaceRegion(
+    root,
+    "records",
     ui.panel(
       t(meta.titleKey),
-      ui.fragment(
-        ui.renderTable(page.items, datasetColumns(meta), tableOptions(datasetKey)),
-        pagination(datasetKey, page),
-      ),
+      ui.fragment(ui.renderTable(page.items, datasetColumns(meta), tableOptions(datasetKey)), pagination(datasetKey, page)),
+      { tone: datasetPanelTone(datasetKey) },
     ),
   );
+}
+
+function datasetPanelTone(datasetKey) {
+  if (datasetKey === "active_blocks" || datasetKey === "probe_sources") return "response";
+  if (datasetKey === "baseline_drifts") return "drift";
+  if (datasetKey === "incidents") return "incident";
+  if (datasetKey === "findings") return "finding";
+  return "";
 }
 
 function datasetColumns(meta) {
@@ -660,13 +742,12 @@ function connectStream() {
       socket.addEventListener("message", async (event) => {
         const message = parseStreamMessage(event.data);
         if (message?.type === "hello") {
-          state.role = selectedRole(message.role || state.role, Boolean(panelToken()));
+          await applyStreamRole(message.role);
           setStreamStatus("live");
           return;
         }
         if (message?.type === "refresh") {
-          state.role = selectedRole(message.role || state.role, Boolean(panelToken()));
-          await refresh().catch((error) => {
+          await refreshFromStream(message).catch((error) => {
             if (isAuthError(error)) renderAccessGate(error.message);
           });
         }
@@ -689,6 +770,33 @@ function parseStreamMessage(value) {
   } catch {
     return null;
   }
+}
+
+async function refreshFromStream(message) {
+  const roleChanged = await applyStreamRole(message?.role);
+  await refresh({ patch: !roleChanged });
+}
+
+async function applyStreamRole(value) {
+  const nextRole = selectedRole(value || state.role, Boolean(panelToken()));
+  if (nextRole === state.role) return false;
+  state.role = nextRole;
+  state.pages = await buildPages(state.manifest);
+  if (!state.pages.some((page) => page.id === state.currentPage)) state.currentPage = "overview";
+  renderNav();
+  return true;
+}
+
+function markLivePatch() {
+  app.classList.remove("live-patched");
+  document.body.classList.remove("live-patched");
+  void app.offsetWidth;
+  app.classList.add("live-patched");
+  document.body.classList.add("live-patched");
+  window.setTimeout(() => {
+    app.classList.remove("live-patched");
+    document.body.classList.remove("live-patched");
+  }, 900);
 }
 
 function scheduleStreamReconnect() {
