@@ -6,7 +6,7 @@ The fleet panel is an optional push-mode dashboard for multiple VPS nodes. Agent
 
 Each panel payload contains:
 
-- non-sensitive node name, agent version, privacy mode, enabled features, and storage stats;
+- non-sensitive node name, agent version, privacy mode, enabled features, storage stats, and lightweight probe metrics such as CPU usage, load average, memory usage, uptime, aggregate network traffic, network rates, interface count, and agent RSS;
 - scan summary counters;
 - recent findings at or above `panel.min_severity`;
 - recent incidents;
@@ -16,7 +16,7 @@ Each panel payload contains:
 
 Payload size is bounded by `panel.max_payload_bytes`. If the panel is unavailable, the agent stores a small local outbox in the existing SQLite rule-state store and retries later. The outbox is capped by `panel.outbox_max_items`.
 
-The self-hosted and Worker panels store the signed payload after a second server-side redaction pass, and read APIs only expose fixed display columns. New uploads use `node_name` for signing and display, and do not serialize node IDs, host IDs, or hostnames. Raw evidence JSON, incident payload JSON, storage details, enabled feature lists, and database timestamps are not returned by browser-facing list endpoints. External source IPs are only returned from admin-only `active_blocks` and `probe_sources` datasets; public and operator responses keep those fields redacted.
+The self-hosted and Worker panels store the signed payload after a second server-side redaction pass, and read APIs only expose fixed display columns. New uploads use `node_name` for signing and display, and do not serialize node IDs, host IDs, or hostnames. Raw evidence JSON, incident payload JSON, storage details, enabled feature lists, and database timestamps are not returned by browser-facing list endpoints. Public node APIs can return non-sensitive probe metrics so the UI can act as a lightweight node monitor without exposing IPs, paths, commands, or raw logs. External source IPs are only returned from admin-only `active_blocks` and `probe_sources` datasets; public and operator responses keep those fields redacted.
 
 ## Agent Configuration
 
@@ -110,7 +110,7 @@ If `PANEL_PUBLIC_ENABLED=false` and all browser tokens are missing, read APIs st
 
 The self-hosted Rust panel has three browser roles enforced by the backend:
 
-- public: aggregate trend, risk count, severity distribution, node name, and online status only;
+- public: aggregate trend, risk count, severity distribution, node name, online status, and non-sensitive node resource metrics;
 - operator: node name, rule, category, risk summary, action queue, redacted subject, impact, and recommendations;
 - admin: full redacted evidence, active-block implementation detail, review state, false-positive marking, and audit logs.
 

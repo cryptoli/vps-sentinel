@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS nodes (
   privacy_mode VARCHAR(32) NOT NULL,
   enabled_features_json TEXT NOT NULL,
   storage_json TEXT NOT NULL,
+  metrics_json TEXT NOT NULL,
   last_seen_at VARCHAR(64) NOT NULL,
   updated_at VARCHAR(64) NOT NULL
 );

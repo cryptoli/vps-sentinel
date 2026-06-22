@@ -250,6 +250,8 @@ struct PanelNode {
     enabled_features: Vec<String>,
     #[serde(default)]
     storage: Option<Value>,
+    #[serde(default)]
+    metrics: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -880,8 +882,16 @@ async fn nodes(
 ) -> Result<Json<Value>, PanelApiError> {
     let role = verify_panel_role(&state, &headers, PanelRole::Public)?;
     let columns = match role {
-        PanelRole::Public | PanelRole::Operator => &["last_seen_at", "node_name"][..],
-        PanelRole::Admin => &["last_seen_at", "node_name", "agent_version", "privacy_mode"][..],
+        PanelRole::Public | PanelRole::Operator => {
+            &["last_seen_at", "node_name", "agent_version", "metrics_json"][..]
+        }
+        PanelRole::Admin => &[
+            "last_seen_at",
+            "node_name",
+            "agent_version",
+            "privacy_mode",
+            "metrics_json",
+        ][..],
     };
     paginated_dataset(
         &state,
@@ -1229,6 +1239,65 @@ impl Repository {
                         {
                             return Err(err.into());
                         }
+                    }
+                }
+            }
+        }
+        self.ensure_compat_schema().await?;
+        Ok(())
+    }
+
+    async fn ensure_compat_schema(&self) -> Result<()> {
+        self.ensure_column(
+            "nodes",
+            "metrics_json",
+            "TEXT NOT NULL DEFAULT '{}'",
+            "TEXT NOT NULL DEFAULT '{}'",
+        )
+        .await
+    }
+
+    async fn ensure_column(
+        &self,
+        table: &str,
+        column: &str,
+        sqlite_definition: &str,
+        sql_definition: &str,
+    ) -> Result<()> {
+        match &self.driver {
+            RepositoryDriver::Sqlite(connection) => {
+                let connection = connection
+                    .lock()
+                    .map_err(|err| anyhow!("sqlite connection lock poisoned: {err}"))?;
+                let mut stmt = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+                let mut rows = stmt.query([])?;
+                while let Some(row) = rows.next()? {
+                    let name: String = row.get(1)?;
+                    if name == column {
+                        return Ok(());
+                    }
+                }
+                connection.execute(
+                    &format!("ALTER TABLE {table} ADD COLUMN {column} {sqlite_definition}"),
+                    [],
+                )?;
+            }
+            RepositoryDriver::Postgres(pool) => {
+                sql_query(&format!(
+                    "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {sql_definition}"
+                ))
+                .execute(pool)
+                .await?;
+            }
+            RepositoryDriver::Mysql(pool) => {
+                if let Err(err) = sql_query(&format!(
+                    "ALTER TABLE {table} ADD COLUMN {column} {sql_definition}"
+                ))
+                .execute(pool)
+                .await
+                {
+                    if !is_mysql_duplicate_column(&err) {
+                        return Err(err.into());
                     }
                 }
             }
@@ -1935,6 +2004,7 @@ impl Repository {
                 "privacy_mode",
                 "enabled_features_json",
                 "storage_json",
+                "metrics_json",
                 "last_seen_at",
                 "updated_at",
             ],
@@ -1947,6 +2017,7 @@ impl Repository {
                 "privacy_mode",
                 "enabled_features_json",
                 "storage_json",
+                "metrics_json",
                 "last_seen_at",
                 "updated_at",
             ],
@@ -1962,6 +2033,9 @@ impl Repository {
                 DbValue::Text(node.privacy_mode.clone()),
                 DbValue::Text(json_string(&node.enabled_features)?),
                 DbValue::Text(json_string(&node.storage)?),
+                DbValue::Text(json_string(
+                    &node.metrics.clone().unwrap_or_else(|| json!({})),
+                )?),
                 DbValue::Text(sent_at.to_rfc3339()),
                 DbValue::Text(received_at.to_string()),
             ],
@@ -2775,6 +2849,9 @@ fn expand_dataset_json_columns(table: &str, rows: &mut Value) {
             expand_json_column(row, "categories_json", "categories");
             expand_json_column(row, "rule_ids_json", "rule_ids");
         }
+        if table == "nodes" {
+            expand_json_column(row, "metrics_json", "metrics");
+        }
     }
 }
 
@@ -2884,6 +2961,14 @@ fn is_mysql_duplicate_index(error: &sqlx_core::Error) -> bool {
         .and_then(|db_error| db_error.code())
         .is_some_and(|code| code == "1061")
         || error.to_string().contains("Duplicate key name")
+}
+
+fn is_mysql_duplicate_column(error: &sqlx_core::Error) -> bool {
+    error
+        .as_database_error()
+        .and_then(|db_error| db_error.code())
+        .is_some_and(|code| code == "1060")
+        || error.to_string().contains("Duplicate column name")
 }
 
 #[derive(Debug)]
@@ -3197,6 +3282,61 @@ mod tests {
         assert!(admin_text.contains(r#""categories":["web"]"#));
         assert!(!operator_text.contains("8.8.8.8"));
         assert!(operator_text.contains("redacted"));
+    }
+
+    #[tokio::test]
+    async fn node_page_expands_probe_metrics_without_sensitive_identity() {
+        let repo = test_repo();
+        repo.init_schema().await.expect("schema");
+        let now = Utc::now().to_rfc3339();
+        repo.execute_write(
+            "INSERT INTO nodes
+             (node_id, node_name, host_id, hostname, agent_version, privacy_mode,
+              enabled_features_json, storage_json, metrics_json, last_seen_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            &[
+                DbValue::Text("node-a".to_string()),
+                DbValue::Text("node-a".to_string()),
+                DbValue::Text(String::new()),
+                DbValue::Text(String::new()),
+                DbValue::Text("0.2.0".to_string()),
+                DbValue::Text("strict".to_string()),
+                DbValue::Text(r#"["ssh","panel"]"#.to_string()),
+                DbValue::Text("{}".to_string()),
+                DbValue::Text(r#"{"cpu_percent":12.5,"memory_used_percent":44.0}"#.to_string()),
+                DbValue::Text(now.clone()),
+                DbValue::Text(now),
+            ],
+        )
+        .await
+        .expect("insert node");
+        let dataset = PanelDataset {
+            table: "nodes",
+            order_column: "last_seen_at",
+            active_filter: None,
+            columns: &["last_seen_at", "node_name", "agent_version", "metrics_json"],
+        };
+        let request = PageRequest {
+            from: None,
+            to: None,
+            limit: 10,
+            offset: 0,
+        };
+
+        let (mut page, total) = repo
+            .query_page(dataset, &request, PanelRole::Public)
+            .await
+            .expect("node query");
+        scope_panel_value(&mut page, PanelRole::Public);
+        let text = serde_json::to_string(&page).expect("json");
+
+        assert_eq!(total, 1);
+        assert_eq!(page[0]["metrics"]["cpu_percent"], 12.5);
+        assert_eq!(page[0]["metrics"]["memory_used_percent"], 44.0);
+        assert!(!text.contains("node_id"));
+        assert!(!text.contains("host_id"));
+        assert!(!text.contains("hostname"));
+        assert!(!text.contains("metrics_json"));
     }
 
     #[test]

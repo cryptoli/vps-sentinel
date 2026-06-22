@@ -16,7 +16,7 @@ const DATASETS = {
     minRole: "public",
     table: "nodes",
     orderColumn: "last_seen_at",
-    columns: ["last_seen_at", "node_name", "agent_version", "privacy_mode"],
+    columns: ["last_seen_at", "node_name", "agent_version", "privacy_mode", "metrics_json"],
   },
   "/api/v1/findings": {
     minRole: "operator",
@@ -236,32 +236,8 @@ async function persistPayload(env, payload, signedNodeName) {
   const node = payload.node;
   const nodeName = redactIpText(signedNodeName || node.node_name || "");
   const statements = [];
-  statements.push(env.DB.prepare(`
-    INSERT INTO nodes
-      (node_id, node_name, host_id, hostname, agent_version, privacy_mode, enabled_features_json, storage_json, last_seen_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(node_id) DO UPDATE SET
-      node_name = excluded.node_name,
-      host_id = excluded.host_id,
-      hostname = excluded.hostname,
-      agent_version = excluded.agent_version,
-      privacy_mode = excluded.privacy_mode,
-      enabled_features_json = excluded.enabled_features_json,
-      storage_json = excluded.storage_json,
-      last_seen_at = excluded.last_seen_at,
-      updated_at = excluded.updated_at
-  `).bind(
-    nodeName,
-    nodeName,
-    "",
-    "",
-    node.agent_version,
-    node.privacy_mode,
-    JSON.stringify(node.enabled_features || []),
-    JSON.stringify(redactPanelValue(node.storage || {})),
-    payload.sent_at,
-    receivedAt,
-  ));
+  const nodeStatement = panelNodeStatement(env, nodeName, node, payload.sent_at, receivedAt, true);
+  statements.push(nodeStatement);
   statements.push(env.DB.prepare("INSERT OR REPLACE INTO heartbeats (message_id, node_id, sent_at, received_at, scan_json) VALUES (?, ?, ?, ?, ?)")
     .bind(payload.message_id, nodeName, payload.sent_at, receivedAt, JSON.stringify(redactPanelValue(payload.scan || {})))
   );
@@ -357,7 +333,13 @@ async function persistPayload(env, payload, signedNodeName) {
     ));
   }
 
-  await runD1Batch(env, statements);
+  try {
+    await runD1Batch(env, statements);
+  } catch (error) {
+    if (!missingColumnError(error, "metrics_json")) throw error;
+    statements[0] = panelNodeStatement(env, nodeName, node, payload.sent_at, receivedAt, false);
+    await runD1Batch(env, statements);
+  }
   const probeStatements = [];
   for (const source of payload.probe_sources || []) {
     const statement = probeSourceStatement(env, nodeName, source, receivedAt);
@@ -372,6 +354,65 @@ async function persistPayload(env, payload, signedNodeName) {
       throw error;
     }
   }
+}
+
+function panelNodeStatement(env, nodeName, node, sentAt, receivedAt, includeMetrics) {
+  if (!includeMetrics) {
+    return env.DB.prepare(`
+      INSERT INTO nodes
+        (node_id, node_name, host_id, hostname, agent_version, privacy_mode, enabled_features_json, storage_json, last_seen_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(node_id) DO UPDATE SET
+        node_name = excluded.node_name,
+        host_id = excluded.host_id,
+        hostname = excluded.hostname,
+        agent_version = excluded.agent_version,
+        privacy_mode = excluded.privacy_mode,
+        enabled_features_json = excluded.enabled_features_json,
+        storage_json = excluded.storage_json,
+        last_seen_at = excluded.last_seen_at,
+        updated_at = excluded.updated_at
+    `).bind(
+      nodeName,
+      nodeName,
+      "",
+      "",
+      node.agent_version,
+      node.privacy_mode,
+      JSON.stringify(node.enabled_features || []),
+      JSON.stringify(redactPanelValue(node.storage || {})),
+      sentAt,
+      receivedAt,
+    );
+  }
+  return env.DB.prepare(`
+    INSERT INTO nodes
+      (node_id, node_name, host_id, hostname, agent_version, privacy_mode, enabled_features_json, storage_json, metrics_json, last_seen_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(node_id) DO UPDATE SET
+      node_name = excluded.node_name,
+      host_id = excluded.host_id,
+      hostname = excluded.hostname,
+      agent_version = excluded.agent_version,
+      privacy_mode = excluded.privacy_mode,
+      enabled_features_json = excluded.enabled_features_json,
+      storage_json = excluded.storage_json,
+      metrics_json = excluded.metrics_json,
+      last_seen_at = excluded.last_seen_at,
+      updated_at = excluded.updated_at
+  `).bind(
+    nodeName,
+    nodeName,
+    "",
+    "",
+    node.agent_version,
+    node.privacy_mode,
+    JSON.stringify(node.enabled_features || []),
+    JSON.stringify(redactPanelValue(node.storage || {})),
+    JSON.stringify(redactPanelValue(node.metrics || {})),
+    sentAt,
+    receivedAt,
+  );
 }
 
 function probeSourceStatement(env, nodeName, source, receivedAt) {
@@ -577,13 +618,19 @@ function panelBlockStorageId(nodeId, block) {
 }
 
 function expandDatasetJsonColumns(table, rows) {
-  if (table !== "probe_sources") return rows;
+  if (!["probe_sources", "nodes"].includes(table)) return rows;
   return rows.map((row) => {
     const expanded = { ...row };
-    expanded.categories = parseJsonField(expanded.categories_json, []);
-    expanded.rule_ids = parseJsonField(expanded.rule_ids_json, []);
-    delete expanded.categories_json;
-    delete expanded.rule_ids_json;
+    if (table === "probe_sources") {
+      expanded.categories = parseJsonField(expanded.categories_json, []);
+      expanded.rule_ids = parseJsonField(expanded.rule_ids_json, []);
+      delete expanded.categories_json;
+      delete expanded.rule_ids_json;
+    }
+    if (table === "nodes") {
+      expanded.metrics = parseJsonField(expanded.metrics_json, {});
+      delete expanded.metrics_json;
+    }
     return expanded;
   });
 }
@@ -596,13 +643,16 @@ function nodeStatusCounts(nodes) {
   const counts = { fresh: 0, stale: 0, offline: 0, retired: 0 };
   const now = new Date();
   for (const node of nodes || []) {
-    const status = panelNodeStatus(node?.last_seen_at, now);
+    const status = panelNodeStatus(node?.last_seen_at, now, node);
     counts[status] = (counts[status] || 0) + 1;
   }
-  return Object.entries(counts).map(([status, count]) => ({ status, count }));
+  return counts;
 }
 
-function panelNodeStatus(lastSeenAt, now) {
+function panelNodeStatus(lastSeenAt, now, node = {}) {
+  const name = String(node?.node_name || "").trim().toLowerCase();
+  const version = String(node?.agent_version || "").trim().toLowerCase();
+  if (!name || name === "local-host" || version.includes("smoke")) return "retired";
   const seen = new Date(lastSeenAt || "");
   if (Number.isNaN(seen.getTime())) return "retired";
   const ageMinutes = Math.max(0, (now.getTime() - seen.getTime()) / 60000);
@@ -781,6 +831,12 @@ async function queryAllOptional(env, sql, table) {
 
 function missingTableError(error, table) {
   return String(error?.message || error || "").toLowerCase().includes(`no such table: ${table.toLowerCase()}`);
+}
+
+function missingColumnError(error, column) {
+  const message = String(error?.message || error || "").toLowerCase();
+  const name = column.toLowerCase();
+  return message.includes(`no such column: ${name}`) || message.includes(`no column named ${name}`);
 }
 
 function safeInternalErrorCode(error) {

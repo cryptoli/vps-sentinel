@@ -274,7 +274,7 @@ function overviewTrendParams() {
 }
 
 async function loadOverviewDatasets() {
-  const visible = visibleDatasetEntries().filter(([key]) => key !== "nodes" && key !== "probe_sources");
+  const visible = visibleDatasetEntries().filter(([key]) => key !== "probe_sources");
   const entries = await Promise.all(
     visible.map(async ([key, meta]) => [
       key,
@@ -479,16 +479,24 @@ function filters(datasetKey, pageState) {
     });
     quickRanges.append(button);
   }
+  const advanced = document.createElement("details");
+  advanced.className = "filter-details";
+  advanced.open = window.matchMedia("(min-width: 760px)").matches;
+  const summary = document.createElement("summary");
+  summary.textContent = t("advancedFilters");
+  const advancedBody = document.createElement("div");
+  advancedBody.className = "filter-details-body";
   const applyButton = ui.button(t("apply"), "submit", "primary");
   const resetButton = ui.button(t("reset"), "button", "secondary");
-  form.append(
-    quickRanges,
+  advancedBody.append(
     timeRangeControl(t("from"), "from", pageState.from),
     timeRangeControl(t("to"), "to", pageState.to),
     ui.labelControl(t("pageSize"), ui.select("limit", [10, 25, 50, 100, 200], pageState.limit)),
     applyButton,
     resetButton,
   );
+  advanced.append(summary, advancedBody);
+  form.append(quickRanges, advanced);
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const values = new FormData(form);
@@ -790,7 +798,9 @@ function sanitizePanelValue(value) {
 }
 
 function shouldHidePanelField(key) {
-  if (roleAllows("admin") && (key === "backend" || key.endsWith("_backend"))) return false;
+  if (roleAllows("admin")) {
+    return ["node_id", "host_id", "hostname"].includes(key);
+  }
   return PANEL_HIDDEN_KEYS.has(key) || key.endsWith("_backend");
 }
 

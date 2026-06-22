@@ -212,15 +212,17 @@ export function createView({ t, language, freshness = {} }) {
     const max = Math.max(1, ...rows.map((row) => Number(row[valueKey] || 0)));
     if (!rows.length) return emptyChart();
     for (const row of rows) {
-      const severity = String(row[labelKey] || "unknown").toLowerCase();
+      const labelValue = String(row[labelKey] || "unknown").toLowerCase();
       const value = Number(row[valueKey] || 0);
       const item = document.createElement("div");
       item.className = "bar-row";
-      item.append(span("bar-label", translateValue("severity", severity)));
+      item.append(span("bar-label", translateValue(labelKey, labelValue)));
       const track = document.createElement("div");
       track.className = "bar-track";
       const fill = document.createElement("div");
-      fill.className = `bar-fill severity-${severity}`;
+      fill.className = labelKey === "severity"
+        ? `bar-fill severity-${labelValue}`
+        : `bar-fill bar-fill-${safeCssClass(labelValue)}`;
       fill.style.width = `${Math.max(4, (value / max) * 100)}%`;
       track.append(fill);
       item.append(track, span("bar-value", number(value)));
@@ -356,9 +358,16 @@ export function createView({ t, language, freshness = {} }) {
       wrapper.append(emptyChart());
       return wrapper;
     }
-    for (const node of nodes) {
+    const orderedNodes = [...nodes].sort((left, right) => {
+      const priority = { offline: 0, stale: 1, fresh: 2, retired: 3 };
+      const leftStatus = freshnessStatus(ageMinutes(left.last_seen_at), left);
+      const rightStatus = freshnessStatus(ageMinutes(right.last_seen_at), right);
+      return (priority[leftStatus] ?? 9) - (priority[rightStatus] ?? 9);
+    });
+    for (const node of orderedNodes) {
       const age = ageMinutes(node.last_seen_at);
       const status = freshnessStatus(age, node);
+      const metrics = normalizeNodeMetrics(node.metrics);
       const card = document.createElement("article");
       card.className = `node-probe-card ${status}`;
       const head = document.createElement("div");
@@ -377,10 +386,38 @@ export function createView({ t, language, freshness = {} }) {
       if (node.privacy_mode) {
         meta.append(nodeProbeMeta(t("privacy_mode"), translateValue("privacy_mode", node.privacy_mode)));
       }
-      card.append(head, meta);
+      const gauges = document.createElement("div");
+      gauges.className = "node-probe-gauges";
+      gauges.append(
+        nodeProbeGauge(t("cpuUsage"), percentText(metrics.cpu_percent), metrics.cpu_percent, "cpu"),
+        nodeProbeGauge(t("memoryUsage"), percentText(metrics.memory_used_percent), metrics.memory_used_percent, "memory"),
+        nodeProbeGauge(t("loadAverage"), loadText(metrics), loadRatio(metrics), "load"),
+      );
+      const traffic = document.createElement("div");
+      traffic.className = "node-probe-traffic";
+      traffic.append(
+        nodeProbeMeta(t("uploadSpeed"), rateText(metrics.network_tx_rate_bps)),
+        nodeProbeMeta(t("downloadSpeed"), rateText(metrics.network_rx_rate_bps)),
+        nodeProbeMeta(t("outboundTraffic"), bytesText(metrics.network_tx_bytes)),
+        nodeProbeMeta(t("inboundTraffic"), bytesText(metrics.network_rx_bytes)),
+        nodeProbeMeta(t("uptimeDays"), uptimeText(metrics.uptime_days)),
+        nodeProbeMeta(t("agentMemory"), metrics.agent_rss_kb ? `${number(metrics.agent_rss_kb)} KiB` : "-"),
+      );
+      card.append(head, meta, gauges, traffic);
       wrapper.append(card);
     }
     return wrapper;
+  }
+
+  function nodeProbeGauge(label, value, percent, tone) {
+    const item = document.createElement("div");
+    item.className = `node-probe-gauge gauge-${tone}`;
+    item.style.setProperty("--gauge-value", `${clampedPercent(percent)}%`);
+    const ring = document.createElement("span");
+    ring.className = "gauge-ring";
+    ring.append(span("gauge-value", value));
+    item.append(ring, span("gauge-label", label));
+    return item;
   }
 
   function nodeProbeMeta(label, value) {
@@ -388,6 +425,57 @@ export function createView({ t, language, freshness = {} }) {
     item.className = "node-probe-meta-item";
     item.append(span("node-probe-meta-label", label), span("node-probe-meta-value", value || "-"));
     return item;
+  }
+
+  function normalizeNodeMetrics(metrics) {
+    return metrics && typeof metrics === "object" && !Array.isArray(metrics) ? metrics : {};
+  }
+
+  function percentText(value) {
+    return Number.isFinite(Number(value)) ? `${Number(value).toFixed(1)}%` : "-";
+  }
+
+  function loadText(metrics) {
+    return Number.isFinite(Number(metrics.load1)) ? Number(metrics.load1).toFixed(2) : "-";
+  }
+
+  function loadRatio(metrics) {
+    const load = Number(metrics.load1);
+    const cores = Number(metrics.cpu_cores || 1);
+    if (!Number.isFinite(load) || !Number.isFinite(cores) || cores <= 0) return null;
+    return Math.min(100, (load / cores) * 100);
+  }
+
+  function rateText(value) {
+    const bytes = Number(value);
+    if (!Number.isFinite(bytes) || bytes < 0) return "-";
+    return `${bytesText(bytes)}/s`;
+  }
+
+  function bytesText(value) {
+    const bytes = Number(value);
+    if (!Number.isFinite(bytes) || bytes < 0) return "-";
+    const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let index = 0;
+    let size = bytes;
+    while (size >= 1024 && index < units.length - 1) {
+      size /= 1024;
+      index += 1;
+    }
+    return `${size >= 10 || index === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[index]}`;
+  }
+
+  function uptimeText(value) {
+    const days = Number(value);
+    if (!Number.isFinite(days)) return "-";
+    if (days < 1) return formatTemplate(t("hoursValue"), { value: Math.max(1, Math.round(days * 24)) });
+    return formatTemplate(t("daysValue"), { value: days.toFixed(days < 10 ? 1 : 0) });
+  }
+
+  function clampedPercent(value) {
+    const numberValue = Number(value);
+    if (!Number.isFinite(numberValue)) return 0;
+    return Math.max(0, Math.min(100, numberValue));
   }
 
   function freshnessBadge(nodes) {
@@ -475,7 +563,12 @@ export function createView({ t, language, freshness = {} }) {
     const normalized = String(value || "unknown").toLowerCase();
     if (column === "severity" || column === "privacy_mode") return t(normalized) || value || t("unknown");
     if (column === "block_status") return t(`block_status_${normalized}`) || value || t("unknown");
+    if (column === "category") return t(`category_${normalized}`) || value || t("unknown");
     return value || t("unknown");
+  }
+
+  function safeCssClass(value) {
+    return String(value || "unknown").toLowerCase().replace(/[^a-z0-9_-]+/g, "-");
   }
 
   function reasonText(value) {

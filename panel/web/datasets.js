@@ -67,7 +67,7 @@ export const DATASETS = {
     titleKey: "nodesTitle",
     descriptionKey: "nodesDescription",
     endpoint: "/nodes",
-    columns: ["last_seen_at", "node_name"],
+    columns: ["last_seen_at", "node_name", "agent_version"],
     adminColumns: ["last_seen_at", "node_name", "agent_version", "privacy_mode"],
   },
 };

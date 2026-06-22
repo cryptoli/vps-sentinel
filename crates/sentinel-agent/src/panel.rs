@@ -1,6 +1,7 @@
 use crate::active_response::{list_active_blocks, BlockEntry};
 use crate::baseline::assess_baseline_event;
 use crate::incident::{list_incidents, Incident};
+use crate::node_metrics::{collect_node_metrics, NodeMetrics};
 use crate::scanner::ScanReport;
 use crate::storage::{SqliteStore, StorageStats};
 use crate::utils::ip::{ip_in_cidr, is_public_remote_ip};
@@ -57,6 +58,7 @@ pub struct PanelNodeSnapshot {
     pub privacy_mode: String,
     pub enabled_features: Vec<String>,
     pub storage: Option<StorageStats>,
+    pub metrics: Option<NodeMetrics>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -406,6 +408,7 @@ fn node_snapshot(
         privacy_mode: config.panel.privacy_mode.clone(),
         enabled_features: enabled_features(config),
         storage: store.stats().ok(),
+        metrics: collect_node_metrics(store).ok(),
     })
 }
 

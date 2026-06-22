@@ -13,6 +13,7 @@ pub mod fleet;
 pub mod incident;
 pub(crate) mod local_behavior;
 pub mod maintenance;
+pub mod node_metrics;
 pub mod notify;
 pub mod panel;
 pub mod registry;

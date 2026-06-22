@@ -12,6 +12,7 @@ export function renderOverviewDashboard(ctx) {
   const incidents = datasets.incidents?.items || [];
   const drifts = datasets.baseline_drifts?.items || [];
   const blocks = datasets.active_blocks?.items || [];
+  const nodes = datasets.nodes?.items || [];
   const trends = datasets.trends?.items || [];
   const severityRows = summary.by_severity || [];
   const status = fleetStatus(summary.node_status || {}, t);
@@ -64,6 +65,9 @@ export function renderOverviewDashboard(ctx) {
       ui.panel(t("nodeStatusDistribution"), ui.nodeStatusChart(summary.node_status || {}), {
         meta: t("nodeStatusDistributionMeta"),
       }),
+      ui.panel(t("nodeResourceOverview"), nodeResourceOverview(nodes, t, ui), {
+        meta: t("nodeResourceOverviewMeta"),
+      }),
       ui.panel(t("categoryDistribution"), ui.barChart(summary.by_category || [], "category", "count"), {
         meta: t("categoryDistributionMeta"),
       }),
@@ -99,6 +103,59 @@ export function renderOverviewDashboard(ctx) {
   }
 
   app.append(ui.dashboardShell(...sections));
+}
+
+function nodeResourceOverview(nodes, t, ui) {
+  const summary = averageNodeMetrics(nodes);
+  return ui.insightStrip([
+    {
+      label: t("cpuUsage"),
+      value: percent(summary.cpu),
+      detail: t("nodeResourceAverage"),
+      tone: "neutral",
+    },
+    {
+      label: t("memoryUsage"),
+      value: percent(summary.memory),
+      detail: t("nodeResourceAverage"),
+      tone: "attention",
+    },
+    {
+      label: t("loadAverage"),
+      value: summary.load === null ? "-" : summary.load.toFixed(2),
+      detail: t("nodeResourceAverage"),
+      tone: "fresh",
+    },
+  ]);
+}
+
+function averageNodeMetrics(nodes) {
+  const values = { cpu: [], memory: [], load: [] };
+  for (const node of nodes || []) {
+    const metrics = node.metrics && typeof node.metrics === "object" ? node.metrics : {};
+    pushFinite(values.cpu, metrics.cpu_percent);
+    pushFinite(values.memory, metrics.memory_used_percent);
+    pushFinite(values.load, metrics.load1);
+  }
+  return {
+    cpu: average(values.cpu),
+    memory: average(values.memory),
+    load: average(values.load),
+  };
+}
+
+function pushFinite(items, value) {
+  const number = Number(value);
+  if (Number.isFinite(number)) items.push(number);
+}
+
+function average(items) {
+  if (!items.length) return null;
+  return items.reduce((sum, value) => sum + value, 0) / items.length;
+}
+
+function percent(value) {
+  return value === null ? "-" : `${value.toFixed(1)}%`;
 }
 
 function metric(label, value, tone, caption) {

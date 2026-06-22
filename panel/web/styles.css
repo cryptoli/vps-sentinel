@@ -854,12 +854,11 @@ button:disabled {
 }
 
 .filters {
-  align-items: end;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 251, 255, 0.95));
   display: grid;
   gap: 14px;
-  grid-template-columns: repeat(3, minmax(180px, 1fr)) auto auto;
+  grid-template-columns: 1fr;
   margin-bottom: 16px;
   padding: 15px;
 }
@@ -882,6 +881,52 @@ button:disabled {
   border-color: transparent;
   flex: 0 0 auto;
   min-height: 32px;
+}
+
+.filter-details {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.filter-details summary {
+  align-items: center;
+  color: var(--muted-strong);
+  cursor: pointer;
+  display: flex;
+  font-size: 13px;
+  font-weight: 900;
+  justify-content: space-between;
+  list-style: none;
+  min-height: 42px;
+  padding: 0 13px;
+}
+
+.filter-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.filter-details summary::after {
+  border-bottom: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  content: "";
+  height: 7px;
+  transform: rotate(45deg);
+  transition: transform var(--ease);
+  width: 7px;
+}
+
+.filter-details[open] summary::after {
+  transform: rotate(225deg);
+}
+
+.filter-details-body {
+  align-items: end;
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(3, minmax(180px, 1fr)) auto auto;
+  padding: 14px;
 }
 
 .field {
@@ -1166,22 +1211,33 @@ tr:last-child td {
 }
 
 .node-probe-grid {
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   padding: 0;
 }
 
 .node-probe-card {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 251, 255, 0.94));
+    radial-gradient(circle at 18% 0%, rgba(21, 112, 239, 0.09), transparent 34%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(247, 250, 253, 0.96));
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--ring-shadow);
   display: grid;
-  gap: 14px;
-  min-height: 132px;
+  gap: 16px;
+  min-height: 252px;
   overflow: hidden;
-  padding: 16px;
+  padding: 18px;
   position: relative;
+  transition:
+    border-color var(--ease),
+    box-shadow var(--ease),
+    transform var(--ease);
+}
+
+.node-probe-card:hover {
+  border-color: color-mix(in srgb, currentColor 28%, var(--border));
+  box-shadow: var(--shadow-hover);
+  transform: translateY(-2px);
 }
 
 .node-probe-card::before {
@@ -1241,6 +1297,12 @@ tr:last-child td {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.node-probe-traffic {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .node-probe-meta-item {
   background: var(--surface-muted);
   border: 1px solid var(--border);
@@ -1264,6 +1326,68 @@ tr:last-child td {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.node-probe-gauges {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.node-probe-gauge {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+  min-width: 0;
+  padding: 12px 8px;
+}
+
+.gauge-ring {
+  --gauge-color: var(--accent);
+  align-items: center;
+  aspect-ratio: 1;
+  background:
+    radial-gradient(circle, var(--surface) 58%, transparent 59%),
+    conic-gradient(var(--gauge-color) var(--gauge-value), rgba(15, 23, 42, 0.1) 0);
+  border-radius: 999px;
+  display: grid;
+  justify-items: center;
+  max-width: 74px;
+  min-width: 56px;
+  width: 66%;
+}
+
+.gauge-cpu .gauge-ring {
+  --gauge-color: var(--accent);
+}
+
+.gauge-memory .gauge-ring {
+  --gauge-color: var(--high);
+}
+
+.gauge-load .gauge-ring {
+  --gauge-color: var(--success);
+}
+
+.gauge-value {
+  color: var(--text);
+  font-size: clamp(12px, 1.8vw, 15px);
+  font-weight: 950;
+}
+
+.gauge-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 850;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
 }
 
 .bar-chart,
@@ -1406,7 +1530,23 @@ tr:last-child td {
 .bar-fill {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.34);
   border-radius: inherit;
+  background: linear-gradient(90deg, var(--accent), var(--success));
   height: 100%;
+}
+
+.bar-fill-web,
+.bar-fill-network,
+.bar-fill-ssh,
+.bar-fill-observed,
+.bar-fill-blocked {
+  background: linear-gradient(90deg, var(--accent), #22c55e);
+}
+
+.bar-fill-process,
+.bar-fill-persistence,
+.bar-fill-system,
+.bar-fill-permanent_block {
+  background: linear-gradient(90deg, var(--high), var(--medium));
 }
 
 .donut-card {
@@ -1883,12 +2023,17 @@ tr:last-child td {
     align-items: stretch;
   }
 
+  .filter-details-body {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
   .panel-response .compact-records {
     grid-template-columns: 1fr;
   }
 
   .node-probe-grid {
-    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   }
 
   .donut-card {
@@ -2040,8 +2185,29 @@ tr:last-child td {
     grid-template-columns: 1fr;
   }
 
-  .node-probe-meta {
-    grid-template-columns: 1fr;
+  .node-probe-card {
+    min-height: auto;
+    padding: 15px;
+  }
+
+  .node-probe-head {
+    grid-template-columns: 12px minmax(0, 1fr);
+  }
+
+  .node-probe-state {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .node-probe-meta,
+  .node-probe-traffic {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .node-probe-gauges {
+    grid-template-columns: repeat(3, minmax(72px, 1fr));
+    overflow-x: auto;
+    padding-bottom: 2px;
   }
 
   .freshness-age {
@@ -2058,10 +2224,6 @@ tr:last-child td {
 
   .filters {
     padding: 12px;
-  }
-
-  .filters > .button {
-    width: 100%;
   }
 
   .range-control {
@@ -2119,5 +2281,10 @@ tr:last-child td {
   .metric .label,
   .metric-caption {
     white-space: normal;
+  }
+
+  .node-probe-meta,
+  .node-probe-traffic {
+    grid-template-columns: 1fr;
   }
 }
