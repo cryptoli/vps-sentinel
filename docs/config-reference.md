@@ -23,6 +23,8 @@ The default system configuration path is `/etc/vps-sentinel/config.toml`. A user
 - `[notifications.gotify]`: Gotify server, app token, and minimum severity.
 - `[notifications.bark]`: Bark server, device key, and minimum severity.
 - `[notifications.serverchan]`: ServerChan send key and minimum severity.
+- `[notifications.dingtalk]`: DingTalk robot access token and minimum severity.
+- `[notifications.feishu]`: Feishu/Lark bot webhook URL and minimum severity.
 - `[noise_control]`: dedup, durable-state reminder, and alert volume controls. `rate_limit_bypass_min_severity` and `quiet_hours_bypass_min_severity` default to `High`, so high-value alerts bypass the hourly budget and quiet-hours suppression.
 - `[allowlist]`: trusted users, IPs, paths, ports, and specific process command fragments. Use `process_command_contains` for known-good long-running commands whose full path is not stable enough for `process_paths`.
 

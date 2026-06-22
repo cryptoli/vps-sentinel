@@ -176,6 +176,16 @@ enabled = false
 send_key = ""
 min_severity = "Medium"
 
+[notifications.dingtalk]
+enabled = false
+access_token = ""
+min_severity = "Medium"
+
+[notifications.feishu]
+enabled = false
+webhook_url = ""
+min_severity = "Medium"
+
 [noise_control]
 dedup_window_seconds = 3600
 state_reminder_interval_seconds = 86400

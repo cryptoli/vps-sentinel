@@ -1,5 +1,10 @@
 # Changelog
 
+
+## 0.2.1
+
+- Notifications: added DingTalk and Feishu group-robot notifier channels, configured through `[notifications.dingtalk]` and `[notifications.feishu]` and disabled by default.
+
 ## 0.2.0
 
 - Default security posture: active response is enabled for new installs, SSH brute-force alert/block thresholds now default to 6 failures per scan window, and existing explicit user config values remain preserved during upgrade.

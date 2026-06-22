@@ -8,9 +8,9 @@ pub mod severity;
 pub mod time_window;
 
 pub use config::{
-    ActiveResponseConfig, BarkConfig, EmailConfig, EmailTlsMode, GotifyConfig,
-    NotificationLanguage, NotificationTimeZone, NtfyConfig, SentinelConfig, ServerChanConfig,
-    TelegramConfig, WebhookConfig,
+    ActiveResponseConfig, BarkConfig, DingTalkConfig, EmailConfig, EmailTlsMode, FeishuConfig,
+    GotifyConfig, NotificationLanguage, NotificationTimeZone, NtfyConfig, SentinelConfig,
+    ServerChanConfig, TelegramConfig, WebhookConfig,
 };
 pub use error::{SentinelError, SentinelResult};
 pub use event::RawEvent;

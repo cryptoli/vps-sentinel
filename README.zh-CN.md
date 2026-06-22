@@ -47,7 +47,7 @@
 | 本地存储 | 使用 SQLite 存储 raw events、findings、baseline、扫描记录和通知日志；重复 raw fact 使用稳定存储键，并提供可配置数据库容量上限，避免无限增长。 |
 | 噪声控制 | 支持白名单、最低告警级别、finding 去重和保留周期。 |
 | 主动响应 | 默认启用，以 `observe`、`balanced` 或 `strict` 策略处理高置信公网来源 IP；写防火墙时通过 nftables 或 iptables 临时封禁，并带公网 IP 与白名单保护。 |
-| 通知告警 | 支持 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan。 |
+| 通知告警 | 支持 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan、钉钉、飞书。 |
 | 运维部署 | 单 CLI 二进制、`vs` 简写、JSON 日志、systemd unit、一键安装脚本、更新脚本、内置重载命令、停止脚本、配置迁移、报告和处置建议命令。 |
 
 ## 检测模型
@@ -89,8 +89,10 @@ WebShell 内容检测也采用评分模型，不再因为单个 marker 直接告
 | Gotify | `[notifications.gotify]` | `enabled`, `server`, `token` | 自建 Gotify 推送。 |
 | Bark | `[notifications.bark]` | `enabled`, `server`, `device_key` | Bark iOS 推送。 |
 | ServerChan | `[notifications.serverchan]` | `enabled`, `send_key` | ServerChan 通知。 |
+| DingTalk | `[notifications.dingtalk]` | `enabled`, `access_token` | 钉钉群机器人通知。 |
+| Feishu | `[notifications.feishu]` | `enabled`, `webhook_url` | 飞书/Lark 群机器人通知。 |
 
-每个渠道都支持 `min_severity`，可以让低风险 finding 只保存在本地，高风险 finding 才发送出去。HTTP 类通知渠道统一使用 `notifications.request_timeout_seconds` 控制请求超时，默认 15 秒。面向人的通知渠道使用模板策略：Telegram 使用兼容 Telegram 的 HTML，Email 同时发送纯文本和完整 HTML，ServerChan 与 Gotify 使用 Markdown，ntfy/Bark 使用兼容性最好的纯文本。
+每个渠道都支持 `min_severity`，可以让低风险 finding 只保存在本地，高风险 finding 才发送出去。HTTP 类通知渠道统一使用 `notifications.request_timeout_seconds` 控制请求超时，默认 15 秒。面向人的通知渠道使用模板策略：Telegram 使用兼容 Telegram 的 HTML，Email 同时发送纯文本和完整 HTML，ServerChan、Gotify、钉钉与飞书使用 Markdown，ntfy/Bark 使用兼容性最好的纯文本。
 
 通知文本支持英文和简体中文：
 

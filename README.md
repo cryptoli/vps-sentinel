@@ -47,7 +47,7 @@ It is not:
 | Storage | Stores raw events, findings, baselines, and notification logs in local SQLite; repeated raw facts use stable storage keys and a configurable database size cap to prevent unbounded growth. |
 | Noise control | Uses allowlists, minimum severity, finding deduplication, and configurable retention windows. |
 | Active response | Handles high-confidence public-source web probes and SSH brute-force sources through `observe`, `balanced`, or `strict` strategies; firewall writes use nftables or iptables with TTL-based expiry and public-IP safety checks. Enabled by default for new installs. |
-| Notifications | Sends alerts through Telegram, Email SMTP, generic webhook, ntfy, Gotify, Bark, and ServerChan. |
+| Notifications | Sends alerts through Telegram, Email SMTP, generic webhook, ntfy, Gotify, Bark, ServerChan, DingTalk, and Feishu. |
 | Operations | Provides a single CLI binary, `vs` shorthand, JSON logs, systemd unit, one-command installer, update script, built-in reload command, stop helper, config migration, reports, and advice commands. |
 
 ## Detection Model
@@ -89,8 +89,10 @@ All notification channels are disabled by default. Enable only the channels you 
 | Gotify | `[notifications.gotify]` | `enabled`, `server`, `token` | Self-hosted push notifications. |
 | Bark | `[notifications.bark]` | `enabled`, `server`, `device_key` | iOS push notifications through Bark. |
 | ServerChan | `[notifications.serverchan]` | `enabled`, `send_key` | WeChat-style notifications through ServerChan. |
+| DingTalk | `[notifications.dingtalk]` | `enabled`, `access_token` | DingTalk group robot notifications. |
+| Feishu | `[notifications.feishu]` | `enabled`, `webhook_url` | Feishu/Lark group bot notifications. |
 
-Each channel supports `min_severity`, so low-priority findings can be kept local while higher-risk findings are sent out. HTTP-based channels share `notifications.request_timeout_seconds`, which defaults to 15 seconds. Human-facing channels use a template strategy: Telegram uses Telegram-compatible HTML, Email sends multipart plain-text plus full HTML, ServerChan and Gotify use Markdown, and ntfy/Bark use plain text for maximum client compatibility.
+Each channel supports `min_severity`, so low-priority findings can be kept local while higher-risk findings are sent out. HTTP-based channels share `notifications.request_timeout_seconds`, which defaults to 15 seconds. Human-facing channels use a template strategy: Telegram uses Telegram-compatible HTML, Email sends multipart plain-text plus full HTML, ServerChan, Gotify, DingTalk, and Feishu use Markdown, and ntfy/Bark use plain text for maximum client compatibility.
 
 Notification text supports Simplified Chinese by default and can be switched to English:
 
