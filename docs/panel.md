@@ -57,7 +57,7 @@ SQLite example:
 
 ```bash
 PANEL_SHARED_SECRET='replace-with-a-long-random-secret' \
-PANEL_VIEW_TOKEN='replace-with-a-separate-browser-token' \
+PANEL_OPERATOR_TOKEN='replace-with-a-separate-operator-token' \
 PANEL_ADMIN_TOKEN='replace-with-a-separate-admin-token' \
 PANEL_DATABASE_URL='sqlite://panel.db' \
 PANEL_DB_BACKEND='sqlite' \
@@ -69,7 +69,7 @@ PostgreSQL example:
 
 ```bash
 PANEL_SHARED_SECRET='replace-with-a-long-random-secret' \
-PANEL_VIEW_TOKEN='replace-with-a-separate-browser-token' \
+PANEL_OPERATOR_TOKEN='replace-with-a-separate-operator-token' \
 PANEL_ADMIN_TOKEN='replace-with-a-separate-admin-token' \
 PANEL_DATABASE_URL='postgres://vps_sentinel:password@127.0.0.1:5432/vps_sentinel' \
 PANEL_DB_BACKEND='postgres' \
@@ -81,7 +81,7 @@ MySQL example:
 
 ```bash
 PANEL_SHARED_SECRET='replace-with-a-long-random-secret' \
-PANEL_VIEW_TOKEN='replace-with-a-separate-browser-token' \
+PANEL_OPERATOR_TOKEN='replace-with-a-separate-operator-token' \
 PANEL_ADMIN_TOKEN='replace-with-a-separate-admin-token' \
 PANEL_DATABASE_URL='mysql://vps_sentinel:password@127.0.0.1:3306/vps_sentinel' \
 PANEL_DB_BACKEND='mysql' \
@@ -93,9 +93,21 @@ The service initializes the selected database schema on startup. SQLite uses the
 
 The installer and updater copy `panel/` to `/usr/local/share/vps-sentinel/panel` by default. Override `SHARE_DIR` if your package layout uses another directory.
 
-For production, place the panel behind a reverse proxy with HTTPS and keep `PANEL_SHARED_SECRET`, `PANEL_NODE_SECRETS`, `PANEL_VIEW_TOKEN`, and `PANEL_ADMIN_TOKEN` out of shell history. `PANEL_SHARED_SECRET`/`PANEL_NODE_SECRETS` are only for agent ingest signatures. `PANEL_VIEW_TOKEN` is a browser read token. `PANEL_ADMIN_TOKEN` can also read and is required for review writes such as marking a finding as confirmed or false positive.
+For production, place the panel behind a reverse proxy with HTTPS and keep `PANEL_SHARED_SECRET`, `PANEL_NODE_SECRETS`, `PANEL_OPERATOR_TOKEN`, `PANEL_VIEW_TOKEN`, and `PANEL_ADMIN_TOKEN` out of shell history. `PANEL_SHARED_SECRET`/`PANEL_NODE_SECRETS` are only for agent ingest signatures. `PANEL_OPERATOR_TOKEN` is the browser token for normal operations. `PANEL_VIEW_TOKEN` remains supported as a legacy alias for the operator role. `PANEL_ADMIN_TOKEN` can read all panel detail and is required for review writes such as marking a finding as confirmed or false positive.
 
-If both `PANEL_VIEW_TOKEN` and `PANEL_ADMIN_TOKEN` are missing, read APIs stay locked with `panel_view_token_not_configured`. The static UI can still load, but it will not show telemetry data.
+If `PANEL_PUBLIC_ENABLED=true`, browsers without a token can enter the public role. Public role APIs only expose aggregate trends, risk counts, severity distribution, node names, and node freshness. They do not expose finding lists, incident payloads, baseline subjects, active-block details, raw evidence, command lines, file paths, tokens, or raw logs.
+
+If `PANEL_PUBLIC_ENABLED=false` and all browser tokens are missing, read APIs stay locked with `panel_view_token_not_configured`. The static UI can still load, but it will not show telemetry data.
+
+## Browser Roles And Auto Refresh
+
+The self-hosted Rust panel has three browser roles enforced by the backend:
+
+- public: aggregate trend, risk count, severity distribution, node name, and online status only;
+- operator: node name, rule, category, risk summary, action queue, redacted subject, impact, and recommendations;
+- admin: full redacted evidence, active-block implementation detail, review state, false-positive marking, and audit logs.
+
+The UI uses WebSocket auto refresh. It first exchanges the current browser role for a short-lived stream ticket through `GET /api/v1/stream-ticket`, then connects to `GET /api/v1/stream?ticket=<ticket>`. The ticket avoids putting browser tokens in the WebSocket URL. The stream only sends refresh signals and role metadata; all data still comes from role-scoped JSON APIs. If WebSocket is unavailable, the browser falls back to automatic periodic refresh.
 
 The self-hosted Rust panel does not enable permissive CORS by default. The Worker receiver also requires an exact `PANEL_CORS_ORIGIN` when cross-origin static hosting is used; wildcard origins are intentionally ignored.
 

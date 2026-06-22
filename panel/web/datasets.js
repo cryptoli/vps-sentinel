@@ -1,5 +1,6 @@
 export const DATASETS = {
   findings: {
+    minRole: "operator",
     navKey: "findings",
     titleKey: "findingsTitle",
     descriptionKey: "findingsDescription",
@@ -7,6 +8,7 @@ export const DATASETS = {
     columns: ["timestamp", "node_name", "severity", "rule_id", "category", "subject", "title"],
   },
   incidents: {
+    minRole: "operator",
     navKey: "incidents",
     titleKey: "incidentsTitle",
     descriptionKey: "incidentsDescription",
@@ -14,6 +16,7 @@ export const DATASETS = {
     columns: ["last_seen", "node_name", "severity", "score", "title", "summary"],
   },
   baseline_drifts: {
+    minRole: "operator",
     navKey: "drifts",
     titleKey: "driftsTitle",
     descriptionKey: "driftsDescription",
@@ -21,13 +24,16 @@ export const DATASETS = {
     columns: ["timestamp", "node_name", "severity", "rule_id", "tier", "subject", "review_action"],
   },
   active_blocks: {
+    minRole: "operator",
     navKey: "blocks",
     titleKey: "blocksTitle",
     descriptionKey: "blocksDescription",
     endpoint: "/active-blocks",
     columns: ["blocked_at", "node_name", "rule_id", "reason", "expires_at"],
+    adminColumns: ["blocked_at", "node_name", "rule_id", "reason", "backend", "expires_at"],
   },
   audit_logs: {
+    minRole: "admin",
     navKey: "auditLogs",
     titleKey: "auditLogsTitle",
     descriptionKey: "auditLogsDescription",
@@ -35,10 +41,12 @@ export const DATASETS = {
     columns: ["created_at", "action", "actor", "target_type", "target_id"],
   },
   nodes: {
+    minRole: "public",
     navKey: "nodes",
     titleKey: "nodesTitle",
     descriptionKey: "nodesDescription",
     endpoint: "/nodes",
     columns: ["last_seen_at", "node_name"],
+    adminColumns: ["last_seen_at", "node_name", "agent_version", "privacy_mode"],
   },
 };

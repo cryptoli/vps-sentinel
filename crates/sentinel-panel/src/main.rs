@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use axum::body::Body;
 use axum::body::Bytes;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
@@ -25,8 +26,11 @@ use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio::sync::broadcast;
 use tower_http::services::ServeDir;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 const SIGNATURE_WINDOW_SECONDS: i64 = 300;
 const DEFAULT_MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -35,6 +39,9 @@ const DEFAULT_PAGE_LIMIT: usize = 50;
 const MAX_PAGE_LIMIT: usize = 200;
 const DEFAULT_FRESHNESS_THRESHOLD_MINUTES: u64 = 30;
 const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES: u64 = 720;
+const STREAM_TICKET_TTL_SECONDS: i64 = 60;
+const STREAM_HEARTBEAT_SECONDS: u64 = 30;
+const STREAM_RETRY_SECONDS: u64 = 5;
 
 #[derive(Debug, Parser)]
 #[command(name = "vps-sentinel-panel", version)]
@@ -57,8 +64,14 @@ struct Args {
     #[arg(long, env = "PANEL_VIEW_TOKEN")]
     view_token: Option<String>,
 
+    #[arg(long, env = "PANEL_OPERATOR_TOKEN")]
+    operator_token: Option<String>,
+
     #[arg(long, env = "PANEL_ADMIN_TOKEN")]
     admin_token: Option<String>,
+
+    #[arg(long, env = "PANEL_PUBLIC_ENABLED", default_value_t = false)]
+    public_enabled: bool,
 
     #[arg(long, env = "PANEL_WEB_DIR")]
     web_dir: Option<PathBuf>,
@@ -82,9 +95,47 @@ struct AppState {
     repo: Arc<Repository>,
     secrets: Arc<SecretResolver>,
     view_token: Option<String>,
+    operator_token: Option<String>,
     admin_token: Option<String>,
+    public_enabled: bool,
     theme: String,
     max_body_bytes: usize,
+    events: broadcast::Sender<PanelStreamEvent>,
+    stream_tickets: Arc<Mutex<BTreeMap<String, StreamTicket>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum PanelRole {
+    Public = 0,
+    Operator = 1,
+    Admin = 2,
+}
+
+#[derive(Debug, Clone)]
+struct StreamTicket {
+    role: PanelRole,
+    expires_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PanelStreamEvent {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    role: PanelRole,
+    server_time: DateTime<Utc>,
+    retry_after_seconds: u64,
+}
+
+impl PanelStreamEvent {
+    fn refresh(role: PanelRole) -> Self {
+        Self {
+            kind: "refresh",
+            role,
+            server_time: Utc::now(),
+            retry_after_seconds: STREAM_RETRY_SECONDS,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -303,26 +354,44 @@ async fn main() -> Result<()> {
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .map(str::to_string);
+    let operator_token = args
+        .operator_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(str::to_string);
     let admin_token = args
         .admin_token
         .as_deref()
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .map(str::to_string);
-    if view_token.is_none() && admin_token.is_none() {
-        warn!("PANEL_VIEW_TOKEN or PANEL_ADMIN_TOKEN is not configured; panel read APIs will reject browser access");
+    if view_token.is_none()
+        && operator_token.is_none()
+        && admin_token.is_none()
+        && !args.public_enabled
+    {
+        warn!("PANEL_VIEW_TOKEN, PANEL_OPERATOR_TOKEN, PANEL_ADMIN_TOKEN, or PANEL_PUBLIC_ENABLED=true is not configured; panel read APIs will reject browser access");
     }
+    let (events, _) = broadcast::channel(128);
     let state = AppState {
         repo: Arc::new(repo),
         secrets: Arc::new(secrets),
         view_token,
+        operator_token,
         admin_token,
+        public_enabled: args.public_enabled,
         theme: args.theme,
         max_body_bytes: args.max_body_bytes,
+        events,
+        stream_tickets: Arc::new(Mutex::new(BTreeMap::new())),
     };
     let app = Router::new()
         .route("/api/v1/settings", get(settings))
+        .route("/api/v1/stream-ticket", get(stream_ticket))
+        .route("/api/v1/stream", get(stream))
         .route("/api/v1/summary", get(summary))
+        .route("/api/v1/trends", get(trends))
         .route("/api/v1/nodes", get(nodes))
         .route("/api/v1/findings", get(findings))
         .route("/api/v1/finding", get(finding_detail))
@@ -342,12 +411,16 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn settings(State(state): State<AppState>) -> Json<Value> {
+async fn settings(State(state): State<AppState>, headers: HeaderMap) -> Json<Value> {
+    let role = resolve_panel_role(&state, &headers).ok();
     Json(json!({
         "theme": state.theme,
-        "auth_required": true,
-        "auth_configured": state.view_token.is_some() || state.admin_token.is_some(),
+        "auth_required": !state.public_enabled,
+        "auth_configured": state.view_token.is_some() || state.operator_token.is_some() || state.admin_token.is_some(),
+        "public_enabled": state.public_enabled,
+        "operator_configured": state.view_token.is_some() || state.operator_token.is_some(),
         "admin_configured": state.admin_token.is_some(),
+        "role": role,
         "freshness_threshold_minutes": DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
         "node_retired_threshold_minutes": DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
         "server_time": Utc::now().to_rfc3339()
@@ -382,56 +455,179 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
     response
 }
 
+async fn stream_ticket(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, PanelApiError> {
+    let role = verify_panel_role(&state, &headers, PanelRole::Public)?;
+    let ticket = Uuid::new_v4().to_string();
+    let expires_at = Utc::now().timestamp() + STREAM_TICKET_TTL_SECONDS;
+    {
+        let mut tickets = state.stream_tickets.lock().map_err(sqlite_lock_error)?;
+        tickets.retain(|_, ticket| ticket.expires_at > Utc::now().timestamp());
+        tickets.insert(ticket.clone(), StreamTicket { role, expires_at });
+    }
+    Ok(Json(json!({
+        "ticket": ticket,
+        "role": role,
+        "expires_in_seconds": STREAM_TICKET_TTL_SECONDS
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct StreamQuery {
+    ticket: String,
+}
+
+async fn stream(
+    websocket: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Query(query): Query<StreamQuery>,
+) -> Result<Response, PanelApiError> {
+    let role = consume_stream_ticket(&state, &query.ticket)?;
+    Ok(websocket.on_upgrade(move |socket| stream_socket(socket, state, role)))
+}
+
+fn consume_stream_ticket(state: &AppState, ticket: &str) -> Result<PanelRole, PanelApiError> {
+    let mut tickets = state.stream_tickets.lock().map_err(sqlite_lock_error)?;
+    let now = Utc::now().timestamp();
+    tickets.retain(|_, ticket| ticket.expires_at > now);
+    let Some(ticket) = tickets.remove(ticket) else {
+        return Err(PanelApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "invalid_stream_ticket",
+        ));
+    };
+    Ok(ticket.role)
+}
+
+async fn stream_socket(mut socket: WebSocket, state: AppState, role: PanelRole) {
+    let mut receiver = state.events.subscribe();
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(STREAM_HEARTBEAT_SECONDS));
+    if send_stream_event(&mut socket, PanelStreamEvent::refresh(role))
+        .await
+        .is_err()
+    {
+        return;
+    }
+    loop {
+        tokio::select! {
+            event = receiver.recv() => {
+                match event {
+                    Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {
+                        if send_stream_event(&mut socket, PanelStreamEvent::refresh(role)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            _ = heartbeat.tick() => {
+                if send_stream_event(&mut socket, PanelStreamEvent::refresh(role)).await.is_err() {
+                    break;
+                }
+            }
+            inbound = socket.recv() => {
+                match inbound {
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Ping(payload))) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(_)) => break,
+                }
+            }
+        }
+    }
+}
+
+async fn send_stream_event(
+    socket: &mut WebSocket,
+    event: PanelStreamEvent,
+) -> Result<(), axum::Error> {
+    let payload = serde_json::to_string(&event).unwrap_or_else(|_| {
+        "{\"type\":\"refresh\",\"role\":\"public\",\"retry_after_seconds\":5}".to_string()
+    });
+    socket.send(Message::Text(payload)).await
+}
+
+fn verify_panel_role(
+    state: &AppState,
+    headers: &HeaderMap,
+    minimum: PanelRole,
+) -> Result<PanelRole, PanelApiError> {
+    let role = resolve_panel_role(state, headers)?;
+    if role < minimum {
+        return Err(PanelApiError::new(
+            StatusCode::FORBIDDEN,
+            "insufficient_panel_role",
+        ));
+    }
+    Ok(role)
+}
+
+#[cfg(test)]
 fn verify_view_auth(state: &AppState, headers: &HeaderMap) -> Result<(), PanelApiError> {
-    if state.view_token.is_none() && state.admin_token.is_none() {
+    verify_panel_role(state, headers, PanelRole::Operator).map(|_| ())
+}
+
+fn resolve_panel_role(state: &AppState, headers: &HeaderMap) -> Result<PanelRole, PanelApiError> {
+    if state.view_token.is_none()
+        && state.operator_token.is_none()
+        && state.admin_token.is_none()
+        && !state.public_enabled
+    {
         return Err(PanelApiError::new(
             StatusCode::FORBIDDEN,
             "panel_view_token_not_configured",
         ));
     };
     let Some(actual) = view_token_from_headers(headers) else {
+        if state.public_enabled {
+            return Ok(PanelRole::Public);
+        }
         return Err(PanelApiError::new(
             StatusCode::UNAUTHORIZED,
             "missing_view_token",
         ));
     };
-    let view_match = state
-        .view_token
-        .as_deref()
-        .is_some_and(|expected| constant_time_eq(expected, actual));
     let admin_match = state
         .admin_token
         .as_deref()
         .is_some_and(|expected| constant_time_eq(expected, actual));
-    if !view_match && !admin_match {
-        return Err(PanelApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "invalid_view_token",
-        ));
+    if admin_match {
+        return Ok(PanelRole::Admin);
     }
-    Ok(())
+    let operator_match = state
+        .operator_token
+        .as_deref()
+        .is_some_and(|expected| constant_time_eq(expected, actual));
+    let view_match = state
+        .view_token
+        .as_deref()
+        .is_some_and(|expected| constant_time_eq(expected, actual));
+    if operator_match || view_match {
+        return Ok(PanelRole::Operator);
+    }
+    if state.public_enabled {
+        return Ok(PanelRole::Public);
+    }
+    Err(PanelApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "invalid_view_token",
+    ))
 }
 
 fn verify_admin_auth(state: &AppState, headers: &HeaderMap) -> Result<(), PanelApiError> {
-    let Some(expected) = state.admin_token.as_deref() else {
+    if state.admin_token.is_none() {
         return Err(PanelApiError::new(
             StatusCode::FORBIDDEN,
             "panel_admin_token_not_configured",
         ));
-    };
-    let Some(actual) = view_token_from_headers(headers) else {
-        return Err(PanelApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "missing_admin_token",
-        ));
-    };
-    if !constant_time_eq(expected, actual) {
-        return Err(PanelApiError::new(
-            StatusCode::UNAUTHORIZED,
-            "invalid_admin_token",
-        ));
     }
-    Ok(())
+    verify_panel_role(state, headers, PanelRole::Admin).map(|_| ())
 }
 
 fn view_token_from_headers(headers: &HeaderMap) -> Option<&str> {
@@ -483,6 +679,9 @@ async fn ingest(
     }
     state.repo.insert_nonce(&headers, &node_name).await?;
     state.repo.persist_payload(&payload, &node_name).await?;
+    let _ = state
+        .events
+        .send(PanelStreamEvent::refresh(PanelRole::Operator));
     Ok(Json(
         json!({ "ok": true, "message_id": payload.message_id }),
     ))
@@ -504,7 +703,7 @@ async fn summary(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<Json<Value>, PanelApiError> {
-    verify_view_auth(&state, &headers)?;
+    verify_panel_role(&state, &headers, PanelRole::Public)?;
     let by_severity = state
         .repo
         .query_all("SELECT severity, COUNT(*) AS count FROM findings GROUP BY severity")
@@ -519,20 +718,36 @@ async fn summary(
     })))
 }
 
+async fn trends(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Value>, PanelApiError> {
+    verify_panel_role(&state, &headers, PanelRole::Public)?;
+    let request = PageRequest::try_from(query)?;
+    let rows = state.repo.trend_points(&request).await?;
+    Ok(Json(json!({ "items": rows })))
+}
+
 async fn nodes(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    verify_view_auth(&state, &headers)?;
+    let role = verify_panel_role(&state, &headers, PanelRole::Public)?;
+    let columns = match role {
+        PanelRole::Public | PanelRole::Operator => &["last_seen_at", "node_name"][..],
+        PanelRole::Admin => &["last_seen_at", "node_name", "agent_version", "privacy_mode"][..],
+    };
     paginated_dataset(
         &state,
         query,
+        role,
         PanelDataset {
             table: "nodes",
             order_column: "last_seen_at",
             active_filter: None,
-            columns: &["last_seen_at", "node_name", "agent_version", "privacy_mode"],
+            columns,
         },
     )
     .await
@@ -543,10 +758,11 @@ async fn findings(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    verify_view_auth(&state, &headers)?;
+    let role = verify_panel_role(&state, &headers, PanelRole::Operator)?;
     paginated_dataset(
         &state,
         query,
+        role,
         PanelDataset {
             table: "findings",
             order_column: "timestamp",
@@ -571,8 +787,8 @@ async fn finding_detail(
     headers: HeaderMap,
     Query(query): Query<DetailQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    verify_view_auth(&state, &headers)?;
-    let detail = state.repo.finding_detail(&query.id).await?;
+    let role = verify_panel_role(&state, &headers, PanelRole::Operator)?;
+    let detail = state.repo.finding_detail(&query.id, role).await?;
     Ok(Json(detail))
 }
 
@@ -584,6 +800,9 @@ async fn finding_review(
     verify_admin_auth(&state, &headers)?;
     let review = FindingReview::try_from(request)?;
     state.repo.upsert_finding_review(&review).await?;
+    let _ = state
+        .events
+        .send(PanelStreamEvent::refresh(PanelRole::Admin));
     Ok(Json(json!({ "ok": true, "finding_id": review.finding_id })))
 }
 
@@ -592,10 +811,11 @@ async fn incidents(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    verify_view_auth(&state, &headers)?;
+    let role = verify_panel_role(&state, &headers, PanelRole::Operator)?;
     paginated_dataset(
         &state,
         query,
+        role,
         PanelDataset {
             table: "incidents",
             order_column: "last_seen",
@@ -619,8 +839,8 @@ async fn incident_detail(
     headers: HeaderMap,
     Query(query): Query<DetailQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    verify_view_auth(&state, &headers)?;
-    let detail = state.repo.incident_detail(&query.id).await?;
+    let role = verify_panel_role(&state, &headers, PanelRole::Operator)?;
+    let detail = state.repo.incident_detail(&query.id, role).await?;
     Ok(Json(detail))
 }
 
@@ -629,10 +849,11 @@ async fn baseline_drifts(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    verify_view_auth(&state, &headers)?;
+    let role = verify_panel_role(&state, &headers, PanelRole::Operator)?;
     paginated_dataset(
         &state,
         query,
+        role,
         PanelDataset {
             table: "baseline_drifts",
             order_column: "timestamp",
@@ -656,22 +877,34 @@ async fn active_blocks(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    verify_view_auth(&state, &headers)?;
+    let role = verify_panel_role(&state, &headers, PanelRole::Operator)?;
+    let columns = match role {
+        PanelRole::Admin => &[
+            "blocked_at",
+            "node_id AS node_name",
+            "rule_id",
+            "backend",
+            "reason",
+            "expires_at",
+        ][..],
+        PanelRole::Operator => &[
+            "blocked_at",
+            "node_id AS node_name",
+            "rule_id",
+            "reason",
+            "expires_at",
+        ][..],
+        PanelRole::Public => &["blocked_at", "node_id AS node_name"][..],
+    };
     paginated_dataset(
         &state,
         query,
+        role,
         PanelDataset {
             table: "active_blocks",
             order_column: "blocked_at",
             active_filter: Some("expired = 0"),
-            columns: &[
-                "blocked_at",
-                "node_id AS node_name",
-                "rule_id",
-                "backend",
-                "reason",
-                "expires_at",
-            ],
+            columns,
         },
     )
     .await
@@ -682,10 +915,11 @@ async fn audit_logs(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    verify_view_auth(&state, &headers)?;
+    let role = verify_panel_role(&state, &headers, PanelRole::Admin)?;
     paginated_dataset(
         &state,
         query,
+        role,
         PanelDataset {
             table: "panel_audit_logs",
             order_column: "created_at",
@@ -699,10 +933,12 @@ async fn audit_logs(
 async fn paginated_dataset(
     state: &AppState,
     query: PageQuery,
+    role: PanelRole,
     dataset: PanelDataset,
 ) -> Result<Json<Value>, PanelApiError> {
     let request = PageRequest::try_from(query)?;
-    let (items, total) = state.repo.query_page(dataset, &request).await?;
+    let (mut items, total) = state.repo.query_page(dataset, &request).await?;
+    scope_panel_value(&mut items, role);
     Ok(Json(json!({
         "items": items,
         "total": total,
@@ -1022,7 +1258,7 @@ impl Repository {
         Ok((items, total))
     }
 
-    async fn finding_detail(&self, id: &str) -> Result<Value, PanelApiError> {
+    async fn finding_detail(&self, id: &str, role: PanelRole) -> Result<Value, PanelApiError> {
         let columns = [
             "id",
             "node_id AS node_name",
@@ -1056,12 +1292,15 @@ impl Repository {
         expand_json_column(&mut detail, "evidence_json", "evidence");
         expand_json_column(&mut detail, "impact_json", "impact");
         expand_json_column(&mut detail, "recommendations_json", "recommendations");
-        detail["review"] = self.finding_review_value(id).await?.unwrap_or(Value::Null);
+        if role == PanelRole::Admin {
+            detail["review"] = self.finding_review_value(id).await?.unwrap_or(Value::Null);
+        }
         redact_panel_value(&mut detail);
+        scope_panel_value(&mut detail, role);
         Ok(detail)
     }
 
-    async fn incident_detail(&self, id: &str) -> Result<Value, PanelApiError> {
+    async fn incident_detail(&self, id: &str, role: PanelRole) -> Result<Value, PanelApiError> {
         let columns = [
             "id",
             "node_id AS node_name",
@@ -1090,7 +1329,74 @@ impl Repository {
         };
         expand_json_column(&mut detail, "payload_json", "payload");
         redact_panel_value(&mut detail);
+        scope_panel_value(&mut detail, role);
         Ok(detail)
+    }
+
+    async fn trend_points(&self, request: &PageRequest) -> Result<Value, PanelApiError> {
+        let mut values = Vec::new();
+        let mut filters = Vec::new();
+        if let Some(from) = request.from {
+            filters.push(format!(
+                "timestamp >= {}",
+                self.placeholder(values.len() + 1)
+            ));
+            values.push(DbValue::Text(from.to_rfc3339()));
+        }
+        if let Some(to) = request.to {
+            filters.push(format!(
+                "timestamp <= {}",
+                self.placeholder(values.len() + 1)
+            ));
+            values.push(DbValue::Text(to.to_rfc3339()));
+        }
+        let where_sql = if filters.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", filters.join(" AND "))
+        };
+        let limit_placeholder = self.placeholder(values.len() + 1);
+        values.push(DbValue::Integer(5000));
+        let sql = format!(
+            "SELECT timestamp, severity FROM findings{where_sql} ORDER BY timestamp DESC LIMIT {limit_placeholder}"
+        );
+        let rows = self.query_all_with_values(&sql, &values).await?;
+        let Value::Array(rows) = rows else {
+            return Ok(Value::Array(Vec::new()));
+        };
+        let mut buckets: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
+        for row in rows {
+            let timestamp = row
+                .get("timestamp")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let bucket = timestamp.chars().take(13).collect::<String>();
+            if bucket.len() != 13 {
+                continue;
+            }
+            let severity = row
+                .get("severity")
+                .and_then(Value::as_str)
+                .unwrap_or("Unknown")
+                .to_string();
+            *buckets
+                .entry(bucket)
+                .or_default()
+                .entry(severity)
+                .or_default() += 1;
+        }
+        let items = buckets
+            .into_iter()
+            .map(|(bucket, severities)| {
+                let total = severities.values().sum::<i64>();
+                json!({
+                    "bucket": bucket,
+                    "total": total,
+                    "severity": severities
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(Value::Array(items))
     }
 
     async fn finding_review_value(&self, finding_id: &str) -> Result<Option<Value>, PanelApiError> {
@@ -1825,6 +2131,97 @@ fn redact_panel_value(value: &mut Value) {
     }
 }
 
+fn scope_panel_value(value: &mut Value, role: PanelRole) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                scope_panel_value(item, role);
+            }
+        }
+        Value::Object(map) => {
+            let hidden = hidden_panel_keys(role);
+            map.retain(|key, _| {
+                let normalized = key.to_ascii_lowercase();
+                !(hidden.iter().any(|candidate| *candidate == normalized)
+                    || role != PanelRole::Admin && normalized.ends_with("_backend"))
+            });
+            if role != PanelRole::Admin {
+                if let Some(reason) = map.get_mut("reason") {
+                    *reason =
+                        Value::String(panel_block_reason_summary(reason.as_str().unwrap_or("")));
+                }
+            }
+            for value in map.values_mut() {
+                scope_panel_value(value, role);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn hidden_panel_keys(role: PanelRole) -> &'static [&'static str] {
+    match role {
+        PanelRole::Public => &[
+            "active_response_backend",
+            "backend",
+            "dedup_key",
+            "evidence",
+            "evidence_json",
+            "finding_id",
+            "firewall_backend",
+            "firewall_present",
+            "host_id",
+            "hostname",
+            "id",
+            "impact",
+            "ip",
+            "payload",
+            "payload_json",
+            "raw_log",
+            "recommendations",
+            "review",
+            "reviewer",
+            "storage",
+            "storage_json",
+        ],
+        PanelRole::Operator => &[
+            "active_response_backend",
+            "backend",
+            "dedup_key",
+            "evidence",
+            "evidence_json",
+            "firewall_backend",
+            "firewall_present",
+            "host_id",
+            "hostname",
+            "payload",
+            "payload_json",
+            "raw_log",
+            "received_at",
+            "review",
+            "reviewer",
+            "storage",
+            "storage_json",
+        ],
+        PanelRole::Admin => &[],
+    }
+}
+
+fn panel_block_reason_summary(value: &str) -> String {
+    let reason = value.to_ascii_lowercase();
+    if reason.contains("web") || reason.contains("http") {
+        "web_attack".to_string()
+    } else if reason.contains("ssh") {
+        "ssh_bruteforce".to_string()
+    } else if reason.contains("repeated") || reason.contains("permanent") {
+        "repeated_risk".to_string()
+    } else if reason.trim().is_empty() {
+        "policy_match".to_string()
+    } else {
+        "active_response".to_string()
+    }
+}
+
 fn public_node_name(value: &str) -> String {
     let redacted = redact_ip_text(value).trim().to_string();
     if redacted.is_empty() || redacted == "redacted" {
@@ -2147,15 +2544,17 @@ impl From<rusqlite::Error> for PanelApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        redact_ip_text, redact_panel_value, verify_admin_auth, verify_view_auth,
-        view_token_from_headers, AppState, DbValue, FindingReview, FindingReviewRequest, PageQuery,
-        PageRequest, PanelDataset, Repository, RepositoryDriver, SecretResolver, MAX_PAGE_LIMIT,
+        redact_ip_text, redact_panel_value, resolve_panel_role, scope_panel_value,
+        verify_admin_auth, verify_view_auth, view_token_from_headers, AppState, DbValue,
+        FindingReview, FindingReviewRequest, PageQuery, PageRequest, PanelDataset, PanelRole,
+        PanelStreamEvent, Repository, RepositoryDriver, SecretResolver, MAX_PAGE_LIMIT,
     };
     use axum::http::{header, HeaderMap, HeaderValue};
     use chrono::Utc;
     use rusqlite::Connection;
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
+    use tokio::sync::broadcast;
 
     #[test]
     fn page_request_clamps_limit_and_parses_dates() {
@@ -2308,11 +2707,11 @@ mod tests {
             .await
             .expect("page query");
         let finding_detail = repo
-            .finding_detail("finding-raw")
+            .finding_detail("finding-raw", PanelRole::Admin)
             .await
             .expect("finding detail");
         let incident_detail = repo
-            .incident_detail("incident-raw")
+            .incident_detail("incident-raw", PanelRole::Admin)
             .await
             .expect("incident detail");
         let output = serde_json::to_string(&(page, finding_detail, incident_detail)).expect("json");
@@ -2391,8 +2790,52 @@ mod tests {
             verify_admin_auth(&state, &view_headers)
                 .expect_err("view token cannot administer")
                 .code,
-            "invalid_admin_token"
+            "insufficient_panel_role"
         );
+    }
+
+    #[test]
+    fn public_role_requires_enabled_public_access() {
+        let state = test_state(Some("view-token"), Some("admin-token"));
+        let headers = HeaderMap::new();
+
+        assert_eq!(
+            resolve_panel_role(&state, &headers)
+                .expect_err("public access is disabled by default")
+                .code,
+            "missing_view_token"
+        );
+
+        let mut public_state = test_state(Some("view-token"), Some("admin-token"));
+        public_state.public_enabled = true;
+        assert_eq!(
+            resolve_panel_role(&public_state, &headers).expect("public role"),
+            PanelRole::Public
+        );
+    }
+
+    #[test]
+    fn scope_removes_sensitive_fields_for_operator() {
+        let mut value = serde_json::json!({
+            "id": "finding-1",
+            "node_name": "node-a",
+            "rule_id": "SSH-001",
+            "reason": "web probe family=cgi request_count=10 backend=nft",
+            "backend": "nftables",
+            "evidence": [{"key": "cmdline", "value": "secret"}],
+            "payload": {"token": "secret"},
+            "recommendations": ["review service"]
+        });
+
+        scope_panel_value(&mut value, PanelRole::Operator);
+        let text = serde_json::to_string(&value).expect("json");
+
+        assert!(text.contains("SSH-001"));
+        assert!(text.contains("web_attack"));
+        assert!(!text.contains("nftables"));
+        assert!(!text.contains("cmdline"));
+        assert!(!text.contains("payload"));
+        assert!(text.contains("recommendations"));
     }
 
     #[test]
@@ -2416,9 +2859,13 @@ mod tests {
                 node_secrets: BTreeMap::new(),
             }),
             view_token: view_token.map(str::to_string),
+            operator_token: None,
             admin_token: admin_token.map(str::to_string),
+            public_enabled: false,
             theme: "default".to_string(),
             max_body_bytes: 1024,
+            events: broadcast::channel::<PanelStreamEvent>(8).0,
+            stream_tickets: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 

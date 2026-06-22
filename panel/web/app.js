@@ -13,8 +13,11 @@ const API_BASE = "/api/v1";
 const DEFAULT_LIMIT = 25;
 const OVERVIEW_LIMIT = 12;
 const OVERVIEW_NODE_PAGE_LIMIT = 200;
+const STREAM_RECONNECT_MS = 5000;
+const FALLBACK_REFRESH_MS = 60000;
 const TOKEN_STORAGE_KEY = "vps-sentinel-panel-token";
 const TIME_PRESETS = ["1h", "6h", "24h", "today", "7d"];
+const ROLE_LEVELS = { public: 0, operator: 1, admin: 2 };
 const PANEL_HIDDEN_KEYS = new Set([
   "active_response_backend",
   "backend",
@@ -34,13 +37,13 @@ const PANEL_HIDDEN_KEYS = new Set([
   "target_ip",
 ]);
 const BUILTIN_PAGES = [
-  { id: "overview", labelKey: "overview", render: renderOverview },
-  { id: "findings", labelKey: "findings", render: (ctx) => renderDatasetPage(ctx, "findings") },
-  { id: "incidents", labelKey: "incidents", render: (ctx) => renderDatasetPage(ctx, "incidents") },
-  { id: "drifts", labelKey: "drifts", render: (ctx) => renderDatasetPage(ctx, "baseline_drifts") },
-  { id: "blocks", labelKey: "blocks", render: (ctx) => renderDatasetPage(ctx, "active_blocks") },
-  { id: "audit", labelKey: "auditLogs", render: (ctx) => renderDatasetPage(ctx, "audit_logs") },
-  { id: "nodes", labelKey: "nodes", render: (ctx) => renderDatasetPage(ctx, "nodes") },
+  { id: "overview", labelKey: "overview", minRole: "public", render: renderOverview },
+  { id: "findings", labelKey: "findings", minRole: "operator", render: (ctx) => renderDatasetPage(ctx, "findings") },
+  { id: "incidents", labelKey: "incidents", minRole: "operator", render: (ctx) => renderDatasetPage(ctx, "incidents") },
+  { id: "drifts", labelKey: "drifts", minRole: "operator", render: (ctx) => renderDatasetPage(ctx, "baseline_drifts") },
+  { id: "blocks", labelKey: "blocks", minRole: "operator", render: (ctx) => renderDatasetPage(ctx, "active_blocks") },
+  { id: "audit", labelKey: "auditLogs", minRole: "admin", render: (ctx) => renderDatasetPage(ctx, "audit_logs") },
+  { id: "nodes", labelKey: "nodes", minRole: "public", render: (ctx) => renderDatasetPage(ctx, "nodes") },
 ];
 
 const state = {
@@ -54,6 +57,10 @@ const state = {
   theme: null,
   language: selectedLanguage(),
   manifest: null,
+  role: "public",
+  stream: null,
+  fallbackTimer: null,
+  refreshInFlight: null,
 };
 
 const app = document.querySelector("#app");
@@ -66,6 +73,7 @@ init().catch((error) => renderError(error));
 
 async function init() {
   state.settings = await fetchJson(`${API_BASE}/settings`).catch(() => ({ theme: "default" }));
+  state.role = selectedRole(state.settings.role, Boolean(panelToken()));
   state.panelClockOffsetMs = panelClockOffsetMs(state.settings.server_time);
   state.theme = selectedTheme(state.settings.theme || "default");
   applyThemeScope(state.theme);
@@ -79,6 +87,8 @@ async function init() {
     return;
   }
   await refresh();
+  connectStream();
+  startFallbackRefresh();
 }
 
 function bindToolbar() {
@@ -98,16 +108,25 @@ function bindToolbar() {
     renderNav();
     await renderCurrentPage();
   });
-  refreshButton.addEventListener("click", () => refresh());
+  refreshButton.disabled = true;
+  refreshButton.classList.add("stream-status");
 }
 
 async function refresh() {
-  renderNav();
-  state.summary = await fetchJson(`${API_BASE}/summary`);
-  if (state.currentPage === "overview") {
-    await loadOverviewDatasets();
+  if (state.refreshInFlight) return state.refreshInFlight;
+  state.refreshInFlight = (async () => {
+    renderNav();
+    state.summary = await fetchJson(`${API_BASE}/summary`);
+    if (state.currentPage === "overview") {
+      await loadOverviewDatasets();
+    }
+    await renderCurrentPage();
+  })();
+  try {
+    await state.refreshInFlight;
+  } finally {
+    state.refreshInFlight = null;
   }
-  await renderCurrentPage();
 }
 
 function selectedTheme(defaultTheme) {
@@ -153,9 +172,10 @@ function themeAsset(theme, assetPath) {
 }
 
 async function buildPages(manifest) {
-  const pages = [...BUILTIN_PAGES];
+  const pages = BUILTIN_PAGES.filter((page) => roleAllows(page.minRole || "public"));
   for (const page of manifest.pages || []) {
     if (!page.id || !page.label || !page.module) continue;
+    if (!roleAllows(page.min_role || page.minRole || "admin")) continue;
     const moduleUrl = themeAsset(state.theme, page.module);
     if (!moduleUrl) continue;
     let mod;
@@ -231,6 +251,7 @@ function context() {
     manifest: state.manifest,
     renderTable: ui.renderTable,
     state,
+    role: state.role,
     t,
     ui,
   };
@@ -242,16 +263,31 @@ function datasetItemsMap() {
   );
 }
 
+function visibleDatasetEntries() {
+  return Object.entries(DATASETS).filter(([, meta]) => roleAllows(meta.minRole || "operator"));
+}
+
+function overviewTrendParams() {
+  const params = new URLSearchParams();
+  const range = rangePreset("24h");
+  if (range.from) params.set("from", toApiTime(range.from));
+  if (range.to) params.set("to", toApiTime(range.to));
+  params.set("limit", "200");
+  return params.toString();
+}
+
 async function loadOverviewDatasets() {
+  const visible = visibleDatasetEntries();
   const entries = await Promise.all(
-    Object.entries(DATASETS).map(async ([key, meta]) => [
+    visible.map(async ([key, meta]) => [
       key,
       key === "nodes"
         ? await loadAllDatasetPages(meta, OVERVIEW_NODE_PAGE_LIMIT)
         : await loadDataset(meta, { limit: OVERVIEW_LIMIT, offset: 0 }),
     ]),
   );
-  state.datasets = Object.fromEntries(entries);
+  const trends = await fetchJson(`${API_BASE}/trends?${overviewTrendParams()}`).catch(() => ({ items: [] }));
+  state.datasets = { ...Object.fromEntries(entries), trends };
 }
 
 async function loadAllDatasetPages(meta, pageLimit) {
@@ -269,7 +305,7 @@ async function loadAllDatasetPages(meta, pageLimit) {
 }
 
 async function renderOverview(ctx) {
-  if (Object.keys(DATASETS).some((key) => !state.datasets[key]?.items)) {
+  if (visibleDatasetEntries().some(([key]) => !state.datasets[key]?.items)) {
     await loadOverviewDatasets();
   }
   renderOverviewDashboard(ctx);
@@ -287,15 +323,20 @@ async function renderDatasetPage(ctx, datasetKey) {
     ui.panel(
       t(meta.titleKey),
       ui.fragment(
-        ui.renderTable(page.items, meta.columns, tableOptions(datasetKey)),
+        ui.renderTable(page.items, datasetColumns(meta), tableOptions(datasetKey)),
         pagination(datasetKey, page),
       ),
     ),
   );
 }
 
+function datasetColumns(meta) {
+  return roleAllows("admin") && meta.adminColumns ? meta.adminColumns : meta.columns;
+}
+
 function tableOptions(datasetKey) {
   if (!["findings", "incidents"].includes(datasetKey)) return {};
+  if (!roleAllows("operator")) return {};
   return {
     actionHeader: t("actions"),
     actionLabel: t("details"),
@@ -327,21 +368,20 @@ function findingDetailContent(detail) {
   const ui = view();
   const wrapper = document.createElement("div");
   wrapper.className = "detail-content";
-  wrapper.append(
-    ui.detailList([
+  const details = [
       [t("node_name"), detail.node_name],
       [t("severity"), detail.severity],
       [t("rule_id"), detail.rule_id],
       [t("category"), detail.category],
       [t("subject"), detail.subject],
       [t("timestamp"), detail.timestamp],
-      [t("reviewStatus"), detail.review?.verdict ? t(detail.review.verdict) : t("unreviewed")],
-    ]),
-    ui.panel(t("evidence"), ui.jsonBlock(detail.evidence || [])),
-    ui.panel(t("impact"), ui.jsonBlock(detail.impact || [])),
-    ui.panel(t("recommendations"), ui.jsonBlock(detail.recommendations || [])),
-    reviewForm(detail),
-  );
+  ];
+  if (roleAllows("admin")) details.push([t("reviewStatus"), detail.review?.verdict ? t(detail.review.verdict) : t("unreviewed")]);
+  wrapper.append(ui.detailList(details));
+  if (roleAllows("admin")) wrapper.append(ui.panel(t("evidence"), ui.jsonBlock(detail.evidence || [])));
+  wrapper.append(ui.panel(t("impact"), ui.jsonBlock(detail.impact || [])));
+  wrapper.append(ui.panel(t("recommendations"), ui.jsonBlock(detail.recommendations || [])));
+  if (roleAllows("admin")) wrapper.append(reviewForm(detail));
   return wrapper;
 }
 
@@ -349,17 +389,16 @@ function incidentDetailContent(detail) {
   const ui = view();
   const wrapper = document.createElement("div");
   wrapper.className = "detail-content";
-  wrapper.append(
-    ui.detailList([
+  const details = [
       [t("node_name"), detail.node_name],
       [t("severity"), detail.severity],
       [t("score"), detail.score],
       [t("first_seen"), detail.first_seen],
       [t("last_seen"), detail.last_seen],
       [t("summary"), detail.summary],
-    ]),
-    ui.panel(t("payload"), ui.jsonBlock(detail.payload || {})),
-  );
+  ];
+  wrapper.append(ui.detailList(details));
+  if (roleAllows("admin")) wrapper.append(ui.panel(t("payload"), ui.jsonBlock(detail.payload || {})));
   return wrapper;
 }
 
@@ -560,7 +599,7 @@ function applyLanguage() {
   document.documentElement.lang = state.language === "zh" ? "zh-CN" : "en";
   const subtitle = document.querySelector("[data-i18n='subtitle']");
   if (subtitle) subtitle.textContent = t("appSubtitle");
-  refreshButton.textContent = t("refresh");
+  setStreamStatus(state.stream?.status || "idle");
   themeSelect.setAttribute("aria-label", t("theme"));
   languageSelect.setAttribute("aria-label", t("language"));
 }
@@ -587,6 +626,89 @@ function panelClockOffsetMs(serverTime) {
   return Date.now() - serverDate.getTime();
 }
 
+function selectedRole(value, hasToken = false) {
+  const role = String(value || "").toLowerCase();
+  if (ROLE_LEVELS[role] !== undefined) return role;
+  return hasToken ? "operator" : "public";
+}
+
+function roleAllows(minRole) {
+  return (ROLE_LEVELS[state.role] ?? 0) >= (ROLE_LEVELS[minRole] ?? 0);
+}
+
+function connectStream() {
+  if (state.stream?.socket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(state.stream.socket.readyState)) return;
+  if (!("WebSocket" in window)) {
+    setStreamStatus("fallback");
+    return;
+  }
+  state.stream = { ...(state.stream || {}), status: "connecting" };
+  setStreamStatus("connecting");
+  fetchJson(`${API_BASE}/stream-ticket`)
+    .then(({ ticket }) => {
+      if (!ticket) throw new Error("missing stream ticket");
+      const scheme = location.protocol === "https:" ? "wss" : "ws";
+      const socket = new WebSocket(`${scheme}://${location.host}${API_BASE}/stream?ticket=${encodeURIComponent(ticket)}`);
+      state.stream.socket = socket;
+      socket.addEventListener("open", () => {
+        state.stream.status = "live";
+        setStreamStatus("live");
+      });
+      socket.addEventListener("message", async (event) => {
+        const message = parseStreamMessage(event.data);
+        if (message?.type === "refresh") {
+          state.role = selectedRole(message.role || state.role, Boolean(panelToken()));
+          await refresh().catch((error) => {
+            if (isAuthError(error)) renderAccessGate(error.message);
+          });
+        }
+      });
+      socket.addEventListener("close", () => scheduleStreamReconnect());
+      socket.addEventListener("error", () => scheduleStreamReconnect());
+    })
+    .catch((error) => {
+      if (error?.status === 404 || error?.status === 501) {
+        setStreamStatus("fallback");
+        return;
+      }
+      scheduleStreamReconnect();
+    });
+}
+
+function parseStreamMessage(value) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function scheduleStreamReconnect() {
+  if (state.stream?.reconnectTimer) return;
+  state.stream = { ...(state.stream || {}), status: "reconnecting" };
+  setStreamStatus("reconnecting");
+  state.stream.reconnectTimer = setTimeout(() => {
+    state.stream.reconnectTimer = null;
+    connectStream();
+  }, STREAM_RECONNECT_MS);
+}
+
+function startFallbackRefresh() {
+  if (state.fallbackTimer) return;
+  state.fallbackTimer = setInterval(() => {
+    if (state.stream?.status === "live") return;
+    refresh().catch((error) => {
+      if (isAuthError(error)) renderAccessGate(error.message);
+    });
+  }, FALLBACK_REFRESH_MS);
+}
+
+function setStreamStatus(status) {
+  state.stream = { ...(state.stream || {}), status };
+  refreshButton.textContent = t(`stream_${status}`) || t("stream_idle");
+  refreshButton.title = t("streamStatus");
+}
+
 function renderAccessGate(message = "") {
   const ui = view();
   nav.replaceChildren();
@@ -605,8 +727,14 @@ function renderAccessGate(message = "") {
     const token = String(new FormData(form).get("token") || "").trim();
     if (!token) return;
     localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    state.settings = await fetchJson(`${API_BASE}/settings`);
+    state.role = selectedRole(state.settings.role, Boolean(panelToken()));
+    state.pages = await buildPages(state.manifest);
+    if (!state.pages.some((page) => page.id === state.currentPage)) state.currentPage = "overview";
     renderNav();
     await refresh();
+    connectStream();
+    startFallbackRefresh();
   });
   app.replaceChildren(form);
   tokenInput.focus();
@@ -673,6 +801,7 @@ function sanitizePanelValue(value) {
 }
 
 function shouldHidePanelField(key) {
+  if (roleAllows("admin") && (key === "backend" || key.endsWith("_backend"))) return false;
   return PANEL_HIDDEN_KEYS.has(key) || key.endsWith("_backend");
 }
 

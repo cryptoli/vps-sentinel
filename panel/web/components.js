@@ -254,6 +254,23 @@ export function createView({ t, language, freshness = {} }) {
     return wrapper;
   }
 
+  function trendChart(rows) {
+    if (!rows?.length) return emptyChart();
+    const wrapper = document.createElement("div");
+    wrapper.className = "trend-chart";
+    const max = Math.max(1, ...rows.map((row) => Number(row.total || 0)));
+    for (const row of rows.slice(-24)) {
+      const value = Number(row.total || 0);
+      const item = document.createElement("div");
+      item.className = "trend-column";
+      item.style.setProperty("--trend-ratio", `${Math.max(4, (value / max) * 100)}%`);
+      item.title = `${row.bucket}: ${number(value)}`;
+      item.append(span("trend-bar", ""), span("trend-label", String(row.bucket || "").slice(11, 13) || "-"));
+      wrapper.append(item);
+    }
+    return wrapper;
+  }
+
   function donutGradient(items) {
     const colors = {
       "chart-critical": "var(--critical)",
@@ -564,6 +581,7 @@ export function createView({ t, language, freshness = {} }) {
     splitPanels,
     statusSummary,
     timeRangeHint,
+    trendChart,
   };
 }
 

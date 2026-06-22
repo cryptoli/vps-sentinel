@@ -198,6 +198,30 @@ button:disabled {
   box-shadow: 0 10px 22px rgba(21, 112, 239, 0.28);
 }
 
+.toolbar .stream-status {
+  background: rgba(5, 150, 105, 0.16);
+  border-color: rgba(93, 230, 177, 0.28);
+  box-shadow: none;
+  color: #b7f7dc;
+  cursor: default;
+  font-size: 12px;
+  font-weight: 900;
+  min-width: 84px;
+  opacity: 1;
+  position: relative;
+}
+
+.toolbar .stream-status::before {
+  background: #62f0b7;
+  border-radius: 999px;
+  box-shadow: 0 0 0 4px rgba(98, 240, 183, 0.12);
+  content: "";
+  display: inline-block;
+  height: 7px;
+  margin-right: 7px;
+  width: 7px;
+}
+
 .button {
   align-items: center;
   display: inline-flex;
@@ -1110,6 +1134,44 @@ tr:last-child td {
 .bar-chart,
 .donut-card {
   min-height: 218px;
+}
+
+.trend-chart {
+  align-items: end;
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(24, minmax(8px, 1fr));
+  min-height: 196px;
+  padding: 14px 6px 4px;
+}
+
+.trend-column {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-rows: 1fr auto;
+  min-width: 0;
+}
+
+.trend-bar {
+  align-self: end;
+  background:
+    linear-gradient(180deg, rgba(21, 112, 239, 0.92), rgba(5, 150, 105, 0.86));
+  border-radius: 999px 999px 4px 4px;
+  box-shadow: 0 8px 18px rgba(21, 112, 239, 0.18);
+  display: block;
+  height: var(--trend-ratio);
+  min-height: 8px;
+  width: 100%;
+}
+
+.trend-label {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
+  overflow: hidden;
+  text-align: center;
 }
 
 .node-health-widget {

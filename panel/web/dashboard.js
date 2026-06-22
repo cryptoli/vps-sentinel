@@ -13,57 +13,67 @@ export function renderOverviewDashboard(ctx) {
   const incidents = datasets.incidents?.items || [];
   const drifts = datasets.baseline_drifts?.items || [];
   const blocks = datasets.active_blocks?.items || [];
+  const trends = datasets.trends?.items || [];
   const severityRows = summary.by_severity || [];
   const status = fleetStatus(nodes, ui, t);
+  const operatorView = roleAllows(state.role, "operator");
 
-  app.append(
-    ui.dashboardShell(
-      ui.heroBand({
-        eyebrow: t("securityPosture"),
-        title: t("overviewTitle"),
-        description: t("overviewDescription"),
-        status: ui.statusSummary(status.label, status.tone, status.detail),
-        actions: [ui.timeRangeHint(t("range_24h")), ui.freshnessBadge(nodes)],
+  const sections = [
+    ui.heroBand({
+      eyebrow: t("securityPosture"),
+      title: t("overviewTitle"),
+      description: t("overviewDescription"),
+      status: ui.statusSummary(status.label, status.tone, status.detail),
+      actions: [ui.timeRangeHint(t("range_24h")), ui.freshnessBadge(nodes)],
+    }),
+    ui.insightStrip([
+      {
+        label: t("attentionQueue"),
+        value: queueCount(summary),
+        detail: t("attentionQueueDetail"),
+        tone: "attention",
+      },
+      {
+        label: t("fleetFreshness"),
+        value: status.label,
+        detail: status.detail,
+        tone: status.tone,
+      },
+      {
+        label: t("highRiskPressure"),
+        value: highRiskCount(severityRows),
+        detail: t("highRiskPressureDetail"),
+        tone: "risk",
+      },
+    ]),
+    ui.metrics([
+      metric(t("nodesMetric"), summary.nodes ?? nodes.length, "nodes", t("nodesMetricHint")),
+      metric(t("findingsMetric"), summary.findings, "findings", t("findingsMetricHint")),
+      metric(t("incidentsMetric"), summary.incidents, "incidents", t("incidentsMetricHint")),
+      metric(t("driftsMetric"), summary.baseline_drifts, "drifts", t("driftsMetricHint")),
+      metric(t("blocksMetric"), summary.active_blocks, "blocks", t("blocksMetricHint")),
+    ]),
+    ui.dashboardGrid(
+      ui.panel(t("activityTrend"), ui.trendChart(trends), {
+        meta: t("activityTrendMeta"),
+        tone: "wide",
       }),
-      ui.insightStrip([
-        {
-          label: t("attentionQueue"),
-          value: queueCount(summary),
-          detail: t("attentionQueueDetail"),
-          tone: "attention",
-        },
-        {
-          label: t("fleetFreshness"),
-          value: status.label,
-          detail: status.detail,
-          tone: status.tone,
-        },
-        {
-          label: t("highRiskPressure"),
-          value: highRiskCount(severityRows),
-          detail: t("highRiskPressureDetail"),
-          tone: "risk",
-        },
-      ]),
-      ui.metrics([
-        metric(t("nodesMetric"), summary.nodes ?? nodes.length, "nodes", t("nodesMetricHint")),
-        metric(t("findingsMetric"), summary.findings, "findings", t("findingsMetricHint")),
-        metric(t("incidentsMetric"), summary.incidents, "incidents", t("incidentsMetricHint")),
-        metric(t("driftsMetric"), summary.baseline_drifts, "drifts", t("driftsMetricHint")),
-        metric(t("blocksMetric"), summary.active_blocks, "blocks", t("blocksMetricHint")),
-      ]),
+      ui.panel(t("severityDistribution"), ui.barChart(severityRows, "severity", "count"), {
+        meta: t("severityDistributionMeta"),
+      }),
+      ui.panel(t("activityMix"), signalMix(summary, t, ui), {
+        meta: t("activityMixMeta"),
+      }),
+      ui.panel(t("fleetFreshness"), ui.nodeFreshness(nodes), {
+        meta: t("fleetFreshnessMeta"),
+        tone: "fleet",
+      }),
+    ),
+  ];
+
+  if (operatorView) {
+    sections.push(
       ui.dashboardGrid(
-        ui.panel(t("severityDistribution"), ui.barChart(severityRows, "severity", "count"), {
-          meta: t("severityDistributionMeta"),
-          tone: "wide",
-        }),
-        ui.panel(t("activityMix"), signalMix(summary, t, ui), {
-          meta: t("activityMixMeta"),
-        }),
-        ui.panel(t("fleetFreshness"), ui.nodeFreshness(nodes), {
-          meta: t("fleetFreshnessMeta"),
-          tone: "fleet",
-        }),
         ui.panel(t("activeBlocksSnapshot"), ui.compactRecords(blocks, blockRecord(t, ui)), {
           meta: t("activeBlocksSnapshotMeta"),
           tone: "response",
@@ -80,8 +90,10 @@ export function renderOverviewDashboard(ctx) {
       ui.panel(t("recentBaselineDrift"), ui.renderTable(drifts, OVERVIEW_DRIFT_COLUMNS), {
         meta: t("recentBaselineDriftMeta"),
       }),
-    ),
-  );
+    );
+  }
+
+  app.append(ui.dashboardShell(...sections));
 }
 
 function canonicalNodes(nodes, settings) {
@@ -152,6 +164,11 @@ function highRiskCount(rows) {
   return rows
     .filter((row) => ["critical", "high"].includes(String(row.severity || "").toLowerCase()))
     .reduce((sum, row) => sum + Number(row.count || 0), 0);
+}
+
+function roleAllows(role, minRole) {
+  const levels = { public: 0, operator: 1, admin: 2 };
+  return (levels[String(role || "public")] ?? 0) >= (levels[minRole] ?? 0);
 }
 
 function blockRecord(t, ui) {

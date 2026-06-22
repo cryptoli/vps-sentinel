@@ -171,7 +171,7 @@ min_severity = "Medium"
 
 ## 多 VPS 面板
 
-agent 可以把签名后的遥测主动推送到中心面板，被监控 VPS 不需要开放入站管理端口。自建部署使用 Rust 二进制 `vps-sentinel-panel`，支持 SQLite、PostgreSQL 和 MySQL；Cloudflare 部署可使用 `panel/cloudflare` 中的 Worker/D1 接收端，并把 `panel/web` 作为静态 UI。浏览器读取面板需要独立访问令牌。本地检测和防火墙响应仍会使用来源 IP，但默认远端面板载荷会在离开被监控主机前移除原始 IP。
+agent 可以把签名后的遥测主动推送到中心面板，被监控 VPS 不需要开放入站管理端口。自建部署使用 Rust 二进制 `vps-sentinel-panel`，支持 SQLite、PostgreSQL 和 MySQL；Cloudflare 部署可使用 `panel/cloudflare` 中的 Worker/D1 接收端，并把 `panel/web` 作为静态 UI。浏览器访问分为公开、运维和管理三层；自建面板支持 WebSocket 自动刷新。本地检测和防火墙响应仍会使用来源 IP，但默认远端面板载荷会在离开被监控主机前移除原始 IP。
 
 agent 侧配置示例：
 
