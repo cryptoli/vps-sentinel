@@ -920,7 +920,7 @@ impl Default for PanelConfig {
             min_severity: Severity::Medium,
             batch_size: 100,
             push_interval_seconds: 60,
-            request_timeout_seconds: 10,
+            request_timeout_seconds: 60,
             outbox_max_items: 128,
             max_payload_bytes: 512 * 1024,
             privacy_mode: "strict".to_string(),

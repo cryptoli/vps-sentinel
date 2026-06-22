@@ -183,6 +183,7 @@ node_name = "prod-web-1"
 secret = "replace-with-a-long-random-secret"
 min_severity = "Medium"
 privacy_mode = "strict"
+request_timeout_seconds = 60
 ip_intel_paths = [] # 可选 CSV: cidr,country,asn,organization
 ```
 
