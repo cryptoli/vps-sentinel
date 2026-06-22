@@ -15,7 +15,9 @@ const DATASETS = {
   "/api/v1/nodes": {
     minRole: "public",
     table: "nodes",
-    orderColumn: "last_seen_at",
+    orderColumn: "node_name",
+    orderDirection: "ASC",
+    filterColumn: "last_seen_at",
     columns: ["last_seen_at", "node_name", "agent_version", "privacy_mode", "metrics_json"],
   },
   "/api/v1/findings": {
@@ -540,11 +542,11 @@ async function queryPage(env, dataset, url, role = "operator") {
   if (dataset.activeFilter) parts.push(dataset.activeFilter);
   if (page.from) {
     values.push(page.from);
-    parts.push(`${dataset.orderColumn} >= ?`);
+    parts.push(`${dataset.filterColumn || dataset.orderColumn} >= ?`);
   }
   if (page.to) {
     values.push(page.to);
-    parts.push(`${dataset.orderColumn} <= ?`);
+    parts.push(`${dataset.filterColumn || dataset.orderColumn} <= ?`);
   }
   const whereSql = parts.length ? ` WHERE ${parts.join(" AND ")}` : "";
   try {
@@ -552,7 +554,7 @@ async function queryPage(env, dataset, url, role = "operator") {
       .bind(...values)
       .first();
     const result = await env.DB.prepare(
-      `SELECT ${dataset.columns.join(", ")} FROM ${dataset.table}${whereSql} ORDER BY ${dataset.orderColumn} DESC LIMIT ? OFFSET ?`,
+      `SELECT ${dataset.columns.join(", ")} FROM ${dataset.table}${whereSql} ORDER BY ${dataset.orderColumn} ${dataset.orderDirection === "ASC" ? "ASC" : "DESC"} LIMIT ? OFFSET ?`,
     ).bind(...values, page.limit, page.offset).all();
     const items = expandDatasetJsonColumns(dataset.table, result.results || []);
     return {

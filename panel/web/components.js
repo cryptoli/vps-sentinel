@@ -30,13 +30,16 @@ export function createView({ t, language, freshness = {} }) {
     wrapper.className = "grid metrics";
     const max = Math.max(
       1,
-      ...items.map((itemConfig) => Number((Array.isArray(itemConfig) ? itemConfig[1] : itemConfig.value) || 0)),
+      ...items
+        .map((itemConfig) => Number((Array.isArray(itemConfig) ? itemConfig[1] : itemConfig.value) || 0))
+        .filter(Number.isFinite),
     );
     for (const itemConfig of items) {
       const { label, value, tone, caption } = Array.isArray(itemConfig)
         ? { label: itemConfig[0], value: itemConfig[1], tone: itemConfig[2], caption: "" }
         : itemConfig;
-      const ratio = Math.max(8, Math.min(100, (Number(value || 0) / max) * 100));
+      const numericValue = Number(value);
+      const ratio = Number.isFinite(numericValue) ? Math.max(8, Math.min(100, (numericValue / max) * 100)) : 100;
       const item = document.createElement("div");
       item.className = `metric metric-${tone}`;
       item.style.setProperty("--metric-ratio", `${ratio}%`);
@@ -46,7 +49,7 @@ export function createView({ t, language, freshness = {} }) {
       const visual = document.createElement("div");
       visual.className = "metric-visual";
       visual.append(span("metric-bar", ""));
-      item.append(head, span("value", number(value)), visual);
+      item.append(head, span("value", formatMetricValue(value)), visual);
       if (caption) item.append(span("metric-caption", caption));
       wrapper.append(item);
     }
@@ -57,51 +60,6 @@ export function createView({ t, language, freshness = {} }) {
     const wrapper = document.createElement("div");
     wrapper.className = "dashboard-shell";
     wrapper.append(...children);
-    return wrapper;
-  }
-
-  function heroBand({ eyebrow, title, description, status, actions = [] }) {
-    const wrapper = document.createElement("section");
-    wrapper.className = "hero-band";
-    const copy = document.createElement("div");
-    copy.className = "hero-copy";
-    copy.append(span("hero-eyebrow", eyebrow), heading("h2", title), paragraph(description));
-    const aside = document.createElement("div");
-    aside.className = "hero-actions";
-    aside.append(...actions.filter(Boolean));
-    wrapper.append(copy);
-    if (status || aside.childElementCount) {
-      const rail = document.createElement("div");
-      rail.className = "hero-rail";
-      if (status) rail.append(status);
-      if (aside.childElementCount) rail.append(aside);
-      wrapper.append(rail);
-    }
-    return wrapper;
-  }
-
-  function statusSummary(label, tone, detail) {
-    const wrapper = document.createElement("div");
-    wrapper.className = `status-summary ${tone || "fresh"}`;
-    wrapper.append(span("status-summary-label", label), span("status-summary-detail", detail));
-    return wrapper;
-  }
-
-  function timeRangeHint(label) {
-    return span("time-range-hint", label);
-  }
-
-  function chartsGrid(items) {
-    const wrapper = document.createElement("div");
-    wrapper.className = "charts-grid";
-    wrapper.append(...items);
-    return wrapper;
-  }
-
-  function dashboardGrid(...items) {
-    const wrapper = document.createElement("div");
-    wrapper.className = "dashboard-grid";
-    wrapper.append(...items);
     return wrapper;
   }
 
@@ -351,7 +309,7 @@ export function createView({ t, language, freshness = {} }) {
 
     const list = document.createElement("div");
     list.className = "node-freshness";
-    const visibleNodes = nodes.slice(0, 8);
+    const visibleNodes = sortNodesByName(nodes).slice(0, 8);
     for (const node of visibleNodes) {
       const age = ageMinutes(node.last_seen_at);
       const status = freshnessStatus(age, node);
@@ -397,16 +355,12 @@ export function createView({ t, language, freshness = {} }) {
       wrapper.append(emptyChart());
       return wrapper;
     }
-    const orderedNodes = [...nodes].sort((left, right) => {
-      const priority = { offline: 0, stale: 1, fresh: 2, retired: 3 };
-      const leftStatus = freshnessStatus(ageMinutes(left.last_seen_at), left);
-      const rightStatus = freshnessStatus(ageMinutes(right.last_seen_at), right);
-      return (priority[leftStatus] ?? 9) - (priority[rightStatus] ?? 9);
-    });
+    const orderedNodes = sortNodesByName(nodes);
     for (const node of orderedNodes) {
       const age = ageMinutes(node.last_seen_at);
       const status = freshnessStatus(age, node);
       const metrics = normalizeNodeMetrics(node.metrics);
+      const location = nodeLocation(node, metrics);
       const card = document.createElement("article");
       card.className = `node-probe-card ${status}`;
       const head = document.createElement("div");
@@ -414,11 +368,13 @@ export function createView({ t, language, freshness = {} }) {
       head.append(
         span(`status-dot ${status}`, ""),
         span("node-probe-name", node.node_name || "-"),
+        nodeLocationBadge(location),
         span("node-probe-state", t(status)),
       );
       const meta = document.createElement("div");
       meta.className = "node-probe-meta";
       meta.append(nodeProbeMeta(t("last_seen_at"), relativeAge(age)));
+      meta.append(nodeProbeMeta(t("location"), location.label));
       if (node.agent_version) {
         meta.append(nodeProbeMeta(t("agent_version"), node.agent_version));
       }
@@ -446,6 +402,137 @@ export function createView({ t, language, freshness = {} }) {
       wrapper.append(card);
     }
     return wrapper;
+  }
+
+  function sortNodesByName(nodes) {
+    return [...(nodes || [])].sort((left, right) =>
+      String(left?.node_name || "").localeCompare(String(right?.node_name || ""), undefined, {
+        sensitivity: "base",
+        numeric: true,
+      }),
+    );
+  }
+
+  function nodeLocation(node, metrics) {
+    const source = firstObject(node.location, node.geo, metrics.location, metrics.geo);
+    const rawCountry = firstText(
+      node.country_code,
+      node.country,
+      source?.country_code,
+      source?.country,
+      metrics.country_code,
+      metrics.country,
+    );
+    const region = firstText(
+      node.region,
+      node.cloud_region,
+      node.provider_region,
+      source?.region,
+      source?.cloud_region,
+      source?.provider_region,
+      metrics.region,
+      metrics.cloud_region,
+      metrics.provider_region,
+    );
+    const countryCode = normalizeCountryCode(rawCountry) || countryFromRegion(region) || countryFromNodeName(node.node_name);
+    const city = firstText(node.city, source?.city, metrics.city);
+    const label = [city, region, countryCode].filter(Boolean).join(" / ") || t("unknownLocation");
+    return {
+      code: countryCode,
+      flag: countryFlag(countryCode),
+      label,
+    };
+  }
+
+  function nodeLocationBadge(location) {
+    const badge = span("node-probe-location", location.flag || "--");
+    badge.title = location.label;
+    return badge;
+  }
+
+  function firstObject(...values) {
+    return values.find((value) => value && typeof value === "object" && !Array.isArray(value)) || null;
+  }
+
+  function firstText(...values) {
+    for (const value of values) {
+      const text = String(value || "").trim();
+      if (text) return text;
+    }
+    return "";
+  }
+
+  function normalizeCountryCode(value) {
+    const text = String(value || "").trim().toUpperCase();
+    if (/^[A-Z]{2}$/.test(text)) return text;
+    const normalized = text.toLowerCase();
+    const aliases = {
+      australia: "AU",
+      brazil: "BR",
+      canada: "CA",
+      france: "FR",
+      germany: "DE",
+      hongkong: "HK",
+      "hong kong": "HK",
+      india: "IN",
+      japan: "JP",
+      korea: "KR",
+      netherlands: "NL",
+      singapore: "SG",
+      sweden: "SE",
+      "united kingdom": "GB",
+      uk: "GB",
+      "united states": "US",
+      usa: "US",
+    };
+    return aliases[normalized] || "";
+  }
+
+  function countryFromRegion(value) {
+    const region = String(value || "").trim().toLowerCase();
+    if (!region) return "";
+    const exact = {
+      "af-south-1": "ZA",
+      "ap-east-1": "HK",
+      "ap-northeast-1": "JP",
+      "ap-northeast-2": "KR",
+      "ap-south-1": "IN",
+      "ap-southeast-1": "SG",
+      "ap-southeast-2": "AU",
+      "ca-central-1": "CA",
+      "eu-central-1": "DE",
+      "eu-north-1": "SE",
+      "eu-west-1": "IE",
+      "eu-west-2": "GB",
+      "eu-west-3": "FR",
+      "me-central-1": "AE",
+      "me-south-1": "BH",
+      "sa-east-1": "BR",
+    };
+    if (exact[region]) return exact[region];
+    if (region.startsWith("us-")) return "US";
+    if (region.includes("tokyo") || region.includes("japan")) return "JP";
+    if (region.includes("singapore")) return "SG";
+    if (region.includes("frankfurt") || region.includes("germany")) return "DE";
+    if (region.includes("london") || region.includes("united-kingdom")) return "GB";
+    return "";
+  }
+
+  function countryFromNodeName(value) {
+    const name = String(value || "").trim().toLowerCase();
+    if (!name) return "";
+    const supported = new Set(["au", "br", "ca", "de", "fr", "gb", "hk", "ie", "in", "jp", "kr", "nl", "sg", "se", "us"]);
+    const tokens = name.split(/[^a-z0-9]+/).filter(Boolean);
+    const tokenMatch = tokens.find((token) => supported.has(token));
+    if (tokenMatch) return tokenMatch.toUpperCase();
+    const suffix = name.match(/(?:^|[a-z0-9])([a-z]{2})$/)?.[1] || "";
+    return supported.has(suffix) ? suffix.toUpperCase() : "";
+  }
+
+  function countryFlag(code) {
+    const normalized = normalizeCountryCode(code);
+    if (!normalized) return "";
+    return [...normalized].map((letter) => String.fromCodePoint(127397 + letter.charCodeAt(0))).join("");
   }
 
   function nodeProbeGauge(label, value, percent, tone) {
@@ -749,19 +836,22 @@ export function createView({ t, language, freshness = {} }) {
     return new Intl.NumberFormat(language === "zh" ? "zh-CN" : "en-US").format(Number(value || 0));
   }
 
+  function formatMetricValue(value) {
+    const numericValue = Number(value);
+    if (value !== null && value !== undefined && value !== "" && !Number.isFinite(numericValue)) return String(value);
+    return number(value);
+  }
+
   return {
     barChart,
     button,
-    chartsGrid,
     compactRecords,
-    dashboardGrid,
     dashboardShell,
     detailList,
     donutChart,
     fragment,
     freshnessBadge,
     freshnessCounts,
-    heroBand,
     input,
     insightStrip,
     labelControl,
@@ -779,8 +869,6 @@ export function createView({ t, language, freshness = {} }) {
     select,
     span,
     splitPanels,
-    statusSummary,
-    timeRangeHint,
     trendChart,
   };
 }

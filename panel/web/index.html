@@ -8,23 +8,35 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <header class="topbar">
-      <div class="brand">
-        <span class="brand-mark" aria-hidden="true">VS</span>
-        <div>
-          <h1>vps-sentinel</h1>
-          <p data-i18n="subtitle">Fleet security signal panel</p>
-        </div>
-      </div>
-      <div class="toolbar">
-        <select id="theme-select" aria-label="Theme"></select>
-        <select id="language-select" aria-label="Language"></select>
-        <button id="refresh-button" type="button">Refresh</button>
-      </div>
-    </header>
     <main class="layout">
-      <nav id="nav" class="sidebar" aria-label="Panel navigation"></nav>
-      <section id="app" class="content" aria-live="polite"></section>
+      <aside class="sidebar-shell">
+        <div class="brand sidebar-brand">
+          <span class="brand-mark" aria-hidden="true">VS</span>
+          <div>
+            <h1>VPS Sentinel</h1>
+            <p data-i18n="subtitle">Fleet security signal panel</p>
+          </div>
+        </div>
+        <nav id="nav" class="sidebar" aria-label="Panel navigation"></nav>
+        <div class="sidebar-meta">
+          <span>Runtime</span>
+          <strong>Production</strong>
+        </div>
+      </aside>
+      <section class="main-stage">
+        <header class="topbar">
+          <div class="page-titlebar">
+            <span class="page-eyebrow" data-i18n="securityPosture">Security posture</span>
+            <h2 id="page-title">Security Overview</h2>
+          </div>
+          <div class="toolbar">
+            <select id="theme-select" aria-label="Theme"></select>
+            <select id="language-select" aria-label="Language"></select>
+            <button id="refresh-button" type="button">Refresh</button>
+          </div>
+        </header>
+        <section id="app" class="content" aria-live="polite"></section>
+      </section>
     </main>
     <script type="module" src="/app.js"></script>
   </body>

@@ -896,6 +896,10 @@ fn panel_row_name(row: &Value) -> &str {
         .unwrap_or_default()
 }
 
+fn panel_node_sort_key(row: &Value) -> String {
+    panel_row_name(row).trim().to_ascii_lowercase()
+}
+
 async fn nodes(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1601,11 +1605,7 @@ impl Repository {
             }
         }
         let mut rows = latest.into_values().collect::<Vec<_>>();
-        rows.sort_by(|left, right| {
-            panel_row_time(right, "last_seen_at")
-                .cmp(&panel_row_time(left, "last_seen_at"))
-                .then_with(|| panel_row_name(left).cmp(panel_row_name(right)))
-        });
+        rows.sort_by(|left, right| panel_node_sort_key(left).cmp(&panel_node_sort_key(right)));
         Ok(rows)
     }
 

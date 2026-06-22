@@ -66,6 +66,7 @@ const nav = document.querySelector("#nav");
 const refreshButton = document.querySelector("#refresh-button");
 const themeSelect = document.querySelector("#theme-select");
 const languageSelect = document.querySelector("#language-select");
+const pageTitle = document.querySelector("#page-title");
 
 init().catch((error) => renderError(error));
 
@@ -134,7 +135,6 @@ async function refresh(options = {}) {
       await loadOverviewDatasets();
     }
     await renderCurrentPage({ patch });
-    if (patch) markLivePatch();
   })();
   try {
     await state.refreshInFlight;
@@ -142,6 +142,25 @@ async function refresh(options = {}) {
     state.refreshInFlight = null;
   }
 }
+
+async function refreshVisibleData(options = {}) {
+  const patch = options.patch !== false;
+  if (state.refreshInFlight) return state.refreshInFlight;
+  state.refreshInFlight = (async () => {
+    if (!patch) renderNav();
+    state.summary = await fetchJson(`${API_BASE}/summary`);
+    if (state.currentPage === "overview") {
+      await loadOverviewDatasets();
+    }
+    await renderCurrentPage({ patch });
+  })();
+  try {
+    await state.refreshInFlight;
+  } finally {
+    state.refreshInFlight = null;
+  }
+}
+
 
 function selectedTheme(defaultTheme) {
   const params = new URLSearchParams(location.search);
@@ -215,6 +234,7 @@ async function buildPages(manifest) {
 }
 
 function renderNav() {
+  updatePageTitle();
   nav.replaceChildren(
     ...state.pages.map((page, index) => {
       const button = document.createElement("button");
@@ -230,6 +250,7 @@ function renderNav() {
       button.append(marker, label);
       button.addEventListener("click", async () => {
         state.currentPage = page.id;
+        updatePageTitle();
         renderNav();
         await renderCurrentPage();
       });
@@ -241,6 +262,7 @@ function renderNav() {
 async function renderCurrentPage(options = {}) {
   const patch = Boolean(options.patch);
   const page = state.pages.find((item) => item.id === state.currentPage) || state.pages[0];
+  updatePageTitle(page);
   document.body.dataset.page = page?.id || "overview";
   if (!patch) app.replaceChildren(view().loading());
   try {
@@ -274,6 +296,10 @@ function context(options = {}) {
     patch: Boolean(options.patch),
     mountPage,
     replaceRegion,
+    replaceRegionIfChanged: (root, name, signature, ...children) =>
+      replaceRegionIfChanged(root, name, signature, Boolean(options.patch), ...children),
+    ensureRegion,
+    retainRegions,
     hasRegion,
     t,
     ui,
@@ -295,6 +321,17 @@ function mountPage(className = "") {
 function replaceRegion(root, name, ...children) {
   const region = ensureRegion(root, name);
   region.replaceChildren(...children.filter(Boolean));
+  region.dataset.liveHash = "";
+  return region;
+}
+
+function replaceRegionIfChanged(root, name, signature, animate, ...children) {
+  const region = ensureRegion(root, name);
+  const nextHash = stableHash(signature);
+  if (region.dataset.liveHash === nextHash) return region;
+  region.dataset.liveHash = nextHash;
+  region.replaceChildren(...children.filter(Boolean));
+  if (animate) markRegionLivePatch(region);
   return region;
 }
 
@@ -314,6 +351,26 @@ function ensureRegion(root, name) {
 
 function findRegion(root, name) {
   return [...root.children].find((child) => child.dataset?.region === name) || null;
+}
+
+function retainRegions(root, names) {
+  const retained = new Set(names);
+  for (const child of [...root.children]) {
+    if (!child.dataset?.region || !retained.has(child.dataset.region)) child.remove();
+  }
+}
+
+function stableHash(value) {
+  return stableStringify(value);
+}
+
+function stableStringify(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  return `{${Object.keys(value)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+    .join(",")}}`;
 }
 
 function datasetItemsMap() {
@@ -361,16 +418,17 @@ async function renderNodesPage(ctx) {
   const ui = view();
   state.datasets.nodes = page;
   const root = ctx.mountPage("nodes-page");
-  ctx.replaceRegion(
+  ctx.replaceRegionIfChanged(
     root,
     "header",
+    { language: state.language, title: meta.titleKey, total: page.total, offset: page.offset, limit: page.limit },
     ui.sectionHeader(t(meta.titleKey), t(meta.descriptionKey), ui.span("record-count", formatTemplate(t("pageInfo"), rangeInfo(page)))),
   );
   if (!ctx.patch || !ctx.hasRegion(root, "filters")) {
     ctx.replaceRegion(root, "filters", filters("nodes", pageState));
   }
-  ctx.replaceRegion(root, "nodes", ui.nodeProbeGrid(page.items || []));
-  ctx.replaceRegion(root, "pagination", pagination("nodes", page));
+  ctx.replaceRegionIfChanged(root, "nodes", { language: state.language, items: page.items || [] }, ui.nodeProbeGrid(page.items || []));
+  ctx.replaceRegionIfChanged(root, "pagination", { dataset: "nodes", offset: page.offset, limit: page.limit, total: page.total }, pagination("nodes", page));
 }
 
 async function renderDatasetPage(ctx, datasetKey) {
@@ -380,17 +438,19 @@ async function renderDatasetPage(ctx, datasetKey) {
   const ui = view();
   state.datasets[datasetKey] = page;
   const root = ctx.mountPage(`dataset-page dataset-${datasetKey}`);
-  ctx.replaceRegion(
+  ctx.replaceRegionIfChanged(
     root,
     "header",
+    { datasetKey, language: state.language, title: meta.titleKey, total: page.total, offset: page.offset, limit: page.limit },
     ui.sectionHeader(t(meta.titleKey), t(meta.descriptionKey), ui.span("record-count", formatTemplate(t("pageInfo"), rangeInfo(page)))),
   );
   if (!ctx.patch || !ctx.hasRegion(root, "filters")) {
     ctx.replaceRegion(root, "filters", filters(datasetKey, pageState));
   }
-  ctx.replaceRegion(
+  ctx.replaceRegionIfChanged(
     root,
     "records",
+    { datasetKey, language: state.language, role: state.role, page },
     ui.panel(
       t(meta.titleKey),
       ui.fragment(ui.renderTable(page.items, datasetColumns(meta), tableOptions(datasetKey)), pagination(datasetKey, page)),
@@ -684,9 +744,18 @@ function applyLanguage() {
   document.documentElement.lang = state.language === "zh" ? "zh-CN" : "en";
   const subtitle = document.querySelector("[data-i18n='subtitle']");
   if (subtitle) subtitle.textContent = t("appSubtitle");
+  const posture = document.querySelector("[data-i18n='securityPosture']");
+  if (posture) posture.textContent = t("securityPosture");
+  updatePageTitle();
   setStreamStatus(state.stream?.status || "idle");
   themeSelect.setAttribute("aria-label", t("theme"));
   languageSelect.setAttribute("aria-label", t("language"));
+}
+
+function updatePageTitle(page = null) {
+  if (!pageTitle) return;
+  const current = page || state.pages.find((item) => item.id === state.currentPage) || state.pages[0];
+  pageTitle.textContent = current?.labelKey ? t(current.labelKey) : current?.label || t("overview");
 }
 
 function t(key) {
@@ -774,7 +843,7 @@ function parseStreamMessage(value) {
 
 async function refreshFromStream(message) {
   const roleChanged = await applyStreamRole(message?.role);
-  await refresh({ patch: !roleChanged });
+  await refreshVisibleData({ patch: !roleChanged });
 }
 
 async function applyStreamRole(value) {
@@ -787,16 +856,13 @@ async function applyStreamRole(value) {
   return true;
 }
 
-function markLivePatch() {
-  app.classList.remove("live-patched");
-  document.body.classList.remove("live-patched");
-  void app.offsetWidth;
-  app.classList.add("live-patched");
-  document.body.classList.add("live-patched");
+function markRegionLivePatch(region) {
+  region.classList.remove("live-region-patched");
+  void region.offsetWidth;
+  region.classList.add("live-region-patched");
   window.setTimeout(() => {
-    app.classList.remove("live-patched");
-    document.body.classList.remove("live-patched");
-  }, 900);
+    region.classList.remove("live-region-patched");
+  }, 720);
 }
 
 function scheduleStreamReconnect() {

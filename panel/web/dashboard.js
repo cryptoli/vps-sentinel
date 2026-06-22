@@ -18,92 +18,123 @@ export function renderOverviewDashboard(ctx) {
   const status = fleetStatus(summary.node_status || {}, t);
   const operatorView = roleAllows(state.role, "operator");
 
-  const sections = [
-    ui.heroBand({
-      eyebrow: t("securityPosture"),
-      title: t("overviewTitle"),
-      description: t("overviewDescription"),
-      status: ui.statusSummary(status.label, status.tone, status.detail),
-      actions: [ui.timeRangeHint(t("range_24h"))],
-    }),
-    ui.insightStrip([
-      {
-        label: t("attentionQueue"),
-        value: queueCount(summary),
-        detail: t("attentionQueueDetail"),
-        tone: "attention",
-      },
-      {
-        label: t("fleetFreshness"),
-        value: status.label,
-        detail: status.detail,
-        tone: status.tone,
-      },
-      {
-        label: t("highRiskPressure"),
-        value: highRiskCount(severityRows),
-        detail: t("highRiskPressureDetail"),
-        tone: "risk",
-      },
-    ]),
+  const root = ctx.mountPage("overview-page");
+  const shell = ctx.ensureRegion(root, "dashboard");
+  shell.className = "page-region page-region-dashboard dashboard-shell";
+
+  const shellRegions = ["overview-metrics", "overview-charts"];
+  if (operatorView) shellRegions.push("overview-operator", "overview-latest", "overview-drifts");
+  ctx.retainRegions(shell, shellRegions);
+
+  ctx.replaceRegionIfChanged(
+    shell,
+    "overview-metrics",
+    {
+      language: state.language,
+      nodes: summary.nodes,
+      fleet: status,
+      highRisk: highRiskCount(severityRows),
+      incidents: summary.incidents,
+      drifts: summary.baseline_drifts,
+      blocks: summary.active_blocks,
+    },
     ui.metrics([
       metric(t("nodesMetric"), summary.nodes, "nodes", t("nodesMetricHint")),
-      metric(t("findingsMetric"), summary.findings, "findings", t("findingsMetricHint")),
+      metric(t("fleetFreshness"), status.label, "freshness", status.detail),
+      metric(t("highRiskPressure"), highRiskCount(severityRows), "findings", t("highRiskPressureDetail")),
       metric(t("incidentsMetric"), summary.incidents, "incidents", t("incidentsMetricHint")),
       metric(t("driftsMetric"), summary.baseline_drifts, "drifts", t("driftsMetricHint")),
       metric(t("blocksMetric"), summary.active_blocks, "blocks", t("blocksMetricHint")),
-      metric(t("blacklistMetric"), summary.probe_sources, "blacklist", t("blacklistMetricHint")),
     ]),
-    ui.dashboardGrid(
-      ui.panel(t("activityTrend"), ui.trendChart(trends), {
-        meta: t("activityTrendMeta"),
-        tone: "wide",
-      }),
-      ui.panel(t("severityDistribution"), ui.barChart(severityRows, "severity", "count"), {
-        meta: t("severityDistributionMeta"),
-      }),
-      ui.panel(t("nodeStatusDistribution"), ui.nodeStatusChart(summary.node_status || {}), {
-        meta: t("nodeStatusDistributionMeta"),
-      }),
-      ui.panel(t("nodeResourceOverview"), nodeResourceOverview(nodes, t, ui), {
-        meta: t("nodeResourceOverviewMeta"),
-      }),
-      ui.panel(t("categoryDistribution"), ui.barChart(summary.by_category || [], "category", "count"), {
-        meta: t("categoryDistributionMeta"),
-      }),
-      ui.panel(t("blockStatusDistribution"), ui.barChart(summary.by_block_status || [], "block_status", "count"), {
-        meta: t("blockStatusDistributionMeta"),
-      }),
-      ui.panel(t("activityMix"), signalMix(summary, t, ui), {
-        meta: t("activityMixMeta"),
-      }),
+  );
+
+  const charts = ctx.ensureRegion(shell, "overview-charts");
+  charts.className = "overview-bento";
+  ctx.retainRegions(charts, [
+    "activity-trend",
+    "severity-distribution",
+    "node-status",
+    "node-resource",
+    "category-distribution",
+    "block-status",
+    "activity-mix",
+  ]);
+  ctx.replaceRegionIfChanged(
+    charts,
+    "activity-trend",
+    { language: state.language, trends },
+    ui.panel(t("activityTrend"), ui.trendChart(trends), { meta: t("activityTrendMeta"), tone: "wide" }),
+  );
+  ctx.replaceRegionIfChanged(
+    charts,
+    "severity-distribution",
+    { language: state.language, rows: severityRows },
+    ui.panel(t("severityDistribution"), ui.barChart(severityRows, "severity", "count"), { meta: t("severityDistributionMeta") }),
+  );
+  ctx.replaceRegionIfChanged(
+    charts,
+    "node-status",
+    { language: state.language, rows: summary.node_status || {} },
+    ui.panel(t("nodeStatusDistribution"), ui.nodeStatusChart(summary.node_status || {}), { meta: t("nodeStatusDistributionMeta") }),
+  );
+  ctx.replaceRegionIfChanged(
+    charts,
+    "node-resource",
+    { language: state.language, nodes },
+    ui.panel(t("nodeResourceOverview"), nodeResourceOverview(nodes, t, ui), { meta: t("nodeResourceOverviewMeta") }),
+  );
+  ctx.replaceRegionIfChanged(
+    charts,
+    "category-distribution",
+    { language: state.language, rows: summary.by_category || [] },
+    ui.panel(t("categoryDistribution"), ui.barChart(summary.by_category || [], "category", "count"), { meta: t("categoryDistributionMeta") }),
+  );
+  ctx.replaceRegionIfChanged(
+    charts,
+    "block-status",
+    { language: state.language, rows: summary.by_block_status || [] },
+    ui.panel(t("blockStatusDistribution"), ui.barChart(summary.by_block_status || [], "block_status", "count"), { meta: t("blockStatusDistributionMeta") }),
+  );
+  ctx.replaceRegionIfChanged(
+    charts,
+    "activity-mix",
+    {
+      language: state.language,
+      findings: summary.findings,
+      incidents: summary.incidents,
+      drifts: summary.baseline_drifts,
+      blocks: summary.active_blocks,
+      blacklist: summary.probe_sources,
+    },
+    ui.panel(t("activityMix"), signalMix(summary, t, ui), { meta: t("activityMixMeta") }),
+  );
+
+  if (!operatorView) return;
+
+  ctx.replaceRegionIfChanged(
+    shell,
+    "overview-operator",
+    { language: state.language, blocks },
+    ui.panel(t("activeBlocksSnapshot"), ui.compactRecords(blocks, blockRecord(t, ui)), {
+      meta: t("activeBlocksSnapshotMeta"),
+      tone: "response",
+    }),
+  );
+  ctx.replaceRegionIfChanged(
+    shell,
+    "overview-latest",
+    { language: state.language, findings, incidents },
+    ui.splitPanels(
+      ui.panel(t("latestFindings"), ui.renderTable(findings, OVERVIEW_FINDING_COLUMNS), { meta: t("latestFindingsMeta") }),
+      ui.panel(t("latestIncidents"), ui.renderTable(incidents, OVERVIEW_INCIDENT_COLUMNS), { meta: t("latestIncidentsMeta") }),
     ),
-  ];
-
-  if (operatorView) {
-    sections.push(
-      ui.dashboardGrid(
-        ui.panel(t("activeBlocksSnapshot"), ui.compactRecords(blocks, blockRecord(t, ui)), {
-          meta: t("activeBlocksSnapshotMeta"),
-          tone: "response",
-        }),
-      ),
-      ui.splitPanels(
-        ui.panel(t("latestFindings"), ui.renderTable(findings, OVERVIEW_FINDING_COLUMNS), {
-          meta: t("latestFindingsMeta"),
-        }),
-        ui.panel(t("latestIncidents"), ui.renderTable(incidents, OVERVIEW_INCIDENT_COLUMNS), {
-          meta: t("latestIncidentsMeta"),
-        }),
-      ),
-      ui.panel(t("recentBaselineDrift"), ui.renderTable(drifts, OVERVIEW_DRIFT_COLUMNS), {
-        meta: t("recentBaselineDriftMeta"),
-      }),
-    );
-  }
-
-  const root = ctx.mountPage("overview-page");
-  ctx.replaceRegion(root, "dashboard", ui.dashboardShell(...sections));
+  );
+  ctx.replaceRegionIfChanged(
+    shell,
+    "overview-drifts",
+    { language: state.language, drifts },
+    ui.panel(t("recentBaselineDrift"), ui.renderTable(drifts, OVERVIEW_DRIFT_COLUMNS), { meta: t("recentBaselineDriftMeta") }),
+  );
 }
 
 function nodeResourceOverview(nodes, t, ui) {
@@ -171,10 +202,6 @@ function signalMix(summary, t, ui) {
     { label: t("blocksMetric"), value: summary.active_blocks || 0, className: "chart-low" },
     { label: t("blacklistMetric"), value: summary.probe_sources || 0, className: "chart-fresh" },
   ]);
-}
-
-function queueCount(summary) {
-  return Number(summary.findings || 0) + Number(summary.baseline_drifts || 0);
 }
 
 function highRiskCount(rows) {
