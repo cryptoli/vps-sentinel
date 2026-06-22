@@ -850,10 +850,7 @@ fn panel_node_status(
     last_seen_at: Option<&Value>,
     now: DateTime<Utc>,
 ) -> &'static str {
-    if node_name.trim().is_empty()
-        || node_name.eq_ignore_ascii_case("local-host")
-        || agent_version.to_ascii_lowercase().contains("smoke")
-    {
+    if is_panel_placeholder_node(node_name, agent_version) {
         return "retired";
     }
     let Some(last_seen_at) = last_seen_at.and_then(Value::as_str) else {
@@ -874,6 +871,12 @@ fn panel_node_status(
     } else {
         "fresh"
     }
+}
+
+fn is_panel_placeholder_node(node_name: &str, agent_version: &str) -> bool {
+    node_name.trim().is_empty()
+        || node_name.eq_ignore_ascii_case("local-host")
+        || agent_version.to_ascii_lowercase().contains("smoke")
 }
 
 fn panel_row_is_newer(candidate: &Value, existing: &Value, time_key: &str) -> bool {
@@ -1582,6 +1585,13 @@ impl Repository {
                 .filter(|value| !value.is_empty())
                 .unwrap_or("unnamed-node")
                 .to_string();
+            let agent_version = row
+                .get("agent_version")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            if is_panel_placeholder_node(&node_name, agent_version) {
+                continue;
+            }
             let replace = latest
                 .get(&node_name)
                 .map(|existing| panel_row_is_newer(&row, existing, "last_seen_at"))
@@ -3387,6 +3397,27 @@ mod tests {
         )
         .await
         .expect("insert legacy node");
+        repo.execute_write(
+            "INSERT INTO nodes
+             (node_id, node_name, host_id, hostname, agent_version, privacy_mode,
+              enabled_features_json, storage_json, metrics_json, last_seen_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            &[
+                DbValue::Text("local-host".to_string()),
+                DbValue::Text("local-host".to_string()),
+                DbValue::Text(String::new()),
+                DbValue::Text(String::new()),
+                DbValue::Text("smoke-test".to_string()),
+                DbValue::Text("strict".to_string()),
+                DbValue::Text(r#"["panel"]"#.to_string()),
+                DbValue::Text("{}".to_string()),
+                DbValue::Text(r#"{"cpu_percent":1.0}"#.to_string()),
+                DbValue::Text(now.clone()),
+                DbValue::Text(now.clone()),
+            ],
+        )
+        .await
+        .expect("insert placeholder node");
         repo.execute_write(
             "INSERT INTO nodes
              (node_id, node_name, host_id, hostname, agent_version, privacy_mode,
