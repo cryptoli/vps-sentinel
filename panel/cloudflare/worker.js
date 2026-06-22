@@ -757,7 +757,7 @@ function secretForNode(env, nodeId) {
 }
 
 function viewToken(env) {
-  return String(env.PANEL_VIEW_TOKEN || "").trim();
+  return String(env.PANEL_VIEW_TOKEN || env.PANEL_OPERATOR_TOKEN || "").trim();
 }
 
 function adminToken(env) {
