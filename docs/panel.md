@@ -36,9 +36,17 @@ max_payload_bytes = 524288
 privacy_mode = "strict" # strict removes node identity details and raw evidence; admin response datasets may still carry external public source IPs
 ip_intel_paths = [] # optional CSV files: cidr,country,asn,organization
 ip_intel_max_entries = 20000
+
+[panel.location]
+country_code = "SG" # optional display metadata for flags; never derived from public IPs
+country = "Singapore"
+region = ""
+city = "Singapore"
 ```
 
 Use HTTPS for remote panel URLs. Plain HTTP is accepted only for `localhost` or `127.0.0.1` because panel payloads can contain sensitive security context even though they are HMAC signed.
+
+`panel.location` is optional and only accepts explicit non-sensitive display metadata. Agents do not upload public IPs, private hostnames, or automatic GeoIP lookups for node cards.
 
 `panel.ip_intel_paths` is optional. When configured, the agent reads bounded local CSV files and enriches admin-only probe-source blacklist rows by longest CIDR prefix match. The panel does not call external ASN or GeoIP services by default, so enrichment does not leak attacker IPs to third parties. Empty, invalid, or missing files degrade to `unknown` country/ASN/organization fields.
 
@@ -198,9 +206,19 @@ POST
 
 Receivers reject stale timestamps, nonce replay, node mismatches, body-hash mismatches, and invalid signatures.
 
-## Theme And Page Extensions
+## React UI And Theme Extensions
 
-The panel UI is static and themeable. A theme lives under:
+The panel UI source lives under `panel/ui` and is built with Next.js/React as a static export. The committed `panel/web` directory is the deployable static asset bundle consumed by the self-hosted Rust panel and by Cloudflare Worker static assets.
+
+To rebuild the static bundle after UI changes:
+
+```bash
+cd panel/ui
+npm install
+npm run build:web
+```
+
+The panel remains themeable without executing third-party JavaScript. A theme lives under:
 
 ```text
 panel/web/themes/<theme-name>/
@@ -211,40 +229,17 @@ Minimum theme:
 ```json
 {
   "name": "my-theme",
-  "styles": ["theme.css"],
-  "pages": []
+  "styles": ["theme.css"]
 }
 ```
 
-CSS files are loaded relative to the theme directory. Themes can override the CSS variables declared in `panel/web/styles.css`.
-Remote theme assets are intentionally ignored; keep theme CSS and page modules under `panel/web/themes/<theme-name>/` so the panel remains static-hosting friendly and does not leak browser traffic to third-party CDNs. The app also sets `data-theme="<theme-name>"` on `<html>` and `<body>`, and `data-page="<page-id>"` on `<body>`, so a theme can safely scope page-specific overrides.
+CSS files are loaded relative to the theme directory. Themes should override CSS variables and scoped selectors declared by the React panel bundle.
+Remote theme assets are intentionally ignored; keep theme CSS under `panel/web/themes/<theme-name>/` so the panel remains static-hosting friendly and does not leak browser traffic to third-party CDNs. The app sets `data-theme="<theme-name>"` on `<html>` and `<body>`, so a theme can safely scope overrides.
 
 Useful theme variables include:
 
-- layout: `--topbar-height`, `--sidebar-width`, `--radius`, `--radius-sm`, `--panel-body-min`, `--node-list-max-height`;
-- surfaces: `--app-bg`, `--app-bg-strong`, `--app-bg-grid`, `--surface`, `--surface-muted`, `--surface-hover`, `--panel-title-bg`;
-- text and borders: `--text`, `--muted`, `--muted-strong`, `--border`, `--border-strong`;
-- security tones: `--critical`, `--high`, `--medium`, `--low`, `--success`, `--retired`;
-- effects: `--shadow`, `--shadow-soft`, `--shadow-hover`, `--ring-shadow`, `--focus-ring`.
-
-Custom pages can be added through the theme manifest:
-
-```json
-{
-  "name": "ops-theme",
-  "styles": ["theme.css"],
-  "pages": [
-    { "id": "ops", "label": "Ops", "module": "ops-page.js" }
-  ]
-}
-```
-
-The page module must export `render(context)`. The context includes:
-
-- `context.api(path)` for `/api/v1` calls;
-- `context.app`, the current page container;
-- `context.datasets`, preloaded built-in datasets;
-- `context.renderTable(rows, columns)`;
-- `context.state` and the loaded theme manifest.
-
-If a custom page module fails to load or does not export `render(context)`, the built-in pages still load. This keeps visual customization separate from the Rust API and avoids hardcoding dashboard pages in the backend.
+- surfaces: `--bg`, `--bg-soft`, `--sidebar`, `--sidebar-2`, `--panel`, `--panel-strong`;
+- text and borders: `--text`, `--muted`, `--line`;
+- action colors: `--blue`, `--cyan`, `--green`, `--orange`, `--amber`, `--red`, `--violet`;
+- severity tones: `--severity-critical`, `--severity-high`, `--severity-medium`, `--severity-low`;
+- effects: `--shadow`, `--shadow-soft`, `--radius`.

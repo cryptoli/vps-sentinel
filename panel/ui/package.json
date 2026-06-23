@@ -1,0 +1,25 @@
+{
+  "name": "vps-sentinel-panel-ui",
+  "private": true,
+  "version": "0.3.0",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --hostname 127.0.0.1 --port 3000",
+    "build": "next build",
+    "build:web": "next build && node scripts/sync-web.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "flag-icons": "^7.5.0",
+    "lucide-react": "1.21.0",
+    "next": "16.2.9",
+    "react": "19.2.7",
+    "react-dom": "19.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "26.0.0",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "typescript": "6.0.3"
+  }
+}

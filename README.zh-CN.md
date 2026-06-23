@@ -185,9 +185,11 @@ min_severity = "Medium"
 privacy_mode = "strict"
 request_timeout_seconds = 60
 ip_intel_paths = [] # 可选 CSV: cidr,country,asn,organization
+ip_intel_remote_enabled = true # 对公网外部探查 IP 做 ASN/国家/组织补全
+ip_intel_remote_endpoint = "whois.cymru.com:43"
 ```
 
-常用命令是 `vs panel push`、`vs panel flush` 和 `vs panel outbox`。可选的 `panel.ip_intel_paths` CSV 会在本地按最长 CIDR 前缀匹配，为管理层黑名单补充国家、ASN 和组织信息，不会默认调用外部 API。Cloudflare 部署可使用 `scripts/deploy-cloudflare-panel.sh` 复用或创建 D1、部署 Worker API，并把 `panel/web` 作为 Worker 静态资源一并发布。Rust 面板服务、Cloudflare Worker/D1、MySQL/PostgreSQL 注意事项和第三方主题/页面开发见 [docs/panel.md](docs/panel.md)；从零部署 Cloudflare 面板和 VPS 自建面板的详细教程见 [docs/panel-deployment.zh-CN.md](docs/panel-deployment.zh-CN.md)。
+常用命令是 `vs panel push`、`vs panel flush` 和 `vs panel outbox`。`panel.ip_intel_paths` CSV 会在本地按最长 CIDR 前缀匹配，`panel.ip_intel_remote_enabled` 会通过可配置 WHOIS 端点对公网外部探查 IP 做补全；两者都会为管理层黑名单和生效封禁补充国家、ASN 和组织信息，同时不上传节点私有身份信息。Cloudflare 部署可使用 `scripts/deploy-cloudflare-panel.sh` 复用或创建 D1、部署 Worker API，并把 `panel/web` 作为 Worker 静态资源一并发布。Rust 面板服务、Cloudflare Worker/D1、MySQL/PostgreSQL 注意事项和第三方主题/页面开发见 [docs/panel.md](docs/panel.md)；从零部署 Cloudflare 面板和 VPS 自建面板的详细教程见 [docs/panel-deployment.zh-CN.md](docs/panel-deployment.zh-CN.md)。
 
 ## 架构
 
@@ -199,7 +201,7 @@ vps-sentinel/
     sentinel-cli/    # vps-sentinel command line
     sentinel-panel/  # Rust 自建多 VPS 面板 API 和 Web 服务
   config/            # 示例配置
-  panel/             # Cloudflare Worker、SQL schema 和可换主题的静态面板 UI
+  panel/             # Cloudflare Worker、SQL schema、Next.js/React 面板源码和静态 UI 产物
   packaging/         # systemd 模板和安装辅助脚本
   docs/              # 部署、隐私、规则和通知扩展文档
 ```

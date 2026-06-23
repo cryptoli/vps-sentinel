@@ -185,9 +185,16 @@ min_severity = "Medium"
 privacy_mode = "strict"
 request_timeout_seconds = 60
 ip_intel_paths = [] # Optional CSV files: cidr,country,asn,organization
+ip_intel_remote_enabled = true # Best-effort ASN/country/org lookup for public external probe IPs
+ip_intel_remote_endpoint = "whois.cymru.com:43"
+
+[panel.location]
+country_code = "SG" # Optional display metadata for node flags; not derived from IPs
+country = "Singapore"
+city = "Singapore"
 ```
 
-Useful commands are `vs panel push`, `vs panel flush`, and `vs panel outbox`. Optional `panel.ip_intel_paths` CSV files are matched locally by longest CIDR prefix to enrich admin-only probe-source blacklists with country, ASN, and organization without calling an external API. Cloudflare deployments can use `scripts/deploy-cloudflare-panel.sh` to provision/reuse D1, deploy the Worker API, and serve `panel/web` as Worker assets. See [docs/panel.md](docs/panel.md) for the Rust panel service, Cloudflare Worker/D1 setup, MySQL/PostgreSQL notes, and third-party theme/page development; see [docs/panel-deployment.zh-CN.md](docs/panel-deployment.zh-CN.md) for the detailed Cloudflare and VPS deployment tutorial.
+Useful commands are `vs panel push`, `vs panel flush`, and `vs panel outbox`. `panel.ip_intel_paths` CSV files are matched locally by longest CIDR prefix, and `panel.ip_intel_remote_enabled` can enrich public external probe IPs through a configurable WHOIS endpoint. Both feed admin-only probe-source and active-block blacklists with country, ASN, and organization while keeping private node identity out of panel telemetry. Optional `panel.location` fields are display-only node metadata for the dashboard and should not contain IPs or private hostnames. Cloudflare deployments can use `scripts/deploy-cloudflare-panel.sh` to provision/reuse D1, deploy the Worker API, and serve `panel/web` as Worker assets. See [docs/panel.md](docs/panel.md) for the Rust panel service, Cloudflare Worker/D1 setup, MySQL/PostgreSQL notes, and third-party theme/page development; see [docs/panel-deployment.zh-CN.md](docs/panel-deployment.zh-CN.md) for the detailed Cloudflare and VPS deployment tutorial.
 
 ## Architecture
 
@@ -199,7 +206,7 @@ vps-sentinel/
     sentinel-cli/    # vps-sentinel command line
     sentinel-panel/  # Rust self-hosted fleet panel API and web server
   config/            # example configuration
-  panel/             # Cloudflare worker, SQL schemas, and themeable static panel UI
+  panel/             # Cloudflare worker, SQL schemas, Next.js/React panel source, and static UI bundle
   packaging/         # systemd unit template and package-time install helper
   docs/              # deployment, privacy, rule and notifier guides
 ```

@@ -1839,6 +1839,7 @@ dependencies = [
  "sentinel-core",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx-core",
  "sqlx-mysql",
  "sqlx-postgres",

@@ -9,7 +9,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use clap::{Parser, ValueEnum};
 use rusqlite::{Connection, OptionalExtension};
 use sentinel_core::panel_auth::{
@@ -18,14 +18,16 @@ use sentinel_core::panel_auth::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use sqlx_core::column::Column;
 use sqlx_core::query::query as sql_query;
 use sqlx_core::row::Row;
 use sqlx_mysql::MySqlPool;
 use sqlx_postgres::PgPool;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::net::{IpAddr, SocketAddr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast;
@@ -104,6 +106,7 @@ struct AppState {
     max_body_bytes: usize,
     events: broadcast::Sender<PanelStreamEvent>,
     stream_tickets: Arc<Mutex<BTreeMap<String, StreamTicket>>>,
+    csp_header: HeaderValue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -200,6 +203,17 @@ struct FindingReviewRequest {
     reviewer: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct PanelReviewRequest {
+    target_type: String,
+    target_id: String,
+    verdict: String,
+    #[serde(default)]
+    note: String,
+    #[serde(default)]
+    reviewer: String,
+}
+
 #[derive(Debug)]
 struct PageRequest {
     from: Option<DateTime<Utc>>,
@@ -288,6 +302,8 @@ struct PanelIncident {
 struct PanelBaselineDrift {
     finding_id: String,
     rule_id: String,
+    #[serde(default)]
+    category: String,
     severity: String,
     subject: String,
     timestamp: DateTime<Utc>,
@@ -341,6 +357,36 @@ struct FindingReview {
     reviewed_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReviewTargetType {
+    Finding,
+    Incident,
+    BaselineDrift,
+}
+
+#[derive(Debug, Clone)]
+struct PanelReview {
+    target_type: ReviewTargetType,
+    target_id: String,
+    verdict: String,
+    note: String,
+    reviewer: String,
+    reviewed_at: DateTime<Utc>,
+}
+
+impl PanelReview {
+    fn response_review(&self) -> Value {
+        json!({
+            "target_type": self.target_type.as_str(),
+            "target_id": &self.target_id,
+            "verdict": &self.verdict,
+            "note": &self.note,
+            "reviewer": &self.reviewer,
+            "reviewed_at": self.reviewed_at.to_rfc3339(),
+        })
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct ApiError {
     error: String,
@@ -358,21 +404,96 @@ impl TryFrom<FindingReviewRequest> for FindingReview {
                 "invalid_finding_id",
             ));
         }
-        let verdict = value.verdict.trim();
-        if !matches!(verdict, "false_positive" | "confirmed" | "needs_review") {
-            return Err(PanelApiError::new(
-                StatusCode::BAD_REQUEST,
-                "invalid_review_verdict",
-            ));
-        }
+        let verdict = normalize_review_verdict(&value.verdict)?;
         Ok(Self {
             finding_id: finding_id.to_string(),
-            verdict: verdict.to_string(),
+            verdict,
             note: value.note.trim().chars().take(1000).collect(),
             reviewer: value.reviewer.trim().chars().take(128).collect::<String>(),
             reviewed_at: Utc::now(),
         })
     }
+}
+
+impl TryFrom<PanelReviewRequest> for PanelReview {
+    type Error = PanelApiError;
+
+    fn try_from(value: PanelReviewRequest) -> Result<Self, Self::Error> {
+        let target_type = ReviewTargetType::try_from(value.target_type.as_str())?;
+        let target_id = value.target_id.trim();
+        if target_id.is_empty() || target_id.len() > 191 {
+            return Err(PanelApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_review_target_id",
+            ));
+        }
+        let verdict = normalize_review_verdict(&value.verdict)?;
+        Ok(Self {
+            target_type,
+            target_id: target_id.to_string(),
+            verdict,
+            note: value.note.trim().chars().take(1000).collect(),
+            reviewer: value.reviewer.trim().chars().take(128).collect::<String>(),
+            reviewed_at: Utc::now(),
+        })
+    }
+}
+
+impl TryFrom<&str> for ReviewTargetType {
+    type Error = PanelApiError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "finding" | "findings" => Ok(Self::Finding),
+            "incident" | "incidents" => Ok(Self::Incident),
+            "baseline_drift" | "baseline_drifts" | "baseline" | "drift" => Ok(Self::BaselineDrift),
+            _ => Err(PanelApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_review_target_type",
+            )),
+        }
+    }
+}
+
+impl ReviewTargetType {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Finding => "finding",
+            Self::Incident => "incident",
+            Self::BaselineDrift => "baseline_drift",
+        }
+    }
+
+    fn table(self) -> &'static str {
+        match self {
+            Self::Finding => "findings",
+            Self::Incident => "incidents",
+            Self::BaselineDrift => "baseline_drifts",
+        }
+    }
+
+    fn id_column(self) -> &'static str {
+        "id"
+    }
+
+    fn not_found_error(self) -> &'static str {
+        match self {
+            Self::Finding => "finding_not_found",
+            Self::Incident => "incident_not_found",
+            Self::BaselineDrift => "baseline_drift_not_found",
+        }
+    }
+}
+
+fn normalize_review_verdict(value: &str) -> Result<String, PanelApiError> {
+    let verdict = value.trim();
+    if !matches!(verdict, "false_positive" | "confirmed" | "needs_review") {
+        return Err(PanelApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_review_verdict",
+        ));
+    }
+    Ok(verdict.to_string())
 }
 
 #[tokio::main]
@@ -417,6 +538,7 @@ async fn main() -> Result<()> {
         warn!("PANEL_VIEW_TOKEN, PANEL_OPERATOR_TOKEN, PANEL_ADMIN_TOKEN, or PANEL_PUBLIC_ENABLED=true is not configured; panel read APIs will reject browser access");
     }
     let (events, _) = broadcast::channel(128);
+    let csp_header = panel_csp_header(&web_dir);
     let state = AppState {
         repo: Arc::new(repo),
         secrets: Arc::new(secrets),
@@ -428,6 +550,7 @@ async fn main() -> Result<()> {
         max_body_bytes: args.max_body_bytes,
         events,
         stream_tickets: Arc::new(Mutex::new(BTreeMap::new())),
+        csp_header,
     };
     let app = Router::new()
         .route("/api/v1/settings", get(settings))
@@ -439,6 +562,7 @@ async fn main() -> Result<()> {
         .route("/api/v1/findings", get(findings))
         .route("/api/v1/finding", get(finding_detail))
         .route("/api/v1/finding-review", post(finding_review))
+        .route("/api/v1/review", post(panel_review))
         .route("/api/v1/incidents", get(incidents))
         .route("/api/v1/incident", get(incident_detail))
         .route("/api/v1/baseline-drifts", get(baseline_drifts))
@@ -447,7 +571,10 @@ async fn main() -> Result<()> {
         .route("/api/v1/audit-logs", get(audit_logs))
         .route("/api/v1/ingest", post(ingest))
         .fallback_service(ServeDir::new(web_dir))
-        .layer(middleware::from_fn(security_headers))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            security_headers,
+        ))
         .with_state(state);
     info!(bind = %args.bind, "vps-sentinel panel started");
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
@@ -471,7 +598,11 @@ async fn settings(State(state): State<AppState>, headers: HeaderMap) -> Json<Val
     }))
 }
 
-async fn security_headers(request: Request<Body>, next: Next) -> Response {
+async fn security_headers(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
     let mut response = next.run(request).await;
     let headers = response.headers_mut();
     headers.insert(
@@ -486,17 +617,66 @@ async fn security_headers(request: Request<Body>, next: Next) -> Response {
         header::CACHE_CONTROL,
         HeaderValue::from_static("no-store, no-cache, must-revalidate, max-age=0"),
     );
-    headers.insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
-        ),
-    );
+    headers.insert(header::CONTENT_SECURITY_POLICY, state.csp_header);
     headers.insert(
         header::HeaderName::from_static("permissions-policy"),
         HeaderValue::from_static("geolocation=(), microphone=(), camera=()"),
     );
     response
+}
+
+fn panel_csp_header(web_dir: &Path) -> HeaderValue {
+    let mut policy = String::from("default-src 'self'; script-src 'self'");
+    for hash in inline_script_hashes(web_dir) {
+        policy.push_str(" 'sha256-");
+        policy.push_str(&hash);
+        policy.push('\'');
+    }
+    policy.push_str(
+        "; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+    );
+    HeaderValue::from_str(&policy).unwrap_or_else(|error| {
+        warn!(%error, "failed to build panel CSP header; falling back to strict script policy");
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        )
+    })
+}
+
+fn inline_script_hashes(web_dir: &Path) -> BTreeSet<String> {
+    let index_path = web_dir.join("index.html");
+    let Ok(html) = fs::read_to_string(&index_path) else {
+        warn!(path = %index_path.display(), "panel index.html is not readable; inline scripts will be blocked by CSP");
+        return BTreeSet::new();
+    };
+    let mut hashes = BTreeSet::new();
+    let mut rest = html.as_str();
+    while let Some(script_offset) = rest.find("<script") {
+        rest = &rest[script_offset..];
+        let Some(tag_end) = rest.find('>') else {
+            break;
+        };
+        let tag = &rest[..=tag_end];
+        rest = &rest[tag_end + 1..];
+        let Some(close_offset) = rest.find("</script>") else {
+            break;
+        };
+        let body = &rest[..close_offset];
+        rest = &rest[close_offset + "</script>".len()..];
+        let tag_lower = tag.to_ascii_lowercase();
+        if tag_lower.contains(" src=")
+            || tag_lower.contains(" src\t")
+            || tag_lower.contains(" src\n")
+        {
+            continue;
+        }
+        if body.trim().is_empty() {
+            continue;
+        }
+        let digest = Sha256::digest(body.as_bytes());
+        hashes.insert(BASE64_STANDARD.encode(digest));
+    }
+    hashes
 }
 
 async fn stream_ticket(
@@ -774,13 +954,23 @@ async fn summary(
     headers: HeaderMap,
 ) -> Result<Json<Value>, PanelApiError> {
     verify_panel_role(&state, &headers, PanelRole::Public)?;
+    let active_findings_filter =
+        review_not_false_positive_filter("findings", ReviewTargetType::Finding);
+    let active_incidents_filter =
+        review_not_false_positive_filter("incidents", ReviewTargetType::Incident);
+    let active_drifts_filter =
+        review_not_false_positive_filter("baseline_drifts", ReviewTargetType::BaselineDrift);
     let by_severity = state
         .repo
-        .query_all("SELECT severity, COUNT(*) AS count FROM findings GROUP BY severity")
+        .query_all(&format!(
+            "SELECT severity, COUNT(*) AS count FROM findings WHERE {active_findings_filter} GROUP BY severity"
+        ))
         .await?;
     let by_category = state
         .repo
-        .query_all("SELECT category, COUNT(*) AS count FROM findings GROUP BY category")
+        .query_all(&format!(
+            "SELECT category, COUNT(*) AS count FROM findings WHERE {active_findings_filter} GROUP BY category"
+        ))
         .await?;
     let by_block_status = state
         .repo
@@ -795,9 +985,9 @@ async fn summary(
     let node_count = nodes.len();
     Ok(Json(json!({
         "nodes": node_count,
-        "findings": state.repo.count("findings", None).await?,
-        "incidents": state.repo.count("incidents", None).await?,
-        "baseline_drifts": state.repo.count("baseline_drifts", None).await?,
+        "findings": state.repo.count("findings", Some(&active_findings_filter)).await?,
+        "incidents": state.repo.count("incidents", Some(&active_incidents_filter)).await?,
+        "baseline_drifts": state.repo.count("baseline_drifts", Some(&active_drifts_filter)).await?,
         "active_blocks": state.repo.count("active_blocks", Some("expired = 0")).await?,
         "probe_sources": state.repo.count("probe_sources", None).await?,
         "by_severity": by_severity,
@@ -915,6 +1105,7 @@ async fn nodes(
             "node_name",
             "agent_version",
             "privacy_mode",
+            "storage_json",
             "metrics_json",
         ][..],
     };
@@ -979,10 +1170,41 @@ async fn finding_review(
     verify_admin_auth(&state, &headers)?;
     let review = FindingReview::try_from(request)?;
     state.repo.upsert_finding_review(&review).await?;
+    let panel_review = PanelReview {
+        target_type: ReviewTargetType::Finding,
+        target_id: review.finding_id.clone(),
+        verdict: review.verdict.clone(),
+        note: review.note.clone(),
+        reviewer: review.reviewer.clone(),
+        reviewed_at: review.reviewed_at,
+    };
     let _ = state
         .events
         .send(PanelStreamEvent::refresh(PanelRole::Admin));
-    Ok(Json(json!({ "ok": true, "finding_id": review.finding_id })))
+    Ok(Json(json!({
+        "ok": true,
+        "finding_id": &review.finding_id,
+        "review": panel_review.response_review(),
+    })))
+}
+
+async fn panel_review(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<PanelReviewRequest>,
+) -> Result<Json<Value>, PanelApiError> {
+    verify_admin_auth(&state, &headers)?;
+    let review = PanelReview::try_from(request)?;
+    state.repo.upsert_panel_review(&review).await?;
+    let _ = state
+        .events
+        .send(PanelStreamEvent::refresh(PanelRole::Admin));
+    Ok(Json(json!({
+        "ok": true,
+        "target_type": review.target_type.as_str(),
+        "target_id": &review.target_id,
+        "review": review.response_review(),
+    })))
 }
 
 async fn incidents(
@@ -1038,10 +1260,13 @@ async fn baseline_drifts(
             order_column: "timestamp",
             active_filter: None,
             columns: &[
+                "id",
+                "finding_id",
                 "timestamp",
                 "node_id AS node_name",
                 "severity",
                 "rule_id",
+                "category",
                 "tier",
                 "subject",
                 "review_action",
@@ -1062,6 +1287,34 @@ async fn active_blocks(
             "blocked_at",
             "node_id AS node_name",
             "ip",
+            "(
+                SELECT network_prefix FROM probe_sources
+                WHERE probe_sources.node_id = active_blocks.node_id
+                  AND probe_sources.source_ip = active_blocks.ip
+                ORDER BY probe_sources.last_seen DESC
+                LIMIT 1
+             ) AS network_prefix",
+            "(
+                SELECT country FROM probe_sources
+                WHERE probe_sources.node_id = active_blocks.node_id
+                  AND probe_sources.source_ip = active_blocks.ip
+                ORDER BY probe_sources.last_seen DESC
+                LIMIT 1
+             ) AS country",
+            "(
+                SELECT asn FROM probe_sources
+                WHERE probe_sources.node_id = active_blocks.node_id
+                  AND probe_sources.source_ip = active_blocks.ip
+                ORDER BY probe_sources.last_seen DESC
+                LIMIT 1
+             ) AS asn",
+            "(
+                SELECT organization FROM probe_sources
+                WHERE probe_sources.node_id = active_blocks.node_id
+                  AND probe_sources.source_ip = active_blocks.ip
+                ORDER BY probe_sources.last_seen DESC
+                LIMIT 1
+             ) AS organization",
             "rule_id",
             "backend",
             "reason",
@@ -1153,6 +1406,12 @@ async fn paginated_dataset(
 ) -> Result<Json<Value>, PanelApiError> {
     let request = PageRequest::try_from(query)?;
     let (mut items, total) = state.repo.query_page(dataset, &request, role).await?;
+    if let Some(target_type) = review_target_for_table(dataset.table) {
+        state
+            .repo
+            .attach_panel_reviews(target_type, &mut items, role)
+            .await?;
+    }
     scope_panel_value(&mut items, role);
     Ok(Json(json!({
         "items": items,
@@ -1160,6 +1419,27 @@ async fn paginated_dataset(
         "limit": request.limit,
         "offset": request.offset
     })))
+}
+
+fn review_target_for_table(table: &str) -> Option<ReviewTargetType> {
+    match table {
+        "findings" => Some(ReviewTargetType::Finding),
+        "incidents" => Some(ReviewTargetType::Incident),
+        "baseline_drifts" => Some(ReviewTargetType::BaselineDrift),
+        _ => None,
+    }
+}
+
+fn review_not_false_positive_filter(table: &str, target_type: ReviewTargetType) -> String {
+    format!(
+        "NOT EXISTS (
+            SELECT 1 FROM panel_reviews review
+            WHERE review.target_type = '{}'
+              AND review.target_id = {table}.id
+              AND review.verdict = 'false_positive'
+        )",
+        target_type.as_str()
+    )
 }
 
 impl TryFrom<PageQuery> for PageRequest {
@@ -1192,6 +1472,11 @@ fn parse_panel_time(value: &str) -> Result<DateTime<Utc>, PanelApiError> {
     DateTime::parse_from_rfc3339(value)
         .map(|timestamp| timestamp.with_timezone(&Utc))
         .or_else(|_| {
+            NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M")
+                .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M"))
+                .map(|timestamp| timestamp.and_utc())
+        })
+        .or_else(|_| {
             NaiveDate::parse_from_str(value, "%Y-%m-%d").map(|date| {
                 date.and_hms_opt(0, 0, 0)
                     .expect("midnight is valid")
@@ -1199,6 +1484,30 @@ fn parse_panel_time(value: &str) -> Result<DateTime<Utc>, PanelApiError> {
             })
         })
         .map_err(|_| PanelApiError::new(StatusCode::BAD_REQUEST, "invalid_time"))
+}
+
+fn baseline_category_from_rule(rule_id: &str) -> &'static str {
+    match rule_id
+        .split('-')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_uppercase()
+        .as_str()
+    {
+        "AUTH" | "SSH" => "ssh",
+        "USER" => "user",
+        "PRIV" => "privilege",
+        "PERSIST" => "persistence",
+        "PROC" => "process",
+        "NET" | "SERVICE" => "network",
+        "FILE" => "file_integrity",
+        "WEB" => "web",
+        "DOCKER" => "docker",
+        "ROOTKIT" => "rootkit",
+        "CONFIG" => "config_risk",
+        "SYS" | "SYSTEM" => "system",
+        _ => "system",
+    }
 }
 
 impl Repository {
@@ -1278,6 +1587,13 @@ impl Repository {
             "metrics_json",
             "TEXT NOT NULL DEFAULT '{}'",
             "TEXT NOT NULL DEFAULT '{}'",
+        )
+        .await?;
+        self.ensure_column(
+            "baseline_drifts",
+            "category",
+            "TEXT NOT NULL DEFAULT 'system'",
+            "VARCHAR(64) NOT NULL DEFAULT 'system'",
         )
         .await
     }
@@ -1548,6 +1864,7 @@ impl Repository {
         let end = (start + request.limit).min(rows.len());
         let mut items = Value::Array(rows[start..end].to_vec());
         expand_dataset_json_columns("nodes", &mut items);
+        attach_node_statuses(&mut items);
         if should_redact_dataset("nodes", role) {
             redact_panel_value(&mut items);
         }
@@ -1644,7 +1961,11 @@ impl Repository {
         expand_json_column(&mut detail, "impact_json", "impact");
         expand_json_column(&mut detail, "recommendations_json", "recommendations");
         if role == PanelRole::Admin {
-            detail["review"] = self.finding_review_value(id).await?.unwrap_or(Value::Null);
+            detail["review"] = self
+                .panel_review_value(ReviewTargetType::Finding, id)
+                .await?
+                .or(self.finding_review_value(id).await?)
+                .unwrap_or(Value::Null);
         }
         redact_panel_value(&mut detail);
         scope_panel_value(&mut detail, role);
@@ -1679,6 +2000,12 @@ impl Repository {
             ));
         };
         expand_json_column(&mut detail, "payload_json", "payload");
+        if role == PanelRole::Admin {
+            detail["review"] = self
+                .panel_review_value(ReviewTargetType::Incident, id)
+                .await?
+                .unwrap_or(Value::Null);
+        }
         redact_panel_value(&mut detail);
         scope_panel_value(&mut detail, role);
         Ok(detail)
@@ -1686,7 +2013,10 @@ impl Repository {
 
     async fn trend_points(&self, request: &PageRequest) -> Result<Value, PanelApiError> {
         let mut values = Vec::new();
-        let mut filters = Vec::new();
+        let mut filters = vec![review_not_false_positive_filter(
+            "findings",
+            ReviewTargetType::Finding,
+        )];
         if let Some(from) = request.from {
             filters.push(format!(
                 "timestamp >= {}",
@@ -1701,11 +2031,7 @@ impl Repository {
             ));
             values.push(DbValue::Text(to.to_rfc3339()));
         }
-        let where_sql = if filters.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {}", filters.join(" AND "))
-        };
+        let where_sql = format!(" WHERE {}", filters.join(" AND "));
         let limit_placeholder = self.placeholder(values.len() + 1);
         values.push(DbValue::Integer(5000));
         let sql = format!(
@@ -1761,6 +2087,67 @@ impl Repository {
             .await
     }
 
+    async fn panel_review_value(
+        &self,
+        target_type: ReviewTargetType,
+        target_id: &str,
+    ) -> Result<Option<Value>, PanelApiError> {
+        let columns = [
+            "target_type",
+            "target_id",
+            "verdict",
+            "note",
+            "reviewer",
+            "reviewed_at",
+        ];
+        let sql = format!(
+            "SELECT {} FROM panel_reviews WHERE target_type = {} AND target_id = {}",
+            columns.join(", "),
+            self.placeholder(1),
+            self.placeholder(2)
+        );
+        self.query_one_with_values(
+            &sql,
+            &[
+                DbValue::Text(target_type.as_str().to_string()),
+                DbValue::Text(target_id.to_string()),
+            ],
+        )
+        .await
+    }
+
+    async fn attach_panel_reviews(
+        &self,
+        target_type: ReviewTargetType,
+        rows: &mut Value,
+        role: PanelRole,
+    ) -> Result<(), PanelApiError> {
+        let Value::Array(items) = rows else {
+            return Ok(());
+        };
+        for item in items {
+            let Some(target_id) = item.get("id").and_then(Value::as_str).map(str::to_string) else {
+                continue;
+            };
+            if let Some(review) = self.panel_review_value(target_type, &target_id).await? {
+                let verdict = review
+                    .get("verdict")
+                    .and_then(Value::as_str)
+                    .unwrap_or("needs_review")
+                    .to_string();
+                item["review_verdict"] = Value::String(verdict);
+                item["status"] = item["review_verdict"].clone();
+                if role == PanelRole::Admin {
+                    item["review"] = review;
+                }
+            } else {
+                item["review_verdict"] = Value::String("needs_review".to_string());
+                item["status"] = Value::String("needs_review".to_string());
+            }
+        }
+        Ok(())
+    }
+
     async fn query_one_with_values(
         &self,
         sql: &str,
@@ -1788,6 +2175,73 @@ impl Repository {
                 "finding_not_found",
             ));
         }
+        self.write_finding_review_row(review).await?;
+        let panel_review = PanelReview {
+            target_type: ReviewTargetType::Finding,
+            target_id: review.finding_id.clone(),
+            verdict: review.verdict.clone(),
+            note: review.note.clone(),
+            reviewer: review.reviewer.clone(),
+            reviewed_at: review.reviewed_at,
+        };
+        self.write_panel_review_row(&panel_review).await?;
+        self.insert_audit_log(
+            "finding_review",
+            &review.reviewer,
+            "finding",
+            &review.finding_id,
+            json!({
+                "verdict": review.verdict,
+                "note_present": !review.note.is_empty()
+            }),
+            review.reviewed_at,
+        )
+        .await
+    }
+
+    async fn upsert_panel_review(&self, review: &PanelReview) -> Result<(), PanelApiError> {
+        let exists_sql = format!(
+            "SELECT COUNT(*) AS count FROM {} WHERE {} = {}",
+            review.target_type.table(),
+            review.target_type.id_column(),
+            self.placeholder(1)
+        );
+        if self
+            .count_sql(&exists_sql, &[DbValue::Text(review.target_id.clone())])
+            .await?
+            == 0
+        {
+            return Err(PanelApiError::new(
+                StatusCode::NOT_FOUND,
+                review.target_type.not_found_error(),
+            ));
+        }
+        self.write_panel_review_row(review).await?;
+        if review.target_type == ReviewTargetType::Finding {
+            let legacy_review = FindingReview {
+                finding_id: review.target_id.clone(),
+                verdict: review.verdict.clone(),
+                note: review.note.clone(),
+                reviewer: review.reviewer.clone(),
+                reviewed_at: review.reviewed_at,
+            };
+            self.write_finding_review_row(&legacy_review).await?;
+        }
+        self.insert_audit_log(
+            "panel_review",
+            &review.reviewer,
+            review.target_type.as_str(),
+            &review.target_id,
+            json!({
+                "verdict": review.verdict,
+                "note_present": !review.note.is_empty()
+            }),
+            review.reviewed_at,
+        )
+        .await
+    }
+
+    async fn write_finding_review_row(&self, review: &FindingReview) -> Result<(), PanelApiError> {
         let columns = ["finding_id", "verdict", "note", "reviewer", "reviewed_at"];
         let sql = self.upsert_sql(
             "finding_reviews",
@@ -1805,17 +2259,34 @@ impl Repository {
                 DbValue::Text(review.reviewed_at.to_rfc3339()),
             ],
         )
-        .await?;
-        self.insert_audit_log(
-            "finding_review",
-            &review.reviewer,
-            "finding",
-            &review.finding_id,
-            json!({
-                "verdict": review.verdict,
-                "note_present": !review.note.is_empty()
-            }),
-            review.reviewed_at,
+        .await
+    }
+
+    async fn write_panel_review_row(&self, review: &PanelReview) -> Result<(), PanelApiError> {
+        let columns = [
+            "target_type",
+            "target_id",
+            "verdict",
+            "note",
+            "reviewer",
+            "reviewed_at",
+        ];
+        let sql = self.upsert_sql(
+            "panel_reviews",
+            &columns,
+            &["target_type", "target_id"],
+            &["verdict", "note", "reviewer", "reviewed_at"],
+        );
+        self.execute_write(
+            &sql,
+            &[
+                DbValue::Text(review.target_type.as_str().to_string()),
+                DbValue::Text(review.target_id.clone()),
+                DbValue::Text(review.verdict.clone()),
+                DbValue::Text(review.note.clone()),
+                DbValue::Text(review.reviewer.clone()),
+                DbValue::Text(review.reviewed_at.to_rfc3339()),
+            ],
         )
         .await
     }
@@ -2288,6 +2759,11 @@ impl Repository {
     ) -> Result<(), PanelApiError> {
         let subject = redact_ip_text(&drift.subject);
         let reasons = redact_text_list(&drift.reasons);
+        let category = if drift.category.trim().is_empty() {
+            baseline_category_from_rule(&drift.rule_id).to_string()
+        } else {
+            drift.category.trim().to_string()
+        };
         let id = format!(
             "{}:{}:{}:{}",
             node_id, drift.finding_id, subject, drift.timestamp
@@ -2299,6 +2775,7 @@ impl Repository {
                 "node_id",
                 "finding_id",
                 "rule_id",
+                "category",
                 "severity",
                 "subject",
                 "timestamp",
@@ -2311,6 +2788,7 @@ impl Repository {
             &["id"],
             &[
                 "severity",
+                "category",
                 "subject",
                 "timestamp",
                 "tier",
@@ -2327,6 +2805,7 @@ impl Repository {
                 DbValue::Text(node_id.to_string()),
                 DbValue::Text(drift.finding_id.clone()),
                 DbValue::Text(drift.rule_id.clone()),
+                DbValue::Text(category),
                 DbValue::Text(drift.severity.clone()),
                 DbValue::Text(subject),
                 DbValue::Text(drift.timestamp.to_rfc3339()),
@@ -2933,8 +3412,28 @@ fn expand_dataset_json_columns(table: &str, rows: &mut Value) {
             expand_json_column(row, "rule_ids_json", "rule_ids");
         }
         if table == "nodes" {
+            expand_json_column(row, "storage_json", "storage");
             expand_json_column(row, "metrics_json", "metrics");
         }
+    }
+}
+
+fn attach_node_statuses(rows: &mut Value) {
+    let Value::Array(items) = rows else {
+        return;
+    };
+    let now = Utc::now();
+    for item in items {
+        let node_name = item
+            .get("node_name")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let version = item
+            .get("agent_version")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let status = panel_node_status(node_name, version, item.get("last_seen_at"), now);
+        item["status"] = Value::String(status.to_string());
     }
 }
 
@@ -3120,8 +3619,9 @@ mod tests {
     use super::{
         redact_ip_text, redact_panel_value, resolve_panel_role, scope_panel_value,
         verify_admin_auth, verify_view_auth, view_token_from_headers, AppState, DbValue,
-        FindingReview, FindingReviewRequest, PageQuery, PageRequest, PanelDataset, PanelRole,
-        PanelStreamEvent, Repository, RepositoryDriver, SecretResolver, MAX_PAGE_LIMIT,
+        FindingReview, FindingReviewRequest, PageQuery, PageRequest, PanelDataset, PanelReview,
+        PanelReviewRequest, PanelRole, PanelStreamEvent, Repository, RepositoryDriver,
+        ReviewTargetType, SecretResolver, MAX_PAGE_LIMIT,
     };
     use axum::http::{header, HeaderMap, HeaderValue};
     use chrono::Utc;
@@ -3596,6 +4096,36 @@ mod tests {
         assert_eq!(err.code, "invalid_review_verdict");
     }
 
+    #[test]
+    fn panel_review_accepts_baseline_drift_target() {
+        let review = PanelReview::try_from(PanelReviewRequest {
+            target_type: "baseline_drifts".to_string(),
+            target_id: "drift-1".to_string(),
+            verdict: "confirmed".to_string(),
+            note: "checked".to_string(),
+            reviewer: "panel".to_string(),
+        })
+        .expect("baseline drift review should be valid");
+
+        assert_eq!(review.target_type, ReviewTargetType::BaselineDrift);
+        assert_eq!(review.target_id, "drift-1");
+        assert_eq!(review.verdict, "confirmed");
+    }
+
+    #[test]
+    fn panel_review_rejects_unknown_target_type() {
+        let err = PanelReview::try_from(PanelReviewRequest {
+            target_type: "node".to_string(),
+            target_id: "node-1".to_string(),
+            verdict: "confirmed".to_string(),
+            note: String::new(),
+            reviewer: String::new(),
+        })
+        .expect_err("unknown target type should fail");
+
+        assert_eq!(err.code, "invalid_review_target_type");
+    }
+
     fn test_state(view_token: Option<&str>, admin_token: Option<&str>) -> AppState {
         AppState {
             repo: Arc::new(test_repo()),
@@ -3611,6 +4141,9 @@ mod tests {
             max_body_bytes: 1024,
             events: broadcast::channel::<PanelStreamEvent>(8).0,
             stream_tickets: Arc::new(Mutex::new(BTreeMap::new())),
+            csp_header: HeaderValue::from_static(
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
+            ),
         }
     }
 

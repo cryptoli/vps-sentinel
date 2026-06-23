@@ -5,6 +5,8 @@ use sentinel_core::SentinelResult;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::{ffi::CString, os::unix::ffi::OsStrExt};
 
 const STATE_RULE_ID: &str = "panel_node_metrics";
 const PROC_ROOT: &str = "/proc";
@@ -24,6 +26,9 @@ pub struct NodeMetrics {
     pub memory_used_percent: Option<f64>,
     pub swap_total_bytes: Option<u64>,
     pub swap_used_bytes: Option<u64>,
+    pub disk_total_bytes: Option<u64>,
+    pub disk_used_bytes: Option<u64>,
+    pub disk_used_percent: Option<f64>,
     pub uptime_seconds: Option<u64>,
     pub uptime_days: Option<f64>,
     pub network_rx_bytes: Option<u64>,
@@ -32,6 +37,14 @@ pub struct NodeMetrics {
     pub network_tx_rate_bps: Option<u64>,
     pub network_interfaces: Option<u16>,
     pub agent_rss_kb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +62,7 @@ struct RawNodeMetrics {
     cpu_ticks: Option<CpuTicks>,
     load: Option<LoadAverage>,
     memory: Option<MemoryStats>,
+    disk: Option<DiskStats>,
     uptime_seconds: Option<u64>,
     network: Option<NetworkStats>,
     agent_rss_kb: Option<u64>,
@@ -76,6 +90,12 @@ struct MemoryStats {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DiskStats {
+    total_bytes: u64,
+    used_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct NetworkStats {
     rx_bytes: u64,
     tx_bytes: u64,
@@ -97,6 +117,7 @@ fn collect_raw_metrics(proc_root: &Path) -> RawNodeMetrics {
         cpu_ticks: read_cpu_ticks(proc_root.join("stat")),
         load: read_load_average(proc_root.join("loadavg")),
         memory: read_memory_stats(proc_root.join("meminfo")),
+        disk: read_root_disk_stats(),
         uptime_seconds: read_uptime_seconds(proc_root.join("uptime")),
         network: read_network_stats(proc_root.join("net/dev")),
         agent_rss_kb: current_rss_kb(),
@@ -127,6 +148,9 @@ fn build_node_metrics(
         memory_used_percent: raw.memory.and_then(memory_used_percent),
         swap_total_bytes: raw.memory.map(|memory| memory.swap_total_bytes),
         swap_used_bytes: raw.memory.map(|memory| memory.swap_used_bytes),
+        disk_total_bytes: raw.disk.map(|disk| disk.total_bytes),
+        disk_used_bytes: raw.disk.map(|disk| disk.used_bytes),
+        disk_used_percent: raw.disk.and_then(disk_used_percent),
         uptime_seconds: raw.uptime_seconds,
         uptime_days: raw
             .uptime_seconds
@@ -137,6 +161,10 @@ fn build_node_metrics(
         network_tx_rate_bps,
         network_interfaces: raw.network.map(|network| network.interfaces),
         agent_rss_kb: raw.agent_rss_kb,
+        country_code: None,
+        country: None,
+        region: None,
+        city: None,
     }
 }
 
@@ -196,6 +224,16 @@ fn memory_used_percent(memory: MemoryStats) -> Option<f64> {
     } else {
         Some(round2(
             memory.used_bytes as f64 / memory.total_bytes as f64 * 100.0,
+        ))
+    }
+}
+
+fn disk_used_percent(disk: DiskStats) -> Option<f64> {
+    if disk.total_bytes == 0 {
+        None
+    } else {
+        Some(round2(
+            disk.used_bytes as f64 / disk.total_bytes as f64 * 100.0,
         ))
     }
 }
@@ -277,6 +315,36 @@ fn parse_memory_stats(meminfo: &str) -> Option<MemoryStats> {
         swap_used_bytes: swap_total
             .saturating_sub(swap_free)
             .saturating_mul(BYTES_PER_KIB),
+    })
+}
+
+#[cfg(unix)]
+fn read_root_disk_stats() -> Option<DiskStats> {
+    read_disk_stats(Path::new("/"))
+}
+
+#[cfg(not(unix))]
+fn read_root_disk_stats() -> Option<DiskStats> {
+    None
+}
+
+#[cfg(unix)]
+fn read_disk_stats(path: &Path) -> Option<DiskStats> {
+    let c_path = CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    let result = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+    if result != 0 {
+        return None;
+    }
+    let stat = unsafe { stat.assume_init() };
+    let block_size = stat.f_frsize.max(stat.f_bsize) as u64;
+    let total_blocks = stat.f_blocks as u64;
+    let available_blocks = stat.f_bavail as u64;
+    let total_bytes = total_blocks.saturating_mul(block_size);
+    let available_bytes = available_blocks.saturating_mul(block_size);
+    Some(DiskStats {
+        total_bytes,
+        used_bytes: total_bytes.saturating_sub(available_bytes),
     })
 }
 

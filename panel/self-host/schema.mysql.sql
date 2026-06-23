@@ -45,6 +45,16 @@ CREATE TABLE IF NOT EXISTS finding_reviews (
   reviewed_at VARCHAR(64) NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS panel_reviews (
+  target_type VARCHAR(64) NOT NULL,
+  target_id VARCHAR(191) NOT NULL,
+  verdict VARCHAR(32) NOT NULL,
+  note TEXT NOT NULL,
+  reviewer VARCHAR(128) NOT NULL,
+  reviewed_at VARCHAR(64) NOT NULL,
+  PRIMARY KEY (target_type, target_id)
+);
+
 CREATE TABLE IF NOT EXISTS panel_audit_logs (
   id VARCHAR(191) PRIMARY KEY,
   action VARCHAR(64) NOT NULL,
@@ -73,6 +83,7 @@ CREATE TABLE IF NOT EXISTS baseline_drifts (
   node_id VARCHAR(191) NOT NULL,
   finding_id VARCHAR(191) NOT NULL,
   rule_id VARCHAR(64) NOT NULL,
+  category VARCHAR(64) NOT NULL DEFAULT 'system',
   severity VARCHAR(32) NOT NULL,
   subject VARCHAR(512) NOT NULL,
   timestamp VARCHAR(64) NOT NULL,
@@ -128,6 +139,7 @@ CREATE INDEX idx_nodes_last_seen ON nodes(last_seen_at);
 CREATE INDEX idx_findings_node_time ON findings(node_id, timestamp);
 CREATE INDEX idx_findings_severity_time ON findings(severity, timestamp);
 CREATE INDEX idx_finding_reviews_verdict ON finding_reviews(verdict, reviewed_at);
+CREATE INDEX idx_panel_reviews_verdict ON panel_reviews(target_type, verdict, reviewed_at);
 CREATE INDEX idx_panel_audit_logs_created ON panel_audit_logs(created_at);
 CREATE INDEX idx_incidents_node_time ON incidents(node_id, last_seen);
 CREATE INDEX idx_baseline_node_time ON baseline_drifts(node_id, timestamp);

@@ -18,7 +18,8 @@ use sentinel_core::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::io::{Read, Write};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 use tracing::{debug, warn};
 use uuid::Uuid;
@@ -107,6 +108,7 @@ pub struct PanelIncident {
 pub struct PanelBaselineDrift {
     pub finding_id: String,
     pub rule_id: String,
+    pub category: String,
     pub severity: Severity,
     pub subject: String,
     pub timestamp: DateTime<Utc>,
@@ -399,6 +401,10 @@ fn node_snapshot(
     store: &SqliteStore,
 ) -> SentinelResult<PanelNodeSnapshot> {
     let node_name = panel_node_name(config);
+    let mut metrics = collect_node_metrics(store).ok();
+    if let Some(metrics) = metrics.as_mut() {
+        apply_configured_node_location(config, metrics);
+    }
     Ok(PanelNodeSnapshot {
         node_id: node_name.clone(),
         node_name,
@@ -408,7 +414,7 @@ fn node_snapshot(
         privacy_mode: config.panel.privacy_mode.clone(),
         enabled_features: enabled_features(config),
         storage: store.stats().ok(),
-        metrics: collect_node_metrics(store).ok(),
+        metrics,
     })
 }
 
@@ -644,7 +650,6 @@ fn panel_probe_sources(
     findings: &[Finding],
     blocks: &[BlockEntry],
 ) -> Vec<PanelProbeSource> {
-    let ip_intel_catalog = IpIntelCatalog::load(config);
     let mut sources = BTreeMap::<IpAddr, ProbeSourceAggregate>::new();
     for finding in findings {
         let Some(ip) = finding_source_ip(finding) else {
@@ -714,6 +719,9 @@ fn panel_probe_sources(
         };
         source.block_reason = redact_text(config, &block.reason);
     }
+
+    let mut ip_intel_catalog = IpIntelCatalog::load(config);
+    ip_intel_catalog.extend_remote(config, sources.keys().copied());
 
     let mut items = sources
         .into_values()
@@ -807,6 +815,37 @@ impl IpIntelCatalog {
         Self { entries }
     }
 
+    fn extend_remote(&mut self, config: &SentinelConfig, ips: impl Iterator<Item = IpAddr>) {
+        if !config.panel.ip_intel_remote_enabled {
+            return;
+        }
+        let lookup_ips = ips
+            .filter(|ip| self.lookup(*ip).is_none())
+            .take(config.panel.ip_intel_remote_max_lookups)
+            .collect::<Vec<_>>();
+        if lookup_ips.is_empty() {
+            return;
+        }
+        match query_cymru_ip_intel(config, &lookup_ips) {
+            Ok(mut remote_entries) => {
+                if remote_entries.is_empty() {
+                    return;
+                }
+                let remaining = config
+                    .panel
+                    .ip_intel_max_entries
+                    .saturating_sub(self.entries.len());
+                remote_entries.truncate(remaining);
+                self.entries.extend(remote_entries);
+                self.entries
+                    .sort_by_key(|entry| std::cmp::Reverse(entry.prefix));
+            }
+            Err(err) => {
+                debug!(error = %err, "remote IP intelligence lookup failed");
+            }
+        }
+    }
+
     fn lookup(&self, ip: IpAddr) -> Option<&IpIntelEntry> {
         self.entries
             .iter()
@@ -821,6 +860,80 @@ struct IpIntelEntry {
     country: String,
     asn: String,
     organization: String,
+}
+
+fn query_cymru_ip_intel(
+    config: &SentinelConfig,
+    ips: &[IpAddr],
+) -> SentinelResult<Vec<IpIntelEntry>> {
+    let timeout = Duration::from_millis(config.panel.ip_intel_remote_timeout_ms);
+    let endpoint = config.panel.ip_intel_remote_endpoint.trim();
+    let mut addrs = endpoint
+        .to_socket_addrs()
+        .map_err(|err| SentinelError::Command(format!("resolve {endpoint}: {err}")))?;
+    let addr = addrs
+        .next()
+        .ok_or_else(|| SentinelError::Command(format!("resolve {endpoint}: no address")))?;
+    let mut stream = TcpStream::connect_timeout(&addr, timeout)
+        .map_err(|err| SentinelError::Command(format!("connect {endpoint}: {err}")))?;
+    stream
+        .set_read_timeout(Some(timeout))
+        .map_err(|err| SentinelError::Command(format!("set read timeout: {err}")))?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|err| SentinelError::Command(format!("set write timeout: {err}")))?;
+    let mut request = String::from("begin\nverbose\n");
+    for ip in ips {
+        request.push_str(&ip.to_string());
+        request.push('\n');
+    }
+    request.push_str("end\n");
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|err| SentinelError::Command(format!("write whois request: {err}")))?;
+    let mut response = String::new();
+    stream
+        .read_to_string(&mut response)
+        .map_err(|err| SentinelError::Command(format!("read whois response: {err}")))?;
+    Ok(response
+        .lines()
+        .filter_map(parse_cymru_ip_intel_line)
+        .collect())
+}
+
+fn parse_cymru_ip_intel_line(line: &str) -> Option<IpIntelEntry> {
+    let fields = line.split('|').map(str::trim).collect::<Vec<_>>();
+    if fields.len() < 7 || fields[0].eq_ignore_ascii_case("as") {
+        return None;
+    }
+    let asn = clean_cymru_asn(fields[0]);
+    let country = clean_ip_intel_field(fields[3]);
+    let organization = clean_ip_intel_field(fields[6]);
+    let (network, prefix) = parse_cidr(fields[2]).or_else(|| {
+        fields[1]
+            .parse::<IpAddr>()
+            .ok()
+            .map(|ip| (ip, if ip.is_ipv4() { 32 } else { 128 }))
+    })?;
+    Some(IpIntelEntry {
+        network,
+        prefix,
+        country,
+        asn,
+        organization,
+    })
+}
+
+fn clean_cymru_asn(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() || value.eq_ignore_ascii_case("na") {
+        return "unknown".to_string();
+    }
+    if value.to_ascii_uppercase().starts_with("AS") {
+        clean_ip_intel_field(value)
+    } else {
+        format!("AS{}", clean_ip_intel_field(value))
+    }
 }
 
 fn parse_ip_intel_line(line: &str) -> Option<IpIntelEntry> {
@@ -1009,6 +1122,7 @@ fn baseline_drifts_from_panel_findings(findings: &[PanelFinding]) -> Vec<PanelBa
             Some(PanelBaselineDrift {
                 finding_id: finding.id.clone(),
                 rule_id: finding.rule_id.clone(),
+                category: finding.category.clone(),
                 severity: finding.severity,
                 subject: finding.subject.clone(),
                 timestamp: finding.timestamp,
@@ -1034,6 +1148,7 @@ fn baseline_drift_from_finding(
     Some(PanelBaselineDrift {
         finding_id: finding.id.clone(),
         rule_id: finding.rule_id.clone(),
+        category: finding.category.to_string(),
         severity: finding.severity,
         subject: redact_subject(config, &finding.subject),
         timestamp: finding.timestamp,
@@ -1054,6 +1169,7 @@ pub fn baseline_drift_from_event(event: &RawEvent) -> Option<PanelBaselineDrift>
     Some(PanelBaselineDrift {
         finding_id: String::new(),
         rule_id: "BASELINE".to_string(),
+        category: event.field("category").unwrap_or("system").to_string(),
         severity: Severity::Low,
         subject: event
             .field("path")
@@ -1150,6 +1266,9 @@ fn sanitize_panel_envelope(config: &SentinelConfig, mut payload: PanelEnvelope) 
     payload.node.agent_version = env!("CARGO_PKG_VERSION").to_string();
     payload.node.privacy_mode = config.panel.privacy_mode.clone();
     payload.node.enabled_features = enabled_features(config);
+    if let Some(metrics) = payload.node.metrics.as_mut() {
+        apply_configured_node_location(config, metrics);
+    }
 
     for finding in &mut payload.findings {
         sanitize_panel_finding(config, finding);
@@ -1246,6 +1365,42 @@ fn truncate_node_name(value: &str) -> String {
     value[..end].to_string()
 }
 
+fn apply_configured_node_location(config: &SentinelConfig, metrics: &mut NodeMetrics) {
+    let location = &config.panel.location;
+    metrics.country_code = normalize_country_code(&location.country_code);
+    metrics.country = safe_location_value(&location.country);
+    metrics.region = safe_location_value(&location.region);
+    metrics.city = safe_location_value(&location.city);
+}
+
+fn normalize_country_code(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.len() == 2 && trimmed.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        return Some(trimmed.to_ascii_uppercase());
+    }
+    None
+}
+
+fn safe_location_value(value: &str) -> Option<String> {
+    let cleaned = remove_ips_in_text(value).trim().to_string();
+    if cleaned.is_empty() || cleaned == "redacted" || cleaned.contains("redacted") {
+        return None;
+    }
+    Some(truncate_location_value(&cleaned))
+}
+
+fn truncate_location_value(value: &str) -> String {
+    const MAX_LOCATION_BYTES: usize = 96;
+    if value.len() <= MAX_LOCATION_BYTES {
+        return value.to_string();
+    }
+    let mut end = MAX_LOCATION_BYTES;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
+}
+
 fn enabled_features(config: &SentinelConfig) -> Vec<String> {
     [
         ("ssh", config.ssh.enabled),
@@ -1322,6 +1477,7 @@ mod tests {
     use sentinel_core::panel_auth::{panel_signature_hex, PANEL_INGEST_METHOD, PANEL_INGEST_PATH};
     use sentinel_core::{Category, Evidence, Finding, SentinelConfig, Severity};
     use std::collections::BTreeMap;
+    use std::net::IpAddr;
 
     #[test]
     fn signing_is_deterministic_for_payload_hash_shape() {
@@ -1531,6 +1687,57 @@ mod tests {
     }
 
     #[test]
+    fn panel_node_location_uses_explicit_non_sensitive_config(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+        let mut config = SentinelConfig::default();
+        config.panel.node_name = "apernet-sg".to_string();
+        config.panel.location.country_code = "sg".to_string();
+        config.panel.location.country = "Singapore".to_string();
+        config.panel.location.city = "Singapore".to_string();
+
+        let payload = panel_envelope(
+            &config,
+            &store,
+            PanelEnvelopeParts {
+                scan: PanelScanSummary {
+                    finished_at: Utc::now(),
+                    raw_events: 0,
+                    diff_events: 0,
+                    findings: 0,
+                    incidents: 0,
+                    suppressed_duplicates: 0,
+                    maintenance_suppressed: 0,
+                    active_response_applied: 0,
+                    active_response_failed: 0,
+                    collector_errors: 0,
+                    event_count_by_source: BTreeMap::new(),
+                },
+                findings: Vec::new(),
+                incidents: Vec::new(),
+                baseline_drifts: Vec::new(),
+                active_blocks: Vec::new(),
+                probe_sources: Vec::new(),
+            },
+        )?;
+        let metrics = payload.node.metrics.as_ref().expect("node metrics");
+        assert_eq!(metrics.country_code.as_deref(), Some("SG"));
+        assert_eq!(metrics.country.as_deref(), Some("Singapore"));
+        assert_eq!(metrics.city.as_deref(), Some("Singapore"));
+
+        let mut tampered = payload.clone();
+        let metrics = tampered.node.metrics.as_mut().expect("node metrics");
+        metrics.country_code = Some("US".to_string());
+        metrics.country = Some("203.0.113.10".to_string());
+        let sanitized = sanitize_panel_envelope(&config, tampered);
+        let metrics = sanitized.node.metrics.as_ref().expect("node metrics");
+        assert_eq!(metrics.country_code.as_deref(), Some("SG"));
+        assert_eq!(metrics.country.as_deref(), Some("Singapore"));
+        Ok(())
+    }
+
+    #[test]
     fn legacy_panel_outbox_payload_is_sanitized() -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
@@ -1597,6 +1804,7 @@ mod tests {
         payload.baseline_drifts.push(PanelBaselineDrift {
             finding_id: "finding-2".to_string(),
             rule_id: "SERVICE-001".to_string(),
+            category: "network".to_string(),
             severity: Severity::Medium,
             subject: "0.0.0.0:24409/udp".to_string(),
             timestamp: Utc::now(),
@@ -1742,5 +1950,19 @@ mod tests {
         assert!(source.rule_ids.contains(&"SSH-003".to_string()));
         assert!(source.latest_reason.contains("ssh_bruteforce"));
         assert!(source.block_reason.contains("failure_count=8"));
+    }
+
+    #[test]
+    fn parse_cymru_ip_intel_line_builds_cidr_entry() {
+        let entry = super::parse_cymru_ip_intel_line(
+            "15169 | 8.8.8.8 | 8.8.8.0/24 | US | arin | 1992-12-01 | GOOGLE, US",
+        )
+        .expect("cymru line");
+
+        assert_eq!(entry.network, "8.8.8.0".parse::<IpAddr>().expect("ip"));
+        assert_eq!(entry.prefix, 24);
+        assert_eq!(entry.country, "US");
+        assert_eq!(entry.asn, "AS15169");
+        assert_eq!(entry.organization, "GOOGLE, US");
     }
 }

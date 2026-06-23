@@ -460,11 +460,12 @@ install_optional_panel() {
     install -m 0755 "$panel_bin" "$PREFIX/bin/vps-sentinel-panel"
     echo "installed optional Rust panel binary to $PREFIX/bin/vps-sentinel-panel"
   fi
-  if [ -d "$source_dir/panel" ]; then
+  if [ -d "$source_dir/panel/web" ]; then
     install -d "$SHARE_DIR"
     rm -rf "$SHARE_DIR/panel"
-    cp -R "$source_dir/panel" "$SHARE_DIR/panel"
-    echo "installed optional panel assets to $SHARE_DIR/panel"
+    install -d "$SHARE_DIR/panel"
+    cp -R "$source_dir/panel/web" "$SHARE_DIR/panel/web"
+    echo "installed optional panel web assets to $SHARE_DIR/panel/web"
   fi
 }
 

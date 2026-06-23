@@ -345,6 +345,16 @@ max_payload_bytes = 524288
 privacy_mode = "strict" # strict removes node identity details and raw evidence; admin response datasets may still carry external public source IPs
 ip_intel_paths = [] # Optional CSV files: cidr,country,asn,organization
 ip_intel_max_entries = 20000
+ip_intel_remote_enabled = true # Best-effort ASN/country/org enrichment for public external probe IPs
+ip_intel_remote_endpoint = "whois.cymru.com:43"
+ip_intel_remote_timeout_ms = 1200
+ip_intel_remote_max_lookups = 64
+
+[panel.location]
+country_code = "" # Optional two-letter country code for dashboard flags, for example SG, JP, US
+country = "" # Optional display-only country name; do not put IPs or hostnames here
+region = ""
+city = ""
 
 [maintenance]
 enabled = false

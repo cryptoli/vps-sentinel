@@ -897,6 +897,7 @@ pub struct PanelConfig {
     pub url: String,
     pub node_id: String,
     pub node_name: String,
+    pub location: PanelLocationConfig,
     pub secret: String,
     pub min_severity: Severity,
     pub batch_size: usize,
@@ -907,6 +908,19 @@ pub struct PanelConfig {
     pub privacy_mode: String,
     pub ip_intel_paths: Vec<PathBuf>,
     pub ip_intel_max_entries: usize,
+    pub ip_intel_remote_enabled: bool,
+    pub ip_intel_remote_endpoint: String,
+    pub ip_intel_remote_timeout_ms: u64,
+    pub ip_intel_remote_max_lookups: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PanelLocationConfig {
+    pub country_code: String,
+    pub country: String,
+    pub region: String,
+    pub city: String,
 }
 
 impl Default for PanelConfig {
@@ -916,6 +930,7 @@ impl Default for PanelConfig {
             url: String::new(),
             node_id: String::new(),
             node_name: String::new(),
+            location: PanelLocationConfig::default(),
             secret: String::new(),
             min_severity: Severity::Medium,
             batch_size: 100,
@@ -926,6 +941,10 @@ impl Default for PanelConfig {
             privacy_mode: "strict".to_string(),
             ip_intel_paths: Vec::new(),
             ip_intel_max_entries: 20_000,
+            ip_intel_remote_enabled: true,
+            ip_intel_remote_endpoint: "whois.cymru.com:43".to_string(),
+            ip_intel_remote_timeout_ms: 1200,
+            ip_intel_remote_max_lookups: 64,
         }
     }
 }

@@ -1,0 +1,677 @@
+import {
+  Activity,
+  Bell,
+  Blocks,
+  ChevronDown,
+  ClipboardList,
+  Database,
+  FileClock,
+  LayoutDashboard,
+  LogOut,
+  Shield,
+  ShieldCheck,
+  ShieldAlert,
+  Sun,
+  UserRound,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { DetailDrawer } from "@/components/DetailDrawer";
+import { SelectMenu, TextField } from "@/components/Controls";
+import { PanelApiError, clearPanelToken, fetchDataset, fetchJson, fetchSettings, fetchTrends, panelToken, setPanelToken } from "@/lib/api";
+import {
+  API_BASE,
+  DATASET_BY_ID,
+  DEFAULT_LIMIT,
+  DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
+  DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
+  OVERVIEW_LIMIT,
+  PAGES,
+  STREAM_RECONNECT_MS,
+} from "@/lib/datasets";
+import { selectedLanguage, translate } from "@/lib/i18n";
+import { roleAllows, selectedRole } from "@/lib/rbac";
+import { BaselinePageView, BlocksPageView, DatasetPageView, FindingsPageView, IncidentsPageView, NodesPageView, OverviewPage } from "@/features/Pages";
+import type {
+  DatasetPage,
+  DatasetState,
+  Language,
+  NodeRecord,
+  PageConfig,
+  PageId,
+  PanelRecord,
+  PanelRole,
+  PanelSettings,
+  StreamState,
+  Summary,
+  TrendPoint,
+} from "@/types";
+
+const ICONS: Record<PageId, React.ReactNode> = {
+  overview: <LayoutDashboard size={18} />,
+  findings: <Bell size={18} />,
+  incidents: <ShieldAlert size={18} />,
+  baseline_drifts: <FileClock size={18} />,
+  active_blocks: <Blocks size={18} />,
+  probe_sources: <Shield size={18} />,
+  audit_logs: <ClipboardList size={18} />,
+  nodes: <Database size={18} />,
+};
+
+export function PanelApp() {
+  const [language, setLanguage] = useState<Language>("zh");
+  const [theme, setTheme] = useState("default");
+  const [role, setRole] = useState<PanelRole>("public");
+  const [settings, setSettings] = useState<PanelSettings>({});
+  const [currentPage, setCurrentPage] = useState<PageId>("overview");
+  const [summary, setSummary] = useState<Summary>({});
+  const [datasets, setDatasets] = useState<Record<string, DatasetPage>>({});
+  const [trends, setTrends] = useState<TrendPoint[]>([]);
+  const [datasetStates, setDatasetStates] = useState<Record<string, DatasetState>>({});
+  const datasetStatesRef = useRef<Record<string, DatasetState>>({});
+  const [streamState, setStreamState] = useState<StreamState>("idle");
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [accessMessage, setAccessMessage] = useState("");
+  const [drawer, setDrawer] = useState<{ dataset: string; row: PanelRecord } | null>(null);
+  const socketRef = useRef<WebSocket | null>(null);
+  const reconnectRef = useRef<number | null>(null);
+  const activeRoleRef = useRef<PanelRole>("public");
+
+  const visiblePages = useMemo(
+    () => PAGES.filter((page) => roleAllows(role, page.minRole)),
+    [role],
+  );
+  const activePage = visiblePages.find((page) => page.id === currentPage) || visiblePages[0] || PAGES[0];
+
+  const datasetState = useCallback((id: string): DatasetState => datasetStates[id] || defaultDatasetState(), [datasetStates]);
+
+  const updateDatasetState = useCallback((id: string, patch: Partial<DatasetState>) => {
+    setDatasetStates((current) => {
+      const next = {
+        ...current,
+        [id]: { ...(current[id] || defaultDatasetState()), ...patch },
+      };
+      datasetStatesRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const loadVisibleData = useCallback(async (pageId: PageId, nextRole = activeRoleRef.current) => {
+    const stateFor = (id: string) => datasetStatesRef.current[id] || defaultDatasetState();
+    setLoading(true);
+    try {
+      const nextSummary = await fetchJson<Summary>("/summary", nextRole);
+      setSummary(nextSummary);
+
+      if (pageId === "overview") {
+        const visibleDatasets = PAGES.filter((page) => page.endpoint && page.id !== "probe_sources" && roleAllows(nextRole, page.minRole));
+        const pages = await Promise.all(
+          visibleDatasets.map(async (page) => [
+            page.id,
+            await fetchDataset(page.endpoint || "", { ...stateFor(page.id), limit: OVERVIEW_LIMIT, offset: 0 }, nextRole),
+          ] as const),
+        );
+        const trendPayload = await fetchTrends(nextRole).catch(() => ({ items: [] }));
+        setDatasets((current) => ({ ...current, ...Object.fromEntries(pages) }));
+        setTrends(trendPayload.items || []);
+      } else {
+        const config = DATASET_BY_ID.get(pageId);
+        if (config?.endpoint) {
+          const page = await fetchDataset(config.endpoint, stateFor(pageId), nextRole);
+          setDatasets((current) => ({ ...current, [pageId]: page }));
+        }
+      }
+    } catch (error) {
+      if (error instanceof PanelApiError && error.status === 401) {
+        clearPanelToken();
+        activeRoleRef.current = "public";
+        setRole("public");
+        setAccessMessage(translate(language, "invalidAccessToken"));
+      } else {
+        setAccessMessage(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [language]);
+
+  useEffect(() => {
+    setLanguage(selectedLanguage());
+    const storedTheme = window.localStorage.getItem("vps-sentinel-theme") || "default";
+    setTheme(storedTheme);
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+    document.documentElement.dataset.theme = theme;
+    document.body.dataset.theme = theme;
+    window.localStorage.setItem("vps-sentinel-language", language);
+    window.localStorage.setItem("vps-sentinel-theme", theme);
+  }, [language, theme]);
+
+  useEffect(() => {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.dataset.panelTheme = theme;
+    link.href = `/themes/${encodeURIComponent(theme)}/theme.css`;
+    document.head.append(link);
+    return () => link.remove();
+  }, [theme]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const initialRole = selectedRole(undefined, Boolean(panelToken()));
+        const nextSettings = await fetchSettings(initialRole);
+        if (cancelled) return;
+        setSettings(nextSettings);
+        const nextRole = selectedRole(nextSettings.role, Boolean(panelToken()));
+        activeRoleRef.current = nextRole;
+        setRole(nextRole);
+        setTheme(nextSettings.theme || "default");
+        setSettingsLoaded(true);
+        setLoading(false);
+      } catch (error) {
+        if (cancelled) return;
+        setAccessMessage(error instanceof Error ? error.message : String(error));
+        setSettingsLoaded(true);
+        setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    if (settings.auth_required && !panelToken()) return;
+    connectStream();
+    return () => {
+      socketRef.current?.close();
+      if (reconnectRef.current) window.clearTimeout(reconnectRef.current);
+    };
+  }, [settingsLoaded, settings.auth_required, role]);
+
+  useEffect(() => {
+    if (!visiblePages.some((page) => page.id === currentPage)) {
+      setCurrentPage(visiblePages[0]?.id || "overview");
+    }
+  }, [currentPage, visiblePages]);
+
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    if (settings.auth_required && !panelToken()) return;
+    void loadVisibleData(currentPage, role);
+  }, [currentPage, datasetStates, role, settingsLoaded, settings.auth_required, loadVisibleData]);
+
+  async function unlock(token: string) {
+    setPanelToken(token);
+    try {
+      const nextSettings = await fetchSettings(role);
+      const nextRole = selectedRole(nextSettings.role, true);
+      activeRoleRef.current = nextRole;
+      setRole(nextRole);
+      setSettings(nextSettings);
+      setAccessMessage("");
+      setSettingsLoaded(true);
+      await loadVisibleData(currentPage, nextRole);
+      connectStream();
+    } catch {
+      clearPanelToken();
+      setAccessMessage(translate(language, "invalidAccessToken"));
+    }
+  }
+
+  function logout() {
+    clearPanelToken();
+    socketRef.current?.close();
+    setRole(settings.public_enabled ? "public" : "public");
+    setDatasets({});
+    setSummary({});
+  }
+
+  function connectStream() {
+    if (
+      socketRef.current &&
+      (socketRef.current.readyState === WebSocket.CONNECTING || socketRef.current.readyState === WebSocket.OPEN)
+    ) {
+      return;
+    }
+    if (!("WebSocket" in window)) {
+      setStreamState("fallback");
+      return;
+    }
+    setStreamState("connecting");
+    fetchJson<{ ticket: string }>("/stream-ticket", activeRoleRef.current)
+      .then(({ ticket }) => {
+        const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+        const socket = new WebSocket(`${scheme}://${window.location.host}${API_BASE}/stream?ticket=${encodeURIComponent(ticket)}`);
+        socketRef.current = socket;
+        socket.addEventListener("open", () => setStreamState("live"));
+        socket.addEventListener("message", (event) => {
+          const message = parseStreamMessage(event.data);
+          if (message?.role) {
+            const nextRole = selectedRole(message.role, Boolean(panelToken()));
+            activeRoleRef.current = nextRole;
+            setRole(nextRole);
+          }
+          if (message?.type === "refresh") void loadVisibleData(currentPage, activeRoleRef.current);
+        });
+        socket.addEventListener("close", scheduleReconnect);
+        socket.addEventListener("error", scheduleReconnect);
+      })
+      .catch(() => scheduleReconnect());
+  }
+
+  function scheduleReconnect() {
+    setStreamState("reconnecting");
+    if (reconnectRef.current) return;
+    reconnectRef.current = window.setTimeout(() => {
+      reconnectRef.current = null;
+      connectStream();
+    }, STREAM_RECONNECT_MS);
+  }
+
+  const needsAccess = Boolean(settingsLoaded && settings.auth_required && !panelToken());
+
+  return (
+    <main className={`app-shell page-${activePage.id}`}>
+      <Sidebar pages={visiblePages} currentPage={activePage.id} language={language} onNavigate={(id) => setCurrentPage(id as PageId)} />
+      <section className="stage">
+        <Topbar
+          page={activePage}
+          language={language}
+          theme={theme}
+          streamState={streamState}
+          role={role}
+          onLanguage={setLanguage}
+          onTheme={setTheme}
+          onLogout={logout}
+        />
+        <section className="content-shell">
+          {needsAccess ? (
+            <AccessGate language={language} settings={settings} message={accessMessage} onUnlock={unlock} />
+          ) : (
+            <Content
+              page={activePage}
+              loading={loading || !settingsLoaded}
+              language={language}
+              role={role}
+              summary={summary}
+              datasets={datasets}
+              trends={trends}
+              datasetState={datasetState}
+              updateDatasetState={updateDatasetState}
+              onNavigate={(id) => setCurrentPage(id as PageId)}
+              onDetails={(dataset, row) => setDrawer({ dataset, row })}
+            />
+          )}
+        </section>
+      </section>
+      <DetailDrawer
+        row={drawer?.row || null}
+        dataset={drawer?.dataset || ""}
+        role={role}
+        language={language}
+        onClose={() => setDrawer(null)}
+        onSaved={(review) => {
+          if (drawer?.dataset && review) {
+            const targetId = String(review.target_id || drawer.row.id || drawer.row.finding_id || "");
+            setDatasets((current) => {
+              const page = current[drawer.dataset];
+              if (!page?.items?.length) return current;
+              return {
+                ...current,
+                [drawer.dataset]: {
+                  ...page,
+                  items: page.items.map((item) => {
+                    const itemId = String(item.id || item.finding_id || "");
+                    return itemId === targetId
+                      ? { ...item, review, review_verdict: review.verdict || "needs_review", status: review.verdict || "needs_review" }
+                      : item;
+                  }),
+                },
+              };
+            });
+            setDrawer((current) => current && String(current.row.id || current.row.finding_id || "") === targetId
+              ? { ...current, row: { ...current.row, review, review_verdict: review.verdict || "needs_review", status: review.verdict || "needs_review" } }
+              : current);
+          }
+          void loadVisibleData(currentPage, role);
+        }}
+      />
+    </main>
+  );
+}
+
+function Sidebar({
+  pages,
+  currentPage,
+  language,
+  onNavigate,
+}: {
+  pages: PageConfig[];
+  currentPage: PageId;
+  language: Language;
+  onNavigate: (id: PageId) => void;
+}) {
+  return (
+    <aside className="sidebar-shell">
+      <div className="brand-lockup">
+        <span className="brand-mark"><ShieldCheck size={36} /></span>
+        <div>
+          <strong>VPS Sentinel</strong>
+          <small>{translate(language, "appSubtitle")}</small>
+        </div>
+      </div>
+      <nav className="main-nav">
+        {pages.map((page) => (
+          <button className={page.id === currentPage ? "active" : ""} key={page.id} type="button" onClick={() => onNavigate(page.id)}>
+            {ICONS[page.id]}
+            <span>{translate(language, page.labelKey)}</span>
+          </button>
+        ))}
+      </nav>
+      <div className="sidebar-status">
+        <Shield size={20} />
+        <div>
+          <strong>{translate(language, "allSystemsOperational")}</strong>
+          <small>{translate(language, "updatedJustNow")}</small>
+        </div>
+      </div>
+    </aside>
+  );
+}
+
+function Topbar({
+  page,
+  language,
+  theme,
+  streamState,
+  role,
+  onLanguage,
+  onTheme,
+  onLogout,
+}: {
+  page: PageConfig;
+  language: Language;
+  theme: string;
+  streamState: StreamState;
+  role: PanelRole;
+  onLanguage: (language: Language) => void;
+  onTheme: (theme: string) => void;
+  onLogout: () => void;
+}) {
+  return (
+    <header className="topbar">
+      <div>
+        <h1>{translate(language, page.labelKey)}</h1>
+      </div>
+      <div className="toolbar">
+        <span className={`live-pill live-${streamState}`}>
+          <Activity size={14} />
+          {streamLabel(streamState, language)}
+        </span>
+        <button className="icon-button" type="button" aria-label="theme">
+          <Sun size={18} />
+        </button>
+        <SelectMenu
+          className="toolbar-select"
+          value={theme}
+          ariaLabel={translate(language, "theme")}
+          options={[{ value: "default", label: "default" }]}
+          onChange={onTheme}
+        />
+        <SelectMenu
+          className="toolbar-select"
+          value={language}
+          ariaLabel={translate(language, "language")}
+          options={[
+            { value: "zh" as Language, label: translate(language, "chinese") },
+            { value: "en" as Language, label: translate(language, "english") },
+          ]}
+          onChange={onLanguage}
+        />
+        {roleAllows(role, "operator") && <UserMenu role={role} language={language} onLogout={onLogout} />}
+      </div>
+    </header>
+  );
+}
+
+function UserMenu({
+  role,
+  language,
+  onLogout,
+}: {
+  role: PanelRole;
+  language: Language;
+  onLogout: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    function handlePointerDown(event: PointerEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div className="user-menu-wrap" ref={rootRef}>
+      <button
+        className="user-menu"
+        type="button"
+        aria-expanded={open}
+        aria-label={translate(language, "currentRole")}
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="user-avatar"><UserRound size={18} /></span>
+        <span className="user-role-label">{roleLabel(role, language)}</span>
+        <ChevronDown size={15} />
+      </button>
+      {open && (
+        <div className="user-popover">
+          <div className="user-popover-head">
+            <span className="user-avatar small"><UserRound size={15} /></span>
+            <div>
+              <strong>{translate(language, "currentRole")}</strong>
+              <small>{roleLabel(role, language)}</small>
+            </div>
+          </div>
+          <button
+            className="logout-button"
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              onLogout();
+            }}
+          >
+            <LogOut size={15} />
+            {translate(language, "logout")}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function roleLabel(role: PanelRole, language: Language): string {
+  if (role === "admin") return translate(language, "adminRole");
+  if (role === "operator") return translate(language, "operatorRole");
+  return translate(language, "publicRole");
+}
+
+function Content({
+  page,
+  loading,
+  language,
+  role,
+  summary,
+  datasets,
+  trends,
+  datasetState,
+  updateDatasetState,
+  onNavigate,
+  onDetails,
+}: {
+  page: PageConfig;
+  loading: boolean;
+  language: Language;
+  role: PanelRole;
+  summary: Summary;
+  datasets: Record<string, DatasetPage>;
+  trends: TrendPoint[];
+  datasetState: (id: string) => DatasetState;
+  updateDatasetState: (id: string, patch: Partial<DatasetState>) => void;
+  onNavigate: (id: string) => void;
+  onDetails: (dataset: string, row: PanelRecord) => void;
+}) {
+  if (loading && !Object.keys(datasets).length) {
+    return <div className="loading-card">{translate(language, "loading")}</div>;
+  }
+  if (page.id === "overview") {
+    return <OverviewPage summary={summary} datasets={datasets} trends={trends} language={language} role={role} onNavigate={onNavigate} />;
+  }
+  if (page.id === "nodes") {
+    return (
+      <NodesPageView
+        page={(datasets.nodes || emptyPage()) as DatasetPage<NodeRecord>}
+        state={datasetState("nodes")}
+        language={language}
+        onStateChange={(patch) => updateDatasetState("nodes", patch)}
+      />
+    );
+  }
+  if (page.id === "findings") {
+    return (
+      <FindingsPageView
+        config={page}
+        page={datasets.findings || emptyPage()}
+        state={datasetState("findings")}
+        language={language}
+        onStateChange={(patch) => updateDatasetState("findings", patch)}
+        onDetails={(row) => onDetails("findings", row)}
+      />
+    );
+  }
+  if (page.id === "incidents") {
+    return (
+      <IncidentsPageView
+        config={page}
+        page={datasets.incidents || emptyPage()}
+        state={datasetState("incidents")}
+        language={language}
+        onStateChange={(patch) => updateDatasetState("incidents", patch)}
+        onDetails={(row) => onDetails("incidents", row)}
+      />
+    );
+  }
+  if (page.id === "baseline_drifts") {
+    return (
+      <BaselinePageView
+        config={page}
+        page={datasets.baseline_drifts || emptyPage()}
+        state={datasetState("baseline_drifts")}
+        language={language}
+        onStateChange={(patch) => updateDatasetState("baseline_drifts", patch)}
+        onDetails={(row) => onDetails("baseline_drifts", row)}
+      />
+    );
+  }
+  if (page.id === "active_blocks") {
+    return (
+      <BlocksPageView
+        config={page}
+        page={datasets.active_blocks || emptyPage()}
+        state={datasetState("active_blocks")}
+        language={language}
+        role={role}
+        onStateChange={(patch) => updateDatasetState("active_blocks", patch)}
+      />
+    );
+  }
+  return (
+    <DatasetPageView
+      config={page}
+      page={datasets[page.id] || emptyPage()}
+      state={datasetState(page.id)}
+      language={language}
+      role={role}
+      onStateChange={(patch) => updateDatasetState(page.id, patch)}
+      onDetails={onDetails}
+    />
+  );
+}
+
+function AccessGate({
+  language,
+  settings,
+  message,
+  onUnlock,
+}: {
+  language: Language;
+  settings: PanelSettings;
+  message: string;
+  onUnlock: (token: string) => void;
+}) {
+  const [token, setToken] = useState("");
+  return (
+    <form
+      className="access-card"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (token.trim()) void onUnlock(token.trim());
+      }}
+    >
+      <Shield size={34} />
+      <h2>{translate(language, "protectedAccess")}</h2>
+      <p>{translate(language, settings.auth_configured ? "accessDescription" : "accessNotConfigured")}</p>
+      <TextField
+        className="access-token-field"
+        type="password"
+        value={token}
+        placeholder={translate(language, "accessToken")}
+        onChange={setToken}
+      />
+      {message && <span className="access-error">{message}</span>}
+      <button className="primary-button" type="submit">
+        {translate(language, "unlock")}
+      </button>
+    </form>
+  );
+}
+
+function streamLabel(state: StreamState, language: Language): string {
+  if (state === "connecting") return translate(language, "connecting");
+  if (state === "reconnecting") return translate(language, "reconnecting");
+  if (state === "fallback") return translate(language, "waiting");
+  return translate(language, "live");
+}
+
+function parseStreamMessage(value: string): { type?: string; role?: string } | null {
+  try {
+    return JSON.parse(value) as { type?: string; role?: string };
+  } catch {
+    return null;
+  }
+}
+
+function emptyPage<T extends PanelRecord>(): DatasetPage<T> {
+  return { items: [], total: 0, limit: DEFAULT_LIMIT, offset: 0 };
+}
+
+function defaultDatasetState(): DatasetState {
+  return { from: "", to: "", limit: DEFAULT_LIMIT, offset: 0, preset: "", query: "" };
+}

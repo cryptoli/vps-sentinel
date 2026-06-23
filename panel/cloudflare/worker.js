@@ -36,7 +36,7 @@ const DATASETS = {
     minRole: "operator",
     table: "baseline_drifts",
     orderColumn: "timestamp",
-    columns: ["timestamp", "node_id AS node_name", "severity", "rule_id", "tier", "subject", "review_action"],
+    columns: ["id", "finding_id", "timestamp", "node_id AS node_name", "severity", "rule_id", "tier", "subject", "review_action"],
   },
   "/api/v1/active-blocks": {
     minRole: "operator",
@@ -44,7 +44,19 @@ const DATASETS = {
     table: "active_blocks",
     orderColumn: "blocked_at",
     activeFilter: "expired = 0",
-    columns: ["blocked_at", "node_id AS node_name", "ip", "rule_id", "backend", "reason", "expires_at"],
+    columns: [
+      "blocked_at",
+      "node_id AS node_name",
+      "ip",
+      "(SELECT network_prefix FROM probe_sources WHERE probe_sources.node_id = active_blocks.node_id AND probe_sources.source_ip = active_blocks.ip ORDER BY probe_sources.last_seen DESC LIMIT 1) AS network_prefix",
+      "(SELECT country FROM probe_sources WHERE probe_sources.node_id = active_blocks.node_id AND probe_sources.source_ip = active_blocks.ip ORDER BY probe_sources.last_seen DESC LIMIT 1) AS country",
+      "(SELECT asn FROM probe_sources WHERE probe_sources.node_id = active_blocks.node_id AND probe_sources.source_ip = active_blocks.ip ORDER BY probe_sources.last_seen DESC LIMIT 1) AS asn",
+      "(SELECT organization FROM probe_sources WHERE probe_sources.node_id = active_blocks.node_id AND probe_sources.source_ip = active_blocks.ip ORDER BY probe_sources.last_seen DESC LIMIT 1) AS organization",
+      "rule_id",
+      "backend",
+      "reason",
+      "expires_at",
+    ],
   },
   "/api/v1/probe-sources": {
     minRole: "admin",
@@ -132,6 +144,11 @@ export default {
         const authError = adminAuthError(request, env);
         if (authError) return withCors(authError, request, env);
         return withCors(json(await findingReview(request, env)), request, env);
+      }
+      if (request.method === "POST" && url.pathname === "/api/v1/review") {
+        const authError = adminAuthError(request, env);
+        if (authError) return withCors(authError, request, env);
+        return withCors(json(await panelReview(request, env)), request, env);
       }
       if (request.method === "GET" && url.pathname === "/api/v1/stream-ticket") {
         return withCors(json({ error: "stream_unavailable", detail: "stream_unavailable" }, 501), request, env);
@@ -476,15 +493,18 @@ function probeSourceStatement(env, nodeName, source, receivedAt) {
 }
 
 async function summary(env, role = "public") {
+  const activeFindingsFilter = reviewNotFalsePositiveFilter("findings", "finding");
+  const activeIncidentsFilter = reviewNotFalsePositiveFilter("incidents", "incident");
+  const activeDriftsFilter = reviewNotFalsePositiveFilter("baseline_drifts", "baseline_drift");
   const [nodes, findings, incidents, drifts, blocks, probeSources, bySeverity, byCategory, byBlockStatus, nodeRows] = await Promise.all([
     countDistinct(env, "nodes", "node_name"),
-    count(env, "findings"),
-    count(env, "incidents"),
-    count(env, "baseline_drifts"),
+    countWhere(env, "findings", activeFindingsFilter),
+    countWhere(env, "incidents", activeIncidentsFilter),
+    countWhere(env, "baseline_drifts", activeDriftsFilter),
     countWhere(env, "active_blocks", "expired = 0"),
     countOptional(env, "probe_sources"),
-    queryAll(env, "SELECT severity, COUNT(*) AS count FROM findings GROUP BY severity"),
-    queryAll(env, "SELECT category, COUNT(*) AS count FROM findings GROUP BY category"),
+    queryAll(env, `SELECT severity, COUNT(*) AS count FROM findings WHERE ${activeFindingsFilter} GROUP BY severity`),
+    queryAll(env, `SELECT category, COUNT(*) AS count FROM findings WHERE ${activeFindingsFilter} GROUP BY category`),
     queryAllOptional(env, "SELECT block_status, COUNT(*) AS count FROM probe_sources GROUP BY block_status", "probe_sources"),
     queryAll(env, "SELECT node_name, agent_version, last_seen_at FROM nodes"),
   ]);
@@ -506,7 +526,7 @@ async function summary(env, role = "public") {
 async function trendPoints(env, url) {
   const page = pageRequest(url);
   const values = [];
-  const parts = [];
+  const parts = [reviewNotFalsePositiveFilter("findings", "finding")];
   if (page.from) {
     values.push(page.from);
     parts.push("timestamp >= ?");
@@ -515,7 +535,7 @@ async function trendPoints(env, url) {
     values.push(page.to);
     parts.push("timestamp <= ?");
   }
-  const whereSql = parts.length ? ` WHERE ${parts.join(" AND ")}` : "";
+  const whereSql = ` WHERE ${parts.join(" AND ")}`;
   const result = await env.DB.prepare(
     `SELECT timestamp, severity FROM findings${whereSql} ORDER BY timestamp DESC LIMIT ?`,
   ).bind(...values, 5000).all();
@@ -533,6 +553,15 @@ async function trendPoints(env, url) {
     const total = Object.values(severity).reduce((sum, value) => sum + Number(value || 0), 0);
     return { bucket, total, severity };
   });
+}
+
+function reviewNotFalsePositiveFilter(table, targetType) {
+  return `NOT EXISTS (
+    SELECT 1 FROM panel_reviews review
+    WHERE review.target_type = '${targetType}'
+      AND review.target_id = ${table}.id
+      AND review.verdict = 'false_positive'
+  )`;
 }
 
 async function queryPage(env, dataset, url, role = "operator") {
@@ -556,7 +585,8 @@ async function queryPage(env, dataset, url, role = "operator") {
     const result = await env.DB.prepare(
       `SELECT ${dataset.columns.join(", ")} FROM ${dataset.table}${whereSql} ORDER BY ${dataset.orderColumn} ${dataset.orderDirection === "ASC" ? "ASC" : "DESC"} LIMIT ? OFFSET ?`,
     ).bind(...values, page.limit, page.offset).all();
-    const items = expandDatasetJsonColumns(dataset.table, result.results || []);
+    let items = expandDatasetJsonColumns(dataset.table, result.results || []);
+    items = await attachPanelReviews(env, dataset.table, items, role);
     return {
       items: shouldRedactDataset(dataset, role) ? redactPanelValue(items) : items,
       total: Number(countRow?.count || 0),
@@ -569,6 +599,35 @@ async function queryPage(env, dataset, url, role = "operator") {
     }
     throw error;
   }
+}
+
+async function attachPanelReviews(env, table, items, role) {
+  const targetType = reviewTargetForTable(table);
+  if (!targetType || !items.length) return items;
+  const ids = items.map((item) => String(item?.id || "").trim()).filter(Boolean);
+  if (!ids.length) {
+    return items.map((item) => ({ ...item, review_verdict: "needs_review" }));
+  }
+  const placeholders = ids.map(() => "?").join(", ");
+  const result = await env.DB.prepare(
+    `SELECT target_id, verdict, note, reviewer, reviewed_at FROM panel_reviews WHERE target_type = ? AND target_id IN (${placeholders})`,
+  ).bind(targetType, ...ids).all();
+  const reviews = new Map((result.results || []).map((review) => [String(review.target_id), review]));
+  return items.map((item) => {
+    const review = reviews.get(String(item?.id || ""));
+    if (!review) return { ...item, review_verdict: "needs_review", status: "needs_review" };
+    const verdict = review.verdict || "needs_review";
+    const next = { ...item, review_verdict: verdict, status: verdict };
+    if (role === "admin") next.review = { target_type: targetType, ...review };
+    return next;
+  });
+}
+
+function reviewTargetForTable(table) {
+  if (table === "findings") return "finding";
+  if (table === "incidents") return "incident";
+  if (table === "baseline_drifts") return "baseline_drift";
+  return null;
 }
 
 async function findingDetail(env, url) {
@@ -610,15 +669,15 @@ async function findingReview(request, env) {
   const review = normalizeFindingReview(payload);
   const exists = await env.DB.prepare("SELECT id FROM findings WHERE id = ?").bind(review.finding_id).first();
   if (!exists) throwHttp(404, "finding_not_found");
-  await env.DB.prepare(`
-    INSERT INTO finding_reviews (finding_id, verdict, note, reviewer, reviewed_at)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(finding_id) DO UPDATE SET
-      verdict = excluded.verdict,
-      note = excluded.note,
-      reviewer = excluded.reviewer,
-      reviewed_at = excluded.reviewed_at
-  `).bind(review.finding_id, review.verdict, review.note, review.reviewer, review.reviewed_at).run();
+  await writeFindingReview(env, review);
+  await writePanelReview(env, {
+    target_type: "finding",
+    target_id: review.finding_id,
+    verdict: review.verdict,
+    note: review.note,
+    reviewer: review.reviewer,
+    reviewed_at: review.reviewed_at,
+  });
   await env.DB.prepare(`
     INSERT INTO panel_audit_logs (id, action, actor, target_type, target_id, detail_json, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -631,23 +690,135 @@ async function findingReview(request, env) {
     JSON.stringify({ verdict: review.verdict, note_present: Boolean(review.note) }),
     review.reviewed_at,
   ).run();
-  return { ok: true, finding_id: review.finding_id };
+  return {
+    ok: true,
+    finding_id: review.finding_id,
+    review: panelReviewResponse({
+      target_type: "finding",
+      target_id: review.finding_id,
+      verdict: review.verdict,
+      note: review.note,
+      reviewer: review.reviewer,
+      reviewed_at: review.reviewed_at,
+    }),
+  };
+}
+
+async function panelReview(request, env) {
+  const payload = await request.json();
+  const review = normalizePanelReview(payload);
+  const target = panelReviewTarget(review.target_type);
+  const exists = await env.DB.prepare(`SELECT ${target.idColumn} FROM ${target.table} WHERE ${target.idColumn} = ?`)
+    .bind(review.target_id)
+    .first();
+  if (!exists) throwHttp(404, target.notFound);
+  await writePanelReview(env, review);
+  if (review.target_type === "finding") {
+    await writeFindingReview(env, {
+      finding_id: review.target_id,
+      verdict: review.verdict,
+      note: review.note,
+      reviewer: review.reviewer,
+      reviewed_at: review.reviewed_at,
+    });
+  }
+  await env.DB.prepare(`
+    INSERT INTO panel_audit_logs (id, action, actor, target_type, target_id, detail_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    `panel_review:${review.target_type}:${review.target_id}:${crypto.randomUUID()}`,
+    "panel_review",
+    review.reviewer || "panel",
+    review.target_type,
+    review.target_id,
+    JSON.stringify({ verdict: review.verdict, note_present: Boolean(review.note) }),
+    review.reviewed_at,
+  ).run();
+  return { ok: true, target_type: review.target_type, target_id: review.target_id, review: panelReviewResponse(review) };
+}
+
+function panelReviewResponse(review) {
+  return {
+    target_type: review.target_type,
+    target_id: review.target_id,
+    verdict: review.verdict,
+    note: review.note,
+    reviewer: review.reviewer,
+    reviewed_at: review.reviewed_at,
+  };
 }
 
 function normalizeFindingReview(payload) {
   const findingId = String(payload?.finding_id || "").trim();
   if (!findingId || findingId.length > 191) throwHttp(400, "invalid_finding_id");
-  const verdict = String(payload?.verdict || "").trim();
-  if (!["false_positive", "confirmed", "needs_review"].includes(verdict)) {
-    throwHttp(400, "invalid_review_verdict");
-  }
   return {
     finding_id: findingId,
-    verdict,
+    verdict: normalizeReviewVerdict(payload?.verdict),
     note: String(payload?.note || "").trim().slice(0, 1000),
     reviewer: String(payload?.reviewer || "").trim().slice(0, 128),
     reviewed_at: new Date().toISOString(),
   };
+}
+
+function normalizePanelReview(payload) {
+  const targetType = normalizeReviewTargetType(payload?.target_type);
+  const targetId = String(payload?.target_id || "").trim();
+  if (!targetId || targetId.length > 191) throwHttp(400, "invalid_review_target_id");
+  return {
+    target_type: targetType,
+    target_id: targetId,
+    verdict: normalizeReviewVerdict(payload?.verdict),
+    note: String(payload?.note || "").trim().slice(0, 1000),
+    reviewer: String(payload?.reviewer || "").trim().slice(0, 128),
+    reviewed_at: new Date().toISOString(),
+  };
+}
+
+function normalizeReviewVerdict(value) {
+  const verdict = String(value || "").trim();
+  if (!["false_positive", "confirmed", "needs_review"].includes(verdict)) {
+    throwHttp(400, "invalid_review_verdict");
+  }
+  return verdict;
+}
+
+function normalizeReviewTargetType(value) {
+  const targetType = String(value || "").trim().toLowerCase();
+  if (["finding", "findings"].includes(targetType)) return "finding";
+  if (["incident", "incidents"].includes(targetType)) return "incident";
+  if (["baseline_drift", "baseline_drifts", "baseline", "drift"].includes(targetType)) return "baseline_drift";
+  throwHttp(400, "invalid_review_target_type");
+}
+
+function panelReviewTarget(targetType) {
+  if (targetType === "finding") return { table: "findings", idColumn: "id", notFound: "finding_not_found" };
+  if (targetType === "incident") return { table: "incidents", idColumn: "id", notFound: "incident_not_found" };
+  if (targetType === "baseline_drift") return { table: "baseline_drifts", idColumn: "id", notFound: "baseline_drift_not_found" };
+  throwHttp(400, "invalid_review_target_type");
+}
+
+async function writeFindingReview(env, review) {
+  await env.DB.prepare(`
+    INSERT INTO finding_reviews (finding_id, verdict, note, reviewer, reviewed_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(finding_id) DO UPDATE SET
+      verdict = excluded.verdict,
+      note = excluded.note,
+      reviewer = excluded.reviewer,
+      reviewed_at = excluded.reviewed_at
+  `).bind(review.finding_id, review.verdict, review.note, review.reviewer, review.reviewed_at).run();
+}
+
+async function writePanelReview(env, review) {
+  await env.DB.prepare(`
+    INSERT INTO panel_reviews (target_type, target_id, verdict, note, reviewer, reviewed_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(target_type, target_id) DO UPDATE SET
+      verdict = excluded.verdict,
+      note = excluded.note,
+      reviewer = excluded.reviewer,
+      reviewed_at = excluded.reviewed_at
+  `).bind(review.target_type, review.target_id, review.verdict, review.note, review.reviewer, review.reviewed_at).run();
 }
 
 function panelBlockStorageId(nodeId, block) {
@@ -1012,6 +1183,6 @@ function withCors(response, request, env) {
   headers.set("x-content-type-options", "nosniff");
   headers.set("referrer-policy", "no-referrer");
   headers.set("cache-control", "no-store");
-  headers.set("content-security-policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
+  headers.set("content-security-policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'");
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }

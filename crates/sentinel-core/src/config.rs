@@ -4,7 +4,7 @@ mod sections;
 use crate::error::{SentinelError, SentinelResult};
 use crate::MinuteWindow;
 use serde::{Deserialize, Serialize};
-use std::{env, fs, path::Path, process::Command, sync::OnceLock};
+use std::{env, fs, net::IpAddr, path::Path, process::Command, sync::OnceLock};
 
 pub use notifications::{
     BarkConfig, EmailConfig, EmailTlsMode, GotifyConfig, NotificationLanguage,
@@ -16,8 +16,8 @@ pub use sections::{
     AttackFingerprintConfig, BehaviorProfileConfig, DockerConfig, ExternalRulesConfig,
     FileIntegrityConfig, FleetConfig, GpuConfig, IncidentConfig, LogIntegrityConfig,
     MaintenanceConfig, NetworkConfig, NoiseControlConfig, PackageManagerConfig, PanelConfig,
-    PerformanceConfig, PersistenceConfig, PrivacyConfig, ProcessConfig, ReportsConfig,
-    ResourceBudgetConfig, ResponsePolicyConfig, ResponsePolicyRule, SentinelPaths,
+    PanelLocationConfig, PerformanceConfig, PersistenceConfig, PrivacyConfig, ProcessConfig,
+    ReportsConfig, ResourceBudgetConfig, ResponsePolicyConfig, ResponsePolicyRule, SentinelPaths,
     ServiceProfileConfig, SshConfig, StorageConfig, ThreatIntelConfig, WebConfig,
     DEFAULT_DYNAMIC_UDP_MIN_PORT,
 };
@@ -745,6 +745,23 @@ fn validate_panel(config: &PanelConfig) -> SentinelResult<()> {
             "panel.ip_intel_max_entries must be greater than 0".to_string(),
         ));
     }
+    if config.ip_intel_remote_enabled {
+        if config.ip_intel_remote_endpoint.trim().is_empty() {
+            return Err(SentinelError::Config(
+                "panel.ip_intel_remote_endpoint must not be empty when remote IP intelligence is enabled".to_string(),
+            ));
+        }
+        if config.ip_intel_remote_timeout_ms == 0 {
+            return Err(SentinelError::Config(
+                "panel.ip_intel_remote_timeout_ms must be greater than 0".to_string(),
+            ));
+        }
+        if config.ip_intel_remote_max_lookups == 0 {
+            return Err(SentinelError::Config(
+                "panel.ip_intel_remote_max_lookups must be greater than 0".to_string(),
+            ));
+        }
+    }
     for path in &config.ip_intel_paths {
         if path.as_os_str().is_empty() {
             return Err(SentinelError::Config(
@@ -752,12 +769,47 @@ fn validate_panel(config: &PanelConfig) -> SentinelResult<()> {
             ));
         }
     }
+    validate_panel_location(&config.location)?;
     match config.privacy_mode.as_str() {
         "normal" | "strict" => Ok(()),
         other => Err(SentinelError::Config(format!(
             "panel.privacy_mode '{other}' is invalid; use normal or strict"
         ))),
     }
+}
+
+fn validate_panel_location(config: &PanelLocationConfig) -> SentinelResult<()> {
+    let country_code = config.country_code.trim();
+    if !country_code.is_empty()
+        && (country_code.len() != 2 || !country_code.chars().all(|ch| ch.is_ascii_alphabetic()))
+    {
+        return Err(SentinelError::Config(
+            "panel.location.country_code must be a two-letter ISO country code".to_string(),
+        ));
+    }
+    for (name, value) in [
+        ("panel.location.country", config.country.as_str()),
+        ("panel.location.region", config.region.as_str()),
+        ("panel.location.city", config.city.as_str()),
+    ] {
+        validate_panel_location_text(name, value)?;
+    }
+    Ok(())
+}
+
+fn validate_panel_location_text(name: &str, value: &str) -> SentinelResult<()> {
+    let trimmed = value.trim();
+    if trimmed.len() > 96 {
+        return Err(SentinelError::Config(format!(
+            "{name} must be at most 96 bytes"
+        )));
+    }
+    if trimmed.parse::<IpAddr>().is_ok() {
+        return Err(SentinelError::Config(format!(
+            "{name} must not contain an IP address"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_maintenance(config: &MaintenanceConfig) -> SentinelResult<()> {

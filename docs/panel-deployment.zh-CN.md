@@ -259,10 +259,11 @@ cargo build --release -p sentinel-panel
 sudo install -m 0755 target/release/vps-sentinel-panel /usr/local/bin/vps-sentinel-panel
 sudo install -d /usr/local/share/vps-sentinel
 sudo rm -rf /usr/local/share/vps-sentinel/panel
-sudo cp -a panel /usr/local/share/vps-sentinel/panel
+sudo install -d /usr/local/share/vps-sentinel/panel
+sudo cp -a panel/web /usr/local/share/vps-sentinel/panel/web
 ```
 
-如果你已经通过项目安装脚本安装过程序，`vps-sentinel-panel` 和 `panel/` 可能已经被复制到系统路径；仍建议用上面的命令确认面板二进制和静态资源是当前版本。
+如果你已经通过项目安装脚本安装过程序，`vps-sentinel-panel` 和 `panel/web` 可能已经被复制到系统路径；仍建议用上面的命令确认面板二进制和静态资源是当前版本。
 
 ### 3. 创建运行用户和目录
 
@@ -483,7 +484,8 @@ cargo build --release -p sentinel-panel
 sudo systemctl stop vps-sentinel-panel
 sudo install -m 0755 target/release/vps-sentinel-panel /usr/local/bin/vps-sentinel-panel
 sudo rm -rf /usr/local/share/vps-sentinel/panel
-sudo cp -a panel /usr/local/share/vps-sentinel/panel
+sudo install -d /usr/local/share/vps-sentinel/panel
+sudo cp -a panel/web /usr/local/share/vps-sentinel/panel/web
 sudo systemctl start vps-sentinel-panel
 sudo systemctl status vps-sentinel-panel --no-pager
 ```
