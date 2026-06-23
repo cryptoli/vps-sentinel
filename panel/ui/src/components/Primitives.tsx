@@ -107,7 +107,7 @@ export function DataTable({
             <tr className={`row-${rowTone(row)}`} key={String(row.id || `${row.node_name || "row"}-${index}`)}>
               {columns.map((column) => (
                 <td className={`col-${columnClass(column)}`} data-label={translate(language, column)} key={column} title={plainCellValue(column, cellValue(row, column), language)}>
-                  {renderCell(column, cellValue(row, column), language)}
+                  <span className="cell-value">{renderCell(column, cellValue(row, column), language)}</span>
                 </td>
               ))}
               {onDetails && (

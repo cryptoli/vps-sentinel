@@ -8,6 +8,8 @@ import {
   FileClock,
   LayoutDashboard,
   LogOut,
+  Menu,
+  RefreshCw,
   Shield,
   ShieldCheck,
   ShieldAlert,
@@ -317,6 +319,7 @@ export function PanelApp() {
           onLanguage={setLanguage}
           onTheme={setTheme}
           onLogout={logout}
+          onRefresh={() => void loadVisibleData(currentPage, role)}
         />
         <section className="content-shell">
           {needsAccess ? (
@@ -422,6 +425,7 @@ function Topbar({
   onLanguage,
   onTheme,
   onLogout,
+  onRefresh,
 }: {
   page: PageConfig;
   language: Language;
@@ -431,9 +435,22 @@ function Topbar({
   onLanguage: (language: Language) => void;
   onTheme: (theme: string) => void;
   onLogout: () => void;
+  onRefresh: () => void;
 }) {
   return (
     <header className="topbar">
+      <div className="mobile-appbar">
+        <button className="mobile-icon-button" type="button" aria-label="menu">
+          <Menu size={20} />
+        </button>
+        <div className="mobile-brand">
+          <ShieldCheck size={20} />
+          <span>{translate(language, page.labelKey)}</span>
+        </div>
+        <button className="mobile-icon-button" type="button" aria-label={translate(language, "refresh")} onClick={onRefresh}>
+          <RefreshCw size={18} />
+        </button>
+      </div>
       <div>
         <h1>{translate(language, page.labelKey)}</h1>
       </div>
