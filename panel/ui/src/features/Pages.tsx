@@ -75,7 +75,7 @@ export function OverviewPage({
         <Card title={translate(language, "riskTrend")} className="wide-card" action={<button className="ghost-button compact timeframe-button" type="button">{translate(language, "range_7d")}</button>}>
           <RiskTrend rows={trends} language={language} />
         </Card>
-        <Card title={translate(language, "findingsBySeverity")}>
+        <Card title={translate(language, "findingsBySeverity")} className="overview-severity-card">
           <DonutChart
             centerLabel={translate(language, "total")}
             items={severityRows.map((row) => ({
@@ -88,7 +88,7 @@ export function OverviewPage({
       </section>
 
       <section className="overview-triad">
-        <Card title={translate(language, "nodeStatus")}>
+        <Card title={translate(language, "nodeStatus")} className="node-status-card">
           <NodeStatus summary={summary} language={language} />
         </Card>
         <Card title={translate(language, "responseActivity")}>

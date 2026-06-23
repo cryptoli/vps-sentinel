@@ -1096,6 +1096,15 @@ button:disabled {
   padding: 18px 20px;
 }
 
+.overview-severity-card .donut-card {
+  grid-template-columns: minmax(220px, 0.9fr) minmax(180px, 0.72fr);
+  gap: 28px;
+  justify-content: center;
+  align-items: center;
+  min-height: 358px;
+  padding: 18px 28px 24px;
+}
+
 .donut {
   position: relative;
   display: grid;
@@ -1107,6 +1116,11 @@ button:disabled {
 .overview-grid .donut {
   width: 156px;
   height: 156px;
+}
+
+.overview-severity-card .donut {
+  width: 216px;
+  height: 216px;
 }
 
 .donut-svg {
@@ -1182,6 +1196,11 @@ button:disabled {
   height: 84px;
 }
 
+.overview-severity-card .donut-center {
+  width: 112px;
+  height: 112px;
+}
+
 .donut-center strong {
   font-size: 28px;
   line-height: 1;
@@ -1189,6 +1208,19 @@ button:disabled {
 
 .overview-grid .donut-center strong {
   font-size: 27px;
+}
+
+.overview-severity-card .donut-center strong {
+  font-size: 32px;
+}
+
+.overview-severity-card .legend {
+  align-self: center;
+  gap: 15px;
+}
+
+.overview-severity-card .legend-row {
+  grid-template-columns: auto minmax(56px, 1fr) auto 48px;
 }
 
 .donut-center span {
@@ -1362,6 +1394,28 @@ button:disabled {
   padding: 30px 18px;
   color: var(--muted);
   text-align: center;
+}
+
+.node-status-card .donut-card {
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 20px;
+  align-items: center;
+  min-height: 190px;
+  padding: 18px 24px;
+}
+
+.node-status-card .donut {
+  width: 136px;
+  height: 136px;
+}
+
+.node-status-card .donut-center {
+  width: 74px;
+  height: 74px;
+}
+
+.node-status-card .legend {
+  align-self: center;
 }
 
 .feature-page {
@@ -2499,19 +2553,20 @@ tbody tr.row-muted:hover {
 .node-card {
   display: grid;
   grid-template-columns:
-    minmax(174px, 1.05fr)
-    74px
+    268px
     78px
-    76px
-    86px
-    70px
-    126px
-    84px
-    82px
     88px
-    82px;
-  gap: 8px;
-  min-width: 1136px;
+    80px
+    108px
+    76px
+    142px
+    108px
+    88px
+    88px
+    92px;
+  gap: 14px;
+  justify-content: space-between;
+  min-width: 1400px;
 }
 
 .node-list-head {
@@ -3107,7 +3162,7 @@ tbody tr.row-muted:hover {
 
   .node-list-head,
   .node-card {
-    min-width: 1136px;
+    min-width: 1400px;
   }
 }
 
