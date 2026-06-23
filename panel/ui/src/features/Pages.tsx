@@ -1072,7 +1072,7 @@ function NodeStatus({ summary, language }: { summary: Summary; language: Languag
     { label: translate(language, "stale"), value: Number(status.stale || 0), className: "status-degraded" },
     { label: translate(language, "offline"), value: Number(status.offline || 0), className: "status-offline" },
   ];
-  return <DonutChart items={items} centerLabel={translate(language, "total")} />;
+  return <DonutChart items={items} centerLabel={translate(language, "total")} hideZero />;
 }
 
 function fleetResource(nodes: NodeRecord[]) {

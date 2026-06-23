@@ -89,13 +89,22 @@ export function RiskTrend({ rows, language }: { rows: TrendPoint[]; language: La
   );
 }
 
-export function DonutChart({ items, centerLabel }: { items: ChartSlice[]; centerLabel?: string }) {
-  const total = items.reduce((sum, item) => sum + item.value, 0);
+export function DonutChart({
+  items,
+  centerLabel,
+  hideZero = false,
+}: {
+  items: ChartSlice[];
+  centerLabel?: string;
+  hideZero?: boolean;
+}) {
+  const visibleItems = hideZero ? items.filter((item) => item.value > 0) : items;
+  const total = visibleItems.reduce((sum, item) => sum + item.value, 0);
   const radius = 47;
   const circumference = 2 * Math.PI * radius;
   const gap = total > 0 ? 3.2 : 0;
   let offset = 0;
-  const slices = items.map((item) => {
+  const slices = visibleItems.map((item) => {
     const ratio = total > 0 ? Math.max(0, item.value) / total : 0;
     const length = Math.max(0, circumference * ratio - gap);
     const dashOffset = -offset;
@@ -125,7 +134,7 @@ export function DonutChart({ items, centerLabel }: { items: ChartSlice[]; center
         </div>
       </div>
       <div className="legend">
-        {items.map((item) => (
+        {visibleItems.map((item) => (
           <div className="legend-row" key={item.label}>
             <span className={`legend-dot ${item.className}`} />
             <span>{item.label}</span>
