@@ -1,0 +1,7 @@
+[advisories]
+ignore = [
+    # Transitive dependency of sqlx-mysql. The advisory concerns RSA private-key
+    # timing side channels, while vps-sentinel-panel only uses sqlx-mysql as a
+    # database client and no fixed rsa release is available upstream yet.
+    "RUSTSEC-2023-0071",
+]
