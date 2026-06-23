@@ -72,7 +72,7 @@ export function PanelApp() {
   const [theme, setTheme] = useState("default");
   const [role, setRole] = useState<PanelRole>("public");
   const [settings, setSettings] = useState<PanelSettings>({});
-  const [currentPage, setCurrentPage] = useState<PageId>("overview");
+  const [currentPage, setCurrentPage] = useState<PageId>(() => initialPageFromLocation());
   const [summary, setSummary] = useState<Summary>({});
   const [datasets, setDatasets] = useState<Record<string, DatasetPage>>({});
   const [trends, setTrends] = useState<TrendPoint[]>([]);
@@ -111,6 +111,11 @@ export function PanelApp() {
     });
   }, []);
 
+  const navigatePage = useCallback((id: PageId) => {
+    setCurrentPage(id);
+    syncPageToLocation(id);
+  }, []);
+
   const loadVisibleData = useCallback(async (pageId: PageId, nextRole = activeRoleRef.current) => {
     const stateFor = (id: string) => datasetStatesRef.current[id] || defaultDatasetState();
     setLoading(true);
@@ -130,7 +135,10 @@ export function PanelApp() {
             await fetchDataset(page.endpoint || "", { ...stateFor(page.id), limit: OVERVIEW_LIMIT, offset: 0 }, nextRole),
           ] as const),
         );
-        const trendPayload = await fetchTrends(nextRole).catch(() => ({ items: [] }));
+        const trendPayload = await fetchTrends(nextRole).catch((error) => {
+          setAccessMessage(error instanceof Error ? error.message : String(error));
+          return { items: [] };
+        });
         setDatasets((current) => ({ ...current, ...Object.fromEntries(pages) }));
         setTrends(trendPayload.items || []);
       } else {
@@ -214,10 +222,11 @@ export function PanelApp() {
   }, [activePage, pageMinRole, settingsLoaded, settings.auth_required, role]);
 
   useEffect(() => {
+    if (!settingsLoaded) return;
     if (!visiblePages.some((page) => page.id === currentPage)) {
-      setCurrentPage(visiblePages[0]?.id || "overview");
+      navigatePage(visiblePages[0]?.id || "overview");
     }
-  }, [currentPage, visiblePages]);
+  }, [currentPage, navigatePage, settingsLoaded, visiblePages]);
 
   useEffect(() => {
     if (!settingsLoaded) return;
@@ -297,7 +306,7 @@ export function PanelApp() {
 
   return (
     <main className={`app-shell page-${activePage.id}`}>
-      <Sidebar pages={visiblePages} currentPage={activePage.id} language={language} onNavigate={(id) => setCurrentPage(id as PageId)} />
+      <Sidebar pages={visiblePages} currentPage={activePage.id} language={language} onNavigate={navigatePage} />
       <section className="stage">
         <Topbar
           page={activePage}
@@ -323,7 +332,7 @@ export function PanelApp() {
               trends={trends}
               datasetState={datasetState}
               updateDatasetState={updateDatasetState}
-              onNavigate={(id) => setCurrentPage(id as PageId)}
+              onNavigate={(id) => navigatePage(id as PageId)}
               onDetails={(dataset, row) => setDrawer({ dataset, row })}
             />
           )}
@@ -712,6 +721,27 @@ function parseStreamMessage(value: string): { type?: string; role?: string } | n
 
 function emptyPage<T extends PanelRecord>(): DatasetPage<T> {
   return { items: [], total: 0, limit: DEFAULT_LIMIT, offset: 0 };
+}
+
+function initialPageFromLocation(): PageId {
+  if (typeof window === "undefined") return "overview";
+  const page = new URLSearchParams(window.location.search).get("page");
+  return isPageId(page) ? page : "overview";
+}
+
+function syncPageToLocation(page: PageId): void {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (page === "overview") {
+    url.searchParams.delete("page");
+  } else {
+    url.searchParams.set("page", page);
+  }
+  window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
+function isPageId(value: unknown): value is PageId {
+  return typeof value === "string" && PAGES.some((page) => page.id === value);
 }
 
 function defaultDatasetState(): DatasetState {

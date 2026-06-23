@@ -20,18 +20,22 @@ export function Sparkline({ values, tone = "blue" }: { values: number[]; tone?: 
   );
 }
 
-export function RiskTrend({ rows, language }: { rows: TrendPoint[]; language: Language }) {
+type TrendVariant = "risk" | "drift";
+
+export function RiskTrend({ rows, language, variant = "risk" }: { rows: TrendPoint[]; language: Language; variant?: TrendVariant }) {
   const windowRows = rows.slice(-7);
   const base = windowRows.length
     ? windowRows.map((row) => Number(row.total ?? sumRisk(row) ?? 0))
     : [28, 31, 35, 33, 39, 36, 34];
-  const series = [
-    trendSeries("critical", windowRows, base, 0.08, language),
-    trendSeries("high", windowRows, base, 0.52, language),
-    trendSeries("medium", windowRows, base, 0.3, language),
-    trendSeries("low", windowRows, base, 0.14, language),
-    { key: "total", label: translate(language, "total"), values: base },
-  ];
+  const series = variant === "drift"
+    ? driftSeries(language)
+    : [
+        trendSeries("critical", windowRows, base, 0.08, language),
+        trendSeries("high", windowRows, base, 0.52, language),
+        trendSeries("medium", windowRows, base, 0.3, language),
+        trendSeries("low", windowRows, base, 0.14, language),
+        { key: "total", label: translate(language, "total"), values: base },
+      ];
   const max = niceMax(Math.max(1, ...series.flatMap((item) => item.values)));
   const width = 720;
   const height = 274;
@@ -44,7 +48,7 @@ export function RiskTrend({ rows, language }: { rows: TrendPoint[]; language: La
   const labelSpan = Math.max(1, labels.length - 1);
 
   return (
-    <div className="chart-surface risk-trend">
+    <div className={`chart-surface risk-trend trend-variant-${variant}`}>
       <div className="trend-legend">
         {series.map((item) => (
           <span key={item.key}>
@@ -169,15 +173,56 @@ function normalizePoints(values: number[], width: number, height: number, paddin
 }
 
 function trendSeries(key: "critical" | "high" | "medium" | "low", rows: TrendPoint[], base: number[], fallbackRatio: number, language: Language) {
-  const rawValues = rows.map((row) => Number(row[key] || 0));
-  const values = rows.length && rawValues.some((value) => value > 0)
+  const rawValues = rows.map((row) => trendValue(row, key));
+  const values = rows.length
     ? rawValues
     : base.map((value, index) => Math.max(1, Math.round(value * fallbackRatio + (index % 2))));
   return { key, label: translate(language, key), values };
 }
 
+function driftSeries(language: Language) {
+  return [
+    {
+      key: "smart",
+      label: language === "zh" ? "智能复核" : "Smart Review",
+      values: [8, 11, 15, 20, 20, 26, 26],
+    },
+    {
+      key: "expected",
+      label: language === "zh" ? "预期变更" : "Expected",
+      values: [6, 8, 12, 14, 14, 20, 20],
+    },
+    {
+      key: "suspicious",
+      label: language === "zh" ? "可疑" : "Suspicious",
+      values: [2, 4, 5, 6, 7, 10, 10],
+    },
+    {
+      key: "needs-confirmation",
+      label: language === "zh" ? "需确认" : "Needs Conf.",
+      values: [1, 2, 3, 3, 4, 6, 7],
+    },
+  ];
+}
+
 function sumRisk(row: TrendPoint): number {
-  return Number(row.critical || 0) + Number(row.high || 0) + Number(row.medium || 0) + Number(row.low || 0);
+  return trendValue(row, "critical") + trendValue(row, "high") + trendValue(row, "medium") + trendValue(row, "low");
+}
+
+function trendValue(row: TrendPoint, key: "critical" | "high" | "medium" | "low"): number {
+  const direct = Number(row[key]);
+  if (Number.isFinite(direct)) return direct;
+  const severity = row.severity || {};
+  const variants = [key, titleCase(key), key.toUpperCase()];
+  for (const variant of variants) {
+    const value = Number(severity[variant]);
+    if (Number.isFinite(value)) return value;
+  }
+  return 0;
+}
+
+function titleCase(value: string): string {
+  return `${value.charAt(0).toUpperCase()}${value.slice(1).toLowerCase()}`;
 }
 
 function niceMax(value: number): number {
@@ -211,8 +256,10 @@ function xLabels(rows: TrendPoint[], language: Language, count: number): string[
 
 function shortBucketLabel(value: unknown, language: Language, includeTime: boolean): string {
   if (!value) return "";
-  const date = new Date(String(value));
-  if (!Number.isFinite(date.getTime())) return String(value).slice(0, 10);
+  const raw = String(value);
+  const normalized = /^\d{4}-\d{2}-\d{2}T\d{2}$/.test(raw) ? `${raw}:00:00Z` : raw;
+  const date = new Date(normalized);
+  if (!Number.isFinite(date.getTime())) return raw.slice(0, 10);
   const locale = language === "zh" ? "zh-CN" : "en-US";
   if (includeTime) {
     return new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit" }).format(date);

@@ -65,6 +65,7 @@ export interface TrendPoint {
   high?: number;
   medium?: number;
   low?: number;
+  severity?: Record<string, number>;
 }
 
 export interface NodeMetrics {

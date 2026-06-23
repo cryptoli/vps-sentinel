@@ -78,6 +78,7 @@ export function OverviewPage({
         <Card title={translate(language, "findingsBySeverity")} className="overview-severity-card">
           <DonutChart
             centerLabel={translate(language, "total")}
+            hideZero
             items={severityRows.map((row) => ({
               label: translate(language, String(row.severity || "unknown").toLowerCase()),
               value: Number(row.count || 0),
@@ -91,14 +92,14 @@ export function OverviewPage({
         <Card title={translate(language, "nodeStatus")} className="node-status-card">
           <NodeStatus summary={summary} language={language} />
         </Card>
-        <Card title={translate(language, "responseActivity")}>
+        <Card title={translate(language, "responseActivity")} className="response-activity-card">
           <div className="response-list">
             <ResponseRow icon={<Siren />} value={summary.incidents || incidents.length} label={translate(language, "activeIncidents")} tone="red" />
             <ResponseRow icon={<ShieldCheck />} value={summary.active_blocks || blocks.length} label={translate(language, "blocksInEffect")} tone="orange" />
             <ResponseRow icon={<Cpu />} value={Math.max(0, highRisk)} label={translate(language, "highRiskPressure")} tone="green" />
           </div>
         </Card>
-        <Card title={translate(language, "nodeFreshness")} action={<button className="link-button" type="button" onClick={() => onNavigate("nodes")}>{translate(language, "nodes")}</button>}>
+        <Card title={translate(language, "nodeFreshness")} className="node-freshness-card" action={<button className="link-button" type="button" onClick={() => onNavigate("nodes")}>{translate(language, "nodes")}</button>}>
           <div className="freshness-table">
             <div className="freshness-head">
               <span>{translate(language, "nodes")}</span>
@@ -246,7 +247,7 @@ export function IncidentsPageView({
                 ))}
               </div>
             </Card>
-            <Card title={copy(language, "Correlation Score", "关联评分")}>
+            <Card title={copy(language, "Correlation Score", "关联评分")} className="correlation-card">
               <div className="score-panel">
                 <div className="posture-ring posture-bad" style={{ "--score": "92%" } as React.CSSProperties}>
                   <strong>{Number(selected.score || 92)}</strong>
@@ -348,8 +349,8 @@ export function BaselinePageView({
         <StatTile icon={<ShieldQuestion />} tone="red" label={copy(language, "Needs Confirmation", "需确认")} value={reviewVerdictCount(rows, "needs_review")} detail={copy(language, "Insufficient context", "上下文不足")} />
       </section>
       <section className="baseline-grid">
-        <Card title={copy(language, "Drift Timeline", "漂移时间线")} className="wide-card">
-          <RiskTrend rows={[]} language={language} />
+        <Card title={copy(language, "Drift Timeline", "漂移时间线")} className="wide-card baseline-timeline-card">
+          <RiskTrend rows={[]} language={language} variant="drift" />
         </Card>
         <SideCard title={copy(language, "Smart Classification", "智能分类")}>
           <ClassificationRows language={language} />
