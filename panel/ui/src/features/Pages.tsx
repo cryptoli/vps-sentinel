@@ -9,8 +9,11 @@ import {
   Clock3,
   Cpu,
   Database,
+  FileText,
   GitBranch,
+  Globe2,
   Infinity,
+  ListChecks,
   Network,
   RotateCw,
   Server,
@@ -435,6 +438,92 @@ export function BlocksPageView({
   );
 }
 
+export function SourcesPageView({
+  config,
+  page,
+  state,
+  language,
+  onStateChange,
+}: {
+  config: PageConfig;
+  page: DatasetPage;
+  state: DatasetState;
+  language: Language;
+  onStateChange: (patch: Partial<DatasetState>) => void;
+}) {
+  const rows = filteredRows(page.items, state);
+  const blocked = rows.filter((row) => String(row.block_status || "").toLowerCase().includes("block")).length;
+  return (
+    <div className="page-stack feature-page sources-design">
+      <FeatureHeader title={translate(language, config.titleKey)} description={translate(language, config.descriptionKey)} />
+      <section className="feature-metrics four">
+        <StatTile icon={<Globe2 />} tone="blue" label={copy(language, "Observed Sources", "探查来源")} value={number(page.total)} detail={copy(language, "Aggregated by source", "按来源聚合")} />
+        <StatTile icon={<Ban />} tone="red" label={copy(language, "Blocked Sources", "已封禁来源")} value={blocked} detail={copy(language, "Evidence threshold met", "证据达到阈值")} />
+        <StatTile icon={<Network />} tone="green" label={copy(language, "Countries", "国家/地区")} value={uniqueCount(rows, "country")} detail={copy(language, "For attribution only", "仅供归属参考")} />
+        <StatTile icon={<Database />} tone="orange" label={copy(language, "Organizations", "组织")} value={uniqueCount(rows, "organization")} detail={copy(language, "ASN context", "ASN 上下文")} />
+      </section>
+      <Filters state={state} language={language} onChange={onStateChange} />
+      <section className="feature-main-grid compact-side">
+        <Card title={translate(language, config.labelKey)} className="feature-table-card">
+          <DataTable rows={rows} columns={config.columns || []} language={language} tableId="probe_sources" />
+          <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
+        </Card>
+        <aside className="feature-side-stack">
+          <SideCard title={copy(language, "Top Categories", "主要分类")}>
+            <RankList rows={topValues(rows, "categories")} />
+          </SideCard>
+          <SideCard title={copy(language, "Block Status", "处置状态")}>
+            <RankList rows={topValues(rows, "block_status")} />
+          </SideCard>
+        </aside>
+      </section>
+    </div>
+  );
+}
+
+export function AuditPageView({
+  config,
+  page,
+  state,
+  language,
+  onStateChange,
+}: {
+  config: PageConfig;
+  page: DatasetPage;
+  state: DatasetState;
+  language: Language;
+  onStateChange: (patch: Partial<DatasetState>) => void;
+}) {
+  const rows = filteredRows(page.items, state);
+  const reviewActions = rows.filter((row) => String(row.action || "").includes("review")).length;
+  return (
+    <div className="page-stack feature-page audit-design">
+      <FeatureHeader title={translate(language, config.titleKey)} description={translate(language, config.descriptionKey)} />
+      <section className="feature-metrics four">
+        <StatTile icon={<FileText />} tone="blue" label={copy(language, "Audit Records", "审计记录")} value={number(page.total)} detail={copy(language, "Panel operations", "面板操作")} />
+        <StatTile icon={<ListChecks />} tone="green" label={copy(language, "Review Actions", "复核操作")} value={reviewActions} detail={copy(language, "Manual decisions", "人工结论")} />
+        <StatTile icon={<Server />} tone="orange" label={copy(language, "Actors", "操作者")} value={uniqueCount(rows, "actor")} detail={copy(language, "Deduplicated", "去重统计")} />
+        <StatTile icon={<Target />} tone="red" label={copy(language, "Target Types", "对象类型")} value={uniqueCount(rows, "target_type")} detail={copy(language, "Action coverage", "操作覆盖")} />
+      </section>
+      <Filters state={state} language={language} onChange={onStateChange} />
+      <section className="feature-main-grid compact-side">
+        <Card title={translate(language, config.labelKey)} className="feature-table-card">
+          <DataTable rows={rows} columns={config.columns || []} language={language} tableId="audit_logs" />
+          <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
+        </Card>
+        <aside className="feature-side-stack">
+          <SideCard title={copy(language, "Actions", "操作类型")}>
+            <RankList rows={topValues(rows, "action")} />
+          </SideCard>
+          <SideCard title={copy(language, "Targets", "对象分布")}>
+            <RankList rows={topValues(rows, "target_type")} />
+          </SideCard>
+        </aside>
+      </section>
+    </div>
+  );
+}
+
 export function DatasetPageView({
   config,
   page,
@@ -761,6 +850,30 @@ function topNodes(rows: PanelRecord[]): Array<{ label: string; value: number }> 
   return [...counts.entries()]
     .map(([label, value]) => ({ label, value }))
     .sort((left, right) => right.value - left.value);
+}
+
+function topValues(rows: PanelRecord[], key: string): Array<{ label: string; value: number }> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const raw = row[key];
+    const values = Array.isArray(raw) ? raw : [raw];
+    for (const value of values) {
+      const label = String(value || "unknown").trim() || "unknown";
+      counts.set(label, (counts.get(label) || 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .map(([label, value]) => ({ label, value }))
+    .sort((left, right) => right.value - left.value || left.label.localeCompare(right.label));
+}
+
+function uniqueCount(rows: PanelRecord[], key: string): number {
+  const values = new Set<string>();
+  for (const row of rows) {
+    const value = String(row[key] || "").trim();
+    if (value && value.toLowerCase() !== "unknown") values.add(value);
+  }
+  return values.size;
 }
 
 function copy(language: Language, en: string, zh: string): string {

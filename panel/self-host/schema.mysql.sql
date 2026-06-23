@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS findings (
   confidence VARCHAR(32) NOT NULL,
   category VARCHAR(64) NOT NULL,
   subject VARCHAR(512) NOT NULL,
+  review_signature VARCHAR(96) NOT NULL DEFAULT '',
   timestamp VARCHAR(64) NOT NULL,
   dedup_key VARCHAR(191) NOT NULL,
   evidence_json TEXT NOT NULL,
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS panel_reviews (
   verdict VARCHAR(32) NOT NULL,
   note TEXT NOT NULL,
   reviewer VARCHAR(128) NOT NULL,
+  review_signature VARCHAR(96) NOT NULL DEFAULT '',
   reviewed_at VARCHAR(64) NOT NULL,
   PRIMARY KEY (target_type, target_id)
 );
@@ -74,6 +76,7 @@ CREATE TABLE IF NOT EXISTS incidents (
   first_seen VARCHAR(64) NOT NULL,
   last_seen VARCHAR(64) NOT NULL,
   summary TEXT NOT NULL,
+  review_signature VARCHAR(96) NOT NULL DEFAULT '',
   payload_json TEXT NOT NULL,
   received_at VARCHAR(64) NOT NULL
 );
@@ -86,6 +89,7 @@ CREATE TABLE IF NOT EXISTS baseline_drifts (
   category VARCHAR(64) NOT NULL DEFAULT 'system',
   severity VARCHAR(32) NOT NULL,
   subject VARCHAR(512) NOT NULL,
+  review_signature VARCHAR(96) NOT NULL DEFAULT '',
   timestamp VARCHAR(64) NOT NULL,
   tier VARCHAR(32) NOT NULL,
   score INTEGER,
@@ -140,9 +144,13 @@ CREATE INDEX idx_findings_node_time ON findings(node_id, timestamp);
 CREATE INDEX idx_findings_severity_time ON findings(severity, timestamp);
 CREATE INDEX idx_finding_reviews_verdict ON finding_reviews(verdict, reviewed_at);
 CREATE INDEX idx_panel_reviews_verdict ON panel_reviews(target_type, verdict, reviewed_at);
+CREATE INDEX idx_panel_reviews_signature ON panel_reviews(target_type, review_signature, verdict, reviewed_at);
 CREATE INDEX idx_panel_audit_logs_created ON panel_audit_logs(created_at);
 CREATE INDEX idx_incidents_node_time ON incidents(node_id, last_seen);
+CREATE INDEX idx_incidents_review_signature ON incidents(review_signature);
 CREATE INDEX idx_baseline_node_time ON baseline_drifts(node_id, timestamp);
+CREATE INDEX idx_baseline_review_signature ON baseline_drifts(review_signature);
+CREATE INDEX idx_findings_review_signature ON findings(review_signature);
 CREATE INDEX idx_blocks_node ON active_blocks(node_id);
 CREATE INDEX idx_probe_sources_node_seen ON probe_sources(node_id, last_seen);
 CREATE INDEX idx_probe_sources_ip_seen ON probe_sources(source_ip, last_seen);

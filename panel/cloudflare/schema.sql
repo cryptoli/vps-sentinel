@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS findings (
   confidence TEXT NOT NULL,
   category TEXT NOT NULL,
   subject TEXT NOT NULL,
+  review_signature TEXT NOT NULL DEFAULT '',
   timestamp TEXT NOT NULL,
   dedup_key TEXT NOT NULL,
   evidence_json TEXT NOT NULL,
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS panel_reviews (
   verdict TEXT NOT NULL,
   note TEXT NOT NULL,
   reviewer TEXT NOT NULL,
+  review_signature TEXT NOT NULL DEFAULT '',
   reviewed_at TEXT NOT NULL,
   PRIMARY KEY (target_type, target_id)
 );
@@ -74,6 +76,7 @@ CREATE TABLE IF NOT EXISTS incidents (
   first_seen TEXT NOT NULL,
   last_seen TEXT NOT NULL,
   summary TEXT NOT NULL,
+  review_signature TEXT NOT NULL DEFAULT '',
   payload_json TEXT NOT NULL,
   received_at TEXT NOT NULL
 );
@@ -85,6 +88,7 @@ CREATE TABLE IF NOT EXISTS baseline_drifts (
   rule_id TEXT NOT NULL,
   severity TEXT NOT NULL,
   subject TEXT NOT NULL,
+  review_signature TEXT NOT NULL DEFAULT '',
   timestamp TEXT NOT NULL,
   tier TEXT NOT NULL,
   score INTEGER,
@@ -139,9 +143,13 @@ CREATE INDEX IF NOT EXISTS idx_findings_node_time ON findings(node_id, timestamp
 CREATE INDEX IF NOT EXISTS idx_findings_severity_time ON findings(severity, timestamp);
 CREATE INDEX IF NOT EXISTS idx_finding_reviews_verdict ON finding_reviews(verdict, reviewed_at);
 CREATE INDEX IF NOT EXISTS idx_panel_reviews_verdict ON panel_reviews(target_type, verdict, reviewed_at);
+CREATE INDEX IF NOT EXISTS idx_panel_reviews_signature ON panel_reviews(target_type, review_signature, verdict, reviewed_at);
 CREATE INDEX IF NOT EXISTS idx_panel_audit_logs_created ON panel_audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_incidents_node_time ON incidents(node_id, last_seen);
+CREATE INDEX IF NOT EXISTS idx_incidents_review_signature ON incidents(review_signature);
 CREATE INDEX IF NOT EXISTS idx_baseline_node_time ON baseline_drifts(node_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_baseline_review_signature ON baseline_drifts(review_signature);
+CREATE INDEX IF NOT EXISTS idx_findings_review_signature ON findings(review_signature);
 CREATE INDEX IF NOT EXISTS idx_blocks_node ON active_blocks(node_id);
 CREATE INDEX IF NOT EXISTS idx_probe_sources_node_seen ON probe_sources(node_id, last_seen);
 CREATE INDEX IF NOT EXISTS idx_probe_sources_ip_seen ON probe_sources(source_ip, last_seen);

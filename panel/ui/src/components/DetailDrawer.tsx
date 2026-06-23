@@ -8,7 +8,15 @@ import { X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 type ReviewTargetType = "finding" | "incident" | "baseline_drift";
-type ReviewValue = { verdict?: string; note?: string; reviewer?: string; reviewed_at?: string; target_type?: string; target_id?: string };
+type ReviewValue = {
+  verdict?: string;
+  note?: string;
+  reviewer?: string;
+  reviewed_at?: string;
+  target_type?: string;
+  target_id?: string;
+  review_signature?: string;
+};
 type ReviewResponse = { ok?: boolean; review?: ReviewValue };
 
 export function DetailDrawer({
@@ -94,7 +102,7 @@ export function DetailDrawer({
         </header>
         <dl className="detail-list">
           {Object.entries(row)
-            .filter(([key]) => !["id", "finding_id", "evidence", "impact", "recommendations", "payload", "review", "review_verdict"].includes(key))
+            .filter(([key]) => !["id", "finding_id", "evidence", "impact", "recommendations", "payload", "review", "review_verdict", "review_signature"].includes(key))
             .slice(0, 18)
             .map(([key, value]) => (
               <div key={key}>
@@ -112,6 +120,7 @@ export function DetailDrawer({
                 {currentReview.reviewed_at && <span>{translate(language, "reviewedAt")}: {formatValue("reviewed_at", currentReview.reviewed_at, language)}</span>}
               </p>
             )}
+            <p className="review-scope-note">{translate(language, "reviewScopeSimilar")}</p>
             <SelectMenu
               value={verdict}
               ariaLabel={translate(language, "reviewRecord")}
@@ -150,5 +159,6 @@ function reviewValue(row: PanelRecord | null): ReviewValue | null {
     reviewed_at: typeof review.reviewed_at === "string" ? review.reviewed_at : undefined,
     target_type: typeof review.target_type === "string" ? review.target_type : undefined,
     target_id: typeof review.target_id === "string" ? review.target_id : undefined,
+    review_signature: typeof review.review_signature === "string" ? review.review_signature : undefined,
   };
 }

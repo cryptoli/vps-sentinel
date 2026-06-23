@@ -10,6 +10,7 @@ const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
 const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES = 720;
 const ROLE_LEVELS = { public: 0, operator: 1, admin: 2 };
 const PANEL_TRANSPORT_ENCODING = "json-base64";
+let compatSchemaPromise = null;
 
 const DATASETS = {
   "/api/v1/nodes": {
@@ -24,19 +25,19 @@ const DATASETS = {
     minRole: "operator",
     table: "findings",
     orderColumn: "timestamp",
-    columns: ["id", "timestamp", "node_id AS node_name", "severity", "rule_id", "category", "subject", "title"],
+    columns: ["id", "timestamp", "node_id AS node_name", "severity", "rule_id", "category", "subject", "review_signature", "title"],
   },
   "/api/v1/incidents": {
     minRole: "operator",
     table: "incidents",
     orderColumn: "last_seen",
-    columns: ["id", "last_seen", "node_id AS node_name", "severity", "score", "title", "summary"],
+    columns: ["id", "last_seen", "node_id AS node_name", "severity", "score", "title", "summary", "review_signature"],
   },
   "/api/v1/baseline-drifts": {
     minRole: "operator",
     table: "baseline_drifts",
     orderColumn: "timestamp",
-    columns: ["id", "finding_id", "timestamp", "node_id AS node_name", "severity", "rule_id", "tier", "subject", "review_action"],
+    columns: ["id", "finding_id", "timestamp", "node_id AS node_name", "severity", "rule_id", "tier", "subject", "review_signature", "review_action"],
   },
   "/api/v1/active-blocks": {
     minRole: "operator",
@@ -95,6 +96,9 @@ export default {
     try {
       if (request.method === "OPTIONS") {
         return withCors(new Response(null, { status: 204 }), request, env);
+      }
+      if (env.DB && url.pathname.startsWith("/api/v1/")) {
+        await ensureCompatSchema(env);
       }
       if (request.method === "POST" && url.pathname === "/api/v1/ingest") {
         return withCors(await ingest(request, env), request, env);
@@ -166,6 +170,45 @@ export default {
     }
   },
 };
+
+async function ensureCompatSchema(env) {
+  if (!compatSchemaPromise) {
+    compatSchemaPromise = (async () => {
+      const columns = [
+        ["findings", "review_signature", "TEXT NOT NULL DEFAULT ''"],
+        ["incidents", "review_signature", "TEXT NOT NULL DEFAULT ''"],
+        ["baseline_drifts", "review_signature", "TEXT NOT NULL DEFAULT ''"],
+        ["panel_reviews", "review_signature", "TEXT NOT NULL DEFAULT ''"],
+      ];
+      for (const [table, column, definition] of columns) {
+        await ignoreExistingSchemaError(
+          env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run(),
+        );
+      }
+      const indexes = [
+        "CREATE INDEX IF NOT EXISTS idx_findings_review_signature ON findings(review_signature)",
+        "CREATE INDEX IF NOT EXISTS idx_incidents_review_signature ON incidents(review_signature)",
+        "CREATE INDEX IF NOT EXISTS idx_baseline_review_signature ON baseline_drifts(review_signature)",
+        "CREATE INDEX IF NOT EXISTS idx_panel_reviews_signature ON panel_reviews(target_type, review_signature, verdict, reviewed_at)",
+      ];
+      for (const statement of indexes) {
+        await env.DB.prepare(statement).run();
+      }
+    })();
+  }
+  return compatSchemaPromise;
+}
+
+async function ignoreExistingSchemaError(promise) {
+  try {
+    await promise;
+  } catch (error) {
+    const message = String(error?.message || error).toLowerCase();
+    if (!message.includes("duplicate column") && !message.includes("already exists")) {
+      throw error;
+    }
+  }
+}
 
 async function ingest(request, env) {
   const body = new Uint8Array(await request.arrayBuffer());
@@ -270,19 +313,23 @@ async function persistPayload(env, payload, signedNodeName) {
     const evidence = redactPanelValue(finding.evidence || []);
     const impact = redactPanelValue(finding.impact || []);
     const recommendations = redactPanelValue(finding.recommendations || []);
+    const title = redactIpText(finding.title || "");
+    const subject = redactIpText(finding.subject || "");
+    const reviewSignature = await findingReviewSignature(nodeName, finding.rule_id, finding.category, subject, title);
     statements.push(env.DB.prepare(`
       INSERT OR REPLACE INTO findings
-        (id, node_id, rule_id, title, severity, confidence, category, subject, timestamp, dedup_key, evidence_json, impact_json, recommendations_json, received_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, node_id, rule_id, title, severity, confidence, category, subject, review_signature, timestamp, dedup_key, evidence_json, impact_json, recommendations_json, received_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       finding.id,
       nodeName,
       finding.rule_id,
-      redactIpText(finding.title || ""),
+      title,
       finding.severity,
       finding.confidence,
       finding.category,
-      redactIpText(finding.subject || ""),
+      subject,
+      reviewSignature,
       finding.timestamp,
       redactIpText(finding.dedup_key || ""),
       JSON.stringify(evidence),
@@ -294,19 +341,23 @@ async function persistPayload(env, payload, signedNodeName) {
 
   for (const incident of payload.incidents || []) {
     const incidentPayload = redactPanelValue(incident);
+    const title = redactIpText(incident.title || "");
+    const summary = redactIpText(incident.summary || "");
+    const reviewSignature = await incidentReviewSignature(nodeName, incident.severity, title, summary);
     statements.push(env.DB.prepare(`
       INSERT OR REPLACE INTO incidents
-        (id, node_id, title, severity, score, first_seen, last_seen, summary, payload_json, received_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, node_id, title, severity, score, first_seen, last_seen, summary, review_signature, payload_json, received_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       incident.id,
       nodeName,
-      redactIpText(incident.title || ""),
+      title,
       incident.severity,
       Number(incident.score || 0),
       incident.first_seen,
       incident.last_seen,
-      redactIpText(incident.summary || ""),
+      summary,
+      reviewSignature,
       JSON.stringify(incidentPayload),
       receivedAt,
     ));
@@ -314,11 +365,13 @@ async function persistPayload(env, payload, signedNodeName) {
 
   for (const drift of payload.baseline_drifts || []) {
     const subject = redactIpText(drift.subject || "");
+    const category = String(drift.category || baselineCategoryFromRule(drift.rule_id || ""));
+    const reviewSignature = await driftReviewSignature(nodeName, drift.rule_id, category, subject, drift.tier);
     const id = `${nodeName}:${drift.finding_id || drift.rule_id}:${subject}:${drift.timestamp}`;
     statements.push(env.DB.prepare(`
       INSERT OR REPLACE INTO baseline_drifts
-        (id, node_id, finding_id, rule_id, severity, subject, timestamp, tier, score, review_action, reasons_json, received_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, node_id, finding_id, rule_id, severity, subject, review_signature, timestamp, tier, score, review_action, reasons_json, received_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       id,
       nodeName,
@@ -326,6 +379,7 @@ async function persistPayload(env, payload, signedNodeName) {
       drift.rule_id,
       drift.severity,
       subject,
+      reviewSignature,
       drift.timestamp,
       drift.tier,
       drift.score ?? null,
@@ -559,7 +613,13 @@ function reviewNotFalsePositiveFilter(table, targetType) {
   return `NOT EXISTS (
     SELECT 1 FROM panel_reviews review
     WHERE review.target_type = '${targetType}'
-      AND review.target_id = ${table}.id
+      AND (
+        review.target_id = ${table}.id
+        OR (
+          review.review_signature <> ''
+          AND review.review_signature = ${table}.review_signature
+        )
+      )
       AND review.verdict = 'false_positive'
   )`;
 }
@@ -605,16 +665,32 @@ async function attachPanelReviews(env, table, items, role) {
   const targetType = reviewTargetForTable(table);
   if (!targetType || !items.length) return items;
   const ids = items.map((item) => String(item?.id || "").trim()).filter(Boolean);
-  if (!ids.length) {
+  const signatures = [...new Set(items.map((item) => String(item?.review_signature || "").trim()).filter(Boolean))];
+  if (!ids.length && !signatures.length) {
     return items.map((item) => ({ ...item, review_verdict: "needs_review" }));
   }
-  const placeholders = ids.map(() => "?").join(", ");
+  const idPlaceholders = ids.map(() => "?").join(", ");
+  const signaturePlaceholders = signatures.map(() => "?").join(", ");
+  const predicates = [];
+  if (ids.length) predicates.push(`target_id IN (${idPlaceholders})`);
+  if (signatures.length) predicates.push(`review_signature IN (${signaturePlaceholders})`);
   const result = await env.DB.prepare(
-    `SELECT target_id, verdict, note, reviewer, reviewed_at FROM panel_reviews WHERE target_type = ? AND target_id IN (${placeholders})`,
-  ).bind(targetType, ...ids).all();
-  const reviews = new Map((result.results || []).map((review) => [String(review.target_id), review]));
+    `SELECT target_id, review_signature, verdict, note, reviewer, reviewed_at
+     FROM panel_reviews
+     WHERE target_type = ? AND (${predicates.join(" OR ")})
+     ORDER BY reviewed_at DESC`,
+  ).bind(targetType, ...ids, ...signatures).all();
+  const exactReviews = new Map();
+  const signatureReviews = new Map();
+  for (const review of result.results || []) {
+    const targetId = String(review.target_id || "");
+    const signature = String(review.review_signature || "");
+    if (targetId && !exactReviews.has(targetId)) exactReviews.set(targetId, review);
+    if (signature && !signatureReviews.has(signature)) signatureReviews.set(signature, review);
+  }
   return items.map((item) => {
-    const review = reviews.get(String(item?.id || ""));
+    const review = exactReviews.get(String(item?.id || ""))
+      || signatureReviews.get(String(item?.review_signature || ""));
     if (!review) return { ...item, review_verdict: "needs_review", status: "needs_review" };
     const verdict = review.verdict || "needs_review";
     const next = { ...item, review_verdict: verdict, status: verdict };
@@ -633,7 +709,7 @@ function reviewTargetForTable(table) {
 async function findingDetail(env, url) {
   const id = requiredQuery(url, "id");
   const row = await env.DB.prepare(`
-    SELECT id, node_id AS node_name, rule_id, title, severity, confidence, category, subject, timestamp, dedup_key,
+    SELECT id, node_id AS node_name, rule_id, title, severity, confidence, category, subject, review_signature, timestamp, dedup_key,
            evidence_json, impact_json, recommendations_json, received_at
     FROM findings
     WHERE id = ?
@@ -645,23 +721,44 @@ async function findingDetail(env, url) {
   delete row.evidence_json;
   delete row.impact_json;
   delete row.recommendations_json;
-  row.review = await env.DB.prepare(
-    "SELECT finding_id, verdict, note, reviewer, reviewed_at FROM finding_reviews WHERE finding_id = ?",
-  ).bind(id).first();
+  row.review = await panelReviewValue(env, "finding", id, row.review_signature)
+    || await env.DB.prepare(
+      "SELECT finding_id, verdict, note, reviewer, reviewed_at FROM finding_reviews WHERE finding_id = ?",
+    ).bind(id).first();
   return redactPanelValue(row);
 }
 
 async function incidentDetail(env, url) {
   const id = requiredQuery(url, "id");
   const row = await env.DB.prepare(`
-    SELECT id, node_id AS node_name, title, severity, score, first_seen, last_seen, summary, payload_json, received_at
+    SELECT id, node_id AS node_name, title, severity, score, first_seen, last_seen, summary, review_signature, payload_json, received_at
     FROM incidents
     WHERE id = ?
   `).bind(id).first();
   if (!row) throwHttp(404, "incident_not_found");
   row.payload = parseJsonField(row.payload_json, null);
   delete row.payload_json;
+  row.review = await panelReviewValue(env, "incident", id, row.review_signature);
   return redactPanelValue(row);
+}
+
+async function panelReviewValue(env, targetType, targetId, reviewSignature = "") {
+  const signature = String(reviewSignature || "").trim();
+  const result = signature
+    ? await env.DB.prepare(`
+        SELECT target_type, target_id, review_signature, verdict, note, reviewer, reviewed_at
+        FROM panel_reviews
+        WHERE target_type = ? AND (target_id = ? OR review_signature = ?)
+        ORDER BY CASE WHEN target_id = ? THEN 0 ELSE 1 END, reviewed_at DESC
+        LIMIT 1
+      `).bind(targetType, targetId, signature, targetId).first()
+    : await env.DB.prepare(`
+        SELECT target_type, target_id, review_signature, verdict, note, reviewer, reviewed_at
+        FROM panel_reviews
+        WHERE target_type = ? AND target_id = ?
+        LIMIT 1
+      `).bind(targetType, targetId).first();
+  return result || null;
 }
 
 async function findingReview(request, env) {
@@ -669,10 +766,12 @@ async function findingReview(request, env) {
   const review = normalizeFindingReview(payload);
   const exists = await env.DB.prepare("SELECT id FROM findings WHERE id = ?").bind(review.finding_id).first();
   if (!exists) throwHttp(404, "finding_not_found");
+  const reviewSignature = await targetReviewSignature(env, "finding", review.finding_id);
   await writeFindingReview(env, review);
   await writePanelReview(env, {
     target_type: "finding",
     target_id: review.finding_id,
+    review_signature: reviewSignature,
     verdict: review.verdict,
     note: review.note,
     reviewer: review.reviewer,
@@ -696,6 +795,7 @@ async function findingReview(request, env) {
     review: panelReviewResponse({
       target_type: "finding",
       target_id: review.finding_id,
+      review_signature: reviewSignature,
       verdict: review.verdict,
       note: review.note,
       reviewer: review.reviewer,
@@ -712,7 +812,9 @@ async function panelReview(request, env) {
     .bind(review.target_id)
     .first();
   if (!exists) throwHttp(404, target.notFound);
-  await writePanelReview(env, review);
+  const reviewSignature = await targetReviewSignature(env, review.target_type, review.target_id);
+  const scopedReview = { ...review, review_signature: reviewSignature };
+  await writePanelReview(env, scopedReview);
   if (review.target_type === "finding") {
     await writeFindingReview(env, {
       finding_id: review.target_id,
@@ -734,13 +836,14 @@ async function panelReview(request, env) {
     JSON.stringify({ verdict: review.verdict, note_present: Boolean(review.note) }),
     review.reviewed_at,
   ).run();
-  return { ok: true, target_type: review.target_type, target_id: review.target_id, review: panelReviewResponse(review) };
+  return { ok: true, target_type: review.target_type, target_id: review.target_id, review: panelReviewResponse(scopedReview) };
 }
 
 function panelReviewResponse(review) {
   return {
     target_type: review.target_type,
     target_id: review.target_id,
+    review_signature: review.review_signature || "",
     verdict: review.verdict,
     note: review.note,
     reviewer: review.reviewer,
@@ -797,6 +900,124 @@ function panelReviewTarget(targetType) {
   throwHttp(400, "invalid_review_target_type");
 }
 
+async function targetReviewSignature(env, targetType, targetId) {
+  const target = panelReviewTarget(targetType);
+  const columns = targetType === "finding"
+    ? "node_id, rule_id, category, subject, title, review_signature"
+    : targetType === "incident"
+      ? "node_id, severity, title, summary, review_signature"
+      : "node_id, rule_id, subject, tier, review_signature";
+  const row = await env.DB.prepare(`SELECT ${columns} FROM ${target.table} WHERE ${target.idColumn} = ?`)
+    .bind(targetId)
+    .first();
+  if (!row) throwHttp(404, target.notFound);
+  if (String(row.review_signature || "").trim()) return String(row.review_signature);
+  const signature = await reviewSignatureFromRow(targetType, row);
+  await env.DB.prepare(`UPDATE ${target.table} SET review_signature = ? WHERE ${target.idColumn} = ?`)
+    .bind(signature, targetId)
+    .run();
+  return signature;
+}
+
+async function reviewSignatureFromRow(targetType, row) {
+  if (targetType === "finding") {
+    return findingReviewSignature(row.node_id, row.rule_id, row.category, row.subject, row.title);
+  }
+  if (targetType === "incident") {
+    return incidentReviewSignature(row.node_id, row.severity, row.title, row.summary);
+  }
+  return driftReviewSignature(
+    row.node_id,
+    row.rule_id,
+    baselineCategoryFromRule(row.rule_id),
+    row.subject,
+    row.tier,
+  );
+}
+
+async function findingReviewSignature(nodeId, ruleId, category, subject, title) {
+  return reviewSignature([
+    ["finding", false],
+    [nodeId, false],
+    [ruleId, false],
+    [category, false],
+    [subject, true],
+    [title, true],
+  ]);
+}
+
+async function incidentReviewSignature(nodeId, severity, title, summary) {
+  return reviewSignature([
+    ["incident", false],
+    [nodeId, false],
+    [severity, false],
+    [title, true],
+    [summary, true],
+  ]);
+}
+
+async function driftReviewSignature(nodeId, ruleId, category, subject, tier) {
+  return reviewSignature([
+    ["baseline_drift", false],
+    [nodeId, false],
+    [ruleId, false],
+    [category, false],
+    [subject, true],
+    [tier, false],
+  ]);
+}
+
+async function reviewSignature(parts) {
+  const source = parts.map(([value, dynamic]) => normalizeReviewSignaturePart(value, dynamic)).join("|");
+  return `v1:${await sha256Hex(new TextEncoder().encode(source))}`;
+}
+
+function normalizeReviewSignaturePart(value, dynamic) {
+  let out = "";
+  let previousSpace = false;
+  let numberOpen = false;
+  for (const char of redactIpText(String(value || "")).trim().toLowerCase()) {
+    if (dynamic && /[0-9]/.test(char)) {
+      if (!numberOpen) out += "#";
+      numberOpen = true;
+      previousSpace = false;
+      continue;
+    }
+    numberOpen = false;
+    if (/\s/.test(char)) {
+      if (!previousSpace) out += " ";
+      previousSpace = true;
+      continue;
+    }
+    previousSpace = false;
+    if (dynamic && ["\"", "'", "`"].includes(char)) continue;
+    out += char;
+  }
+  return out.trim().slice(0, 256);
+}
+
+function baselineCategoryFromRule(ruleId) {
+  const prefix = String(ruleId || "").split("-")[0].toUpperCase();
+  const categories = {
+    AUTH: "ssh",
+    SSH: "ssh",
+    USER: "user",
+    PRIV: "privilege",
+    PERSIST: "persistence",
+    PROC: "process",
+    NET: "network",
+    SERVICE: "network",
+    FILE: "file_integrity",
+    WEB: "web",
+    DOCKER: "docker",
+    ROOTKIT: "rootkit",
+    CONFIG: "config_risk",
+    SYS: "system",
+    SYSTEM: "system",
+  };
+  return categories[prefix] || "system";
+}
+
 async function writeFindingReview(env, review) {
   await env.DB.prepare(`
     INSERT INTO finding_reviews (finding_id, verdict, note, reviewer, reviewed_at)
@@ -811,14 +1032,23 @@ async function writeFindingReview(env, review) {
 
 async function writePanelReview(env, review) {
   await env.DB.prepare(`
-    INSERT INTO panel_reviews (target_type, target_id, verdict, note, reviewer, reviewed_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO panel_reviews (target_type, target_id, review_signature, verdict, note, reviewer, reviewed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(target_type, target_id) DO UPDATE SET
+      review_signature = excluded.review_signature,
       verdict = excluded.verdict,
       note = excluded.note,
       reviewer = excluded.reviewer,
       reviewed_at = excluded.reviewed_at
-  `).bind(review.target_type, review.target_id, review.verdict, review.note, review.reviewer, review.reviewed_at).run();
+  `).bind(
+    review.target_type,
+    review.target_id,
+    review.review_signature || "",
+    review.verdict,
+    review.note,
+    review.reviewer,
+    review.reviewed_at,
+  ).run();
 }
 
 function panelBlockStorageId(nodeId, block) {
@@ -897,10 +1127,11 @@ function redactPanelValue(value) {
   if (Array.isArray(value)) return value.map((item) => redactPanelValue(item));
   if (typeof value === "object") {
     return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+      if (String(key || "").toLowerCase() === "review_signature") return null;
       if (sensitiveNetworkKey(key)) return [key, redactedIp()];
       if (String(key || "").toLowerCase() === "node_name") return [key, publicNodeName(item)];
       return [key, redactPanelValue(item)];
-    }));
+    }).filter(Boolean));
   }
   return value;
 }

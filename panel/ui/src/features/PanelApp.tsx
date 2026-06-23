@@ -30,7 +30,17 @@ import {
 } from "@/lib/datasets";
 import { selectedLanguage, translate } from "@/lib/i18n";
 import { roleAllows, selectedRole } from "@/lib/rbac";
-import { BaselinePageView, BlocksPageView, DatasetPageView, FindingsPageView, IncidentsPageView, NodesPageView, OverviewPage } from "@/features/Pages";
+import {
+  AuditPageView,
+  BaselinePageView,
+  BlocksPageView,
+  DatasetPageView,
+  FindingsPageView,
+  IncidentsPageView,
+  NodesPageView,
+  OverviewPage,
+  SourcesPageView,
+} from "@/features/Pages";
 import type {
   DatasetPage,
   DatasetState,
@@ -599,6 +609,28 @@ function Content({
         language={language}
         role={role}
         onStateChange={(patch) => updateDatasetState("active_blocks", patch)}
+      />
+    );
+  }
+  if (page.id === "probe_sources") {
+    return (
+      <SourcesPageView
+        config={page}
+        page={datasets.probe_sources || emptyPage()}
+        state={datasetState("probe_sources")}
+        language={language}
+        onStateChange={(patch) => updateDatasetState("probe_sources", patch)}
+      />
+    );
+  }
+  if (page.id === "audit_logs") {
+    return (
+      <AuditPageView
+        config={page}
+        page={datasets.audit_logs || emptyPage()}
+        state={datasetState("audit_logs")}
+        language={language}
+        onStateChange={(patch) => updateDatasetState("audit_logs", patch)}
       />
     );
   }

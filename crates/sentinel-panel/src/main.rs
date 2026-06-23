@@ -368,6 +368,7 @@ enum ReviewTargetType {
 struct PanelReview {
     target_type: ReviewTargetType,
     target_id: String,
+    review_signature: String,
     verdict: String,
     note: String,
     reviewer: String,
@@ -379,6 +380,7 @@ impl PanelReview {
         json!({
             "target_type": self.target_type.as_str(),
             "target_id": &self.target_id,
+            "review_signature": &self.review_signature,
             "verdict": &self.verdict,
             "note": &self.note,
             "reviewer": &self.reviewer,
@@ -431,6 +433,7 @@ impl TryFrom<PanelReviewRequest> for PanelReview {
         Ok(Self {
             target_type,
             target_id: target_id.to_string(),
+            review_signature: String::new(),
             verdict,
             note: value.note.trim().chars().take(1000).collect(),
             reviewer: value.reviewer.trim().chars().take(128).collect::<String>(),
@@ -1145,6 +1148,7 @@ async fn findings(
                 "rule_id",
                 "category",
                 "subject",
+                "review_signature",
                 "title",
             ],
         },
@@ -1169,15 +1173,7 @@ async fn finding_review(
 ) -> Result<Json<Value>, PanelApiError> {
     verify_admin_auth(&state, &headers)?;
     let review = FindingReview::try_from(request)?;
-    state.repo.upsert_finding_review(&review).await?;
-    let panel_review = PanelReview {
-        target_type: ReviewTargetType::Finding,
-        target_id: review.finding_id.clone(),
-        verdict: review.verdict.clone(),
-        note: review.note.clone(),
-        reviewer: review.reviewer.clone(),
-        reviewed_at: review.reviewed_at,
-    };
+    let panel_review = state.repo.upsert_finding_review(&review).await?;
     let _ = state
         .events
         .send(PanelStreamEvent::refresh(PanelRole::Admin));
@@ -1195,7 +1191,7 @@ async fn panel_review(
 ) -> Result<Json<Value>, PanelApiError> {
     verify_admin_auth(&state, &headers)?;
     let review = PanelReview::try_from(request)?;
-    state.repo.upsert_panel_review(&review).await?;
+    let review = state.repo.upsert_panel_review(&review).await?;
     let _ = state
         .events
         .send(PanelStreamEvent::refresh(PanelRole::Admin));
@@ -1229,6 +1225,7 @@ async fn incidents(
                 "score",
                 "title",
                 "summary",
+                "review_signature",
             ],
         },
     )
@@ -1269,6 +1266,7 @@ async fn baseline_drifts(
                 "category",
                 "tier",
                 "subject",
+                "review_signature",
                 "review_action",
             ],
         },
@@ -1435,7 +1433,13 @@ fn review_not_false_positive_filter(table: &str, target_type: ReviewTargetType) 
         "NOT EXISTS (
             SELECT 1 FROM panel_reviews review
             WHERE review.target_type = '{}'
-              AND review.target_id = {table}.id
+              AND (
+                review.target_id = {table}.id
+                OR (
+                    review.review_signature <> ''
+                    AND review.review_signature = {table}.review_signature
+                )
+              )
               AND review.verdict = 'false_positive'
         )",
         target_type.as_str()
@@ -1507,6 +1511,139 @@ fn baseline_category_from_rule(rule_id: &str) -> &'static str {
         "CONFIG" => "config_risk",
         "SYS" | "SYSTEM" => "system",
         _ => "system",
+    }
+}
+
+fn finding_review_signature(
+    node_id: &str,
+    rule_id: &str,
+    category: &str,
+    subject: &str,
+    title: &str,
+) -> String {
+    review_signature(&[
+        ReviewSignaturePart::stable("finding"),
+        ReviewSignaturePart::stable(node_id),
+        ReviewSignaturePart::stable(rule_id),
+        ReviewSignaturePart::stable(category),
+        ReviewSignaturePart::dynamic(subject),
+        ReviewSignaturePart::dynamic(title),
+    ])
+}
+
+fn incident_review_signature(node_id: &str, severity: &str, title: &str, summary: &str) -> String {
+    review_signature(&[
+        ReviewSignaturePart::stable("incident"),
+        ReviewSignaturePart::stable(node_id),
+        ReviewSignaturePart::stable(severity),
+        ReviewSignaturePart::dynamic(title),
+        ReviewSignaturePart::dynamic(summary),
+    ])
+}
+
+fn drift_review_signature(
+    node_id: &str,
+    rule_id: &str,
+    category: &str,
+    subject: &str,
+    tier: &str,
+) -> String {
+    review_signature(&[
+        ReviewSignaturePart::stable("baseline_drift"),
+        ReviewSignaturePart::stable(node_id),
+        ReviewSignaturePart::stable(rule_id),
+        ReviewSignaturePart::stable(category),
+        ReviewSignaturePart::dynamic(subject),
+        ReviewSignaturePart::stable(tier),
+    ])
+}
+
+struct ReviewSignaturePart<'a> {
+    value: &'a str,
+    dynamic: bool,
+}
+
+impl<'a> ReviewSignaturePart<'a> {
+    fn stable(value: &'a str) -> Self {
+        Self {
+            value,
+            dynamic: false,
+        }
+    }
+
+    fn dynamic(value: &'a str) -> Self {
+        Self {
+            value,
+            dynamic: true,
+        }
+    }
+}
+
+fn review_signature(parts: &[ReviewSignaturePart<'_>]) -> String {
+    let mut source = String::new();
+    for part in parts {
+        source.push('|');
+        source.push_str(&normalize_review_signature_part(part.value, part.dynamic));
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(source.as_bytes());
+    format!("v1:{:x}", hasher.finalize())
+}
+
+fn normalize_review_signature_part(value: &str, dynamic: bool) -> String {
+    let redacted = redact_ip_text(value);
+    let mut out = String::new();
+    let mut previous_space = false;
+    let mut number_open = false;
+    for ch in redacted.trim().to_ascii_lowercase().chars() {
+        if dynamic && ch.is_ascii_digit() {
+            if !number_open {
+                out.push('#');
+                number_open = true;
+            }
+            previous_space = false;
+            continue;
+        }
+        number_open = false;
+        if ch.is_whitespace() {
+            if !previous_space {
+                out.push(' ');
+                previous_space = true;
+            }
+            continue;
+        }
+        previous_space = false;
+        if dynamic && matches!(ch, '"' | '\'' | '`') {
+            continue;
+        }
+        out.push(ch);
+    }
+    out.trim().chars().take(256).collect()
+}
+
+fn review_signature_from_row(target_type: ReviewTargetType, row: &Value) -> String {
+    let text = |key: &str| row.get(key).and_then(Value::as_str).unwrap_or_default();
+    match target_type {
+        ReviewTargetType::Finding => finding_review_signature(
+            text("node_id"),
+            text("rule_id"),
+            text("category"),
+            text("subject"),
+            text("title"),
+        ),
+        ReviewTargetType::Incident => incident_review_signature(
+            text("node_id"),
+            text("severity"),
+            text("title"),
+            text("summary"),
+        ),
+        ReviewTargetType::BaselineDrift => drift_review_signature(
+            text("node_id"),
+            text("rule_id"),
+            text("category"),
+            text("subject"),
+            text("tier"),
+        ),
     }
 }
 
@@ -1582,20 +1719,72 @@ impl Repository {
     }
 
     async fn ensure_compat_schema(&self) -> Result<()> {
-        self.ensure_column(
-            "nodes",
-            "metrics_json",
-            "TEXT NOT NULL DEFAULT '{}'",
-            "TEXT NOT NULL DEFAULT '{}'",
-        )
-        .await?;
-        self.ensure_column(
-            "baseline_drifts",
-            "category",
-            "TEXT NOT NULL DEFAULT 'system'",
-            "VARCHAR(64) NOT NULL DEFAULT 'system'",
-        )
-        .await
+        for (table, column, sqlite_definition, sql_definition) in [
+            (
+                "nodes",
+                "metrics_json",
+                "TEXT NOT NULL DEFAULT '{}'",
+                "TEXT NOT NULL DEFAULT '{}'",
+            ),
+            (
+                "baseline_drifts",
+                "category",
+                "TEXT NOT NULL DEFAULT 'system'",
+                "VARCHAR(64) NOT NULL DEFAULT 'system'",
+            ),
+            (
+                "findings",
+                "review_signature",
+                "TEXT NOT NULL DEFAULT ''",
+                "VARCHAR(96) NOT NULL DEFAULT ''",
+            ),
+            (
+                "incidents",
+                "review_signature",
+                "TEXT NOT NULL DEFAULT ''",
+                "VARCHAR(96) NOT NULL DEFAULT ''",
+            ),
+            (
+                "baseline_drifts",
+                "review_signature",
+                "TEXT NOT NULL DEFAULT ''",
+                "VARCHAR(96) NOT NULL DEFAULT ''",
+            ),
+            (
+                "panel_reviews",
+                "review_signature",
+                "TEXT NOT NULL DEFAULT ''",
+                "VARCHAR(96) NOT NULL DEFAULT ''",
+            ),
+        ] {
+            self.ensure_column(table, column, sqlite_definition, sql_definition)
+                .await?;
+        }
+        for (name, table, columns) in [
+            (
+                "idx_findings_review_signature",
+                "findings",
+                "review_signature",
+            ),
+            (
+                "idx_incidents_review_signature",
+                "incidents",
+                "review_signature",
+            ),
+            (
+                "idx_baseline_review_signature",
+                "baseline_drifts",
+                "review_signature",
+            ),
+            (
+                "idx_panel_reviews_signature",
+                "panel_reviews",
+                "target_type, review_signature, verdict, reviewed_at",
+            ),
+        ] {
+            self.ensure_index(name, table, columns).await?;
+        }
+        Ok(())
     }
 
     async fn ensure_column(
@@ -1638,6 +1827,38 @@ impl Repository {
                 .await
                 {
                     if !is_mysql_duplicate_column(&err) {
+                        return Err(err.into());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn ensure_index(&self, name: &str, table: &str, columns: &str) -> Result<()> {
+        match &self.driver {
+            RepositoryDriver::Sqlite(connection) => {
+                let connection = connection
+                    .lock()
+                    .map_err(|err| anyhow!("sqlite connection lock poisoned: {err}"))?;
+                connection.execute(
+                    &format!("CREATE INDEX IF NOT EXISTS {name} ON {table}({columns})"),
+                    [],
+                )?;
+            }
+            RepositoryDriver::Postgres(pool) => {
+                sql_query(&format!(
+                    "CREATE INDEX IF NOT EXISTS {name} ON {table}({columns})"
+                ))
+                .execute(pool)
+                .await?;
+            }
+            RepositoryDriver::Mysql(pool) => {
+                if let Err(err) = sql_query(&format!("CREATE INDEX {name} ON {table}({columns})"))
+                    .execute(pool)
+                    .await
+                {
+                    if !is_mysql_duplicate_index(&err) {
                         return Err(err.into());
                     }
                 }
@@ -1936,6 +2157,7 @@ impl Repository {
             "confidence",
             "category",
             "subject",
+            "review_signature",
             "timestamp",
             "dedup_key",
             "evidence_json",
@@ -1961,9 +2183,17 @@ impl Repository {
         expand_json_column(&mut detail, "impact_json", "impact");
         expand_json_column(&mut detail, "recommendations_json", "recommendations");
         if role == PanelRole::Admin {
+            let signature = detail
+                .get("review_signature")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
             detail["review"] = self
                 .panel_review_value(ReviewTargetType::Finding, id)
                 .await?
+                .or(self
+                    .panel_review_by_signature(ReviewTargetType::Finding, &signature)
+                    .await?)
                 .or(self.finding_review_value(id).await?)
                 .unwrap_or(Value::Null);
         }
@@ -1982,6 +2212,7 @@ impl Repository {
             "first_seen",
             "last_seen",
             "summary",
+            "review_signature",
             "payload_json",
             "received_at",
         ];
@@ -2001,9 +2232,17 @@ impl Repository {
         };
         expand_json_column(&mut detail, "payload_json", "payload");
         if role == PanelRole::Admin {
+            let signature = detail
+                .get("review_signature")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
             detail["review"] = self
                 .panel_review_value(ReviewTargetType::Incident, id)
                 .await?
+                .or(self
+                    .panel_review_by_signature(ReviewTargetType::Incident, &signature)
+                    .await?)
                 .unwrap_or(Value::Null);
         }
         redact_panel_value(&mut detail);
@@ -2095,6 +2334,7 @@ impl Repository {
         let columns = [
             "target_type",
             "target_id",
+            "review_signature",
             "verdict",
             "note",
             "reviewer",
@@ -2129,7 +2369,18 @@ impl Repository {
             let Some(target_id) = item.get("id").and_then(Value::as_str).map(str::to_string) else {
                 continue;
             };
-            if let Some(review) = self.panel_review_value(target_type, &target_id).await? {
+            let signature = item
+                .get("review_signature")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if let Some(review) = self
+                .panel_review_value(target_type, &target_id)
+                .await?
+                .or(self
+                    .panel_review_by_signature(target_type, &signature)
+                    .await?)
+            {
                 let verdict = review
                     .get("verdict")
                     .and_then(Value::as_str)
@@ -2160,7 +2411,10 @@ impl Repository {
         Ok(rows.pop())
     }
 
-    async fn upsert_finding_review(&self, review: &FindingReview) -> Result<(), PanelApiError> {
+    async fn upsert_finding_review(
+        &self,
+        review: &FindingReview,
+    ) -> Result<PanelReview, PanelApiError> {
         let exists_sql = format!(
             "SELECT COUNT(*) AS count FROM findings WHERE id = {}",
             self.placeholder(1)
@@ -2179,6 +2433,9 @@ impl Repository {
         let panel_review = PanelReview {
             target_type: ReviewTargetType::Finding,
             target_id: review.finding_id.clone(),
+            review_signature: self
+                .target_review_signature(ReviewTargetType::Finding, &review.finding_id)
+                .await?,
             verdict: review.verdict.clone(),
             note: review.note.clone(),
             reviewer: review.reviewer.clone(),
@@ -2196,10 +2453,14 @@ impl Repository {
             }),
             review.reviewed_at,
         )
-        .await
+        .await?;
+        Ok(panel_review)
     }
 
-    async fn upsert_panel_review(&self, review: &PanelReview) -> Result<(), PanelApiError> {
+    async fn upsert_panel_review(
+        &self,
+        review: &PanelReview,
+    ) -> Result<PanelReview, PanelApiError> {
         let exists_sql = format!(
             "SELECT COUNT(*) AS count FROM {} WHERE {} = {}",
             review.target_type.table(),
@@ -2216,29 +2477,37 @@ impl Repository {
                 review.target_type.not_found_error(),
             ));
         }
-        self.write_panel_review_row(review).await?;
-        if review.target_type == ReviewTargetType::Finding {
+        let scoped_review = PanelReview {
+            review_signature: self
+                .target_review_signature(review.target_type, &review.target_id)
+                .await?,
+            ..review.clone()
+        };
+        self.write_panel_review_row(&scoped_review).await?;
+        if scoped_review.target_type == ReviewTargetType::Finding {
             let legacy_review = FindingReview {
-                finding_id: review.target_id.clone(),
-                verdict: review.verdict.clone(),
-                note: review.note.clone(),
-                reviewer: review.reviewer.clone(),
-                reviewed_at: review.reviewed_at,
+                finding_id: scoped_review.target_id.clone(),
+                verdict: scoped_review.verdict.clone(),
+                note: scoped_review.note.clone(),
+                reviewer: scoped_review.reviewer.clone(),
+                reviewed_at: scoped_review.reviewed_at,
             };
             self.write_finding_review_row(&legacy_review).await?;
         }
         self.insert_audit_log(
             "panel_review",
-            &review.reviewer,
-            review.target_type.as_str(),
-            &review.target_id,
+            &scoped_review.reviewer,
+            scoped_review.target_type.as_str(),
+            &scoped_review.target_id,
             json!({
-                "verdict": review.verdict,
-                "note_present": !review.note.is_empty()
+                "verdict": scoped_review.verdict,
+                "note_present": !scoped_review.note.is_empty(),
+                "similar_scope": !scoped_review.review_signature.is_empty()
             }),
-            review.reviewed_at,
+            scoped_review.reviewed_at,
         )
-        .await
+        .await?;
+        Ok(scoped_review)
     }
 
     async fn write_finding_review_row(&self, review: &FindingReview) -> Result<(), PanelApiError> {
@@ -2266,6 +2535,7 @@ impl Repository {
         let columns = [
             "target_type",
             "target_id",
+            "review_signature",
             "verdict",
             "note",
             "reviewer",
@@ -2275,17 +2545,115 @@ impl Repository {
             "panel_reviews",
             &columns,
             &["target_type", "target_id"],
-            &["verdict", "note", "reviewer", "reviewed_at"],
+            &[
+                "review_signature",
+                "verdict",
+                "note",
+                "reviewer",
+                "reviewed_at",
+            ],
         );
         self.execute_write(
             &sql,
             &[
                 DbValue::Text(review.target_type.as_str().to_string()),
                 DbValue::Text(review.target_id.clone()),
+                DbValue::Text(review.review_signature.clone()),
                 DbValue::Text(review.verdict.clone()),
                 DbValue::Text(review.note.clone()),
                 DbValue::Text(review.reviewer.clone()),
                 DbValue::Text(review.reviewed_at.to_rfc3339()),
+            ],
+        )
+        .await
+    }
+
+    async fn target_review_signature(
+        &self,
+        target_type: ReviewTargetType,
+        target_id: &str,
+    ) -> Result<String, PanelApiError> {
+        let columns = match target_type {
+            ReviewTargetType::Finding => {
+                "node_id, rule_id, category, subject, title, review_signature"
+            }
+            ReviewTargetType::Incident => "node_id, severity, title, summary, review_signature",
+            ReviewTargetType::BaselineDrift => {
+                "node_id, rule_id, category, subject, tier, review_signature"
+            }
+        };
+        let sql = format!(
+            "SELECT {columns} FROM {} WHERE {} = {}",
+            target_type.table(),
+            target_type.id_column(),
+            self.placeholder(1)
+        );
+        let Some(row) = self
+            .query_one_with_values(&sql, &[DbValue::Text(target_id.to_string())])
+            .await?
+        else {
+            return Err(PanelApiError::new(
+                StatusCode::NOT_FOUND,
+                target_type.not_found_error(),
+            ));
+        };
+        let existing = row
+            .get("review_signature")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !existing.is_empty() {
+            return Ok(existing);
+        }
+        let signature = review_signature_from_row(target_type, &row);
+        self.execute_write(
+            &format!(
+                "UPDATE {} SET review_signature = {} WHERE {} = {}",
+                target_type.table(),
+                self.placeholder(1),
+                target_type.id_column(),
+                self.placeholder(2)
+            ),
+            &[
+                DbValue::Text(signature.clone()),
+                DbValue::Text(target_id.to_string()),
+            ],
+        )
+        .await?;
+        Ok(signature)
+    }
+
+    async fn panel_review_by_signature(
+        &self,
+        target_type: ReviewTargetType,
+        signature: &str,
+    ) -> Result<Option<Value>, PanelApiError> {
+        if signature.trim().is_empty() {
+            return Ok(None);
+        }
+        let columns = [
+            "target_type",
+            "target_id",
+            "review_signature",
+            "verdict",
+            "note",
+            "reviewer",
+            "reviewed_at",
+        ];
+        let sql = format!(
+            "SELECT {} FROM panel_reviews
+             WHERE target_type = {} AND review_signature = {}
+             ORDER BY reviewed_at DESC LIMIT 1",
+            columns.join(", "),
+            self.placeholder(1),
+            self.placeholder(2)
+        );
+        self.query_one_with_values(
+            &sql,
+            &[
+                DbValue::Text(target_type.as_str().to_string()),
+                DbValue::Text(signature.to_string()),
             ],
         )
         .await
@@ -2642,6 +3010,16 @@ impl Repository {
         redact_panel_value(&mut evidence);
         let impact = redact_text_list(&finding.impact);
         let recommendations = redact_text_list(&finding.recommendations);
+        let title = redact_ip_text(&finding.title);
+        let subject = redact_ip_text(&finding.subject);
+        let dedup_key = redact_ip_text(&finding.dedup_key);
+        let review_signature = finding_review_signature(
+            node_id,
+            &finding.rule_id,
+            &finding.category,
+            &subject,
+            &title,
+        );
         let sql = self.upsert_sql(
             "findings",
             &[
@@ -2653,6 +3031,7 @@ impl Repository {
                 "confidence",
                 "category",
                 "subject",
+                "review_signature",
                 "timestamp",
                 "dedup_key",
                 "evidence_json",
@@ -2667,6 +3046,7 @@ impl Repository {
                 "confidence",
                 "category",
                 "subject",
+                "review_signature",
                 "timestamp",
                 "dedup_key",
                 "evidence_json",
@@ -2681,13 +3061,14 @@ impl Repository {
                 DbValue::Text(finding.id.clone()),
                 DbValue::Text(node_id.to_string()),
                 DbValue::Text(finding.rule_id.clone()),
-                DbValue::Text(redact_ip_text(&finding.title)),
+                DbValue::Text(title),
                 DbValue::Text(finding.severity.clone()),
                 DbValue::Text(finding.confidence.clone()),
                 DbValue::Text(finding.category.clone()),
-                DbValue::Text(redact_ip_text(&finding.subject)),
+                DbValue::Text(subject),
+                DbValue::Text(review_signature),
                 DbValue::Text(finding.timestamp.to_rfc3339()),
-                DbValue::Text(redact_ip_text(&finding.dedup_key)),
+                DbValue::Text(dedup_key),
                 DbValue::Text(json_string(&evidence)?),
                 DbValue::Text(json_string(&impact)?),
                 DbValue::Text(json_string(&recommendations)?),
@@ -2706,6 +3087,10 @@ impl Repository {
     ) -> Result<(), PanelApiError> {
         let mut payload = json!(incident);
         redact_panel_value(&mut payload);
+        let title = redact_ip_text(&incident.title);
+        let summary = redact_ip_text(&incident.summary);
+        let review_signature =
+            incident_review_signature(node_id, &incident.severity, &title, &summary);
         let sql = self.upsert_sql(
             "incidents",
             &[
@@ -2717,6 +3102,7 @@ impl Repository {
                 "first_seen",
                 "last_seen",
                 "summary",
+                "review_signature",
                 "payload_json",
                 "received_at",
             ],
@@ -2728,6 +3114,7 @@ impl Repository {
                 "first_seen",
                 "last_seen",
                 "summary",
+                "review_signature",
                 "payload_json",
                 "received_at",
             ],
@@ -2742,7 +3129,8 @@ impl Repository {
                 DbValue::Integer(i64::from(incident.score)),
                 DbValue::Text(incident.first_seen.to_rfc3339()),
                 DbValue::Text(incident.last_seen.to_rfc3339()),
-                DbValue::Text(redact_ip_text(&incident.summary)),
+                DbValue::Text(summary),
+                DbValue::Text(review_signature),
                 DbValue::Text(json_string(&payload)?),
                 DbValue::Text(received_at.to_string()),
             ],
@@ -2764,6 +3152,8 @@ impl Repository {
         } else {
             drift.category.trim().to_string()
         };
+        let review_signature =
+            drift_review_signature(node_id, &drift.rule_id, &category, &subject, &drift.tier);
         let id = format!(
             "{}:{}:{}:{}",
             node_id, drift.finding_id, subject, drift.timestamp
@@ -2778,6 +3168,7 @@ impl Repository {
                 "category",
                 "severity",
                 "subject",
+                "review_signature",
                 "timestamp",
                 "tier",
                 "score",
@@ -2790,6 +3181,7 @@ impl Repository {
                 "severity",
                 "category",
                 "subject",
+                "review_signature",
                 "timestamp",
                 "tier",
                 "score",
@@ -2808,6 +3200,7 @@ impl Repository {
                 DbValue::Text(category),
                 DbValue::Text(drift.severity.clone()),
                 DbValue::Text(subject),
+                DbValue::Text(review_signature),
                 DbValue::Text(drift.timestamp.to_rfc3339()),
                 DbValue::Text(drift.tier.clone()),
                 optional_i64(drift.score.map(i64::from)),
@@ -3196,6 +3589,7 @@ fn hidden_panel_keys(role: PanelRole) -> &'static [&'static str] {
             "raw_log",
             "recommendations",
             "review",
+            "review_signature",
             "reviewer",
             "storage",
             "storage_json",
@@ -3215,11 +3609,12 @@ fn hidden_panel_keys(role: PanelRole) -> &'static [&'static str] {
             "raw_log",
             "received_at",
             "review",
+            "review_signature",
             "reviewer",
             "storage",
             "storage_json",
         ],
-        PanelRole::Admin => &[],
+        PanelRole::Admin => &["review_signature"],
     }
 }
 

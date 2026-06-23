@@ -1529,6 +1529,15 @@ button:disabled {
   align-items: start;
 }
 
+.feature-main-grid.compact-side {
+  grid-template-columns: minmax(0, 1fr) 260px;
+}
+
+.sources-design .feature-table-card,
+.audit-design .feature-table-card {
+  min-width: 0;
+}
+
 .feature-side-stack,
 .blocks-main {
   display: grid;
@@ -2169,7 +2178,21 @@ button:disabled {
   overflow-x: auto;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 252, 255, 0.98));
+  border: 1px solid rgba(216, 226, 238, 0.78);
   border-radius: 8px;
+  scrollbar-color: rgba(106, 130, 163, 0.45) transparent;
+  scrollbar-width: thin;
+}
+
+.table-wrap::-webkit-scrollbar {
+  height: 10px;
+}
+
+.table-wrap::-webkit-scrollbar-thumb {
+  background: rgba(106, 130, 163, 0.38);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
 }
 
 .data-table {
@@ -2186,7 +2209,7 @@ button:disabled {
 
 th,
 td {
-  padding: 13px 14px;
+  padding: 12px 13px;
   border-bottom: 1px solid var(--line-soft);
   overflow: hidden;
   text-align: left;
@@ -2210,6 +2233,10 @@ td {
   line-height: 1.35;
 }
 
+.col-details {
+  text-align: right;
+}
+
 td .badge,
 td .ghost-button {
   max-width: 100%;
@@ -2224,6 +2251,16 @@ td .ghost-button {
 .col-organization,
 .col-target-id {
   white-space: normal;
+}
+
+.col-title,
+.col-summary,
+.col-reason,
+.col-latest-reason,
+.col-block-reason,
+.col-subject,
+.col-organization {
+  line-height: 1.42;
 }
 
 .cell-chip-list {
@@ -2920,6 +2957,17 @@ tbody tr.row-muted:hover {
   line-height: 1.35;
 }
 
+.review-scope-note {
+  margin: 0;
+  padding: 10px 11px;
+  color: #31516e;
+  background: #eef6ff;
+  border: 1px solid #d9eaff;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .review-message {
   margin: 0;
   padding: 9px 10px;
@@ -3209,7 +3257,7 @@ tbody tr.row-muted:hover {
 
   tr {
     margin-bottom: 10px;
-    padding: 12px;
+    padding: 11px 12px;
     background: rgba(255, 255, 255, 0.98);
     border: 1px solid var(--line);
     border-radius: 8px;
@@ -3217,19 +3265,29 @@ tbody tr.row-muted:hover {
   }
 
   td {
-    display: flex;
-    justify-content: space-between;
-    gap: 16px;
+    display: grid;
+    grid-template-columns: minmax(96px, 0.42fr) minmax(0, 1fr);
+    align-items: start;
+    gap: 12px;
     padding: 8px 0;
     border: 0;
     white-space: normal;
   }
 
   td::before {
-    flex: 0 0 120px;
     color: var(--muted);
     content: attr(data-label);
     font-weight: 760;
+  }
+
+  td.col-details {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 12px;
+  }
+
+  td.col-details::before {
+    display: none;
   }
 
   .node-card {

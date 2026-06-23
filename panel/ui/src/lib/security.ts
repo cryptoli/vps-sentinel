@@ -17,6 +17,7 @@ const HIDDEN_KEYS = new Set([
   "remote_addr",
   "remote_ip",
   "response_backend",
+  "review_signature",
   "source_ip",
   "target_ip",
 ]);
@@ -42,7 +43,7 @@ export function sanitizePanelValue<T>(value: T, role: PanelRole): T {
 }
 
 function shouldHidePanelField(key: string, role: PanelRole): boolean {
-  if (roleAllows(role, "admin")) return ["node_id", "host_id", "hostname"].includes(key);
+  if (roleAllows(role, "admin")) return ["node_id", "host_id", "hostname", "review_signature"].includes(key);
   return HIDDEN_KEYS.has(key) || key.endsWith("_backend");
 }
 
