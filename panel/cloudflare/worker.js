@@ -14,6 +14,7 @@ let compatSchemaPromise = null;
 
 const DATASETS = {
   "/api/v1/nodes": {
+    pageId: "nodes",
     minRole: "public",
     table: "nodes",
     orderColumn: "node_name",
@@ -22,24 +23,28 @@ const DATASETS = {
     columns: ["last_seen_at", "node_name", "agent_version", "privacy_mode", "metrics_json"],
   },
   "/api/v1/findings": {
+    pageId: "findings",
     minRole: "operator",
     table: "findings",
     orderColumn: "timestamp",
     columns: ["id", "timestamp", "node_id AS node_name", "severity", "rule_id", "category", "subject", "review_signature", "title"],
   },
   "/api/v1/incidents": {
+    pageId: "incidents",
     minRole: "operator",
     table: "incidents",
     orderColumn: "last_seen",
     columns: ["id", "last_seen", "node_id AS node_name", "severity", "score", "title", "summary", "review_signature"],
   },
   "/api/v1/baseline-drifts": {
+    pageId: "baseline_drifts",
     minRole: "operator",
     table: "baseline_drifts",
     orderColumn: "timestamp",
     columns: ["id", "finding_id", "timestamp", "node_id AS node_name", "severity", "rule_id", "tier", "subject", "review_signature", "review_action"],
   },
   "/api/v1/active-blocks": {
+    pageId: "active_blocks",
     minRole: "operator",
     sensitive: true,
     table: "active_blocks",
@@ -60,6 +65,7 @@ const DATASETS = {
     ],
   },
   "/api/v1/probe-sources": {
+    pageId: "probe_sources",
     minRole: "admin",
     sensitive: true,
     optional: true,
@@ -83,6 +89,7 @@ const DATASETS = {
     ],
   },
   "/api/v1/audit-logs": {
+    pageId: "audit_logs",
     minRole: "admin",
     table: "panel_audit_logs",
     orderColumn: "created_at",
@@ -105,13 +112,15 @@ export default {
       }
       if (request.method === "GET" && url.pathname === "/api/v1/settings") {
         const role = resolvePanelRole(request, env, { allowAnonymous: true });
+        const pages = publicPages(env);
         return withCors(json({
           theme: env.PANEL_THEME || "default",
-          auth_required: !publicEnabled(env),
+          auth_required: !publicAccessEnabled(env),
           auth_configured: Boolean(viewToken(env) || adminToken(env)),
           operator_configured: Boolean(viewToken(env)),
           admin_configured: Boolean(adminToken(env)),
-          public_enabled: publicEnabled(env),
+          public_enabled: publicAccessEnabled(env),
+          public_pages: pages,
           role,
           freshness_threshold_minutes: DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
           node_retired_threshold_minutes: DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
@@ -130,7 +139,7 @@ export default {
       }
       if (request.method === "GET" && DATASETS[url.pathname]) {
         const dataset = DATASETS[url.pathname];
-        const auth = panelAuth(request, env, dataset.minRole || "operator");
+        const auth = panelAuth(request, env, datasetMinimumRole(dataset, env));
         if (auth.error) return withCors(auth.error, request, env);
         return withCors(json(await queryPage(env, dataset, url, auth.role)), request, env);
       }
@@ -507,9 +516,26 @@ function probeSourceStatement(env, nodeName, source, receivedAt) {
        block_status, block_reason, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
-      country = excluded.country,
-      asn = excluded.asn,
-      organization = excluded.organization,
+      network_prefix = CASE
+        WHEN excluded.network_prefix IS NOT NULL AND excluded.network_prefix <> '' AND LOWER(excluded.network_prefix) <> 'unknown' THEN excluded.network_prefix
+        WHEN probe_sources.network_prefix IS NOT NULL AND probe_sources.network_prefix <> '' AND LOWER(probe_sources.network_prefix) <> 'unknown' THEN probe_sources.network_prefix
+        ELSE excluded.network_prefix
+      END,
+      country = CASE
+        WHEN excluded.country IS NOT NULL AND excluded.country <> '' AND LOWER(excluded.country) <> 'unknown' THEN excluded.country
+        WHEN probe_sources.country IS NOT NULL AND probe_sources.country <> '' AND LOWER(probe_sources.country) <> 'unknown' THEN probe_sources.country
+        ELSE excluded.country
+      END,
+      asn = CASE
+        WHEN excluded.asn IS NOT NULL AND excluded.asn <> '' AND LOWER(excluded.asn) <> 'unknown' THEN excluded.asn
+        WHEN probe_sources.asn IS NOT NULL AND probe_sources.asn <> '' AND LOWER(probe_sources.asn) <> 'unknown' THEN probe_sources.asn
+        ELSE excluded.asn
+      END,
+      organization = CASE
+        WHEN excluded.organization IS NOT NULL AND excluded.organization <> '' AND LOWER(excluded.organization) <> 'unknown' THEN excluded.organization
+        WHEN probe_sources.organization IS NOT NULL AND probe_sources.organization <> '' AND LOWER(probe_sources.organization) <> 'unknown' THEN probe_sources.organization
+        ELSE excluded.organization
+      END,
       first_seen = CASE
         WHEN probe_sources.first_seen <= excluded.first_seen THEN probe_sources.first_seen
         ELSE excluded.first_seen
@@ -522,7 +548,13 @@ function probeSourceStatement(env, nodeName, source, receivedAt) {
       categories_json = excluded.categories_json,
       rule_ids_json = excluded.rule_ids_json,
       latest_reason = excluded.latest_reason,
-      block_status = excluded.block_status,
+      block_status = CASE
+        WHEN LOWER(COALESCE(excluded.block_status, '')) LIKE '%permanent%' THEN excluded.block_status
+        WHEN LOWER(COALESCE(probe_sources.block_status, '')) LIKE '%permanent%' THEN probe_sources.block_status
+        WHEN LOWER(COALESCE(excluded.block_status, '')) LIKE '%block%' OR LOWER(COALESCE(excluded.block_status, '')) IN ('temporary', 'blocked') THEN excluded.block_status
+        WHEN LOWER(COALESCE(probe_sources.block_status, '')) LIKE '%block%' OR LOWER(COALESCE(probe_sources.block_status, '')) IN ('temporary', 'blocked') THEN probe_sources.block_status
+        ELSE excluded.block_status
+      END,
       block_reason = excluded.block_reason,
       updated_at = excluded.updated_at
   `).bind(
@@ -556,10 +588,10 @@ async function summary(env, role = "public") {
     countWhere(env, "incidents", activeIncidentsFilter),
     countWhere(env, "baseline_drifts", activeDriftsFilter),
     countWhere(env, "active_blocks", "expired = 0"),
-    countOptional(env, "probe_sources"),
+    countDistinctWhereOptional(env, "probe_sources", "source_ip", blockedProbeSourceFilter()),
     queryAll(env, `SELECT severity, COUNT(*) AS count FROM findings WHERE ${activeFindingsFilter} GROUP BY severity`),
     queryAll(env, `SELECT category, COUNT(*) AS count FROM findings WHERE ${activeFindingsFilter} GROUP BY category`),
-    queryAllOptional(env, "SELECT block_status, COUNT(*) AS count FROM probe_sources GROUP BY block_status", "probe_sources"),
+    queryAllOptional(env, `SELECT block_status, COUNT(DISTINCT source_ip) AS count FROM probe_sources WHERE ${blockedProbeSourceFilter()} GROUP BY block_status`, "probe_sources"),
     queryAll(env, "SELECT node_name, agent_version, last_seen_at FROM nodes"),
   ]);
   const result = {
@@ -625,6 +657,9 @@ function reviewNotFalsePositiveFilter(table, targetType) {
 }
 
 async function queryPage(env, dataset, url, role = "operator") {
+  if (dataset.table === "probe_sources") {
+    return queryProbeSourcesPage(env, dataset, url, role);
+  }
   const page = pageRequest(url);
   const values = [];
   const parts = [];
@@ -659,6 +694,81 @@ async function queryPage(env, dataset, url, role = "operator") {
     }
     throw error;
   }
+}
+
+async function queryProbeSourcesPage(env, dataset, url, role = "operator") {
+  const page = pageRequest(url);
+  const values = [];
+  const parts = [blockedProbeSourceFilter()];
+  if (page.from) {
+    values.push(page.from);
+    parts.push("last_seen >= ?");
+  }
+  if (page.to) {
+    values.push(page.to);
+    parts.push("last_seen <= ?");
+  }
+  const whereSql = ` WHERE ${parts.join(" AND ")}`;
+  try {
+    const countRow = await env.DB.prepare(
+      `SELECT COUNT(*) AS count FROM (SELECT source_ip FROM probe_sources${whereSql} GROUP BY source_ip) grouped_sources`,
+    ).bind(...values).first();
+    const result = await env.DB.prepare(`
+      SELECT
+        MAX(last_seen) AS last_seen,
+        MIN(first_seen) AS first_seen,
+        MAX(node_id) AS node_name,
+        source_ip,
+        MAX(ip_version) AS ip_version,
+        MAX(CASE WHEN network_prefix IS NOT NULL AND network_prefix <> '' AND LOWER(network_prefix) <> 'unknown' THEN network_prefix ELSE '' END) AS network_prefix,
+        SUM(seen_count) AS seen_count,
+        CASE
+          WHEN SUM(CASE WHEN LOWER(COALESCE(block_status, '')) LIKE '%permanent%' THEN 1 ELSE 0 END) > 0 THEN 'permanent_block'
+          WHEN SUM(CASE WHEN LOWER(COALESCE(block_status, '')) LIKE '%block%' OR LOWER(COALESCE(block_status, '')) IN ('temporary', 'blocked') THEN 1 ELSE 0 END) > 0 THEN 'temporary_block'
+          ELSE MAX(block_status)
+        END AS block_status,
+        COALESCE(NULLIF(MAX(CASE WHEN country IS NOT NULL AND country <> '' AND LOWER(country) <> 'unknown' THEN country ELSE '' END), ''), 'unknown') AS country,
+        COALESCE(NULLIF(MAX(CASE WHEN asn IS NOT NULL AND asn <> '' AND LOWER(asn) <> 'unknown' THEN asn ELSE '' END), ''), 'unknown') AS asn,
+        COALESCE(NULLIF(MAX(CASE WHEN organization IS NOT NULL AND organization <> '' AND LOWER(organization) <> 'unknown' THEN organization ELSE '' END), ''), 'unknown') AS organization,
+        MAX(categories_json) AS categories_json,
+        MAX(rule_ids_json) AS rule_ids_json,
+        MAX(CASE WHEN latest_reason IS NOT NULL AND latest_reason <> '' THEN latest_reason ELSE '' END) AS latest_reason,
+        MAX(CASE WHEN block_reason IS NOT NULL AND block_reason <> '' THEN block_reason ELSE '' END) AS block_reason
+      FROM probe_sources${whereSql}
+      GROUP BY source_ip
+      ORDER BY last_seen DESC
+      LIMIT ? OFFSET ?
+    `).bind(...values, page.limit, page.offset).all();
+    let items = expandDatasetJsonColumns("probe_sources", result.results || []);
+    if (shouldRedactDataset(dataset, role)) items = redactPanelValue(items);
+    items = scopeProbeSourceRows(items, role);
+    return {
+      items,
+      total: Number(countRow?.count || 0),
+      limit: page.limit,
+      offset: page.offset,
+    };
+  } catch (error) {
+    if (dataset.optional && missingTableError(error, dataset.table)) {
+      return { items: [], total: 0, limit: page.limit, offset: page.offset };
+    }
+    throw error;
+  }
+}
+
+function blockedProbeSourceFilter() {
+  return "(LOWER(COALESCE(block_status, '')) LIKE '%block%' OR LOWER(COALESCE(block_status, '')) IN ('temporary', 'permanent', 'blocked'))";
+}
+
+function scopeProbeSourceRows(items, role) {
+  if (role !== "public") return items;
+  return (items || []).map((item) => {
+    const next = { ...item };
+    for (const key of ["source_ip", "network_prefix", "latest_reason", "block_reason", "first_seen"]) {
+      delete next[key];
+    }
+    return next;
+  });
 }
 
 async function attachPanelReviews(env, table, items, role) {
@@ -1261,6 +1371,16 @@ async function countOptional(env, table) {
   }
 }
 
+async function countDistinctWhereOptional(env, table, column, whereClause) {
+  try {
+    const row = await env.DB.prepare(`SELECT COUNT(DISTINCT ${column}) AS count FROM ${table} WHERE ${whereClause}`).first();
+    return Number(row?.count || 0);
+  } catch (error) {
+    if (missingTableError(error, table)) return 0;
+    throw error;
+  }
+}
+
 async function queryAllOptional(env, sql, table) {
   try {
     return await queryAll(env, sql);
@@ -1312,11 +1432,24 @@ function publicEnabled(env) {
   return ["1", "true", "yes", "on"].includes(String(env.PANEL_PUBLIC_ENABLED || "").trim().toLowerCase());
 }
 
+function publicPages(env) {
+  const value = String(env.PANEL_PUBLIC_PAGES === undefined ? "overview,probe_sources,nodes" : env.PANEL_PUBLIC_PAGES);
+  return [...new Set(value.split(",").map((page) => page.trim().toLowerCase()).filter(Boolean))];
+}
+
+function publicAccessEnabled(env) {
+  return publicEnabled(env) || publicPages(env).length > 0;
+}
+
+function datasetMinimumRole(dataset, env) {
+  return publicPages(env).includes(dataset.pageId) ? "public" : dataset.minRole || "operator";
+}
+
 function panelAuth(request, env, minimumRole) {
   const role = resolvePanelRole(request, env);
   if (!role) {
     const hasAnyToken = Boolean(viewToken(env) || adminToken(env));
-    const error = hasAnyToken || publicEnabled(env)
+    const error = hasAnyToken || publicAccessEnabled(env)
       ? json({ error: "missing_or_invalid_panel_token", detail: "missing_or_invalid_panel_token" }, 401)
       : json({ error: "panel_view_token_not_configured", detail: "panel_view_token_not_configured" }, 403);
     return { error, role: "public" };
@@ -1337,7 +1470,7 @@ function resolvePanelRole(request, env, options = {}) {
   const view = viewToken(env);
   if (admin && actual && timingSafeEqual(admin, actual)) return "admin";
   if (view && actual && timingSafeEqual(view, actual)) return "operator";
-  if (!actual && (publicEnabled(env) || options.allowAnonymous)) return "public";
+  if (!actual && (publicAccessEnabled(env) || options.allowAnonymous)) return "public";
   return null;
 }
 

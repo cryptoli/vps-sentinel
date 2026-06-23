@@ -46,6 +46,7 @@ const STREAM_TICKET_TTL_SECONDS: i64 = 60;
 const STREAM_HEARTBEAT_SECONDS: u64 = 30;
 const STREAM_RETRY_SECONDS: u64 = 5;
 const PANEL_TRANSPORT_ENCODING: &str = "json-base64";
+const DEFAULT_PUBLIC_PAGES: &str = "overview,probe_sources,nodes";
 
 #[derive(Debug, Parser)]
 #[command(name = "vps-sentinel-panel", version)]
@@ -77,6 +78,9 @@ struct Args {
     #[arg(long, env = "PANEL_PUBLIC_ENABLED", default_value_t = false)]
     public_enabled: bool,
 
+    #[arg(long, env = "PANEL_PUBLIC_PAGES", default_value = DEFAULT_PUBLIC_PAGES)]
+    public_pages: String,
+
     #[arg(long, env = "PANEL_WEB_DIR")]
     web_dir: Option<PathBuf>,
 
@@ -102,6 +106,7 @@ struct AppState {
     operator_token: Option<String>,
     admin_token: Option<String>,
     public_enabled: bool,
+    public_pages: BTreeSet<String>,
     theme: String,
     max_body_bytes: usize,
     events: broadcast::Sender<PanelStreamEvent>,
@@ -533,12 +538,14 @@ async fn main() -> Result<()> {
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .map(str::to_string);
+    let public_pages = parse_public_pages(&args.public_pages);
     if view_token.is_none()
         && operator_token.is_none()
         && admin_token.is_none()
         && !args.public_enabled
+        && public_pages.is_empty()
     {
-        warn!("PANEL_VIEW_TOKEN, PANEL_OPERATOR_TOKEN, PANEL_ADMIN_TOKEN, or PANEL_PUBLIC_ENABLED=true is not configured; panel read APIs will reject browser access");
+        warn!("PANEL_VIEW_TOKEN, PANEL_OPERATOR_TOKEN, PANEL_ADMIN_TOKEN, PANEL_PUBLIC_ENABLED=true, or PANEL_PUBLIC_PAGES is not configured; panel read APIs will reject browser access");
     }
     let (events, _) = broadcast::channel(128);
     let csp_header = panel_csp_header(&web_dir);
@@ -549,6 +556,7 @@ async fn main() -> Result<()> {
         operator_token,
         admin_token,
         public_enabled: args.public_enabled,
+        public_pages,
         theme: args.theme,
         max_body_bytes: args.max_body_bytes,
         events,
@@ -587,11 +595,13 @@ async fn main() -> Result<()> {
 
 async fn settings(State(state): State<AppState>, headers: HeaderMap) -> Json<Value> {
     let role = resolve_panel_role(&state, &headers).ok();
+    let public_pages = state.public_pages.iter().cloned().collect::<Vec<_>>();
     Json(json!({
         "theme": state.theme,
-        "auth_required": !state.public_enabled,
+        "auth_required": !panel_public_access_enabled(&state),
         "auth_configured": state.view_token.is_some() || state.operator_token.is_some() || state.admin_token.is_some(),
-        "public_enabled": state.public_enabled,
+        "public_enabled": panel_public_access_enabled(&state),
+        "public_pages": public_pages,
         "operator_configured": state.view_token.is_some() || state.operator_token.is_some(),
         "admin_configured": state.admin_token.is_some(),
         "role": role,
@@ -795,6 +805,20 @@ fn verify_panel_role(
     Ok(role)
 }
 
+fn verify_panel_page_role(
+    state: &AppState,
+    headers: &HeaderMap,
+    page_id: &str,
+    default_minimum: PanelRole,
+) -> Result<PanelRole, PanelApiError> {
+    let minimum = if state.public_pages.contains(page_id) {
+        PanelRole::Public
+    } else {
+        default_minimum
+    };
+    verify_panel_role(state, headers, minimum)
+}
+
 #[cfg(test)]
 fn verify_view_auth(state: &AppState, headers: &HeaderMap) -> Result<(), PanelApiError> {
     verify_panel_role(state, headers, PanelRole::Operator).map(|_| ())
@@ -804,7 +828,7 @@ fn resolve_panel_role(state: &AppState, headers: &HeaderMap) -> Result<PanelRole
     if state.view_token.is_none()
         && state.operator_token.is_none()
         && state.admin_token.is_none()
-        && !state.public_enabled
+        && !panel_public_access_enabled(state)
     {
         return Err(PanelApiError::new(
             StatusCode::FORBIDDEN,
@@ -812,7 +836,7 @@ fn resolve_panel_role(state: &AppState, headers: &HeaderMap) -> Result<PanelRole
         ));
     };
     let Some(actual) = view_token_from_headers(headers) else {
-        if state.public_enabled {
+        if panel_public_access_enabled(state) {
             return Ok(PanelRole::Public);
         }
         return Err(PanelApiError::new(
@@ -838,13 +862,26 @@ fn resolve_panel_role(state: &AppState, headers: &HeaderMap) -> Result<PanelRole
     if operator_match || view_match {
         return Ok(PanelRole::Operator);
     }
-    if state.public_enabled {
+    if panel_public_access_enabled(state) {
         return Ok(PanelRole::Public);
     }
     Err(PanelApiError::new(
         StatusCode::UNAUTHORIZED,
         "invalid_view_token",
     ))
+}
+
+fn panel_public_access_enabled(state: &AppState) -> bool {
+    state.public_enabled || !state.public_pages.is_empty()
+}
+
+fn parse_public_pages(value: &str) -> BTreeSet<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|page| !page.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
 }
 
 fn verify_admin_auth(state: &AppState, headers: &HeaderMap) -> Result<(), PanelApiError> {
@@ -978,7 +1015,10 @@ async fn summary(
     let by_block_status = state
         .repo
         .query_all(
-            "SELECT block_status, COUNT(*) AS count FROM probe_sources GROUP BY block_status",
+            &format!(
+                "SELECT block_status, COUNT(DISTINCT source_ip) AS count FROM probe_sources WHERE {} GROUP BY block_status",
+                blocked_probe_source_filter()
+            ),
         )
         .await?;
     let nodes = state
@@ -992,7 +1032,7 @@ async fn summary(
         "incidents": state.repo.count("incidents", Some(&active_incidents_filter)).await?,
         "baseline_drifts": state.repo.count("baseline_drifts", Some(&active_drifts_filter)).await?,
         "active_blocks": state.repo.count("active_blocks", Some("expired = 0")).await?,
-        "probe_sources": state.repo.count("probe_sources", None).await?,
+        "probe_sources": state.repo.count_distinct("probe_sources", "source_ip", Some(blocked_probe_source_filter())).await?,
         "by_severity": by_severity,
         "by_category": by_category,
         "by_block_status": by_block_status,
@@ -1131,7 +1171,7 @@ async fn findings(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    let role = verify_panel_role(&state, &headers, PanelRole::Operator)?;
+    let role = verify_panel_page_role(&state, &headers, "findings", PanelRole::Operator)?;
     paginated_dataset(
         &state,
         query,
@@ -1208,7 +1248,7 @@ async fn incidents(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    let role = verify_panel_role(&state, &headers, PanelRole::Operator)?;
+    let role = verify_panel_page_role(&state, &headers, "incidents", PanelRole::Operator)?;
     paginated_dataset(
         &state,
         query,
@@ -1247,7 +1287,7 @@ async fn baseline_drifts(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    let role = verify_panel_role(&state, &headers, PanelRole::Operator)?;
+    let role = verify_panel_page_role(&state, &headers, "baseline_drifts", PanelRole::Operator)?;
     paginated_dataset(
         &state,
         query,
@@ -1279,7 +1319,7 @@ async fn active_blocks(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    let role = verify_panel_role(&state, &headers, PanelRole::Operator)?;
+    let role = verify_panel_page_role(&state, &headers, "active_blocks", PanelRole::Operator)?;
     let columns = match role {
         PanelRole::Admin => &[
             "blocked_at",
@@ -1346,34 +1386,17 @@ async fn probe_sources(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    let role = verify_panel_role(&state, &headers, PanelRole::Admin)?;
-    paginated_dataset(
-        &state,
-        query,
-        role,
-        PanelDataset {
-            table: "probe_sources",
-            order_column: "last_seen",
-            active_filter: None,
-            columns: &[
-                "last_seen",
-                "node_id AS node_name",
-                "source_ip",
-                "ip_version",
-                "network_prefix",
-                "seen_count",
-                "block_status",
-                "country",
-                "asn",
-                "organization",
-                "categories_json",
-                "rule_ids_json",
-                "latest_reason",
-                "block_reason",
-            ],
-        },
-    )
-    .await
+    let role = verify_panel_page_role(&state, &headers, "probe_sources", PanelRole::Admin)?;
+    let request = PageRequest::try_from(query)?;
+    let (mut items, total) = state.repo.probe_sources_page(&request, role).await?;
+    scope_panel_value(&mut items, role);
+    scope_probe_source_rows(&mut items, role);
+    Ok(Json(json!({
+        "items": items,
+        "total": total,
+        "limit": request.limit,
+        "offset": request.offset
+    })))
 }
 
 async fn audit_logs(
@@ -1381,7 +1404,7 @@ async fn audit_logs(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    let role = verify_panel_role(&state, &headers, PanelRole::Admin)?;
+    let role = verify_panel_page_role(&state, &headers, "audit_logs", PanelRole::Admin)?;
     paginated_dataset(
         &state,
         query,
@@ -1685,7 +1708,17 @@ impl Repository {
                 let connection = connection
                     .lock()
                     .map_err(|err| anyhow!("sqlite connection lock poisoned: {err}"))?;
-                connection.execute_batch(schema)?;
+                for statement in schema
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|item| !item.is_empty())
+                {
+                    if let Err(err) = connection.execute_batch(&format!("{statement};")) {
+                        if !is_sqlite_missing_compat_index(&err, statement) {
+                            return Err(err.into());
+                        }
+                    }
+                }
             }
             RepositoryDriver::Postgres(pool) => {
                 for statement in schema
@@ -1694,7 +1727,9 @@ impl Repository {
                     .filter(|item| !item.is_empty())
                 {
                     if let Err(err) = sql_query(statement).execute(pool).await {
-                        return Err(err.into());
+                        if !is_sqlx_missing_compat_index(&err, statement) {
+                            return Err(err.into());
+                        }
                     }
                 }
             }
@@ -1705,8 +1740,9 @@ impl Repository {
                     .filter(|item| !item.is_empty())
                 {
                     if let Err(err) = sql_query(statement).execute(pool).await {
-                        if !(self.backend == DatabaseBackend::Mysql
-                            && is_mysql_duplicate_index(&err))
+                        if !(is_sqlx_missing_compat_index(&err, statement)
+                            || self.backend == DatabaseBackend::Mysql
+                                && is_mysql_duplicate_index(&err))
                         {
                             return Err(err.into());
                         }
@@ -2073,6 +2109,55 @@ impl Repository {
         Ok((items, total))
     }
 
+    async fn probe_sources_page(
+        &self,
+        request: &PageRequest,
+        role: PanelRole,
+    ) -> Result<(Value, i64), PanelApiError> {
+        let (where_sql, mut values) = self.probe_sources_where_clause(request);
+        let count_sql = format!(
+            "SELECT COUNT(*) AS count FROM (SELECT source_ip FROM probe_sources{where_sql} GROUP BY source_ip) grouped_sources"
+        );
+        let total = self.count_sql(&count_sql, &values).await?;
+
+        let limit_placeholder = self.placeholder(values.len() + 1);
+        let offset_placeholder = self.placeholder(values.len() + 2);
+        values.push(DbValue::Integer(request.limit as i64));
+        values.push(DbValue::Integer(request.offset as i64));
+
+        let columns = [
+            "MAX(last_seen) AS last_seen",
+            "MIN(first_seen) AS first_seen",
+            "MAX(node_id) AS node_name",
+            "source_ip",
+            "MAX(ip_version) AS ip_version",
+            "MAX(CASE WHEN network_prefix IS NOT NULL AND network_prefix <> '' AND LOWER(network_prefix) <> 'unknown' THEN network_prefix ELSE '' END) AS network_prefix",
+            "SUM(seen_count) AS seen_count",
+            "CASE
+                WHEN SUM(CASE WHEN LOWER(COALESCE(block_status, '')) LIKE '%permanent%' THEN 1 ELSE 0 END) > 0 THEN 'permanent_block'
+                WHEN SUM(CASE WHEN LOWER(COALESCE(block_status, '')) LIKE '%block%' OR LOWER(COALESCE(block_status, '')) IN ('temporary', 'blocked') THEN 1 ELSE 0 END) > 0 THEN 'temporary_block'
+                ELSE MAX(block_status)
+             END AS block_status",
+            "COALESCE(NULLIF(MAX(CASE WHEN country IS NOT NULL AND country <> '' AND LOWER(country) <> 'unknown' THEN country ELSE '' END), ''), 'unknown') AS country",
+            "COALESCE(NULLIF(MAX(CASE WHEN asn IS NOT NULL AND asn <> '' AND LOWER(asn) <> 'unknown' THEN asn ELSE '' END), ''), 'unknown') AS asn",
+            "COALESCE(NULLIF(MAX(CASE WHEN organization IS NOT NULL AND organization <> '' AND LOWER(organization) <> 'unknown' THEN organization ELSE '' END), ''), 'unknown') AS organization",
+            "MAX(categories_json) AS categories_json",
+            "MAX(rule_ids_json) AS rule_ids_json",
+            "MAX(CASE WHEN latest_reason IS NOT NULL AND latest_reason <> '' THEN latest_reason ELSE '' END) AS latest_reason",
+            "MAX(CASE WHEN block_reason IS NOT NULL AND block_reason <> '' THEN block_reason ELSE '' END) AS block_reason",
+        ];
+        let sql = format!(
+            "SELECT {} FROM probe_sources{where_sql} GROUP BY source_ip ORDER BY last_seen DESC LIMIT {limit_placeholder} OFFSET {offset_placeholder}",
+            columns.join(", ")
+        );
+        let mut items = self.query_all_with_values(&sql, &values).await?;
+        expand_dataset_json_columns("probe_sources", &mut items);
+        if should_redact_dataset("probe_sources", role) {
+            redact_panel_value(&mut items);
+        }
+        Ok((items, total))
+    }
+
     async fn latest_nodes_page(
         &self,
         columns: &'static [&'static str],
@@ -2143,7 +2228,7 @@ impl Repository {
             }
         }
         let mut rows = latest.into_values().collect::<Vec<_>>();
-        rows.sort_by(|left, right| panel_node_sort_key(left).cmp(&panel_node_sort_key(right)));
+        rows.sort_by_key(panel_node_sort_key);
         Ok(rows)
     }
 
@@ -2739,12 +2824,43 @@ impl Repository {
         }
     }
 
+    fn probe_sources_where_clause(&self, request: &PageRequest) -> (String, Vec<DbValue>) {
+        let mut parts = vec![blocked_probe_source_filter().to_string()];
+        let mut values = Vec::new();
+        if let Some(from) = request.from {
+            values.push(DbValue::Text(from.to_rfc3339()));
+            parts.push(format!("last_seen >= {}", self.placeholder(values.len())));
+        }
+        if let Some(to) = request.to {
+            values.push(DbValue::Text(to.to_rfc3339()));
+            parts.push(format!("last_seen <= {}", self.placeholder(values.len())));
+        }
+        (format!(" WHERE {}", parts.join(" AND ")), values)
+    }
+
     async fn count(&self, table: &str, where_clause: Option<&str>) -> Result<i64, PanelApiError> {
         let sql = match where_clause {
             Some(where_clause) => {
                 format!("SELECT COUNT(*) AS count FROM {table} WHERE {where_clause}")
             }
             None => format!("SELECT COUNT(*) AS count FROM {table}"),
+        };
+        self.count_sql(&sql, &[]).await
+    }
+
+    async fn count_distinct(
+        &self,
+        table: &str,
+        column: &str,
+        where_clause: Option<&str>,
+    ) -> Result<i64, PanelApiError> {
+        let sql = match where_clause {
+            Some(where_clause) => {
+                format!(
+                    "SELECT COUNT(DISTINCT {column}) AS count FROM {table} WHERE {where_clause}"
+                )
+            }
+            None => format!("SELECT COUNT(DISTINCT {column}) AS count FROM {table}"),
         };
         self.count_sql(&sql, &[]).await
     }
@@ -3334,17 +3450,17 @@ impl Repository {
                 DbValue::Text(node_id.to_string()),
                 DbValue::Text(source.source_ip.clone()),
                 DbValue::Text(source.ip_version.clone()),
-                DbValue::Text(source.network_prefix.clone()),
-                DbValue::Text(source.country.clone()),
-                DbValue::Text(source.asn.clone()),
-                DbValue::Text(source.organization.clone()),
+                DbValue::Text(merged.network_prefix),
+                DbValue::Text(merged.country),
+                DbValue::Text(merged.asn),
+                DbValue::Text(merged.organization),
                 DbValue::Text(merged.first_seen),
                 DbValue::Text(merged.last_seen),
                 DbValue::Integer(merged.seen_count),
                 DbValue::Text(json_string(&merged.categories)?),
                 DbValue::Text(json_string(&merged.rule_ids)?),
                 DbValue::Text(redact_ip_text(&source.latest_reason)),
-                DbValue::Text(source.block_status.clone()),
+                DbValue::Text(merged.block_status),
                 DbValue::Text(redact_ip_text(&source.block_reason)),
                 DbValue::Text(received_at.to_string()),
             ],
@@ -3359,7 +3475,7 @@ impl Repository {
         source: &PanelProbeSource,
     ) -> Result<Option<MergedProbeSource>, PanelApiError> {
         let sql = format!(
-            "SELECT first_seen, last_seen, seen_count, categories_json, rule_ids_json FROM probe_sources WHERE id = {}",
+            "SELECT first_seen, last_seen, seen_count, categories_json, rule_ids_json, network_prefix, country, asn, organization, block_status FROM probe_sources WHERE id = {}",
             self.placeholder(1)
         );
         let Some(existing) = self
@@ -3377,12 +3493,30 @@ impl Repository {
             .saturating_add(source.seen_count as i64);
         let categories = merge_string_sets(existing.get("categories_json"), &source.categories);
         let rule_ids = merge_string_sets(existing.get("rule_ids_json"), &source.rule_ids);
+        let network_prefix =
+            prefer_meaningful_text(existing.get("network_prefix"), &source.network_prefix);
+        let country = prefer_meaningful_text(existing.get("country"), &source.country);
+        let asn = prefer_meaningful_text(existing.get("asn"), &source.asn);
+        let organization =
+            prefer_meaningful_text(existing.get("organization"), &source.organization);
+        let block_status = strongest_probe_source_status(
+            existing
+                .get("block_status")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+            &source.block_status,
+        );
         Ok(Some(MergedProbeSource {
             first_seen,
             last_seen,
             seen_count,
             categories,
             rule_ids,
+            network_prefix,
+            country,
+            asn,
+            organization,
+            block_status,
         }))
     }
 }
@@ -3393,6 +3527,11 @@ struct MergedProbeSource {
     seen_count: i64,
     categories: Vec<String>,
     rule_ids: Vec<String>,
+    network_prefix: String,
+    country: String,
+    asn: String,
+    organization: String,
+    block_status: String,
 }
 
 impl From<&PanelProbeSource> for MergedProbeSource {
@@ -3403,6 +3542,11 @@ impl From<&PanelProbeSource> for MergedProbeSource {
             seen_count: value.seen_count as i64,
             categories: sorted_unique(&value.categories),
             rule_ids: sorted_unique(&value.rule_ids),
+            network_prefix: value.network_prefix.clone(),
+            country: value.country.clone(),
+            asn: value.asn.clone(),
+            organization: value.organization.clone(),
+            block_status: value.block_status.clone(),
         }
     }
 }
@@ -3443,6 +3587,54 @@ fn panel_block_storage_id(node_id: &str, block: &PanelActiveBlock) -> String {
 
 fn panel_probe_source_id(node_id: &str, source_ip: &str) -> String {
     format!("{node_id}:{}", source_ip.trim())
+}
+
+fn blocked_probe_source_filter() -> &'static str {
+    "(LOWER(COALESCE(block_status, '')) LIKE '%block%' OR LOWER(COALESCE(block_status, '')) IN ('temporary', 'permanent', 'blocked'))"
+}
+
+fn prefer_meaningful_text(existing: Option<&Value>, candidate: &str) -> String {
+    let candidate = candidate.trim();
+    if meaningful_probe_text(candidate) {
+        return candidate.to_string();
+    }
+    let existing = existing.and_then(Value::as_str).unwrap_or_default().trim();
+    if meaningful_probe_text(existing) {
+        existing.to_string()
+    } else if candidate.is_empty() {
+        "unknown".to_string()
+    } else {
+        candidate.to_string()
+    }
+}
+
+fn meaningful_probe_text(value: &str) -> bool {
+    let normalized = value.trim();
+    !normalized.is_empty() && !normalized.eq_ignore_ascii_case("unknown")
+}
+
+fn strongest_probe_source_status(existing: &str, candidate: &str) -> String {
+    match (
+        probe_source_status_rank(existing),
+        probe_source_status_rank(candidate),
+    ) {
+        (left, right) if right >= left => candidate.trim().to_string(),
+        _ => existing.trim().to_string(),
+    }
+}
+
+fn probe_source_status_rank(value: &str) -> u8 {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.contains("permanent") {
+        3
+    } else if normalized.contains("block") || matches!(normalized.as_str(), "temporary" | "blocked")
+    {
+        2
+    } else if normalized == "observed" {
+        1
+    } else {
+        0
+    }
 }
 
 fn min_time_string(existing: Option<&Value>, candidate: DateTime<Utc>) -> String {
@@ -3565,6 +3757,29 @@ fn scope_panel_value(value: &mut Value, role: PanelRole) {
             }
         }
         _ => {}
+    }
+}
+
+fn scope_probe_source_rows(value: &mut Value, role: PanelRole) {
+    if role != PanelRole::Public {
+        return;
+    }
+    let Value::Array(rows) = value else {
+        return;
+    };
+    for row in rows {
+        let Some(object) = row.as_object_mut() else {
+            continue;
+        };
+        for key in [
+            "source_ip",
+            "network_prefix",
+            "latest_reason",
+            "block_reason",
+            "first_seen",
+        ] {
+            object.remove(key);
+        }
     }
 }
 
@@ -3940,6 +4155,27 @@ fn is_mysql_duplicate_index(error: &sqlx_core::Error) -> bool {
         || error.to_string().contains("Duplicate key name")
 }
 
+fn is_sqlite_missing_compat_index(error: &rusqlite::Error, statement: &str) -> bool {
+    is_compat_review_signature_index(statement)
+        && error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains("no such column: review_signature")
+}
+
+fn is_sqlx_missing_compat_index(error: &sqlx_core::Error, statement: &str) -> bool {
+    if !is_compat_review_signature_index(statement) {
+        return false;
+    }
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("review_signature") && message.contains("column")
+}
+
+fn is_compat_review_signature_index(statement: &str) -> bool {
+    let normalized = statement.to_ascii_lowercase();
+    normalized.contains("create index") && normalized.contains("review_signature")
+}
+
 fn is_mysql_duplicate_column(error: &sqlx_core::Error) -> bool {
     error
         .as_database_error()
@@ -4021,7 +4257,7 @@ mod tests {
     use axum::http::{header, HeaderMap, HeaderValue};
     use chrono::Utc;
     use rusqlite::Connection;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{Arc, Mutex};
     use tokio::sync::broadcast;
 
@@ -4532,6 +4768,7 @@ mod tests {
             operator_token: None,
             admin_token: admin_token.map(str::to_string),
             public_enabled: false,
+            public_pages: BTreeSet::new(),
             theme: "default".to_string(),
             max_body_bytes: 1024,
             events: broadcast::channel::<PanelStreamEvent>(8).0,

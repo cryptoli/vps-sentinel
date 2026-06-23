@@ -337,9 +337,9 @@ fn read_disk_stats(path: &Path) -> Option<DiskStats> {
         return None;
     }
     let stat = unsafe { stat.assume_init() };
-    let block_size = stat.f_frsize.max(stat.f_bsize) as u64;
-    let total_blocks = stat.f_blocks as u64;
-    let available_blocks = stat.f_bavail as u64;
+    let block_size = stat.f_frsize.max(stat.f_bsize);
+    let total_blocks = stat.f_blocks;
+    let available_blocks = stat.f_bavail;
     let total_bytes = total_blocks.saturating_mul(block_size);
     let available_bytes = available_blocks.saturating_mul(block_size);
     Some(DiskStats {

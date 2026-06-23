@@ -20,6 +20,7 @@ export interface PanelSettings {
   auth_required?: boolean;
   auth_configured?: boolean;
   public_enabled?: boolean;
+  public_pages?: PageId[];
   operator_configured?: boolean;
   admin_configured?: boolean;
   role?: PanelRole | null;

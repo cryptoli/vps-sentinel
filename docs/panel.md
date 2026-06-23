@@ -110,9 +110,11 @@ The installer and updater copy `panel/` to `/usr/local/share/vps-sentinel/panel`
 
 For production, place the panel behind a reverse proxy with HTTPS and keep `PANEL_SHARED_SECRET`, `PANEL_NODE_SECRETS`, `PANEL_OPERATOR_TOKEN`, `PANEL_VIEW_TOKEN`, and `PANEL_ADMIN_TOKEN` out of shell history. `PANEL_SHARED_SECRET`/`PANEL_NODE_SECRETS` are only for agent ingest signatures. `PANEL_OPERATOR_TOKEN` is the browser token for normal operations. `PANEL_VIEW_TOKEN` remains supported as a legacy alias for the operator role. `PANEL_ADMIN_TOKEN` can read all panel detail and is required for review writes such as marking a finding as confirmed or false positive.
 
-If `PANEL_PUBLIC_ENABLED=true`, browsers without a token can enter the public role. Public role APIs only expose aggregate trends, risk counts, severity distribution, node names, and node freshness. They do not expose finding lists, incident payloads, baseline subjects, active-block details, raw evidence, command lines, file paths, tokens, or raw logs.
+`PANEL_PUBLIC_PAGES` controls which menu pages are visible without a browser token. The default is `overview,probe_sources,nodes`, so a public visitor can see aggregate dashboard metrics, the redacted blocklist, and non-sensitive node cards. Set `PANEL_PUBLIC_PAGES=` to make every page require a token. `PANEL_PUBLIC_ENABLED=true` remains supported for legacy public-role access, but page visibility should be controlled with `PANEL_PUBLIC_PAGES`.
 
-If `PANEL_PUBLIC_ENABLED=false` and all browser tokens are missing, read APIs stay locked with `panel_view_token_not_configured`. The static UI can still load, but it will not show telemetry data.
+Public role APIs only expose aggregate trends, risk counts, severity distribution, node names, node freshness, non-sensitive node metrics, and redacted blocked-source summaries. They do not expose finding lists, incident payloads, baseline subjects, active-block details, raw evidence, command lines, file paths, tokens, server IPs, or raw logs.
+
+If `PANEL_PUBLIC_PAGES=` and all browser tokens are missing, read APIs stay locked with `panel_view_token_not_configured`. The static UI can still load, but it will not show telemetry data.
 
 ## Browser Roles And Auto Refresh
 

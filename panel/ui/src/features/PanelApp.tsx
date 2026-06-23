@@ -87,9 +87,14 @@ export function PanelApp() {
   const reconnectRef = useRef<number | null>(null);
   const activeRoleRef = useRef<PanelRole>("public");
 
+  const publicPages = useMemo(() => new Set(settings.public_pages || []), [settings.public_pages]);
+  const pageMinRole = useCallback(
+    (page: PageConfig): PanelRole => (publicPages.has(page.id) ? "public" : page.minRole),
+    [publicPages],
+  );
   const visiblePages = useMemo(
-    () => PAGES.filter((page) => roleAllows(role, page.minRole)),
-    [role],
+    () => PAGES.filter((page) => roleAllows(role, pageMinRole(page))),
+    [pageMinRole, role],
   );
   const activePage = visiblePages.find((page) => page.id === currentPage) || visiblePages[0] || PAGES[0];
 
@@ -114,7 +119,11 @@ export function PanelApp() {
       setSummary(nextSummary);
 
       if (pageId === "overview") {
-        const visibleDatasets = PAGES.filter((page) => page.endpoint && page.id !== "probe_sources" && roleAllows(nextRole, page.minRole));
+        const configuredPublicPages = new Set(settings.public_pages || []);
+        const visibleDatasets = PAGES.filter((page) => {
+          const minRole = configuredPublicPages.has(page.id) ? "public" : page.minRole;
+          return page.endpoint && page.id !== "probe_sources" && roleAllows(nextRole, minRole);
+        });
         const pages = await Promise.all(
           visibleDatasets.map(async (page) => [
             page.id,
@@ -143,7 +152,7 @@ export function PanelApp() {
     } finally {
       setLoading(false);
     }
-  }, [language]);
+  }, [language, settings.public_pages]);
 
   useEffect(() => {
     setLanguage(selectedLanguage());
@@ -196,13 +205,13 @@ export function PanelApp() {
 
   useEffect(() => {
     if (!settingsLoaded) return;
-    if (settings.auth_required && !panelToken()) return;
+    if (settings.auth_required && !panelToken() && !roleAllows("public", pageMinRole(activePage))) return;
     connectStream();
     return () => {
       socketRef.current?.close();
       if (reconnectRef.current) window.clearTimeout(reconnectRef.current);
     };
-  }, [settingsLoaded, settings.auth_required, role]);
+  }, [activePage, pageMinRole, settingsLoaded, settings.auth_required, role]);
 
   useEffect(() => {
     if (!visiblePages.some((page) => page.id === currentPage)) {
@@ -212,9 +221,9 @@ export function PanelApp() {
 
   useEffect(() => {
     if (!settingsLoaded) return;
-    if (settings.auth_required && !panelToken()) return;
+    if (settings.auth_required && !panelToken() && !roleAllows("public", pageMinRole(activePage))) return;
     void loadVisibleData(currentPage, role);
-  }, [currentPage, datasetStates, role, settingsLoaded, settings.auth_required, loadVisibleData]);
+  }, [activePage, currentPage, datasetStates, loadVisibleData, pageMinRole, role, settingsLoaded, settings.auth_required]);
 
   async function unlock(token: string) {
     setPanelToken(token);
@@ -237,7 +246,7 @@ export function PanelApp() {
   function logout() {
     clearPanelToken();
     socketRef.current?.close();
-    setRole(settings.public_enabled ? "public" : "public");
+    setRole("public");
     setDatasets({});
     setSummary({});
   }
@@ -284,7 +293,7 @@ export function PanelApp() {
     }, STREAM_RECONNECT_MS);
   }
 
-  const needsAccess = Boolean(settingsLoaded && settings.auth_required && !panelToken());
+  const needsAccess = Boolean(settingsLoaded && settings.auth_required && !panelToken() && !roleAllows("public", pageMinRole(activePage)));
 
   return (
     <main className={`app-shell page-${activePage.id}`}>
@@ -619,6 +628,7 @@ function Content({
         page={datasets.probe_sources || emptyPage()}
         state={datasetState("probe_sources")}
         language={language}
+        role={role}
         onStateChange={(patch) => updateDatasetState("probe_sources", patch)}
       />
     );

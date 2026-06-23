@@ -12,7 +12,7 @@ Required for real deploy:
   CLOUDFLARE_API_TOKEN or an existing wrangler login session
   CLOUDFLARE_ACCOUNT_ID or CF_ACCOUNT_ID
   PANEL_SHARED_SECRET or PANEL_NODE_SECRETS
-  PANEL_OPERATOR_TOKEN or PANEL_ADMIN_TOKEN, unless PANEL_PUBLIC_ENABLED=true
+  PANEL_OPERATOR_TOKEN or PANEL_ADMIN_TOKEN, unless PANEL_PUBLIC_ENABLED=true or PANEL_PUBLIC_PAGES is not empty
 
 Common configuration:
   PANEL_WORKER_NAME             default: vps-sentinel-panel
@@ -20,6 +20,7 @@ Common configuration:
   PANEL_D1_ID                   optional, reused when set
   PANEL_COMPATIBILITY_DATE      default: 2026-06-22
   PANEL_PUBLIC_ENABLED          default: false
+  PANEL_PUBLIC_PAGES            default: overview,probe_sources,nodes
   PANEL_THEME                   default: default
   PANEL_CORS_ORIGIN             optional exact origin for cross-origin agent/UI calls
   PANEL_MAX_BODY_BYTES          default: 1048576
@@ -183,6 +184,9 @@ const fs = require("fs");
 const vars = {
   PANEL_MAX_BODY_BYTES: process.env.PANEL_MAX_BODY_BYTES || "1048576",
   PANEL_PUBLIC_ENABLED: process.env.PANEL_PUBLIC_ENABLED || "false",
+  PANEL_PUBLIC_PAGES: Object.prototype.hasOwnProperty.call(process.env, "PANEL_PUBLIC_PAGES")
+    ? process.env.PANEL_PUBLIC_PAGES
+    : "overview,probe_sources,nodes",
   PANEL_THEME: process.env.PANEL_THEME || "default",
 };
 if (process.env.PANEL_CORS_ORIGIN) {
@@ -266,9 +270,12 @@ main() {
   PANEL_D1_NAME="${PANEL_D1_NAME:-${PANEL_WORKER_NAME}-db}"
   PANEL_COMPATIBILITY_DATE="${PANEL_COMPATIBILITY_DATE:-2026-06-22}"
   PANEL_PUBLIC_ENABLED="${PANEL_PUBLIC_ENABLED:-false}"
+  if [ "${PANEL_PUBLIC_PAGES+x}" != "x" ]; then
+    PANEL_PUBLIC_PAGES="overview,probe_sources,nodes"
+  fi
   PANEL_THEME="${PANEL_THEME:-default}"
   PANEL_MAX_BODY_BYTES="${PANEL_MAX_BODY_BYTES:-1048576}"
-  export PANEL_WORKER_NAME PANEL_D1_NAME PANEL_COMPATIBILITY_DATE PANEL_PUBLIC_ENABLED PANEL_THEME PANEL_MAX_BODY_BYTES
+  export PANEL_WORKER_NAME PANEL_D1_NAME PANEL_COMPATIBILITY_DATE PANEL_PUBLIC_ENABLED PANEL_PUBLIC_PAGES PANEL_THEME PANEL_MAX_BODY_BYTES
 
   validate_name "$PANEL_WORKER_NAME" "PANEL_WORKER_NAME"
   validate_name "$PANEL_D1_NAME" "PANEL_D1_NAME"
@@ -278,8 +285,8 @@ main() {
     if [ -z "${PANEL_SHARED_SECRET:-}" ] && [ -z "${PANEL_NODE_SECRETS:-}" ]; then
       fail "set PANEL_SHARED_SECRET or PANEL_NODE_SECRETS before deploying"
     fi
-    if ! is_enabled "$PANEL_PUBLIC_ENABLED" && [ -z "${PANEL_OPERATOR_TOKEN:-}" ] && [ -z "${PANEL_ADMIN_TOKEN:-}" ]; then
-      fail "set PANEL_OPERATOR_TOKEN or PANEL_ADMIN_TOKEN, or set PANEL_PUBLIC_ENABLED=true"
+    if ! is_enabled "$PANEL_PUBLIC_ENABLED" && [ -z "$PANEL_PUBLIC_PAGES" ] && [ -z "${PANEL_OPERATOR_TOKEN:-}" ] && [ -z "${PANEL_ADMIN_TOKEN:-}" ]; then
+      fail "set PANEL_OPERATOR_TOKEN or PANEL_ADMIN_TOKEN, set PANEL_PUBLIC_PAGES, or set PANEL_PUBLIC_ENABLED=true"
     fi
     log "checking Cloudflare authentication"
     run_wrangler whoami >/dev/null

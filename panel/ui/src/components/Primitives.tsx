@@ -243,6 +243,10 @@ const TABLE_LAYOUTS: Record<string, TableLayout> = {
 
 function tableLayout(tableId: string | undefined, columns: string[], hasDetails: boolean): TableLayout {
   const layout = tableId ? TABLE_LAYOUTS[tableId] : undefined;
+  if (tableId === "probe_sources" && layout) {
+    const width = columns.reduce((sum, column) => sum + px(layout.widths[column] || layout.defaultWidth), hasDetails ? px(layout.detailsWidth) : 0);
+    return { ...layout, minWidth: `${Math.max(860, width)}px` };
+  }
   if (layout) return layout;
   const width = columns.length * 132 + (hasDetails ? 104 : 0);
   return {
@@ -251,6 +255,11 @@ function tableLayout(tableId: string | undefined, columns: string[], hasDetails:
     minWidth: `${Math.max(720, width)}px`,
     widths: {},
   };
+}
+
+function px(value: string): number {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 export function Pagination({

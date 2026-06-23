@@ -2075,14 +2075,21 @@ button:disabled {
 }
 
 .review-tabs {
-  display: flex;
+  display: inline-flex;
   flex-wrap: wrap;
+  flex: 0 0 auto;
+  align-items: center;
+  align-content: flex-start;
+  width: fit-content;
+  max-width: calc(100% - 32px);
   gap: 10px;
   padding: 14px 16px 0;
 }
 
 .review-tabs button {
+  flex: 0 0 auto;
   min-height: 34px;
+  width: auto;
   padding: 0 14px;
   color: #30435d;
   background: #ffffff;
@@ -2102,6 +2109,10 @@ button:disabled {
   background: #eef6ff;
   border-color: #bcd6f6;
   box-shadow: 0 8px 16px rgba(18, 109, 242, 0.08);
+}
+
+.review-tabs + .empty-state {
+  margin-top: 14px;
 }
 
 .nodes-header {

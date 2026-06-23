@@ -443,16 +443,23 @@ export function SourcesPageView({
   page,
   state,
   language,
+  role,
   onStateChange,
 }: {
   config: PageConfig;
   page: DatasetPage;
   state: DatasetState;
   language: Language;
+  role: PanelRole;
   onStateChange: (patch: Partial<DatasetState>) => void;
 }) {
   const rows = filteredRows(page.items, state);
   const blocked = rows.filter((row) => String(row.block_status || "").toLowerCase().includes("block")).length;
+  const columns = roleAllows(role, "admin")
+    ? config.columns || []
+    : roleAllows(role, "operator")
+      ? ["last_seen", "node_name", "source_ip", "seen_count", "block_status", "country", "asn", "organization", "categories", "rule_ids", "block_reason"]
+      : ["last_seen", "node_name", "seen_count", "block_status", "country", "asn", "organization", "categories", "rule_ids"];
   return (
     <div className="page-stack feature-page sources-design">
       <FeatureHeader title={translate(language, config.titleKey)} description={translate(language, config.descriptionKey)} />
@@ -465,7 +472,7 @@ export function SourcesPageView({
       <Filters state={state} language={language} onChange={onStateChange} />
       <section className="feature-main-grid compact-side">
         <Card title={translate(language, config.labelKey)} className="feature-table-card">
-          <DataTable rows={rows} columns={config.columns || []} language={language} tableId="probe_sources" />
+          <DataTable rows={rows} columns={columns} language={language} tableId="probe_sources" />
           <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
         </Card>
         <aside className="feature-side-stack">
