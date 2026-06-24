@@ -411,7 +411,10 @@ export function BlocksPageView({
           </section>
           <Filters state={state} language={language} onChange={onStateChange} />
           <Card title={translate(language, config.labelKey)} className="feature-table-card">
-            <DataTable rows={rows} columns={columns} language={language} tableId="active-blocks" />
+            <div className="desktop-table-panel">
+              <DataTable rows={rows} columns={columns} language={language} tableId="active-blocks" />
+            </div>
+            <MobileBlocksList rows={rows} language={language} visibleColumns={columns} />
             <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
           </Card>
         </div>
@@ -473,7 +476,10 @@ export function SourcesPageView({
       <Filters state={state} language={language} onChange={onStateChange} />
       <section className="feature-main-grid compact-side">
         <Card title={translate(language, config.labelKey)} className="feature-table-card">
-          <DataTable rows={rows} columns={columns} language={language} tableId="probe_sources" />
+          <div className="desktop-table-panel">
+            <DataTable rows={rows} columns={columns} language={language} tableId="probe_sources" />
+          </div>
+          <MobileSourcesList rows={rows} language={language} visibleColumns={columns} />
           <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
         </Card>
         <aside className="feature-side-stack">
@@ -516,7 +522,10 @@ export function AuditPageView({
       <Filters state={state} language={language} onChange={onStateChange} />
       <section className="feature-main-grid compact-side">
         <Card title={translate(language, config.labelKey)} className="feature-table-card">
-          <DataTable rows={rows} columns={config.columns || []} language={language} tableId="audit_logs" />
+          <div className="desktop-table-panel">
+            <DataTable rows={rows} columns={config.columns || []} language={language} tableId="audit_logs" />
+          </div>
+          <MobileAuditTimeline rows={rows} language={language} />
           <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
         </Card>
         <aside className="feature-side-stack">
@@ -788,6 +797,141 @@ function KeyValueRows({ rows }: { rows: Array<[string, string | number]> }) {
   );
 }
 
+function MobileBlocksList({
+  rows,
+  language,
+  visibleColumns,
+}: {
+  rows: PanelRecord[];
+  language: Language;
+  visibleColumns: string[];
+}) {
+  if (!rows.length) return <MobileEmptyState language={language} />;
+  const canShowIp = visibleColumns.includes("ip") || visibleColumns.includes("source_ip");
+  const canShowAttribution = visibleColumns.some((column) => ["country", "asn", "organization"].includes(column));
+  return (
+    <div className="mobile-record-list mobile-block-list">
+      <div className="mobile-segment-tabs" role="group" aria-label={copy(language, "Block type", "封禁类型")}>
+        <button className="active" type="button">{copy(language, "Temporary", "临时")} ({rows.length})</button>
+        <button type="button">{copy(language, "Permanent", "永久")} ({rows.filter((row) => !recordText(row, ["expires_at"], "")).length})</button>
+      </div>
+      {rows.map((row, index) => {
+        const reason = recordText(row, ["reason", "block_reason", "latest_reason", "rule_id"], copy(language, "Blocked source", "已封禁来源"));
+        const title = blockTitle(row, reason, language);
+        const source = recordText(row, ["ip", "source_ip", "network_prefix"], copy(language, "Hidden source", "隐藏来源"));
+        const expires = recordText(row, ["expires_at"], copy(language, "Manual review", "人工复核"));
+        return (
+          <article className="mobile-record-card block-card" key={recordKey(row, index)}>
+            <span className="mobile-record-icon tone-orange"><Globe2 size={20} /></span>
+            <div className="mobile-record-body">
+              <header className="mobile-record-title-row">
+                <div>
+                  <strong>{title}</strong>
+                  {canShowIp && <span>{source}</span>}
+                </div>
+                <Badge value={copy(language, "High", "高危")} tone="high" />
+              </header>
+              {canShowAttribution && (
+                <div className="mobile-record-subline">
+                  <span>{recordText(row, ["country"], translate(language, "unknown"))}</span>
+                  <span>{recordText(row, ["asn"], translate(language, "unknown"))}</span>
+                  <span>{recordText(row, ["organization"], "")}</span>
+                </div>
+              )}
+              <div className="mobile-evidence-row">
+                <span>{copy(language, "Evidence", "证据")}</span>
+                <ScoreDots value={Math.min(5, Math.max(2, Number(row.seen_count || 4)))} total={5} showLabel={false} />
+                <em>{copy(language, "Expires", "到期")} {formatRecordDate(expires, language)}</em>
+              </div>
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function MobileSourcesList({
+  rows,
+  language,
+  visibleColumns,
+}: {
+  rows: PanelRecord[];
+  language: Language;
+  visibleColumns: string[];
+}) {
+  if (!rows.length) return <MobileEmptyState language={language} />;
+  const canShowSource = visibleColumns.includes("source_ip");
+  return (
+    <div className="mobile-record-list mobile-source-list">
+      {rows.map((row, index) => {
+        const source = canShowSource ? recordText(row, ["source_ip", "network_prefix"], copy(language, "Hidden source", "隐藏来源")) : copy(language, "Hidden source", "隐藏来源");
+        const status = String(row.block_status || "observe").toLowerCase();
+        return (
+          <article className="mobile-record-card source-card" key={recordKey(row, index)}>
+            <header className="source-card-head">
+              <div>
+                <small>{translate(language, severityFromSource(row))}</small>
+                <strong>{source}</strong>
+              </div>
+              <Badge value={translate(language, status)} tone={status} />
+            </header>
+            <div className="mobile-record-subline">
+              <span>{recordText(row, ["country"], translate(language, "unknown"))}</span>
+              <span>{recordText(row, ["asn"], translate(language, "unknown"))}</span>
+              <span>{recordText(row, ["organization"], "")}</span>
+            </div>
+            <div className="mobile-record-meta">
+              <span>{copy(language, "Seen", "出现")} {number(Number(row.seen_count || 0))}</span>
+              <span>{copy(language, "Last seen", "最近")} {formatRecordDate(recordText(row, ["last_seen"], ""), language)}</span>
+            </div>
+            <TagList values={[...recordValues(row.categories), ...recordValues(row.rule_ids)].slice(0, 4)} />
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function MobileAuditTimeline({ rows, language }: { rows: PanelRecord[]; language: Language }) {
+  if (!rows.length) return <MobileEmptyState language={language} />;
+  return (
+    <div className="mobile-record-list mobile-audit-timeline">
+      {rows.map((row, index) => (
+        <article className="audit-timeline-item" key={recordKey(row, index)}>
+          <span className={`audit-dot tone-${auditTone(row.action)}`}>{auditIcon(row.action)}</span>
+          <div className="audit-card">
+            <header>
+              <div>
+                <strong>{recordText(row, ["action"], copy(language, "Panel action", "面板操作"))}</strong>
+                <span>{recordText(row, ["target_id", "target_type"], "")}</span>
+              </div>
+              <time>{formatRecordDate(recordText(row, ["created_at"], ""), language)}</time>
+            </header>
+            <div className="mobile-record-meta">
+              <span>{copy(language, "Actor", "操作者")} {recordText(row, ["actor"], "-")}</span>
+              <Badge value={copy(language, "Success", "成功")} tone="success" />
+            </div>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function MobileEmptyState({ language }: { language: Language }) {
+  return <div className="mobile-record-list"><div className="empty-state">{translate(language, "noData")}</div></div>;
+}
+
+function TagList({ values }: { values: string[] }) {
+  if (!values.length) return null;
+  return (
+    <div className="mobile-tag-list">
+      {values.map((value) => <span key={value}>{value}</span>)}
+    </div>
+  );
+}
+
 function ScoreDots({ value, total, showLabel = true }: { value: number; total: number; showLabel?: boolean }) {
   return (
     <div className="score-dots">
@@ -882,6 +1026,88 @@ function uniqueCount(rows: PanelRecord[], key: string): number {
     if (value && value.toLowerCase() !== "unknown") values.add(value);
   }
   return values.size;
+}
+
+function recordKey(row: PanelRecord, index: number): string {
+  return String(row.id || row.event_id || row.source_ip || row.ip || row.created_at || `${row.node_name || "row"}-${index}`);
+}
+
+function recordText(row: PanelRecord, keys: string[], fallback = "-"): string {
+  for (const key of keys) {
+    const value = row[key];
+    if (value === undefined || value === null) continue;
+    if (Array.isArray(value)) {
+      const text = value.map((item) => String(item).trim()).filter(Boolean).join(", ");
+      if (text) return text;
+      continue;
+    }
+    const text = String(value).trim();
+    if (text && text.toLowerCase() !== "unknown") return text;
+  }
+  return fallback;
+}
+
+function recordValues(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : String(value || "").split(",");
+  return values.map((item) => String(item).trim()).filter(Boolean).filter((item) => item.toLowerCase() !== "unknown");
+}
+
+function compactReason(value: string): string {
+  return value
+    .replace(/\s+/g, " ")
+    .replace(/attack fingerprint id=/gi, "")
+    .replace(/policy=/gi, "")
+    .trim();
+}
+
+function blockTitle(row: PanelRecord, reason: string, language: Language): string {
+  const normalized = `${reason} ${recordText(row, ["rule_id"], "")}`.toLowerCase();
+  if (normalized.includes("cgi") || normalized.includes("web_probe") || normalized.includes("web attack")) {
+    return copy(language, "Web Attack / CGI Probe", "Web 攻击 / CGI 探查");
+  }
+  if (normalized.includes("ssh")) return copy(language, "SSH Brute Force", "SSH 暴力尝试");
+  if (normalized.includes("scan") || normalized.includes("probe")) return copy(language, "External Probe", "外部探查");
+  const compact = compactReason(reason);
+  if (compact.startsWith("WEB-FP-")) return copy(language, "Web Attack Fingerprint", "Web 攻击指纹");
+  return compact || copy(language, "Blocked Source", "已封禁来源");
+}
+
+function formatRecordDate(value: string, language: Language): string {
+  if (!value || value === "-") return "-";
+  const parsed = new Date(value);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toLocaleString(language === "zh" ? "zh-CN" : "en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+  return value.length > 18 ? value.slice(0, 18) : value;
+}
+
+function severityFromSource(row: PanelRecord): string {
+  const status = String(row.block_status || "").toLowerCase();
+  const count = Number(row.seen_count || 0);
+  if (status.includes("permanent") || count >= 20) return "high";
+  if (status.includes("block") || count >= 10) return "medium";
+  return "low";
+}
+
+function auditTone(action: unknown): string {
+  const value = String(action || "").toLowerCase();
+  if (value.includes("block")) return "red";
+  if (value.includes("review")) return "green";
+  if (value.includes("baseline") || value.includes("update")) return "orange";
+  return "blue";
+}
+
+function auditIcon(action: unknown): React.ReactNode {
+  const tone = auditTone(action);
+  if (tone === "red") return <Ban size={18} />;
+  if (tone === "green") return <ShieldCheck size={18} />;
+  if (tone === "orange") return <ShieldAlert size={18} />;
+  return <FileText size={18} />;
 }
 
 function copy(language: Language, en: string, zh: string): string {

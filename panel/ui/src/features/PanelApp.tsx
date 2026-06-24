@@ -445,7 +445,10 @@ function Topbar({
         </button>
         <div className="mobile-brand">
           <ShieldCheck size={20} />
-          <span>{translate(language, page.labelKey)}</span>
+          <span>
+            <strong>VPS Sentinel</strong>
+            <small>{language === "zh" ? "多服务器安全面板" : "Multi-server Security Guard"}</small>
+          </span>
         </div>
         <button className="mobile-icon-button" type="button" aria-label={translate(language, "refresh")} onClick={onRefresh}>
           <RefreshCw size={18} />
