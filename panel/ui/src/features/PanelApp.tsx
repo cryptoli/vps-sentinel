@@ -794,14 +794,18 @@ function initialPageFromLocation(): PageId {
 
 function isAdminRoute(adminPath: string | undefined): boolean {
   if (typeof window === "undefined") return false;
-  const configured = normalizeAdminPath(adminPath || "/admin");
-  return normalizeAdminPath(window.location.pathname) === configured;
+  return normalizeLocationPath(window.location.pathname) === normalizeAdminPath(adminPath || "/admin");
 }
 
 function normalizeAdminPath(value: string): string {
   const withSlash = value.startsWith("/") ? value : `/${value}`;
   const normalized = withSlash.replace(/\/+$/, "");
   return normalized || "/admin";
+}
+
+function normalizeLocationPath(value: string): string {
+  const withSlash = value.startsWith("/") ? value : `/${value}`;
+  return withSlash.replace(/\/+$/, "") || "/";
 }
 
 function normalizeThemeOptions(themes: ThemeOption[] | undefined): ThemeOption[] {
