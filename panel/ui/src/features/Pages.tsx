@@ -1170,12 +1170,15 @@ function NodeCard({ node, language }: { node: NodeRecord; language: Language }) 
             )}
             <span>{location.label}</span>
           </small>
+          <small className="node-uptime-mobile">
+            {translate(language, "uptime")} {uptime(metrics.uptime_seconds)}
+          </small>
         </div>
       </div>
       <NodeStatusBadge status={status} language={language} />
-      <MetricMini label={translate(language, "uptime")} value={uptime(metrics.uptime_seconds)} detail={availability} />
-      <MetricMini label={translate(language, "cpu")} value={percent(metrics.cpu_percent)} meter={Number(metrics.cpu_percent || 0)} />
-      <MetricMini label={translate(language, "memory")} value={percent(metrics.memory_used_percent)} detail={memoryDetail(metrics)} meter={Number(metrics.memory_used_percent || 0)} />
+      <MetricMini className="metric-uptime" label={translate(language, "uptime")} value={uptime(metrics.uptime_seconds)} detail={availability} />
+      <MetricMini className="metric-cpu" label={translate(language, "cpu")} value={percent(metrics.cpu_percent)} meter={Number(metrics.cpu_percent || 0)} />
+      <MetricMini className="metric-memory" label={translate(language, "memory")} value={percent(metrics.memory_used_percent)} detail={memoryDetail(metrics)} meter={Number(metrics.memory_used_percent || 0)} />
       <LoadMini value={load} load5={Number(metrics.load5 || 0)} load15={Number(metrics.load15 || 0)} />
       <div className="traffic-cell">
         <span aria-label={translate(language, "download")}><ArrowDown size={12} />{traffic.rx}</span>
@@ -1220,9 +1223,21 @@ function memoryDetail(metrics: ReturnType<typeof metricsFromNode>): string | und
   return `${bytes(used)} / ${bytes(total)}`;
 }
 
-function MetricMini({ label, value, detail, meter }: { label: string; value: string; detail?: string; meter?: number }) {
+function MetricMini({
+  label,
+  value,
+  detail,
+  meter,
+  className = "",
+}: {
+  label: string;
+  value: string;
+  detail?: string;
+  meter?: number;
+  className?: string;
+}) {
   return (
-    <div className="metric-mini">
+    <div className={`metric-mini ${className}`}>
       <span>{label}</span>
       <strong>{value}</strong>
       {detail && <em>{detail}</em>}

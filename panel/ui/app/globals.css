@@ -23,8 +23,8 @@
   --status-online: #159a63;
   --status-degraded: #f2b100;
   --status-offline: #ef2f35;
-  --shadow: 0 18px 46px rgba(22, 38, 62, 0.09);
-  --shadow-soft: 0 10px 24px rgba(23, 42, 68, 0.055);
+  --shadow: 0 18px 46px rgba(22, 38, 62, 0.075);
+  --shadow-soft: 0 8px 20px rgba(23, 42, 68, 0.045);
   --shadow-hairline: 0 1px 0 rgba(255, 255, 255, 0.78) inset;
   --radius: 8px;
 }
@@ -963,7 +963,7 @@ button:disabled {
 .spark-line {
   fill: none;
   stroke: var(--accent, var(--blue));
-  stroke-width: 2.7;
+  stroke-width: 2.35;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -1044,8 +1044,8 @@ button:disabled {
 
 .risk-trend {
   display: grid;
-  grid-template-rows: auto 218px;
-  min-height: 292px;
+  grid-template-rows: auto 190px;
+  min-height: 252px;
   margin-top: 0;
   padding: 12px 18px 18px;
 }
@@ -1076,8 +1076,8 @@ button:disabled {
 
 .risk-trend .trend-chart {
   align-self: auto;
-  height: 218px;
-  min-height: 218px;
+  height: 190px;
+  min-height: 190px;
 }
 
 .chart-grid-line {
@@ -1087,7 +1087,7 @@ button:disabled {
 .trend-line {
   fill: none;
   stroke: var(--trend-color);
-  stroke-width: 2.2;
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -1166,7 +1166,7 @@ button:disabled {
   grid-template-columns: minmax(172px, 0.76fr) minmax(160px, 0.72fr);
   align-content: center;
   height: 100%;
-  min-height: 292px;
+  min-height: 252px;
   padding: 18px 22px 22px;
 }
 
@@ -1175,7 +1175,7 @@ button:disabled {
   gap: 22px;
   justify-content: center;
   align-items: center;
-  min-height: 292px;
+  min-height: 252px;
   padding: 18px 24px 22px;
 }
 
@@ -1209,7 +1209,7 @@ button:disabled {
 .donut-track,
 .donut-slice {
   fill: none;
-  stroke-width: 15;
+  stroke-width: 14;
 }
 
 .donut-track {
@@ -2675,20 +2675,20 @@ tbody tr.row-muted:hover {
 .node-card {
   display: grid;
   grid-template-columns:
-    minmax(210px, 1.8fr)
-    minmax(68px, 0.58fr)
-    minmax(72px, 0.6fr)
-    minmax(64px, 0.55fr)
-    minmax(92px, 0.72fr)
-    minmax(62px, 0.5fr)
-    minmax(118px, 0.92fr)
-    minmax(88px, 0.72fr)
-    minmax(72px, 0.58fr)
-    minmax(72px, 0.58fr)
-    minmax(78px, 0.62fr);
+    minmax(210px, 0.96fr)
+    minmax(76px, 0.56fr)
+    minmax(78px, 0.58fr)
+    minmax(72px, 0.52fr)
+    minmax(118px, 0.82fr)
+    minmax(70px, 0.5fr)
+    minmax(132px, 0.88fr)
+    minmax(96px, 0.66fr)
+    minmax(78px, 0.54fr)
+    minmax(78px, 0.54fr)
+    minmax(86px, 0.58fr);
   gap: 10px;
   justify-content: space-between;
-  min-width: 1180px;
+  min-width: 1194px;
 }
 
 .node-list-head {
@@ -2708,13 +2708,13 @@ tbody tr.row-muted:hover {
 
 .node-card {
   align-items: center;
-  min-height: 96px;
-  padding: 14px 16px;
+  min-height: 92px;
+  padding: 12px 16px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.995), rgba(250, 253, 255, 0.995));
   border: 1px solid #dce6f2;
   border-radius: 9px;
   box-shadow:
-    0 10px 24px rgba(19, 41, 68, 0.06),
+    0 8px 18px rgba(19, 41, 68, 0.05),
     0 1px 0 rgba(255, 255, 255, 0.94) inset;
 }
 
@@ -2784,6 +2784,10 @@ tbody tr.row-muted:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.node-uptime-mobile {
+  display: none;
 }
 
 .metric-mini {
@@ -3657,8 +3661,8 @@ tbody tr.row-muted:hover {
 
   .overview-page .metric-card {
     grid-template-columns: 34px minmax(0, 1fr);
-    min-height: 110px;
-    padding: 12px;
+    min-height: 102px;
+    padding: 10px 12px;
   }
 
   .overview-page .metric-icon {
@@ -3672,11 +3676,11 @@ tbody tr.row-muted:hover {
   }
 
   .overview-page .metric-copy strong {
-    font-size: 25px;
+    font-size: 23px;
   }
 
   .overview-page .sparkline {
-    height: 30px;
+    height: 27px;
   }
 
   .risk-trend,
@@ -3703,17 +3707,17 @@ tbody tr.row-muted:hover {
 
   .overview-severity-card .donut-card,
   .node-status-card .donut-card {
-    grid-template-columns: 126px minmax(0, 1fr);
-    gap: 12px;
+    grid-template-columns: 132px minmax(0, 1fr);
+    gap: 10px;
     justify-items: stretch;
-    min-height: 164px;
-    padding: 14px;
+    min-height: 152px;
+    padding: 12px;
   }
 
   .overview-severity-card .donut,
   .node-status-card .donut {
-    width: 118px;
-    height: 118px;
+    width: 124px;
+    height: 124px;
     justify-self: center;
   }
 
@@ -3754,7 +3758,7 @@ tbody tr.row-muted:hover {
   .response-row {
     grid-template-columns: 1fr;
     align-content: start;
-    min-height: 82px;
+    min-height: 76px;
     gap: 6px;
   }
 
@@ -3841,9 +3845,9 @@ tbody tr.row-muted:hover {
   .blocks-design .feature-metrics.four .stat-tile,
   .sources-design .feature-metrics.four .stat-tile,
   .audit-design .feature-metrics.four .stat-tile {
-    grid-template-columns: 32px minmax(0, 1fr);
-    min-height: 94px;
-    padding: 12px;
+    grid-template-columns: 28px minmax(0, 1fr);
+    min-height: 86px;
+    padding: 10px;
   }
 
   .blocks-design .feature-metrics.four .stat-icon,
@@ -3856,7 +3860,7 @@ tbody tr.row-muted:hover {
   .blocks-design .feature-metrics.four .stat-tile strong,
   .sources-design .feature-metrics.four .stat-tile strong,
   .audit-design .feature-metrics.four .stat-tile strong {
-    font-size: 22px;
+    font-size: 20px;
   }
 
   .blocks-design .feature-metrics.four .stat-tile p,
@@ -4025,24 +4029,24 @@ tbody tr.row-muted:hover {
   .audit-card {
     background:
       linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(249, 252, 255, 0.99));
-    border: 1px solid #dbe6f3;
-    border-radius: 10px;
+    border: 1px solid #dfe8f3;
+    border-radius: 9px;
     box-shadow:
-      0 12px 24px rgba(20, 40, 68, 0.07),
+      0 8px 18px rgba(20, 40, 68, 0.052),
       inset 0 1px 0 rgba(255, 255, 255, 0.92);
   }
 
   .mobile-record-card {
     display: grid;
-    grid-template-columns: 38px minmax(0, 1fr);
-    gap: 12px;
-    padding: 12px;
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 10px;
+    padding: 10px;
   }
 
   .mobile-record-icon {
     display: grid;
-    width: 36px;
-    height: 36px;
+    width: 32px;
+    height: 32px;
     place-items: center;
     border-radius: 10px;
   }
@@ -4329,37 +4333,103 @@ tbody tr.row-muted:hover {
   }
 
   .node-summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
   }
 
   .node-summary-grid .metric-card {
-    min-height: 112px;
-    padding: 12px;
+    grid-template-columns: 1fr;
+    gap: 4px;
+    min-height: 92px;
+    padding: 9px;
+  }
+
+  .node-summary-grid .metric-icon {
+    width: 20px;
+    height: 20px;
+  }
+
+  .node-summary-grid .metric-icon svg {
+    width: 16px;
+    height: 16px;
+  }
+
+  .node-summary-grid .metric-copy span,
+  .node-summary-grid .metric-copy small {
+    font-size: 10px;
+    line-height: 1.15;
+  }
+
+  .node-summary-grid .metric-copy strong {
+    margin: 3px 0 2px;
+    font-size: 20px;
+  }
+
+  .node-summary-grid .sparkline,
+  .node-summary-grid .mini-bars {
+    display: none;
   }
 
   .node-list {
-    gap: 10px;
+    gap: 9px;
     overflow-x: visible;
   }
 
   .node-card {
-    grid-template-columns: minmax(0, 1fr) auto;
-    gap: 10px 12px;
+    grid-template-columns: minmax(0, 1.08fr) minmax(0, 1fr) minmax(0, 0.88fr) 58px;
+    gap: 7px 9px;
     min-width: 0;
-    min-height: 0;
-    padding: 12px;
+    min-height: 132px;
+    padding: 10px 11px;
   }
 
   .node-main {
-    grid-column: 1 / 2;
+    grid-column: 1 / 3;
+    grid-row: 1;
+    gap: 9px;
+  }
+
+  .node-icon {
+    width: 34px;
+    height: 34px;
+  }
+
+  .node-icon svg {
+    width: 19px;
+    height: 19px;
+  }
+
+  .node-main h3 {
+    margin-bottom: 4px;
+    font-size: 13px;
+  }
+
+  .node-location {
+    gap: 6px;
+    font-size: 11px;
+  }
+
+  .node-uptime-mobile {
+    display: block;
+    margin-top: 4px;
+    overflow: hidden;
+    color: #50627c;
+    font-size: 10px;
+    font-weight: 720;
+    line-height: 1.1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .node-status-badge {
+    grid-column: 3;
+    grid-row: 1;
+    align-self: start;
     justify-self: end;
-    min-width: 64px;
-    min-height: 26px;
-    padding: 0 9px;
+    min-width: 58px;
+    min-height: 24px;
+    padding: 0 8px;
+    font-size: 11px;
   }
 
   .node-card .metric-mini,
@@ -4371,36 +4441,96 @@ tbody tr.row-muted:hover {
   }
 
   .node-card .metric-mini {
-    gap: 5px;
+    gap: 4px;
   }
 
   .node-card .metric-mini span {
     display: block;
     color: var(--muted);
-    font-size: 11px;
+    font-size: 10px;
+  }
+
+  .node-card .metric-mini strong,
+  .load-cell strong {
+    font-size: 12px;
+  }
+
+  .node-card .metric-mini em {
+    font-size: 10px;
+  }
+
+  .metric-uptime {
+    display: none;
+  }
+
+  .metric-cpu {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .metric-memory {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .load-cell {
+    grid-column: 3;
+    grid-row: 2;
   }
 
   .traffic-cell {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-column: 1 / -1;
-    font-size: 11px;
+    grid-template-columns: repeat(2, minmax(0, auto));
+    grid-column: 1 / 3;
+    grid-row: 3;
+    gap: 12px;
+    font-size: 10px;
   }
 
-  .agent-rss-cell,
   .version-cell {
     display: none;
   }
 
+  .agent-rss-cell {
+    grid-column: 3;
+    grid-row: 3;
+    gap: 3px;
+  }
+
+  .agent-rss-cell strong {
+    display: none;
+  }
+
+  .agent-rss-cell .mini-bars {
+    height: 18px;
+    margin-top: 0;
+  }
+
   .posture-cell {
-    grid-column: 2;
-    grid-row: 3 / span 2;
+    grid-column: 4;
+    grid-row: 1 / span 3;
     align-self: center;
   }
 
+  .posture-ring {
+    width: 52px;
+    height: 52px;
+  }
+
+  .posture-ring strong {
+    font-size: 16px;
+  }
+
+  .posture-cell > span {
+    font-size: 10px;
+  }
+
   .last-report {
-    grid-column: 1 / -1;
+    grid-column: 4;
+    grid-row: 3;
+    align-self: end;
     justify-content: flex-end;
-    font-size: 11px;
+    gap: 4px;
+    font-size: 10px;
   }
 }
 
@@ -4410,7 +4540,7 @@ tbody tr.row-muted:hover {
   }
 
   .overview-page .metric-card {
-    min-height: 108px;
+    min-height: 100px;
     padding: 10px;
   }
 
@@ -4420,7 +4550,7 @@ tbody tr.row-muted:hover {
   }
 
   .overview-page .metric-copy strong {
-    font-size: 23px;
+    font-size: 22px;
   }
 
   .overview-severity-card .donut-card,
