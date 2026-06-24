@@ -435,7 +435,7 @@ export function SourcesPageView({
     ? config.columns || []
     : roleAllows(role, "operator")
       ? ["last_seen", "node_name", "source_ip", "seen_count", "block_status", "country", "asn", "organization", "categories", "rule_ids", "block_reason"]
-      : ["last_seen", "node_name", "seen_count", "block_status", "country", "asn", "organization", "categories", "rule_ids"];
+      : ["last_seen", "node_name", "source_ip", "seen_count", "block_status", "country", "asn", "organization", "categories", "rule_ids"];
   return (
     <div className="page-stack feature-page sources-design">
       <FeatureHeader title={translate(language, config.titleKey)} description={translate(language, config.descriptionKey)} />

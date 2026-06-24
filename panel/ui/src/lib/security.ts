@@ -18,7 +18,6 @@ const HIDDEN_KEYS = new Set([
   "remote_ip",
   "response_backend",
   "review_signature",
-  "source_ip",
   "target_ip",
 ]);
 
@@ -31,7 +30,7 @@ export function sanitizePanelValue<T>(value: T, role: PanelRole): T {
     for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
       const lower = key.toLowerCase();
       if (shouldHidePanelField(lower, role)) continue;
-      if (!roleAllows(role, "admin") && (lower === "ip" || lower.includes("_ip") || lower.includes("addr"))) {
+      if (!roleAllows(role, "admin") && lower !== "source_ip" && (lower === "ip" || lower.includes("_ip") || lower.includes("addr"))) {
         clean[key] = "redacted";
       } else {
         clean[key] = sanitizePanelValue(item, role);

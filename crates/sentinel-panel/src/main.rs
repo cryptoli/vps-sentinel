@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::broadcast;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -47,6 +47,8 @@ const STREAM_HEARTBEAT_SECONDS: u64 = 30;
 const STREAM_RETRY_SECONDS: u64 = 5;
 const PANEL_TRANSPORT_ENCODING: &str = "json-base64";
 const DEFAULT_PUBLIC_PAGES: &str = "overview,probe_sources,nodes";
+const DEFAULT_ADMIN_PATH: &str = "/admin";
+const DEFAULT_THEMES: &str = "default:Default";
 
 #[derive(Debug, Parser)]
 #[command(name = "vps-sentinel-panel", version)]
@@ -81,11 +83,17 @@ struct Args {
     #[arg(long, env = "PANEL_PUBLIC_PAGES", default_value = DEFAULT_PUBLIC_PAGES)]
     public_pages: String,
 
+    #[arg(long, env = "PANEL_ADMIN_PATH", default_value = DEFAULT_ADMIN_PATH)]
+    admin_path: String,
+
     #[arg(long, env = "PANEL_WEB_DIR")]
     web_dir: Option<PathBuf>,
 
     #[arg(long, env = "PANEL_THEME", default_value = "default")]
     theme: String,
+
+    #[arg(long, env = "PANEL_THEMES", default_value = DEFAULT_THEMES)]
+    themes: String,
 
     #[arg(long, env = "PANEL_MAX_BODY_BYTES", default_value_t = DEFAULT_MAX_BODY_BYTES)]
     max_body_bytes: usize,
@@ -107,7 +115,9 @@ struct AppState {
     admin_token: Option<String>,
     public_enabled: bool,
     public_pages: BTreeSet<String>,
+    admin_path: String,
     theme: String,
+    themes: Vec<PanelThemeOption>,
     max_body_bytes: usize,
     events: broadcast::Sender<PanelStreamEvent>,
     stream_tickets: Arc<Mutex<BTreeMap<String, StreamTicket>>>,
@@ -135,6 +145,12 @@ struct PanelStreamEvent {
     role: PanelRole,
     server_time: DateTime<Utc>,
     retry_after_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PanelThemeOption {
+    id: String,
+    label: String,
 }
 
 impl PanelStreamEvent {
@@ -549,6 +565,8 @@ async fn main() -> Result<()> {
     }
     let (events, _) = broadcast::channel(128);
     let csp_header = panel_csp_header(&web_dir);
+    let admin_path = normalize_panel_path(&args.admin_path);
+    let themes = parse_panel_themes(&args.themes);
     let state = AppState {
         repo: Arc::new(repo),
         secrets: Arc::new(secrets),
@@ -557,12 +575,15 @@ async fn main() -> Result<()> {
         admin_token,
         public_enabled: args.public_enabled,
         public_pages,
+        admin_path,
         theme: args.theme,
+        themes,
         max_body_bytes: args.max_body_bytes,
         events,
         stream_tickets: Arc::new(Mutex::new(BTreeMap::new())),
         csp_header,
     };
+    let index_file = web_dir.join("index.html");
     let app = Router::new()
         .route("/api/v1/settings", get(settings))
         .route("/api/v1/stream-ticket", get(stream_ticket))
@@ -581,7 +602,7 @@ async fn main() -> Result<()> {
         .route("/api/v1/probe-sources", get(probe_sources))
         .route("/api/v1/audit-logs", get(audit_logs))
         .route("/api/v1/ingest", post(ingest))
-        .fallback_service(ServeDir::new(web_dir))
+        .fallback_service(ServeDir::new(&web_dir).fallback(ServeFile::new(index_file)))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             security_headers,
@@ -597,7 +618,9 @@ async fn settings(State(state): State<AppState>, headers: HeaderMap) -> Json<Val
     let role = resolve_panel_role(&state, &headers).ok();
     let public_pages = state.public_pages.iter().cloned().collect::<Vec<_>>();
     Json(json!({
+        "admin_path": state.admin_path,
         "theme": state.theme,
+        "themes": state.themes,
         "auth_required": !panel_public_access_enabled(&state),
         "auth_configured": state.view_token.is_some() || state.operator_token.is_some() || state.admin_token.is_some(),
         "public_enabled": panel_public_access_enabled(&state),
@@ -882,6 +905,69 @@ fn parse_public_pages(value: &str) -> BTreeSet<String> {
         .filter(|page| !page.is_empty())
         .map(str::to_ascii_lowercase)
         .collect()
+}
+
+fn normalize_panel_path(value: &str) -> String {
+    let trimmed = value.trim();
+    let path = if trimmed.is_empty() {
+        DEFAULT_ADMIN_PATH
+    } else {
+        trimmed
+    };
+    let with_slash = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    let normalized = with_slash.trim_end_matches('/').to_string();
+    if normalized.is_empty() {
+        DEFAULT_ADMIN_PATH.to_string()
+    } else {
+        normalized
+    }
+}
+
+fn parse_panel_themes(value: &str) -> Vec<PanelThemeOption> {
+    let mut seen = BTreeSet::new();
+    let mut themes = value
+        .split(',')
+        .filter_map(|entry| {
+            let trimmed = entry.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let (id, label) = trimmed
+                .split_once(':')
+                .map(|(id, label)| (id.trim(), label.trim()))
+                .unwrap_or((trimmed, trimmed));
+            let id = sanitize_theme_id(id);
+            if id.is_empty() || !seen.insert(id.clone()) {
+                return None;
+            }
+            Some(PanelThemeOption {
+                label: if label.is_empty() {
+                    id.clone()
+                } else {
+                    label.to_string()
+                },
+                id,
+            })
+        })
+        .collect::<Vec<_>>();
+    if themes.is_empty() {
+        themes.push(PanelThemeOption {
+            id: "default".to_string(),
+            label: "Default".to_string(),
+        });
+    }
+    themes
+}
+
+fn sanitize_theme_id(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(*ch, '-' | '_'))
+        .collect::<String>()
 }
 
 fn verify_admin_auth(state: &AppState, headers: &HeaderMap) -> Result<(), PanelApiError> {
@@ -3780,13 +3866,15 @@ fn scope_probe_source_rows(value: &mut Value, role: PanelRole) {
             continue;
         };
         for key in [
-            "source_ip",
             "network_prefix",
             "latest_reason",
             "block_reason",
             "first_seen",
         ] {
             object.remove(key);
+        }
+        if let Some(Value::String(node_name)) = object.get_mut("node_name") {
+            *node_name = public_node_name(node_name);
         }
     }
 }
@@ -4057,6 +4145,9 @@ fn attach_node_statuses(rows: &mut Value) {
 
 fn should_redact_dataset(table: &str, role: PanelRole) -> bool {
     if role == PanelRole::Admin && matches!(table, "active_blocks" | "probe_sources") {
+        return false;
+    }
+    if table == "probe_sources" {
         return false;
     }
     true
@@ -4437,7 +4528,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn probe_source_page_preserves_admin_ip_and_redacts_lower_roles() {
+    async fn probe_source_page_preserves_public_block_source_ip() {
         let repo = test_repo();
         repo.init_schema().await.expect("schema");
         let now = Utc::now().to_rfc3339();
@@ -4492,18 +4583,31 @@ mod tests {
             .query_page(dataset, &request, PanelRole::Admin)
             .await
             .expect("admin query");
-        let (mut operator_page, _) = repo
-            .query_page(dataset, &request, PanelRole::Operator)
+        let (mut public_page, _) = repo
+            .query_page(dataset, &request, PanelRole::Public)
             .await
-            .expect("operator query");
-        scope_panel_value(&mut operator_page, PanelRole::Operator);
+            .expect("public query");
+        scope_panel_value(&mut public_page, PanelRole::Public);
+        scope_probe_source_rows(&mut public_page, PanelRole::Public);
         let admin_text = serde_json::to_string(&admin_page).expect("json");
-        let operator_text = serde_json::to_string(&operator_page).expect("json");
+        let public_text = serde_json::to_string(&public_page).expect("json");
 
         assert!(admin_text.contains("8.8.8.8"));
         assert!(admin_text.contains(r#""categories":["web"]"#));
-        assert!(!operator_text.contains("8.8.8.8"));
-        assert!(operator_text.contains("redacted"));
+        assert!(public_text.contains("8.8.8.8"));
+        assert!(!public_text.contains("8.8.8.0/24"));
+        assert!(!public_text.contains("web probe request_count=3"));
+    }
+
+    #[test]
+    fn panel_admin_path_and_theme_config_are_normalized() {
+        assert_eq!(normalize_panel_path("secure-admin/"), "/secure-admin");
+        assert_eq!(normalize_panel_path(""), DEFAULT_ADMIN_PATH);
+
+        let themes = parse_panel_themes("default:Default, ocean:Ocean Theme, ../bad:Bad");
+        assert_eq!(themes[0].id, "default");
+        assert_eq!(themes[1].id, "ocean");
+        assert_eq!(themes[2].id, "bad");
     }
 
     #[tokio::test]

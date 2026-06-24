@@ -21,7 +21,9 @@ Common configuration:
   PANEL_COMPATIBILITY_DATE      default: 2026-06-22
   PANEL_PUBLIC_ENABLED          default: false
   PANEL_PUBLIC_PAGES            default: overview,probe_sources,nodes
+  PANEL_ADMIN_PATH              default: /admin
   PANEL_THEME                   default: default
+  PANEL_THEMES                  default: default:Default
   PANEL_CORS_ORIGIN             optional exact origin for cross-origin agent/UI calls
   PANEL_MAX_BODY_BYTES          default: 1048576
   PANEL_VERIFY_URL              optional URL used for /api/v1/settings verification
@@ -188,6 +190,8 @@ const vars = {
     ? process.env.PANEL_PUBLIC_PAGES
     : "overview,probe_sources,nodes",
   PANEL_THEME: process.env.PANEL_THEME || "default",
+  PANEL_THEMES: process.env.PANEL_THEMES || "default:Default",
+  PANEL_ADMIN_PATH: process.env.PANEL_ADMIN_PATH || "/admin",
 };
 if (process.env.PANEL_CORS_ORIGIN) {
   vars.PANEL_CORS_ORIGIN = process.env.PANEL_CORS_ORIGIN;
@@ -274,8 +278,10 @@ main() {
     PANEL_PUBLIC_PAGES="overview,probe_sources,nodes"
   fi
   PANEL_THEME="${PANEL_THEME:-default}"
+  PANEL_THEMES="${PANEL_THEMES:-default:Default}"
+  PANEL_ADMIN_PATH="${PANEL_ADMIN_PATH:-/admin}"
   PANEL_MAX_BODY_BYTES="${PANEL_MAX_BODY_BYTES:-1048576}"
-  export PANEL_WORKER_NAME PANEL_D1_NAME PANEL_COMPATIBILITY_DATE PANEL_PUBLIC_ENABLED PANEL_PUBLIC_PAGES PANEL_THEME PANEL_MAX_BODY_BYTES
+  export PANEL_WORKER_NAME PANEL_D1_NAME PANEL_COMPATIBILITY_DATE PANEL_PUBLIC_ENABLED PANEL_PUBLIC_PAGES PANEL_THEME PANEL_THEMES PANEL_ADMIN_PATH PANEL_MAX_BODY_BYTES
 
   validate_name "$PANEL_WORKER_NAME" "PANEL_WORKER_NAME"
   validate_name "$PANEL_D1_NAME" "PANEL_D1_NAME"

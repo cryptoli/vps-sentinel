@@ -55,6 +55,7 @@ import type {
   PanelSettings,
   StreamState,
   Summary,
+  ThemeOption,
   TrendPoint,
 } from "@/types";
 
@@ -91,6 +92,8 @@ export function PanelApp() {
   const activeRoleRef = useRef<PanelRole>("public");
 
   const publicPages = useMemo(() => new Set(settings.public_pages || []), [settings.public_pages]);
+  const adminRouteActive = settingsLoaded && isAdminRoute(settings.admin_path);
+  const themeOptions = useMemo(() => normalizeThemeOptions(settings.themes), [settings.themes]);
   const pageMinRole = useCallback(
     (page: PageConfig): PanelRole => (publicPages.has(page.id) ? "public" : page.minRole),
     [publicPages],
@@ -200,7 +203,7 @@ export function PanelApp() {
         const nextRole = selectedRole(nextSettings.role, Boolean(panelToken()));
         activeRoleRef.current = nextRole;
         setRole(nextRole);
-        setTheme(nextSettings.theme || "default");
+        setTheme(selectConfiguredTheme(nextSettings.theme, nextSettings.themes));
         setSettingsLoaded(true);
         setLoading(false);
       } catch (error) {
@@ -243,9 +246,13 @@ export function PanelApp() {
     try {
       const nextSettings = await fetchSettings(role);
       const nextRole = selectedRole(nextSettings.role, true);
+      if (isAdminRoute(nextSettings.admin_path) && nextRole !== "admin") {
+        throw new PanelApiError("admin token required", 403);
+      }
       activeRoleRef.current = nextRole;
       setRole(nextRole);
       setSettings(nextSettings);
+      setTheme(selectConfiguredTheme(nextSettings.theme, nextSettings.themes));
       setAccessMessage("");
       setSettingsLoaded(true);
       await loadVisibleData(currentPage, nextRole);
@@ -306,7 +313,13 @@ export function PanelApp() {
     }, STREAM_RECONNECT_MS);
   }
 
-  const needsAccess = Boolean(settingsLoaded && settings.auth_required && !panelToken() && !roleAllows("public", pageMinRole(activePage)));
+  const needsAccess = Boolean(
+    settingsLoaded
+      && (
+        (adminRouteActive && role !== "admin")
+        || (settings.auth_required && !panelToken() && !roleAllows("public", pageMinRole(activePage)))
+      ),
+  );
 
   return (
     <main className={`app-shell page-${activePage.id}`}>
@@ -316,6 +329,7 @@ export function PanelApp() {
           page={activePage}
           language={language}
           theme={theme}
+          themeOptions={themeOptions}
           streamState={streamState}
           role={role}
           pages={visiblePages}
@@ -427,6 +441,7 @@ function Topbar({
   page,
   language,
   theme,
+  themeOptions,
   streamState,
   role,
   pages,
@@ -442,6 +457,7 @@ function Topbar({
   page: PageConfig;
   language: Language;
   theme: string;
+  themeOptions: ThemeOption[];
   streamState: StreamState;
   role: PanelRole;
   pages: PageConfig[];
@@ -496,7 +512,7 @@ function Topbar({
           className="toolbar-select"
           value={theme}
           ariaLabel={translate(language, "theme")}
-          options={[{ value: "default", label: "default" }]}
+          options={themeOptions.map((item) => ({ value: item.id, label: item.label }))}
           onChange={onTheme}
         />
         <SelectMenu
@@ -774,6 +790,35 @@ function initialPageFromLocation(): PageId {
   if (typeof window === "undefined") return "overview";
   const page = new URLSearchParams(window.location.search).get("page");
   return isPageId(page) ? page : "overview";
+}
+
+function isAdminRoute(adminPath: string | undefined): boolean {
+  if (typeof window === "undefined") return false;
+  const configured = normalizeAdminPath(adminPath || "/admin");
+  return normalizeAdminPath(window.location.pathname) === configured;
+}
+
+function normalizeAdminPath(value: string): string {
+  const withSlash = value.startsWith("/") ? value : `/${value}`;
+  const normalized = withSlash.replace(/\/+$/, "");
+  return normalized || "/admin";
+}
+
+function normalizeThemeOptions(themes: ThemeOption[] | undefined): ThemeOption[] {
+  const seen = new Set<string>();
+  const options = (themes || [])
+    .map((theme) => ({
+      id: String(theme.id || "").replace(/[^a-zA-Z0-9_-]/g, ""),
+      label: String(theme.label || theme.id || "").trim(),
+    }))
+    .filter((theme) => theme.id && !seen.has(theme.id) && seen.add(theme.id));
+  return options.length ? options : [{ id: "default", label: "default" }];
+}
+
+function selectConfiguredTheme(theme: string | undefined, themes: ThemeOption[] | undefined): string {
+  const options = normalizeThemeOptions(themes);
+  const requested = String(theme || "default").replace(/[^a-zA-Z0-9_-]/g, "");
+  return options.some((option) => option.id === requested) ? requested : options[0].id;
 }
 
 function syncPageToLocation(page: PageId): void {

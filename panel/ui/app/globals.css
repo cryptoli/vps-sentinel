@@ -3559,16 +3559,24 @@ tbody tr.row-muted:hover {
 
   .risk-trend,
   .baseline-timeline-card .risk-trend {
-    grid-template-rows: auto 168px;
-    min-height: 224px;
-    padding: 9px 10px 11px;
+    grid-template-rows: auto 132px;
+    min-height: 176px;
+    padding: 8px 9px 10px;
   }
 
   .risk-trend .trend-chart,
   .baseline-timeline-card .trend-chart {
     align-self: auto;
-    height: 168px;
-    min-height: 168px;
+    height: 132px;
+    min-height: 132px;
+  }
+
+  .trend-line {
+    stroke-width: 0.92;
+  }
+
+  .axis-label {
+    font-size: 8.8px;
   }
 
   .trend-legend {
@@ -3581,24 +3589,24 @@ tbody tr.row-muted:hover {
 
   .overview-severity-card .donut-card,
   .node-status-card .donut-card {
-    grid-template-columns: 104px minmax(0, 1fr);
-    gap: 10px;
-    justify-items: stretch;
-    min-height: 126px;
-    padding: 10px;
+    grid-template-columns: 1fr;
+    gap: 8px;
+    justify-items: center;
+    min-height: 0;
+    padding: 11px;
   }
 
   .overview-severity-card .donut,
   .node-status-card .donut {
-    width: 102px;
-    height: 102px;
+    width: 96px;
+    height: 96px;
     justify-self: center;
   }
 
   .overview-severity-card .donut-center,
   .node-status-card .donut-center {
-    width: 52px;
-    height: 52px;
+    width: 48px;
+    height: 48px;
   }
 
   .overview-severity-card .donut-center strong,
@@ -3608,15 +3616,20 @@ tbody tr.row-muted:hover {
 
   .overview-severity-card .legend,
   .node-status-card .legend {
-    gap: 8px;
-    align-self: center;
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    align-self: stretch;
   }
 
   .overview-severity-card .legend-row,
   .node-status-card .legend-row {
     grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: 7px;
-    font-size: 12px;
+    gap: 6px;
+    min-height: 24px;
+    padding: 0 2px;
+    font-size: 11px;
   }
 
   .overview-severity-card .legend-row small,
@@ -4465,21 +4478,23 @@ tbody tr.row-muted:hover {
   .overview-severity-card .donut-card,
   .node-status-card .donut-card,
   .baseline-summary-grid .donut-card {
-    grid-template-columns: 104px minmax(0, 1fr);
+    grid-template-columns: 1fr;
+    justify-items: center;
+    min-height: 0;
   }
 
   .overview-severity-card .donut,
   .node-status-card .donut,
   .baseline-summary-grid .donut {
-    width: 100px;
-    height: 100px;
+    width: 92px;
+    height: 92px;
   }
 
   .overview-severity-card .donut-center,
   .node-status-card .donut-center,
   .baseline-summary-grid .donut-center {
-    width: 52px;
-    height: 52px;
+    width: 46px;
+    height: 46px;
   }
 
   .response-activity-card .response-list {

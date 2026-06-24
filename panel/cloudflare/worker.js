@@ -10,6 +10,8 @@ const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
 const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES = 720;
 const ROLE_LEVELS = { public: 0, operator: 1, admin: 2 };
 const PANEL_TRANSPORT_ENCODING = "json-base64";
+const DEFAULT_ADMIN_PATH = "/admin";
+const DEFAULT_THEMES = "default:Default";
 let compatSchemaPromise = null;
 
 const DATASETS = {
@@ -54,10 +56,10 @@ const DATASETS = {
       "blocked_at",
       "node_id AS node_name",
       "ip",
-      "(SELECT network_prefix FROM probe_sources WHERE probe_sources.node_id = active_blocks.node_id AND probe_sources.source_ip = active_blocks.ip ORDER BY probe_sources.last_seen DESC LIMIT 1) AS network_prefix",
-      "(SELECT country FROM probe_sources WHERE probe_sources.node_id = active_blocks.node_id AND probe_sources.source_ip = active_blocks.ip ORDER BY probe_sources.last_seen DESC LIMIT 1) AS country",
-      "(SELECT asn FROM probe_sources WHERE probe_sources.node_id = active_blocks.node_id AND probe_sources.source_ip = active_blocks.ip ORDER BY probe_sources.last_seen DESC LIMIT 1) AS asn",
-      "(SELECT organization FROM probe_sources WHERE probe_sources.node_id = active_blocks.node_id AND probe_sources.source_ip = active_blocks.ip ORDER BY probe_sources.last_seen DESC LIMIT 1) AS organization",
+      "(SELECT network_prefix FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND network_prefix IS NOT NULL AND network_prefix <> '' AND LOWER(network_prefix) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS network_prefix",
+      "(SELECT country FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND country IS NOT NULL AND country <> '' AND LOWER(country) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS country",
+      "(SELECT asn FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND asn IS NOT NULL AND asn <> '' AND LOWER(asn) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS asn",
+      "(SELECT organization FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND organization IS NOT NULL AND organization <> '' AND LOWER(organization) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS organization",
       "rule_id",
       "backend",
       "reason",
@@ -115,6 +117,8 @@ export default {
         const pages = publicPages(env);
         return withCors(json({
           theme: env.PANEL_THEME || "default",
+          themes: panelThemes(env),
+          admin_path: adminPath(env),
           auth_required: !publicAccessEnabled(env),
           auth_configured: Boolean(viewToken(env) || adminToken(env)),
           operator_configured: Boolean(viewToken(env)),
@@ -764,9 +768,10 @@ function scopeProbeSourceRows(items, role) {
   if (role !== "public") return items;
   return (items || []).map((item) => {
     const next = { ...item };
-    for (const key of ["source_ip", "network_prefix", "latest_reason", "block_reason", "first_seen"]) {
+    for (const key of ["network_prefix", "latest_reason", "block_reason", "first_seen"]) {
       delete next[key];
     }
+    if (next.node_name) next.node_name = publicNodeName(next.node_name);
     return next;
   });
 }
@@ -1186,6 +1191,7 @@ function expandDatasetJsonColumns(table, rows) {
 }
 
 function shouldRedactDataset(dataset, role) {
+  if (dataset.table === "probe_sources") return false;
   return !(dataset.sensitive && role === "admin");
 }
 
@@ -1248,7 +1254,7 @@ function redactPanelValue(value) {
 
 function sensitiveNetworkKey(key) {
   const normalized = String(key || "").toLowerCase();
-  return normalized === "ip" || normalized.includes("_ip") || normalized.includes("addr");
+  return normalized !== "source_ip" && (normalized === "ip" || normalized.includes("_ip") || normalized.includes("addr"));
 }
 
 function redactIpText(value) {
@@ -1435,6 +1441,29 @@ function publicEnabled(env) {
 function publicPages(env) {
   const value = String(env.PANEL_PUBLIC_PAGES === undefined ? "overview,probe_sources,nodes" : env.PANEL_PUBLIC_PAGES);
   return [...new Set(value.split(",").map((page) => page.trim().toLowerCase()).filter(Boolean))];
+}
+
+function adminPath(env) {
+  const raw = String(env.PANEL_ADMIN_PATH || DEFAULT_ADMIN_PATH).trim() || DEFAULT_ADMIN_PATH;
+  const withSlash = raw.startsWith("/") ? raw : `/${raw}`;
+  const normalized = withSlash.replace(/\/+$/, "");
+  return normalized || DEFAULT_ADMIN_PATH;
+}
+
+function panelThemes(env) {
+  const seen = new Set();
+  const themes = String(env.PANEL_THEMES || DEFAULT_THEMES)
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [rawId, rawLabel] = entry.includes(":") ? entry.split(/:(.*)/s) : [entry, entry];
+      const id = String(rawId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+      const label = String(rawLabel || id).trim() || id;
+      return { id, label };
+    })
+    .filter((theme) => theme.id && !seen.has(theme.id) && seen.add(theme.id));
+  return themes.length ? themes : [{ id: "default", label: "Default" }];
 }
 
 function publicAccessEnabled(env) {

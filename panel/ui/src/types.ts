@@ -16,7 +16,9 @@ export type JsonValue = Primitive | JsonValue[] | { [key: string]: JsonValue };
 export type PanelRecord = Record<string, unknown>;
 
 export interface PanelSettings {
+  admin_path?: string;
   theme?: string;
+  themes?: ThemeOption[];
   auth_required?: boolean;
   auth_configured?: boolean;
   public_enabled?: boolean;
@@ -27,6 +29,11 @@ export interface PanelSettings {
   freshness_threshold_minutes?: number;
   node_retired_threshold_minutes?: number;
   server_time?: string;
+}
+
+export interface ThemeOption {
+  id: string;
+  label: string;
 }
 
 export interface DatasetPage<T extends PanelRecord = PanelRecord> {
