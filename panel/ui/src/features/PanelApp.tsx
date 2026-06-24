@@ -85,6 +85,7 @@ export function PanelApp() {
   const [loading, setLoading] = useState(true);
   const [accessMessage, setAccessMessage] = useState("");
   const [drawer, setDrawer] = useState<{ dataset: string; row: PanelRecord } | null>(null);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const socketRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<number | null>(null);
   const activeRoleRef = useRef<PanelRole>("public");
@@ -115,6 +116,7 @@ export function PanelApp() {
 
   const navigatePage = useCallback((id: PageId) => {
     setCurrentPage(id);
+    setMobileNavOpen(false);
     syncPageToLocation(id);
   }, []);
 
@@ -316,10 +318,15 @@ export function PanelApp() {
           theme={theme}
           streamState={streamState}
           role={role}
+          pages={visiblePages}
           onLanguage={setLanguage}
           onTheme={setTheme}
           onLogout={logout}
           onRefresh={() => void loadVisibleData(currentPage, role)}
+          currentPage={activePage.id}
+          mobileNavOpen={mobileNavOpen}
+          onMobileNavToggle={() => setMobileNavOpen((open) => !open)}
+          onMobileNavigate={navigatePage}
         />
         <section className="content-shell">
           {needsAccess ? (
@@ -422,25 +429,35 @@ function Topbar({
   theme,
   streamState,
   role,
+  pages,
   onLanguage,
   onTheme,
   onLogout,
   onRefresh,
+  currentPage,
+  mobileNavOpen,
+  onMobileNavToggle,
+  onMobileNavigate,
 }: {
   page: PageConfig;
   language: Language;
   theme: string;
   streamState: StreamState;
   role: PanelRole;
+  pages: PageConfig[];
   onLanguage: (language: Language) => void;
   onTheme: (theme: string) => void;
   onLogout: () => void;
   onRefresh: () => void;
+  currentPage: PageId;
+  mobileNavOpen: boolean;
+  onMobileNavToggle: () => void;
+  onMobileNavigate: (id: PageId) => void;
 }) {
   return (
     <header className="topbar">
       <div className="mobile-appbar">
-        <button className="mobile-icon-button" type="button" aria-label="menu">
+        <button className="mobile-icon-button" type="button" aria-label="menu" aria-expanded={mobileNavOpen} onClick={onMobileNavToggle}>
           <Menu size={20} />
         </button>
         <div className="mobile-brand">
@@ -453,6 +470,16 @@ function Topbar({
         <button className="mobile-icon-button" type="button" aria-label={translate(language, "refresh")} onClick={onRefresh}>
           <RefreshCw size={18} />
         </button>
+        {mobileNavOpen && (
+          <nav className="mobile-nav-popover" aria-label="mobile navigation">
+            {pages.map((item) => (
+              <button className={item.id === currentPage ? "active" : ""} key={item.id} type="button" onClick={() => onMobileNavigate(item.id)}>
+                {ICONS[item.id]}
+                <span>{translate(language, item.labelKey)}</span>
+              </button>
+            ))}
+          </nav>
+        )}
       </div>
       <div>
         <h1>{translate(language, page.labelKey)}</h1>
@@ -462,9 +489,9 @@ function Topbar({
           <Activity size={14} />
           {streamLabel(streamState, language)}
         </span>
-        <button className="icon-button" type="button" aria-label="theme">
+        <span className="icon-button theme-indicator" aria-hidden="true">
           <Sun size={18} />
-        </button>
+        </span>
         <SelectMenu
           className="toolbar-select"
           value={theme}

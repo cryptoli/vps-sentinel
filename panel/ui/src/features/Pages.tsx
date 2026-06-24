@@ -72,7 +72,7 @@ export function OverviewPage({
       </section>
 
       <section className="overview-grid">
-        <Card title={translate(language, "riskTrend")} className="wide-card" action={<button className="ghost-button compact timeframe-button" type="button">{translate(language, "range_7d")}</button>}>
+        <Card title={translate(language, "riskTrend")} className="wide-card" action={<span className="timeframe-badge">{translate(language, "range_7d")}</span>}>
           <RiskTrend rows={trends} language={language} />
         </Card>
         <Card title={translate(language, "findingsBySeverity")} className="overview-severity-card">
@@ -170,7 +170,10 @@ export function FindingsPageView({
       <Filters state={state} language={language} onChange={onStateChange} />
       <section className="feature-main-grid">
         <Card title={translate(language, config.labelKey)} className="feature-table-card">
-          <DataTable rows={rows} columns={["timestamp", "severity", "node_name", "rule_id", "category", "review_verdict"]} language={language} onDetails={onDetails} tableId="findings" />
+          <div className="desktop-table-panel">
+            <DataTable rows={rows} columns={["timestamp", "severity", "node_name", "rule_id", "category", "review_verdict"]} language={language} onDetails={onDetails} tableId="findings" />
+          </div>
+          <MobileRiskList rows={rows} language={language} kind="finding" onDetails={onDetails} />
           <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
         </Card>
         <aside className="feature-side-stack">
@@ -263,7 +266,10 @@ export function IncidentsPageView({
           </section>
           <Filters state={state} language={language} onChange={onStateChange} />
           <Card title={translate(language, config.labelKey)} className="feature-table-card">
-            <DataTable rows={rows} columns={["last_seen", "severity", "score", "node_name", "title", "review_verdict"]} language={language} onDetails={onDetails} tableId="incidents" />
+            <div className="desktop-table-panel">
+              <DataTable rows={rows} columns={["last_seen", "severity", "score", "node_name", "title", "review_verdict"]} language={language} onDetails={onDetails} tableId="incidents" />
+            </div>
+            <MobileRiskList rows={rows} language={language} kind="incident" onDetails={onDetails} />
             <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
           </Card>
         </div>
@@ -371,7 +377,10 @@ export function BaselinePageView({
             <button className={state.query === "needs_confirmation" ? "active" : ""} type="button" onClick={() => focusQueue("needs_confirmation")}>{copy(language, "Needs Confirmation", "需确认")}</button>
             <button className={state.query === "expected" ? "active" : ""} type="button" onClick={() => focusQueue("expected")}>{copy(language, "Expected", "预期")}</button>
           </div>
-          <DataTable rows={rows} columns={["timestamp", "node_name", "category", "subject", "tier", "review_verdict", "review_action"]} language={language} onDetails={onDetails} detailLabelKey="review" tableId="baseline-drifts" />
+          <div className="desktop-table-panel">
+            <DataTable rows={rows} columns={["timestamp", "node_name", "category", "subject", "tier", "review_verdict", "review_action"]} language={language} onDetails={onDetails} detailLabelKey="review" tableId="baseline-drifts" />
+          </div>
+          <MobileRiskList rows={rows} language={language} kind="baseline" onDetails={onDetails} />
           <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
         </Card>
       </div>
@@ -395,6 +404,8 @@ export function BlocksPageView({
   onStateChange: (patch: Partial<DatasetState>) => void;
 }) {
   const rows = filteredRows(page.items, state);
+  const temporaryBlocks = rows.filter((row) => blockMode(row) === "temporary").length;
+  const permanentBlocks = rows.length - temporaryBlocks;
   const columns = roleAllows(role, "admin") && config.adminColumns
     ? config.adminColumns
     : config.columns || ["blocked_at", "node_name", "rule_id", "reason", "expires_at"];
@@ -405,9 +416,9 @@ export function BlocksPageView({
         <div className="blocks-main">
           <section className="feature-metrics four">
             <StatTile icon={<ShieldCheck />} tone="green" label={copy(language, "Currently Blocked", "当前封禁")} value={number(page.total)} detail={copy(language, "Across all nodes", "全部节点")} />
-            <StatTile icon={<Ban />} tone="red" label={copy(language, "High Risk", "高风险")} value={Math.max(1, rows.length)} detail={copy(language, "Evidence confirmed", "证据确认")} />
-            <StatTile icon={<Clock3 />} tone="orange" label={copy(language, "Temporary Blocks", "临时封禁")} value={rows.length} detail={copy(language, "Auto-expire", "自动过期")} />
-            <StatTile icon={<Infinity />} tone="green" label={copy(language, "Permanent Blocks", "永久封禁")} value={0} detail={copy(language, "Manual review", "人工复核")} />
+            <StatTile icon={<Ban />} tone="red" label={copy(language, "Evidence Confirmed", "证据确认")} value={rows.length} detail={copy(language, "Blocked by policy", "策略已生效")} />
+            <StatTile icon={<Clock3 />} tone="orange" label={copy(language, "Temporary Blocks", "临时封禁")} value={temporaryBlocks} detail={copy(language, "Auto-expire", "自动过期")} />
+            <StatTile icon={<Infinity />} tone="green" label={copy(language, "Permanent Blocks", "永久封禁")} value={permanentBlocks} detail={copy(language, "Manual review", "人工复核")} />
           </section>
           <Filters state={state} language={language} onChange={onStateChange} />
           <Card title={translate(language, config.labelKey)} className="feature-table-card">
@@ -797,6 +808,56 @@ function KeyValueRows({ rows }: { rows: Array<[string, string | number]> }) {
   );
 }
 
+type MobileRiskKind = "finding" | "incident" | "baseline";
+
+function MobileRiskList({
+  rows,
+  language,
+  kind,
+  onDetails,
+}: {
+  rows: PanelRecord[];
+  language: Language;
+  kind: MobileRiskKind;
+  onDetails: (row: PanelRecord) => void;
+}) {
+  if (!rows.length) return <MobileEmptyState language={language} />;
+  return (
+    <div className={`mobile-record-list mobile-risk-list mobile-${kind}-list`}>
+      {rows.map((row, index) => {
+        const severity = mobileRiskSeverity(row, kind);
+        const title = mobileRiskTitle(row, kind, language);
+        const time = recordText(row, kind === "incident" ? ["last_seen", "timestamp"] : ["timestamp", "last_seen"], "");
+        const meta = mobileRiskMeta(row, kind, language);
+        return (
+          <article className={`mobile-record-card mobile-risk-card risk-${severity}`} key={recordKey(row, index)}>
+            <span className={`mobile-record-icon tone-${riskTone(severity)}`}>{mobileRiskIcon(kind)}</span>
+            <div className="mobile-record-body">
+              <header className="mobile-record-title-row">
+                <div>
+                  <strong>{title}</strong>
+                  <span>{meta.primary}</span>
+                </div>
+                <time>{formatRecordDate(time, language)}</time>
+              </header>
+              <div className="mobile-record-subline">
+                {meta.items.map((item) => <span key={item}>{item}</span>)}
+              </div>
+              <div className="mobile-risk-footer">
+                <Badge value={translate(language, severity)} tone={severity} />
+                {kind === "incident" && <span className="mobile-score-pill">{recordText(row, ["score"], "0")}</span>}
+                <button className="ghost-button compact" type="button" onClick={() => onDetails(row)}>
+                  {translate(language, kind === "baseline" ? "review" : "details")}
+                </button>
+              </div>
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
 function MobileBlocksList({
   rows,
   language,
@@ -806,16 +867,21 @@ function MobileBlocksList({
   language: Language;
   visibleColumns: string[];
 }) {
+  const [mode, setMode] = useState<"temporary" | "permanent">("temporary");
   if (!rows.length) return <MobileEmptyState language={language} />;
   const canShowIp = visibleColumns.includes("ip") || visibleColumns.includes("source_ip");
   const canShowAttribution = visibleColumns.some((column) => ["country", "asn", "organization"].includes(column));
+  const temporaryRows = rows.filter((row) => blockMode(row) === "temporary");
+  const permanentRows = rows.filter((row) => blockMode(row) === "permanent");
+  const visibleRows = mode === "temporary" ? temporaryRows : permanentRows;
   return (
     <div className="mobile-record-list mobile-block-list">
       <div className="mobile-segment-tabs" role="group" aria-label={copy(language, "Block type", "封禁类型")}>
-        <button className="active" type="button">{copy(language, "Temporary", "临时")} ({rows.length})</button>
-        <button type="button">{copy(language, "Permanent", "永久")} ({rows.filter((row) => !recordText(row, ["expires_at"], "")).length})</button>
+        <button className={mode === "temporary" ? "active" : ""} type="button" aria-pressed={mode === "temporary"} onClick={() => setMode("temporary")}>{copy(language, "Temporary", "临时")} ({temporaryRows.length})</button>
+        <button className={mode === "permanent" ? "active" : ""} type="button" aria-pressed={mode === "permanent"} onClick={() => setMode("permanent")}>{copy(language, "Permanent", "永久")} ({permanentRows.length})</button>
       </div>
-      {rows.map((row, index) => {
+      {!visibleRows.length && <div className="empty-state mobile-empty-inline">{translate(language, "noData")}</div>}
+      {visibleRows.map((row, index) => {
         const reason = recordText(row, ["reason", "block_reason", "latest_reason", "rule_id"], copy(language, "Blocked source", "已封禁来源"));
         const title = blockTitle(row, reason, language);
         const source = recordText(row, ["ip", "source_ip", "network_prefix"], copy(language, "Hidden source", "隐藏来源"));
@@ -941,6 +1007,83 @@ function ScoreDots({ value, total, showLabel = true }: { value: number; total: n
       {showLabel && <strong>{value} / {total}</strong>}
     </div>
   );
+}
+
+function mobileRiskSeverity(row: PanelRecord, kind: MobileRiskKind): string {
+  if (kind === "baseline") {
+    const tier = String(row.tier || row.review_action || "").toLowerCase();
+    if (tier.includes("suspicious")) return "high";
+    if (tier.includes("expected") || reviewVerdict(row) === "confirmed") return "low";
+    return "medium";
+  }
+  const severity = String(row.severity || row.risk_level || "").toLowerCase();
+  if (["critical", "high", "medium", "low"].includes(severity)) return severity;
+  const score = Number(row.score || 0);
+  if (score >= 85) return "critical";
+  if (score >= 65) return "high";
+  if (score >= 35) return "medium";
+  return "low";
+}
+
+function mobileRiskTitle(row: PanelRecord, kind: MobileRiskKind, language: Language): string {
+  if (kind === "baseline") return recordText(row, ["subject", "rule_id", "category"], copy(language, "Baseline change", "基线变更"));
+  if (kind === "incident") return recordText(row, ["title", "incident_id", "rule_id"], copy(language, "Correlated incident", "关联事件"));
+  return recordText(row, ["title", "rule_id", "category"], copy(language, "Security finding", "安全告警"));
+}
+
+function mobileRiskMeta(row: PanelRecord, kind: MobileRiskKind, language: Language): { primary: string; items: string[] } {
+  const node = recordText(row, ["node_name"], copy(language, "Unknown node", "未知节点"));
+  if (kind === "baseline") {
+    return {
+      primary: node,
+      items: [
+        recordText(row, ["category"], translate(language, "unknown")),
+        translate(language, reviewVerdict(row)),
+        recordText(row, ["review_action", "tier"], ""),
+      ].filter(Boolean),
+    };
+  }
+  if (kind === "incident") {
+    return {
+      primary: node,
+      items: [
+        recordText(row, ["category"], copy(language, "Incident", "事件")),
+        `${copy(language, "Score", "评分")} ${recordText(row, ["score"], "0")}`,
+        translate(language, reviewVerdict(row)),
+      ],
+    };
+  }
+  return {
+    primary: node,
+    items: [
+      recordText(row, ["category"], translate(language, "unknown")),
+      recordText(row, ["rule_id"], ""),
+      translate(language, reviewVerdict(row)),
+    ].filter(Boolean),
+  };
+}
+
+function mobileRiskIcon(kind: MobileRiskKind): React.ReactNode {
+  if (kind === "incident") return <GitBranch size={20} />;
+  if (kind === "baseline") return <ShieldQuestion size={20} />;
+  return <ShieldAlert size={20} />;
+}
+
+function riskTone(severity: string): string {
+  if (severity === "critical" || severity === "high") return "red";
+  if (severity === "medium") return "orange";
+  return "green";
+}
+
+function blockMode(row: PanelRecord): "temporary" | "permanent" {
+  const status = String(row.block_status || row.mode || "").toLowerCase();
+  if (status.includes("permanent")) return "permanent";
+  if (status.includes("temporary") || status.includes("temp")) return "temporary";
+  const expires = row.expires_at;
+  if (expires === undefined || expires === null) return "permanent";
+  const value = String(expires).trim().toLowerCase();
+  if (!value || ["-", "never", "none", "null", "manual", "manual review"].includes(value)) return "permanent";
+  return "temporary";
 }
 
 function ClassificationRows({ language }: { language: Language }) {
