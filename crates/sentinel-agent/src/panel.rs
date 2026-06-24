@@ -614,8 +614,28 @@ fn summary_from_state(state: &PanelOutboxState) -> PanelOutboxSummary {
 
 fn active_blocks(config: &SentinelConfig, store: &SqliteStore) -> SentinelResult<Vec<BlockEntry>> {
     let mut blocks = list_active_blocks(config, store, false)?;
+    sort_panel_active_blocks(&mut blocks);
     blocks.truncate(config.panel.batch_size);
     Ok(blocks)
+}
+
+fn sort_panel_active_blocks(blocks: &mut [BlockEntry]) {
+    blocks.sort_by(|left, right| {
+        panel_active_block_weight(right)
+            .cmp(&panel_active_block_weight(left))
+            .then_with(|| right.blocked_at.cmp(&left.blocked_at))
+            .then_with(|| left.ip.cmp(&right.ip))
+    });
+}
+
+fn panel_active_block_weight(block: &BlockEntry) -> u8 {
+    if block.expires_at.is_none() {
+        3
+    } else if !block.expired {
+        2
+    } else {
+        1
+    }
 }
 
 fn panel_active_block(config: &SentinelConfig, block: BlockEntry) -> PanelActiveBlock {
@@ -846,7 +866,7 @@ impl IpIntelCatalog {
         let lookup_ips = ips
             .filter(|ip| seen.insert(*ip))
             .filter(|ip| self.lookup(*ip).is_none())
-            .take(config.panel.ip_intel_remote_max_lookups)
+            .take(effective_remote_ip_intel_limit(config))
             .collect::<Vec<_>>();
         if lookup_ips.is_empty() {
             return;
@@ -876,6 +896,14 @@ impl IpIntelCatalog {
             .iter()
             .find(|entry| ip_in_cidr(ip, entry.network, entry.prefix))
     }
+}
+
+fn effective_remote_ip_intel_limit(config: &SentinelConfig) -> usize {
+    config
+        .panel
+        .ip_intel_remote_max_lookups
+        .max(config.panel.batch_size)
+        .min(config.panel.ip_intel_max_entries)
 }
 
 #[derive(Debug)]
@@ -1912,6 +1940,65 @@ mod tests {
         assert!(json.contains("203.0.113.44"));
         assert!(json.contains("\"ip\""));
         assert!(json.contains("redacted"));
+    }
+
+    #[test]
+    fn panel_active_blocks_prioritize_current_risky_entries() {
+        let now = Utc::now();
+        let mut blocks = vec![
+            BlockEntry {
+                ip: "203.0.113.30".to_string(),
+                rule_id: "WEB-001".to_string(),
+                finding_id: "old-expired".to_string(),
+                reason: "expired".to_string(),
+                backend: "nftables".to_string(),
+                blocked_at: now - ChronoDuration::hours(3),
+                expires_at: Some(now - ChronoDuration::minutes(1)),
+                expired: true,
+                firewall_present: None,
+            },
+            BlockEntry {
+                ip: "203.0.113.20".to_string(),
+                rule_id: "WEB-001".to_string(),
+                finding_id: "temporary".to_string(),
+                reason: "temporary".to_string(),
+                backend: "nftables".to_string(),
+                blocked_at: now - ChronoDuration::minutes(5),
+                expires_at: Some(now + ChronoDuration::hours(1)),
+                expired: false,
+                firewall_present: None,
+            },
+            BlockEntry {
+                ip: "203.0.113.10".to_string(),
+                rule_id: "SSH-003".to_string(),
+                finding_id: "permanent".to_string(),
+                reason: "permanent".to_string(),
+                backend: "nftables".to_string(),
+                blocked_at: now - ChronoDuration::hours(1),
+                expires_at: None,
+                expired: false,
+                firewall_present: None,
+            },
+        ];
+
+        super::sort_panel_active_blocks(&mut blocks);
+
+        assert_eq!(blocks[0].finding_id, "permanent");
+        assert_eq!(blocks[1].finding_id, "temporary");
+        assert_eq!(blocks[2].finding_id, "old-expired");
+    }
+
+    #[test]
+    fn remote_ip_intel_limit_covers_panel_batch_size() {
+        let mut config = SentinelConfig::default();
+        config.panel.batch_size = 180;
+        config.panel.ip_intel_remote_max_lookups = 64;
+        config.panel.ip_intel_max_entries = 20_000;
+
+        assert_eq!(super::effective_remote_ip_intel_limit(&config), 180);
+
+        config.panel.ip_intel_max_entries = 128;
+        assert_eq!(super::effective_remote_ip_intel_limit(&config), 128);
     }
 
     #[test]
