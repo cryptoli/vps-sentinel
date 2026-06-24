@@ -721,7 +721,15 @@ fn panel_probe_sources(
     }
 
     let mut ip_intel_catalog = IpIntelCatalog::load(config);
-    ip_intel_catalog.extend_remote(config, sources.keys().copied());
+    let mut lookup_sources = sources.values().collect::<Vec<_>>();
+    lookup_sources.sort_by(|left, right| {
+        probe_source_lookup_weight(right)
+            .cmp(&probe_source_lookup_weight(left))
+            .then_with(|| right.last_seen.cmp(&left.last_seen))
+            .then_with(|| right.seen_count.cmp(&left.seen_count))
+            .then_with(|| left.ip.cmp(&right.ip))
+    });
+    ip_intel_catalog.extend_remote(config, lookup_sources.into_iter().map(|source| source.ip));
 
     let mut items = sources
         .into_values()
@@ -757,6 +765,21 @@ fn panel_probe_sources(
     });
     items.truncate(config.panel.batch_size);
     items
+}
+
+fn probe_source_lookup_weight(source: &ProbeSourceAggregate) -> u8 {
+    let status = source.block_status.to_ascii_lowercase();
+    if status.contains("permanent") {
+        4
+    } else if status.contains("block") || status == "temporary" || status == "blocked" {
+        3
+    } else if source.seen_count >= 5 {
+        2
+    } else if !status.is_empty() && status != "observed" && status != "expired" {
+        1
+    } else {
+        0
+    }
 }
 
 struct ProbeIpIntel {
