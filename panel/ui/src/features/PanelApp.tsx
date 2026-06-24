@@ -470,6 +470,11 @@ function Topbar({
   onMobileNavToggle: () => void;
   onMobileNavigate: (id: PageId) => void;
 }) {
+  const languageOptions = [
+    { value: "zh" as Language, label: translate(language, "chinese") },
+    { value: "en" as Language, label: translate(language, "english") },
+  ];
+
   return (
     <header className="topbar">
       <div className="mobile-appbar">
@@ -488,12 +493,30 @@ function Topbar({
         </button>
         {mobileNavOpen && (
           <nav className="mobile-nav-popover" aria-label="mobile navigation">
-            {pages.map((item) => (
-              <button className={item.id === currentPage ? "active" : ""} key={item.id} type="button" onClick={() => onMobileNavigate(item.id)}>
-                {ICONS[item.id]}
-                <span>{translate(language, item.labelKey)}</span>
-              </button>
-            ))}
+            <div className="mobile-nav-list">
+              {pages.map((item) => (
+                <button className={item.id === currentPage ? "active" : ""} key={item.id} type="button" onClick={() => onMobileNavigate(item.id)}>
+                  {ICONS[item.id]}
+                  <span>{translate(language, item.labelKey)}</span>
+                </button>
+              ))}
+            </div>
+            <div className="mobile-toolbar-controls" aria-label={translate(language, "theme")}>
+              <SelectMenu
+                className="mobile-toolbar-select"
+                value={theme}
+                ariaLabel={translate(language, "theme")}
+                options={themeOptions.map((item) => ({ value: item.id, label: item.label }))}
+                onChange={onTheme}
+              />
+              <SelectMenu
+                className="mobile-toolbar-select"
+                value={language}
+                ariaLabel={translate(language, "language")}
+                options={languageOptions}
+                onChange={onLanguage}
+              />
+            </div>
           </nav>
         )}
       </div>
@@ -519,10 +542,7 @@ function Topbar({
           className="toolbar-select"
           value={language}
           ariaLabel={translate(language, "language")}
-          options={[
-            { value: "zh" as Language, label: translate(language, "chinese") },
-            { value: "en" as Language, label: translate(language, "english") },
-          ]}
+          options={languageOptions}
           onChange={onLanguage}
         />
         {roleAllows(role, "operator") && <UserMenu role={role} language={language} onLogout={onLogout} />}
