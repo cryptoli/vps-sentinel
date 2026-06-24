@@ -1,12 +1,12 @@
 :root {
-  --bg: #f7fbff;
-  --bg-soft: #f2f7fc;
+  --bg: #f8fbff;
+  --bg-soft: #f4f8fd;
   --sidebar: #071322;
   --sidebar-2: #0e253f;
   --text: #0e1b2f;
   --muted: #64748b;
-  --line: #e6edf6;
-  --line-soft: #f0f5fa;
+  --line: #e8f0f8;
+  --line-soft: #f2f6fb;
   --panel: #ffffff;
   --panel-strong: #ffffff;
   --blue: #126df2;
@@ -23,8 +23,8 @@
   --status-online: #159a63;
   --status-degraded: #f2b100;
   --status-offline: #ef2f35;
-  --shadow: 0 18px 34px rgba(18, 35, 58, 0.045);
-  --shadow-soft: 0 6px 16px rgba(18, 35, 58, 0.028);
+  --shadow: 0 14px 30px rgba(24, 45, 72, 0.036);
+  --shadow-soft: 0 5px 14px rgba(24, 45, 72, 0.022);
   --shadow-hairline: 0 1px 0 rgba(255, 255, 255, 0.92) inset;
   --radius: 8px;
 }
@@ -134,7 +134,7 @@ button:disabled {
 
 .main-nav {
   display: grid;
-  gap: 8px;
+  gap: 7px;
   margin-top: 28px;
 }
 
@@ -142,9 +142,9 @@ button:disabled {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 14px;
-  min-height: 42px;
-  padding: 0 12px;
+  gap: 12px;
+  min-height: 40px;
+  padding: 0 11px;
   color: #c7d5e7;
   background: transparent;
   border: 1px solid transparent;
@@ -156,15 +156,15 @@ button:disabled {
 .main-nav button:hover,
 .main-nav button.active {
   color: #eaffff;
-  background: linear-gradient(90deg, rgba(8, 169, 200, 0.17), rgba(18, 109, 242, 0.09));
+  background: linear-gradient(90deg, rgba(8, 169, 200, 0.15), rgba(18, 109, 242, 0.075));
   border-color: transparent;
   box-shadow: none;
 }
 
 .main-nav button.active::before {
   position: absolute;
-  top: 8px;
-  bottom: 8px;
+  top: 9px;
+  bottom: 9px;
   left: -14px;
   width: 4px;
   content: "";
@@ -195,14 +195,14 @@ button:disabled {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  min-height: 62px;
+  min-height: 60px;
   padding: 0 24px;
   color: var(--text);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.975), rgba(252, 254, 255, 0.95));
   border-bottom: 1px solid var(--line);
   backdrop-filter: blur(18px);
-  box-shadow: 0 8px 22px rgba(18, 36, 59, 0.032);
+  box-shadow: 0 6px 18px rgba(18, 36, 59, 0.025);
 }
 
 .mobile-appbar {
@@ -416,8 +416,8 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-height: 34px;
+  gap: 7px;
+  min-height: 32px;
   border-radius: var(--radius);
   border: 1px solid transparent;
   font-weight: 660;
@@ -428,13 +428,13 @@ button:disabled {
   padding: 0 14px;
   color: white;
   background: linear-gradient(135deg, #126df2, #0a8fe8);
-  box-shadow: 0 8px 18px rgba(18, 109, 242, 0.14);
+  box-shadow: 0 6px 14px rgba(18, 109, 242, 0.12);
 }
 
 .ghost-button,
 .icon-button {
   color: #30405a;
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.86);
   border-color: var(--line);
 }
 
@@ -452,13 +452,13 @@ button:disabled {
 .timeframe-badge {
   display: inline-flex;
   align-items: center;
-  min-height: 30px;
-  padding: 0 12px;
+  min-height: 28px;
+  padding: 0 11px;
   color: #30405a;
   background: rgba(255, 255, 255, 0.78);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 660;
 }
 
@@ -468,7 +468,7 @@ button:disabled {
 
 .ghost-button.compact,
 .link-button.compact {
-  min-height: 32px;
+  min-height: 30px;
   padding: 0 10px;
 }
 
@@ -480,7 +480,7 @@ button:disabled {
 }
 
 .icon-button {
-  width: 42px;
+  width: 38px;
   padding: 0;
 }
 
@@ -494,7 +494,7 @@ button:disabled {
 .control-input-wrap,
 .textarea-control {
   width: 100%;
-  min-height: 34px;
+  min-height: 32px;
   color: var(--text);
   background: linear-gradient(180deg, #ffffff, #fbfdff);
   border: 1px solid var(--line);
@@ -512,7 +512,7 @@ button:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 0 12px 0 14px;
+  padding: 0 11px 0 13px;
   text-align: left;
 }
 
@@ -833,7 +833,7 @@ button:disabled {
 .panel-card:hover,
 .metric-card:hover,
 .node-card:hover {
-  border-color: #d7e3f0;
+  border-color: #dce8f4;
 }
 
 .content-shell {
@@ -886,9 +886,9 @@ button:disabled {
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr);
   grid-template-rows: auto 1fr;
-  gap: 7px 12px;
-  min-height: 128px;
-  padding: 14px 15px;
+  gap: 6px 11px;
+  min-height: 122px;
+  padding: 13px 14px;
   overflow: hidden;
 }
 
@@ -907,11 +907,11 @@ button:disabled {
 
 .metric-icon {
   display: grid;
-  width: 42px;
-  height: 42px;
+  width: 40px;
+  height: 40px;
   place-items: center;
   color: var(--accent, var(--blue));
-  background: color-mix(in srgb, var(--accent, var(--blue)) 8%, white);
+  background: color-mix(in srgb, var(--accent, var(--blue)) 7%, white);
   border: 0;
   border-radius: 8px;
 }
@@ -926,8 +926,8 @@ button:disabled {
 }
 
 .metric-icon svg {
-  width: 23px;
-  height: 23px;
+  width: 22px;
+  height: 22px;
 }
 
 .node-summary-grid .metric-icon svg {
@@ -951,7 +951,7 @@ button:disabled {
 .metric-copy strong {
   display: block;
   margin: 3px 0 2px;
-  font-size: 28px;
+  font-size: 27px;
   line-height: 1;
 }
 
@@ -978,7 +978,7 @@ button:disabled {
 .sparkline {
   grid-column: 1 / -1;
   width: 100%;
-  height: 38px;
+  height: 36px;
   align-self: end;
   margin-top: 0;
 }
@@ -986,7 +986,7 @@ button:disabled {
 .spark-line {
   fill: none;
   stroke: var(--accent, var(--blue));
-  stroke-width: 1.45;
+  stroke-width: 1.25;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -1038,14 +1038,14 @@ button:disabled {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  min-height: 48px;
-  padding: 12px 17px;
+  min-height: 46px;
+  padding: 11px 16px;
   border-bottom: 1px solid var(--line-soft);
 }
 
 .panel-card-head h3 {
   margin: 0;
-  font-size: 15px;
+  font-size: 14.5px;
   line-height: 1.15;
   font-weight: 740;
 }
@@ -1058,7 +1058,7 @@ button:disabled {
 .donut-card,
 .response-list,
 .freshness-table {
-  padding: 15px 17px;
+  padding: 14px 16px;
 }
 
 .chart-surface svg {
@@ -1068,16 +1068,16 @@ button:disabled {
 
 .risk-trend {
   display: grid;
-  grid-template-rows: auto 198px;
-  min-height: 252px;
+  grid-template-rows: auto 190px;
+  min-height: 242px;
   margin-top: 0;
-  padding: 10px 16px 14px;
+  padding: 9px 15px 13px;
 }
 
 .trend-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: 15px;
+  gap: 14px;
   align-items: center;
   justify-content: center;
   min-height: 22px;
@@ -1100,18 +1100,18 @@ button:disabled {
 
 .risk-trend .trend-chart {
   align-self: auto;
-  height: 198px;
-  min-height: 198px;
+  height: 190px;
+  min-height: 190px;
 }
 
 .chart-grid-line {
-  stroke: #edf4fb;
+  stroke: #eef4fa;
 }
 
 .trend-line {
   fill: none;
   stroke: var(--trend-color);
-  stroke-width: 1.08;
+  stroke-width: 1;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -1170,8 +1170,8 @@ button:disabled {
 }
 
 .axis-label {
-  fill: #7b89a0;
-  font-size: 9.8px;
+  fill: #8190a6;
+  font-size: 9.4px;
 }
 
 .donut-card {
@@ -1228,14 +1228,14 @@ button:disabled {
   width: 100%;
   height: 100%;
   overflow: visible;
-  filter: drop-shadow(0 8px 14px rgba(18, 109, 242, 0.07));
+  filter: drop-shadow(0 7px 12px rgba(18, 109, 242, 0.06));
   transform: rotate(-90deg);
 }
 
 .donut-track,
 .donut-slice {
   fill: none;
-  stroke-width: 8.4;
+  stroke-width: 8;
 }
 
 .donut-track {
@@ -1288,7 +1288,7 @@ button:disabled {
   background: rgba(255, 255, 255, 0.94);
   border: 1px solid #e7eff8;
   border-radius: 50%;
-  box-shadow: 0 7px 16px rgba(20, 39, 64, 0.036);
+  box-shadow: 0 6px 14px rgba(20, 39, 64, 0.03);
 }
 
 .overview-grid .donut-center {
@@ -2374,14 +2374,14 @@ button:disabled {
   overflow-x: auto;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.998), rgba(252, 254, 255, 0.998));
-  border: 1px solid rgba(229, 237, 247, 0.96);
+  border: 1px solid rgba(232, 240, 248, 0.96);
   border-radius: 8px;
   scrollbar-color: rgba(106, 130, 163, 0.45) transparent;
   scrollbar-width: thin;
 }
 
 .table-wrap::-webkit-scrollbar {
-  height: 10px;
+  height: 8px;
 }
 
 .table-wrap::-webkit-scrollbar-thumb {
@@ -2405,7 +2405,7 @@ button:disabled {
 
 th,
 td {
-  padding: 10px 11px;
+  padding: 9px 10px;
   border-bottom: 1px solid var(--line-soft);
   overflow: hidden;
   text-align: left;
@@ -2417,7 +2417,7 @@ td {
 th {
   color: #62728a;
   background: linear-gradient(180deg, #fcfeff, #f9fbfe);
-  font-size: 10px;
+  font-size: 9.8px;
   font-weight: 700;
   letter-spacing: 0;
   text-transform: none;
@@ -2425,7 +2425,7 @@ th {
 
 td {
   color: #203049;
-  font-size: 12px;
+  font-size: 11.8px;
   line-height: 1.35;
 }
 
@@ -3559,24 +3559,24 @@ tbody tr.row-muted:hover {
 
   .risk-trend,
   .baseline-timeline-card .risk-trend {
-    grid-template-rows: auto 132px;
-    min-height: 176px;
-    padding: 8px 9px 10px;
+    grid-template-rows: auto 126px;
+    min-height: 168px;
+    padding: 8px 9px 9px;
   }
 
   .risk-trend .trend-chart,
   .baseline-timeline-card .trend-chart {
     align-self: auto;
-    height: 132px;
-    min-height: 132px;
+    height: 126px;
+    min-height: 126px;
   }
 
   .trend-line {
-    stroke-width: 0.92;
+    stroke-width: 0.84;
   }
 
   .axis-label {
-    font-size: 8.8px;
+    font-size: 8.4px;
   }
 
   .trend-legend {
@@ -3587,49 +3587,53 @@ tbody tr.row-muted:hover {
     padding-bottom: 2px;
   }
 
+  .overview-grid .panel-card:not(.wide-card) .donut-card,
   .overview-severity-card .donut-card,
   .node-status-card .donut-card {
-    grid-template-columns: 1fr;
-    gap: 8px;
-    justify-items: center;
-    min-height: 0;
-    padding: 11px;
+    grid-template-columns: 96px minmax(0, 1fr);
+    gap: 10px;
+    height: auto;
+    min-height: 124px;
+    padding: 10px 11px;
+    align-content: center;
+    align-items: center;
+    justify-items: stretch;
   }
 
   .overview-severity-card .donut,
   .node-status-card .donut {
-    width: 96px;
-    height: 96px;
+    width: 92px;
+    height: 92px;
     justify-self: center;
   }
 
   .overview-severity-card .donut-center,
   .node-status-card .donut-center {
-    width: 48px;
-    height: 48px;
+    width: 46px;
+    height: 46px;
   }
 
   .overview-severity-card .donut-center strong,
   .node-status-card .donut-center strong {
-    font-size: 19px;
+    font-size: 18px;
   }
 
   .overview-severity-card .legend,
   .node-status-card .legend {
     display: grid;
     width: 100%;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 6px;
+    grid-template-columns: 1fr;
+    gap: 5px;
     align-self: stretch;
   }
 
   .overview-severity-card .legend-row,
   .node-status-card .legend-row {
     grid-template-columns: auto minmax(0, 1fr) auto;
-    gap: 6px;
-    min-height: 24px;
+    gap: 5px;
+    min-height: 21px;
     padding: 0 2px;
-    font-size: 11px;
+    font-size: 10.6px;
   }
 
   .overview-severity-card .legend-row small,
@@ -4457,13 +4461,38 @@ tbody tr.row-muted:hover {
 }
 
 @media (max-width: 520px) {
+  .overview-page {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .overview-page .mobile-overview-live,
+  .overview-page .metric-grid,
+  .overview-page .overview-grid > .wide-card,
+  .overview-page .response-activity-card,
+  .overview-page .node-freshness-card,
+  .overview-page .overview-table-row {
+    grid-column: 1 / -1;
+  }
+
+  .overview-page .overview-grid,
+  .overview-page .overview-triad {
+    display: contents;
+  }
+
+  .overview-page .overview-severity-card,
+  .overview-page .node-status-card {
+    grid-column: span 1;
+  }
+
   .overview-page .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
   }
 
   .overview-page .metric-card {
-    min-height: 92px;
-    padding: 9px;
+    min-height: 88px;
+    padding: 8px;
   }
 
   .overview-page .metric-copy span,
@@ -4472,29 +4501,73 @@ tbody tr.row-muted:hover {
   }
 
   .overview-page .metric-copy strong {
-    font-size: 20px;
+    font-size: 19px;
   }
 
+  .overview-page .panel-card-head {
+    min-height: 39px;
+    padding: 9px 10px;
+  }
+
+  .overview-page .panel-card-head h3 {
+    font-size: 13px;
+  }
+
+  .overview-page .overview-grid .panel-card:not(.wide-card) .donut-card,
   .overview-severity-card .donut-card,
   .node-status-card .donut-card,
   .baseline-summary-grid .donut-card {
     grid-template-columns: 1fr;
+    height: auto;
+    min-height: 138px;
+    gap: 6px;
     justify-items: center;
-    min-height: 0;
+    padding: 9px;
   }
 
   .overview-severity-card .donut,
   .node-status-card .donut,
   .baseline-summary-grid .donut {
-    width: 92px;
-    height: 92px;
+    width: 78px;
+    height: 78px;
   }
 
   .overview-severity-card .donut-center,
   .node-status-card .donut-center,
   .baseline-summary-grid .donut-center {
-    width: 46px;
-    height: 46px;
+    width: 40px;
+    height: 40px;
+  }
+
+  .overview-severity-card .donut-center strong,
+  .node-status-card .donut-center strong,
+  .baseline-summary-grid .donut-center strong {
+    font-size: 16px;
+  }
+
+  .overview-severity-card .donut-center span,
+  .node-status-card .donut-center span,
+  .baseline-summary-grid .donut-center span {
+    font-size: 9.5px;
+  }
+
+  .overview-severity-card .legend,
+  .node-status-card .legend,
+  .baseline-summary-grid .legend {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .overview-severity-card .legend-row,
+  .node-status-card .legend-row,
+  .baseline-summary-grid .legend-row {
+    min-height: 18px;
+    font-size: 9.8px;
+  }
+
+  .donut-track,
+  .donut-slice {
+    stroke-width: 6.4;
   }
 
   .response-activity-card .response-list {
@@ -4528,19 +4601,21 @@ tbody tr.row-muted:hover {
   }
 
   .correlation-card .score-panel {
-    grid-template-columns: 112px minmax(0, 1fr);
+    grid-template-columns: 96px minmax(0, 1fr);
+    min-height: 124px;
+    padding: 10px;
   }
 
   .score-panel .posture-ring {
-    width: 104px;
-    height: 104px;
+    width: 90px;
+    height: 90px;
   }
 
   .score-panel .posture-ring::before {
-    inset: 16px;
+    inset: 14px;
   }
 
   .score-panel .posture-ring strong {
-    font-size: 28px;
+    font-size: 24px;
   }
 }
