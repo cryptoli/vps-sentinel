@@ -1,91 +1,149 @@
-# Deployment
+# Agent Deployment
 
-## Build
+This guide covers installing and operating the `vps-sentinel` agent on Linux VPS hosts. For the fleet panel, see [panel-deployment.md](panel-deployment.md).
+
+## Requirements
+
+- Linux VPS with root or sudo access.
+- systemd is recommended; non-systemd hosts can still run `vps-sentinel scan` manually.
+- Rust is only needed when the installer falls back to source builds.
+- Optional tools improve visibility: `journalctl`, `ss`, `nft`, `iptables`, `dpkg`/`rpm`/`apk`/`pacman`, `nvidia-smi`, `rocm-smi`, `auditd`, and `bpftrace`.
+
+## One-Command Install
 
 ```bash
-cargo build --release
+curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/install.sh | sudo sh
 ```
 
-## Install
+Useful install variables:
 
 ```bash
-sudo sh packaging/install.sh
-sudo systemctl enable --now vps-sentinel
+sudo VPS_NAME="prod-sg-1" \
+  TELEGRAM_BOT_TOKEN="<bot-token>" \
+  TELEGRAM_CHAT_ID="<chat-id>" \
+  ACTIVE_RESPONSE_ENABLED="yes" \
+  sh -c 'curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/install.sh | sh'
 ```
 
-The package-time installer copies the binary, creates data/log/config directories, installs the systemd unit when available, and keeps an existing config file untouched.
-It writes the systemd unit before baseline bootstrap, validates the config, creates the first baseline when missing, runs a no-notify warm-up scan, creates the `vs` shorthand symlink, and installs `vps-sentinel-stop` when the helper script is present.
+The installer:
 
-Useful variables:
+- installs `vps-sentinel` and the `vs` shorthand;
+- creates `/etc/vps-sentinel/config.toml` only when it does not exist;
+- validates config, bootstraps the first baseline, and runs a no-notify warm-up scan;
+- installs and starts the systemd service when systemd is available;
+- preserves existing config on reinstall.
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `BIN_PATH` | `target/release/vps-sentinel` | Binary to install. |
-| `PREFIX` | `/usr/local` | Binary installation prefix. |
-| `CONFIG_DIR` | `/etc/vps-sentinel` | Directory for `config.toml`. |
-| `DATA_DIR` | `/var/lib/vps-sentinel` | SQLite data directory. |
-| `LOG_DIR` | `/var/log/vps-sentinel` | Log directory. |
-| `INSTALL_SYSTEMD` | `auto` | `auto`, `yes`, or `no` for systemd unit installation. |
-| `ENABLE_SERVICE` | `no` | Set to `yes` to enable and start the service. |
-| `RUN_DOCTOR` | `yes` | Run runtime checks during install. |
-| `BOOTSTRAP_BASELINE` | `yes` | Create the initial baseline if none exists. |
-| `RUN_FIRST_SCAN` | `yes` | Run one no-notify scan and write full output to `<LOG_DIR>/first-scan.log`. |
-| `VPS_NAME` | empty | Optional human-readable VPS name written to `agent.display_name` by the root `install.sh`. |
-| `STORAGE_MAX_DATABASE_SIZE_MB` | empty | Optional override for `[storage].max_database_size_mb`. |
-| `ACTIVE_RESPONSE_ENABLED` | empty | Set to `yes` to enable optional TTL-based firewall blocking. |
-| `ACTIVE_RESPONSE_FIREWALL_BACKEND` | empty | Optional `auto`, `nftables`, or `iptables` backend override. |
-| `ACTIVE_RESPONSE_BLOCK_TTL_SECONDS` | empty | Optional temporary block TTL override. |
-| `ACTIVE_RESPONSE_MAX_BLOCKS_PER_SCAN` | empty | Optional cap for new firewall blocks in one scan. |
-| `ACTIVE_RESPONSE_WEB_PROBE_BLOCK_THRESHOLD` | empty | Optional high-volume Web probe block threshold. |
-| `ACTIVE_RESPONSE_WEB_EXPLOIT_BLOCK_THRESHOLD` | empty | Optional repeated exploit-family Web probe block threshold. |
-| `ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD` | empty | Optional SSH brute-force block threshold. |
-
-For one-command source installs, use the repository root `install.sh`; for rebuilding an existing install, use `update.sh`.
-
-## Reload Config
+## Update
 
 ```bash
-sudo vps-sentinel reload
+curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.sh | sudo sh
+```
+
+The updater validates a release binary before installing it. If the binary is not compatible with the host, it falls back to a local source build. Existing config, SQLite state, baselines, notification credentials, and panel secrets are preserved.
+
+## Service Operations
+
+```bash
+sudo vs doctor
+sudo vs scan
+sudo vs reload
+sudo systemctl status vps-sentinel --no-pager
+sudo systemctl stop vps-sentinel
+sudo systemctl start vps-sentinel
+```
+
+`vs reload` validates the config before reloading the daemon.
+
+## Configure Notifications
+
+Edit `/etc/vps-sentinel/config.toml`:
+
+```toml
+[notifications]
+language = "zh_cn" # zh_cn or en
+time_zone = "local"
+
+[notifications.telegram]
+enabled = true
+bot_token = "<bot-token>"
+chat_id = "<chat-id>"
+min_severity = "Medium"
+```
+
+Supported channels: Telegram, Email SMTP, webhook, ntfy, Gotify, Bark, and ServerChan.
+
+## Configure Panel Upload
+
+After a panel is deployed, configure each agent:
+
+```toml
+[panel]
+enabled = true
+url = "https://panel.example.com/api/v1/ingest"
+node_name = "prod-sg-1"
+secret = "same-long-secret-as-panel"
+privacy_mode = "strict"
+
+[panel.location]
+country_code = "SG"
+country = "Singapore"
+city = "Singapore"
+```
+
+Then verify:
+
+```bash
+sudo vs config validate
+sudo vs panel push
+sudo vs panel outbox
 sudo vs reload
 ```
 
-or:
+Use non-sensitive `node_name` values. Do not use public IPs, private hostnames, provider instance IDs, or secrets as node names.
 
-```bash
-sudo systemctl reload vps-sentinel
+## Active Response
+
+Active response writes source-IP blocks only after high-confidence SSH/Web evidence and safety checks:
+
+```toml
+[active_response]
+enabled = true
+strategy = "balanced" # observe, balanced, strict
+firewall_backend = "auto"
+ssh_failed_login_block_threshold = 6
+web_probe_block_threshold = 25
+permanent_block_enabled = true
+permanent_block_threshold = 3
 ```
 
-Both paths validate the config before sending SIGHUP to the daemon.
-
-## Stop Service
+Commands:
 
 ```bash
-sudo vps-sentinel-stop
+sudo vs blocks list
+sudo vs blocks unblock <ip>
+sudo vs blocks unblock-all --yes
+sudo vs blocks cleanup
 ```
 
-or:
+Always put your own jump hosts, monitoring systems, VPN egress, and trusted office IPs in `[allowlist].ips`.
+
+## Baseline Review
 
 ```bash
-sudo systemctl stop vps-sentinel
+sudo vs baseline create
+sudo vs baseline diff
+sudo vs baseline approve <approval-key>
 ```
 
-Stopping the service does not remove `/etc/vps-sentinel`, `/var/lib/vps-sentinel`, logs, or binaries.
+Package upgrades and planned maintenance can create legitimate drift. Review evidence before refreshing a baseline.
 
-## First Run
+## Troubleshooting
 
 ```bash
-sudo vps-sentinel doctor --config /etc/vps-sentinel/config.toml
-sudo vps-sentinel baseline create --config /etc/vps-sentinel/config.toml
-sudo vps-sentinel scan --config /etc/vps-sentinel/config.toml
+sudo vs doctor
+sudo journalctl -u vps-sentinel -n 100 --no-pager
+sudo vs config validate
+sudo vs storage stats
 ```
 
-## Release Build Notes
-
-Release artifacts should include:
-
-- `vps-sentinel` binary.
-- `config/config.example.toml`.
-- `packaging/systemd/vps-sentinel.service`.
-- `packaging/install.sh`.
-- `install.sh`, `update.sh`, and `stop.sh`.
-- README and docs.
+If the daemon runs without enough privileges, some collectors degrade. `vs doctor` explains which modules lose visibility.

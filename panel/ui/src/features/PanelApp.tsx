@@ -814,13 +814,13 @@ function initialPageFromLocation(): PageId {
 
 function isAdminRoute(adminPath: string | undefined): boolean {
   if (typeof window === "undefined") return false;
-  return normalizeLocationPath(window.location.pathname) === normalizeAdminPath(adminPath || "/admin");
+  return normalizeLocationPath(window.location.pathname) === normalizeAdminPath(adminPath || "/cryptocaigou");
 }
 
 function normalizeAdminPath(value: string): string {
   const withSlash = value.startsWith("/") ? value : `/${value}`;
   const normalized = withSlash.replace(/\/+$/, "");
-  return normalized || "/admin";
+  return normalized || "/cryptocaigou";
 }
 
 function normalizeLocationPath(value: string): string {

@@ -1265,14 +1265,7 @@ function NodeCard({ node, language }: { node: NodeRecord; language: Language }) 
         <div>
           <h3>{node.node_name || "-"}</h3>
           <small className="node-location">
-            {location.countryCode ? (
-              <span
-                aria-hidden="true"
-                className={`node-flag fi fi-${location.countryCode.toLowerCase()}`}
-              />
-            ) : (
-              <span className="node-flag-fallback" aria-hidden="true">{location.flag}</span>
-            )}
+            <span className="node-flag" aria-hidden="true">{location.flag}</span>
             <span>{location.label}</span>
           </small>
           <small className="node-uptime-mobile">

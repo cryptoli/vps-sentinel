@@ -58,7 +58,7 @@ vs --config /etc/vps-sentinel/config.toml panel flush
 vs --config /etc/vps-sentinel/config.toml panel outbox
 ```
 
-For a step-by-step deployment guide covering Cloudflare Worker/D1 and a self-hosted VPS panel, see [面板部署教程](panel-deployment.zh-CN.md).
+For step-by-step deployment guides covering Cloudflare Worker/D1 and a self-hosted VPS panel, see [Panel deployment](panel-deployment.md) and [面板部署教程](panel-deployment.zh-CN.md).
 
 ## Self-Hosted Rust Panel
 
@@ -76,7 +76,7 @@ PANEL_OPERATOR_TOKEN='replace-with-a-separate-operator-token' \
 PANEL_ADMIN_TOKEN='replace-with-a-separate-admin-token' \
 PANEL_DATABASE_URL='sqlite://panel.db' \
 PANEL_DB_BACKEND='sqlite' \
-PANEL_ADMIN_PATH='/admin' \
+PANEL_ADMIN_PATH='/cryptocaigou' \
 PANEL_THEMES='default:Default' \
 PANEL_WEB_DIR='/usr/local/share/vps-sentinel/panel/web' \
 target/release/vps-sentinel-panel --bind 0.0.0.0:8080
@@ -114,7 +114,7 @@ For production, place the panel behind a reverse proxy with HTTPS and keep `PANE
 
 `PANEL_PUBLIC_PAGES` controls which menu pages are visible without a browser token. The default is `overview,probe_sources,nodes`, so a public visitor can see aggregate dashboard metrics, confirmed external blocked-source IPs with attribution, and non-sensitive node cards. Set `PANEL_PUBLIC_PAGES=` to make every page require a token. `PANEL_PUBLIC_ENABLED=true` remains supported for legacy public-role access, but page visibility should be controlled with `PANEL_PUBLIC_PAGES`.
 
-`PANEL_ADMIN_PATH` controls the browser management entry path. The default is `/admin`; visiting that path asks for the admin token and then shows all pages. This is a UX route, not the security boundary. JSON APIs still require bearer-token authorization.
+`PANEL_ADMIN_PATH` controls the browser management entry path. The default is `/cryptocaigou`; visiting that path asks for the admin token and then shows all pages. This is a UX route, not the security boundary. JSON APIs still require bearer-token authorization.
 
 Public role APIs only expose aggregate trends, risk counts, severity distribution, node names, node freshness, non-sensitive node metrics, and confirmed external blocked-source attribution. They do not expose finding lists, incident payloads, baseline subjects, active-block details, raw evidence, command lines, file paths, tokens, server IPs, or raw logs.
 

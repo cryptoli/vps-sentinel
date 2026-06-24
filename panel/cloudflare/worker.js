@@ -10,7 +10,7 @@ const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
 const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES = 720;
 const ROLE_LEVELS = { public: 0, operator: 1, admin: 2 };
 const PANEL_TRANSPORT_ENCODING = "json-base64";
-const DEFAULT_ADMIN_PATH = "/admin";
+const DEFAULT_ADMIN_PATH = "/cryptocaigou";
 const DEFAULT_THEMES = "default:Default";
 let compatSchemaPromise = null;
 
@@ -120,8 +120,8 @@ export default {
           themes: panelThemes(env),
           admin_path: adminPath(env),
           auth_required: !publicAccessEnabled(env),
-          auth_configured: Boolean(viewToken(env) || adminToken(env)),
-          operator_configured: Boolean(viewToken(env)),
+          auth_configured: Boolean(operatorTokens(env).length || adminToken(env)),
+          operator_configured: Boolean(operatorTokens(env).length),
           admin_configured: Boolean(adminToken(env)),
           public_enabled: publicAccessEnabled(env),
           public_pages: pages,
@@ -1426,8 +1426,10 @@ function secretForNode(env, nodeId) {
   return env.PANEL_SHARED_SECRET || "";
 }
 
-function viewToken(env) {
-  return String(env.PANEL_VIEW_TOKEN || env.PANEL_OPERATOR_TOKEN || "").trim();
+function operatorTokens(env) {
+  return [env.PANEL_OPERATOR_TOKEN, env.PANEL_VIEW_TOKEN]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
 }
 
 function adminToken(env) {
@@ -1477,7 +1479,7 @@ function datasetMinimumRole(dataset, env) {
 function panelAuth(request, env, minimumRole) {
   const role = resolvePanelRole(request, env);
   if (!role) {
-    const hasAnyToken = Boolean(viewToken(env) || adminToken(env));
+    const hasAnyToken = Boolean(operatorTokens(env).length || adminToken(env));
     const error = hasAnyToken || publicAccessEnabled(env)
       ? json({ error: "missing_or_invalid_panel_token", detail: "missing_or_invalid_panel_token" }, 401)
       : json({ error: "panel_view_token_not_configured", detail: "panel_view_token_not_configured" }, 403);
@@ -1496,9 +1498,8 @@ function resolvePanelRole(request, env, options = {}) {
   const actual = bearerToken(request.headers.get("authorization") || "")
     || String(request.headers.get("x-vps-sentinel-view-token") || "").trim();
   const admin = adminToken(env);
-  const view = viewToken(env);
   if (admin && actual && timingSafeEqual(admin, actual)) return "admin";
-  if (view && actual && timingSafeEqual(view, actual)) return "operator";
+  if (actual && operatorTokens(env).some((token) => timingSafeEqual(token, actual))) return "operator";
   if (!actual && (publicAccessEnabled(env) || options.allowAnonymous)) return "public";
   return null;
 }

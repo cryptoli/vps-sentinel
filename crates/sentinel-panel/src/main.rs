@@ -47,7 +47,7 @@ const STREAM_HEARTBEAT_SECONDS: u64 = 30;
 const STREAM_RETRY_SECONDS: u64 = 5;
 const PANEL_TRANSPORT_ENCODING: &str = "json-base64";
 const DEFAULT_PUBLIC_PAGES: &str = "overview,probe_sources,nodes";
-const DEFAULT_ADMIN_PATH: &str = "/admin";
+const DEFAULT_ADMIN_PATH: &str = "/cryptocaigou";
 const DEFAULT_THEMES: &str = "default:Default";
 
 #[derive(Debug, Parser)]

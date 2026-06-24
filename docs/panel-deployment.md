@@ -1,29 +1,29 @@
-# 面板部署教程
+# Panel Deployment
 
-多 VPS 面板是可选组件。Agent 仍然本地检测，只在 `[panel].enabled = true` 时向面板推送有签名、有大小上限的遥测数据。
+The fleet panel is optional. Agents continue to monitor locally and push signed, bounded telemetry to the panel when `[panel].enabled = true`.
 
-## 部署方式
+## Modes
 
-| 方式 | 适合场景 | 存储 |
+| Mode | Use when | Storage |
 | --- | --- | --- |
-| Cloudflare Worker/D1 | 不想维护面板服务器，希望直接获得 HTTPS 和边缘托管。 | Cloudflare D1 |
-| 自建 Rust 面板 | 需要完整 Rust 后端控制、WebSocket 刷新、SQLite/PostgreSQL/MySQL。 | SQLite、PostgreSQL 或 MySQL |
+| Cloudflare Worker/D1 | You want a low-maintenance public HTTPS panel without running another VPS service. | Cloudflare D1 |
+| Self-hosted Rust panel | You want full Rust backend control, WebSocket refresh, and optional SQLite/PostgreSQL/MySQL. | SQLite, PostgreSQL, or MySQL |
 
-## Token 模型
+## Token Model
 
-| Secret | 用途 |
+| Secret | Purpose |
 | --- | --- |
-| `PANEL_SHARED_SECRET` | 共享 HMAC 上报密钥，必须和 agent 的 `[panel].secret` 一致。 |
-| `PANEL_NODE_SECRETS` | 可选，按非敏感节点名称配置单节点密钥的 JSON map。 |
-| `PANEL_OPERATOR_TOKEN` | 浏览器运维层 token，用于查看脱敏运维数据。 |
-| `PANEL_ADMIN_TOKEN` | 浏览器管理层 token，用于复核、写操作和敏感操作。 |
-| `PANEL_VIEW_TOKEN` | 旧版运维只读别名，新部署建议使用 `PANEL_OPERATOR_TOKEN`。 |
+| `PANEL_SHARED_SECRET` | Shared HMAC ingest secret. Must match each agent's `[panel].secret`. |
+| `PANEL_NODE_SECRETS` | Optional JSON map of node-specific secrets keyed by non-sensitive node name. |
+| `PANEL_OPERATOR_TOKEN` | Browser token for redacted operator data. |
+| `PANEL_ADMIN_TOKEN` | Browser token for admin pages, review writes, and sensitive operations. |
+| `PANEL_VIEW_TOKEN` | Legacy operator-read alias. Prefer `PANEL_OPERATOR_TOKEN` for new installs. |
 
-默认管理入口路径是 `/cryptocaigou`。它只是 UI 入口路径，API 权限仍然由 bearer token 控制。
+The default management entry path is `/cryptocaigou`. It only controls the UI entry route; API authorization still depends on bearer tokens.
 
 ## Cloudflare Worker/D1
 
-1. 构建静态 UI：
+1. Build the static UI:
 
 ```bash
 cd panel/ui
@@ -32,7 +32,7 @@ npm run build:web
 cd ../..
 ```
 
-2. 使用 Wrangler 部署：
+2. Deploy with Wrangler:
 
 ```bash
 CLOUDFLARE_ACCOUNT_ID="<account-id>" \
@@ -46,17 +46,17 @@ PANEL_PUBLIC_PAGES="overview,probe_sources,nodes" \
 scripts/deploy-cloudflare-panel.sh
 ```
 
-脚本会：
+The script:
 
-- 创建或复用 D1 数据库；
-- 应用 `panel/cloudflare/schema.sql`；
-- 部署 `panel/cloudflare/worker.js` 和 `panel/web` 静态资源；
-- 通过 Wrangler secrets 写入密钥；
-- 能推断 Worker URL 或设置了 `PANEL_VERIFY_URL` 时验证 `GET /api/v1/settings`。
+- creates or reuses the D1 database;
+- applies `panel/cloudflare/schema.sql`;
+- deploys `panel/cloudflare/worker.js` plus `panel/web` static assets;
+- stores secrets with Wrangler secret bindings;
+- verifies `GET /api/v1/settings` when it can infer the Worker URL or when `PANEL_VERIFY_URL` is set.
 
-不要把 Cloudflare API token、账号 ID、D1 ID 或面板密钥提交到仓库。可在本机 `wrangler login`，或在可信 CI/服务器环境设置 `CLOUDFLARE_API_TOKEN`。
+No Cloudflare API token, account ID, D1 ID, or panel secret is committed. Use `wrangler login` locally or set `CLOUDFLARE_API_TOKEN` in a trusted CI/server environment.
 
-3. 配置 agent：
+3. Configure agents:
 
 ```toml
 [panel]
@@ -67,18 +67,18 @@ secret = "<same-long-agent-secret>"
 privacy_mode = "strict"
 ```
 
-4. 验证：
+4. Verify:
 
 ```bash
 sudo vs panel push
 curl -fsS https://vps-sentinel-panel.<your-workers-subdomain>.workers.dev/api/v1/settings
 ```
 
-Cloudflare Worker 模式的 `/api/v1/stream-ticket` 返回 `stream_unavailable`，更适合低维护展示；自建 Rust 面板支持 WebSocket 自动刷新。
+Cloudflare Worker mode returns `stream_unavailable` for `/api/v1/stream-ticket`; it is meant for simple hosted display. The self-hosted Rust panel supports WebSocket refresh.
 
-## 自建 Rust 面板
+## Self-Hosted Rust Panel
 
-1. 构建并安装：
+1. Build and install:
 
 ```bash
 cargo build --release --bin vps-sentinel-panel
@@ -87,7 +87,7 @@ sudo mkdir -p /usr/local/share/vps-sentinel/panel
 sudo cp -a panel/web /usr/local/share/vps-sentinel/panel/web
 ```
 
-2. 创建环境文件：
+2. Create environment file:
 
 ```bash
 sudo install -d -m 0750 /etc/vps-sentinel-panel
@@ -105,7 +105,7 @@ EOF
 sudo chmod 0600 /etc/vps-sentinel-panel/panel.env
 ```
 
-3. 创建 systemd 服务：
+3. Create systemd service:
 
 ```bash
 sudo useradd --system --home /var/lib/vps-sentinel-panel --shell /usr/sbin/nologin vps-sentinel-panel || true
@@ -136,41 +136,39 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now vps-sentinel-panel
 ```
 
-4. 使用 Nginx、Caddy 或其他反向代理提供 HTTPS，然后把 agent 的 `[panel].url` 设置为 `https://your-panel-domain/api/v1/ingest`。
+4. Put the service behind HTTPS using Nginx, Caddy, or another reverse proxy, then set agent `[panel].url` to `https://your-panel-domain/api/v1/ingest`.
 
-## PostgreSQL 或 MySQL
+## PostgreSQL or MySQL
 
-把 SQLite 配置替换为：
+Set the backend and URL instead of SQLite:
 
 ```bash
 PANEL_DB_BACKEND=postgres
 PANEL_DATABASE_URL=postgres://vps_sentinel:password@127.0.0.1:5432/vps_sentinel
 ```
 
-或：
-
 ```bash
 PANEL_DB_BACKEND=mysql
 PANEL_DATABASE_URL=mysql://vps_sentinel:password@127.0.0.1:3306/vps_sentinel
 ```
 
-Rust 面板启动时会初始化兼容 schema。
+The Rust panel initializes compatible schema on startup.
 
-## 公开页面和主题
+## Public Pages and Themes
 
-`PANEL_PUBLIC_PAGES` 控制不输入 token 也能访问的页面，推荐默认值：
+`PANEL_PUBLIC_PAGES` controls pages visible without a browser token. The recommended default is:
 
 ```text
 overview,probe_sources,nodes
 ```
 
-如果所有页面都必须输入 token，把它设置为空。
+Set it to an empty value if every page must require a token.
 
-主题通过 `PANEL_THEMES` 注册，例如：
+Themes are registered with `PANEL_THEMES`, for example:
 
 ```bash
 PANEL_THEMES='default:Default,ocean:Ocean'
 PANEL_THEME='default'
 ```
 
-主题文件放在 `panel/web/themes/<theme-id>/`，只应包含静态 CSS/JSON 资源。
+Theme files live under `panel/web/themes/<theme-id>/` and should only contain static CSS/JSON assets.
