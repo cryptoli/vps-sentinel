@@ -1068,10 +1068,10 @@ button:disabled {
 
 .risk-trend {
   display: grid;
-  grid-template-rows: auto 184px;
-  min-height: 242px;
+  grid-template-rows: auto 198px;
+  min-height: 252px;
   margin-top: 0;
-  padding: 10px 17px 16px;
+  padding: 10px 16px 14px;
 }
 
 .trend-legend {
@@ -1100,18 +1100,18 @@ button:disabled {
 
 .risk-trend .trend-chart {
   align-self: auto;
-  height: 184px;
-  min-height: 184px;
+  height: 198px;
+  min-height: 198px;
 }
 
 .chart-grid-line {
-  stroke: #eef4fa;
+  stroke: #edf4fb;
 }
 
 .trend-line {
   fill: none;
   stroke: var(--trend-color);
-  stroke-width: 1.28;
+  stroke-width: 1.08;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
@@ -1120,7 +1120,7 @@ button:disabled {
   display: none;
   fill: #ffffff;
   stroke: var(--trend-color);
-  stroke-width: 1.4;
+  stroke-width: 1.1;
   opacity: 0;
 }
 
@@ -1188,20 +1188,20 @@ button:disabled {
 }
 
 .overview-grid .panel-card:not(.wide-card) .donut-card {
-  grid-template-columns: minmax(154px, 0.72fr) minmax(160px, 0.78fr);
+  grid-template-columns: minmax(132px, 0.62fr) minmax(150px, 0.9fr);
   align-content: center;
   height: 100%;
-  min-height: 242px;
-  padding: 16px 20px 20px;
+  min-height: 252px;
+  padding: 16px 18px 18px;
 }
 
 .overview-severity-card .donut-card {
-  grid-template-columns: 150px minmax(166px, 196px);
-  gap: 22px;
-  justify-content: center;
+  grid-template-columns: minmax(136px, 0.62fr) minmax(160px, 0.88fr);
+  gap: 18px;
+  justify-content: stretch;
   align-items: center;
-  min-height: 242px;
-  padding: 16px 22px 20px;
+  min-height: 252px;
+  padding: 16px 18px 18px;
 }
 
 .donut {
@@ -1213,13 +1213,14 @@ button:disabled {
 }
 
 .overview-grid .donut {
-  width: 144px;
-  height: 144px;
+  width: 136px;
+  height: 136px;
 }
 
 .overview-severity-card .donut {
-  width: 152px;
-  height: 152px;
+  justify-self: center;
+  width: 140px;
+  height: 140px;
 }
 
 .donut-svg {
@@ -1234,7 +1235,7 @@ button:disabled {
 .donut-track,
 .donut-slice {
   fill: none;
-  stroke-width: 10.5;
+  stroke-width: 8.4;
 }
 
 .donut-track {
@@ -1291,13 +1292,13 @@ button:disabled {
 }
 
 .overview-grid .donut-center {
-  width: 78px;
-  height: 78px;
+  width: 72px;
+  height: 72px;
 }
 
 .overview-severity-card .donut-center {
-  width: 78px;
-  height: 78px;
+  width: 74px;
+  height: 74px;
 }
 
 .donut-center strong {
@@ -1306,16 +1307,16 @@ button:disabled {
 }
 
 .overview-grid .donut-center strong {
-  font-size: 24px;
+  font-size: 22px;
 }
 
 .overview-severity-card .donut-center strong {
-  font-size: 25px;
+  font-size: 23px;
 }
 
 .overview-severity-card .legend {
   align-self: center;
-  gap: 15px;
+  gap: 12px;
 }
 
 .overview-severity-card .legend-row {
@@ -1630,8 +1631,7 @@ button:disabled {
 
 .stat-tile,
 .side-card,
-.action-card,
-.incident-detail-panel {
+.action-card {
   background: linear-gradient(180deg, #ffffff, #fcfeff);
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -1677,8 +1677,7 @@ button:disabled {
 }
 
 .stat-tile p,
-.action-card p,
-.incident-detail-panel p {
+.action-card p {
   margin: 0;
   color: #52627c;
   font-size: 12px;
@@ -1697,6 +1696,11 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr) 260px;
 }
 
+.feature-main-grid.full-width,
+.blocks-grid.full-width {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .blocks-design .feature-table-card,
 .sources-design .feature-table-card,
 .audit-design .feature-table-card {
@@ -1708,6 +1712,35 @@ button:disabled {
   display: grid;
   gap: 12px;
   min-width: 0;
+}
+
+.blocks-design .feature-metrics.six {
+  gap: 10px;
+}
+
+.blocks-design .feature-metrics.six .stat-tile {
+  grid-template-columns: 1fr;
+  align-content: center;
+  min-height: 106px;
+  padding: 12px;
+}
+
+.blocks-design .feature-metrics.six .stat-icon {
+  width: 28px;
+  height: 28px;
+}
+
+.blocks-design .feature-metrics.six .stat-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.blocks-design .feature-metrics.six .stat-tile strong {
+  font-size: 21px;
+}
+
+.blocks-design .feature-metrics.six .stat-tile p {
+  line-height: 1.25;
 }
 
 .feature-table-card {
@@ -1811,14 +1844,12 @@ button:disabled {
 }
 
 .mini-legend,
-.key-value-rows,
 .classification-rows {
   display: grid;
   gap: 10px;
 }
 
-.mini-legend div,
-.key-value-rows div {
+.mini-legend div {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
@@ -1826,7 +1857,6 @@ button:disabled {
 }
 
 .mini-legend strong,
-.key-value-rows span,
 .rank-list span {
   color: #23334b;
   font-weight: 650;
@@ -1862,13 +1892,6 @@ button:disabled {
   height: 100%;
   background: linear-gradient(90deg, var(--blue), #62a4ff);
   border-radius: inherit;
-}
-
-.incident-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(304px, 332px);
-  gap: 16px;
-  align-items: start;
 }
 
 .incident-main {
@@ -2013,107 +2036,6 @@ button:disabled {
   background: var(--green);
   border-radius: 50%;
   vertical-align: 1px;
-}
-
-.incident-detail-panel {
-  position: sticky;
-  top: 82px;
-  display: grid;
-  align-content: start;
-  gap: 15px;
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
-  min-height: calc(100vh - 110px);
-  padding: 18px;
-  overflow: hidden;
-  background:
-    radial-gradient(circle at 100% 0%, rgba(18, 109, 242, 0.06), transparent 32%),
-    linear-gradient(180deg, #ffffff, #f8fbff);
-}
-
-.incident-detail-panel > strong {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  color: #0f1d33;
-  font-size: 18px;
-  line-height: 1.22;
-  letter-spacing: 0;
-}
-
-.incident-side-section {
-  display: grid;
-  gap: 10px;
-  padding: 0 0 13px;
-  border-bottom: 1px solid var(--line-soft);
-}
-
-.incident-side-section h4 {
-  margin: 0;
-  color: #13233a;
-  font-size: 14px;
-  font-weight: 820;
-}
-
-.incident-detail-panel dl {
-  display: grid;
-  grid-template-columns: minmax(72px, 0.34fr) minmax(0, 1fr);
-  gap: 9px 12px;
-  margin: 0;
-  padding: 13px;
-  background: rgba(255, 255, 255, 0.78);
-  border: 1px solid var(--line-soft);
-  border-radius: var(--radius);
-}
-
-.incident-detail-panel dt {
-  min-width: 0;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 720;
-  overflow-wrap: anywhere;
-}
-
-.incident-detail-panel dd {
-  margin: 0;
-  min-width: 0;
-  color: #16263c;
-  font-weight: 680;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.incident-detail-panel .primary-button {
-  min-height: 42px;
-  border-radius: 8px;
-  box-shadow: 0 14px 28px rgba(18, 109, 242, 0.2);
-}
-
-.incident-chain-list {
-  display: grid;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.incident-chain-list li {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-width: 0;
-  min-height: 36px;
-}
-
-.incident-chain-list li span {
-  min-width: 0;
-  overflow: hidden;
-  color: #23334d;
-  font-size: 13px;
-  font-weight: 690;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .baseline-grid {
@@ -2743,18 +2665,18 @@ tbody tr.row-muted:hover {
 .node-card {
   display: grid;
   grid-template-columns:
-    minmax(220px, 2.12fr)
-    minmax(66px, 0.64fr)
-    minmax(78px, 0.76fr)
-    minmax(52px, 0.5fr)
-    minmax(118px, 1.12fr)
-    minmax(52px, 0.5fr)
-    minmax(122px, 1.16fr)
-    minmax(78px, 0.74fr)
-    minmax(66px, 0.62fr)
-    minmax(58px, 0.54fr)
-    minmax(76px, 0.7fr);
-  gap: 7px;
+    minmax(230px, 1.36fr)
+    78px
+    86px
+    62px
+    minmax(112px, 0.78fr)
+    60px
+    minmax(118px, 0.86fr)
+    86px
+    74px
+    68px
+    84px;
+  gap: 10px;
   justify-content: stretch;
   min-width: 0;
   width: 100%;
@@ -2764,17 +2686,17 @@ tbody tr.row-muted:hover {
   .node-list-head,
   .node-card {
     grid-template-columns:
-      minmax(210px, 1.96fr)
-      minmax(64px, 0.6fr)
-      minmax(74px, 0.7fr)
-      minmax(50px, 0.48fr)
-      minmax(108px, 1.0fr)
-      minmax(50px, 0.46fr)
-      minmax(114px, 1.04fr)
-      minmax(72px, 0.66fr)
-      minmax(62px, 0.56fr)
-      minmax(54px, 0.5fr)
-      minmax(70px, 0.64fr);
+      minmax(210px, 1.26fr)
+      74px
+      82px
+      58px
+      minmax(104px, 0.74fr)
+      56px
+      minmax(110px, 0.82fr)
+      80px
+      68px
+      64px
+      78px;
     min-width: 0;
   }
 }
@@ -3358,16 +3280,10 @@ tbody tr.row-muted:hover {
 
   .feature-main-grid,
   .blocks-grid,
-  .incident-layout,
   .incident-workbench,
   .baseline-grid,
   .feature-topline {
     grid-template-columns: 1fr;
-  }
-
-  .incident-detail-panel {
-    position: static;
-    min-height: 0;
   }
 
   .attack-chain {
@@ -3795,14 +3711,14 @@ tbody tr.row-muted:hover {
     display: none;
   }
 
-  .blocks-design .feature-metrics.four,
+  .blocks-design .feature-metrics.six,
   .sources-design .feature-metrics.four,
   .audit-design .feature-metrics.four {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
   }
 
-  .blocks-design .feature-metrics.four .stat-tile,
+  .blocks-design .feature-metrics.six .stat-tile,
   .sources-design .feature-metrics.four .stat-tile,
   .audit-design .feature-metrics.four .stat-tile {
     grid-template-columns: 26px minmax(0, 1fr);
@@ -3810,20 +3726,20 @@ tbody tr.row-muted:hover {
     padding: 9px;
   }
 
-  .blocks-design .feature-metrics.four .stat-icon,
+  .blocks-design .feature-metrics.six .stat-icon,
   .sources-design .feature-metrics.four .stat-icon,
   .audit-design .feature-metrics.four .stat-icon {
     width: 25px;
     height: 25px;
   }
 
-  .blocks-design .feature-metrics.four .stat-tile strong,
+  .blocks-design .feature-metrics.six .stat-tile strong,
   .sources-design .feature-metrics.four .stat-tile strong,
   .audit-design .feature-metrics.four .stat-tile strong {
     font-size: 18px;
   }
 
-  .blocks-design .feature-metrics.four .stat-tile p,
+  .blocks-design .feature-metrics.six .stat-tile p,
   .sources-design .feature-metrics.four .stat-tile p,
   .audit-design .feature-metrics.four .stat-tile p {
     font-size: 11px;
@@ -4263,16 +4179,6 @@ tbody tr.row-muted:hover {
 
   .score-panel li {
     font-size: 12px;
-  }
-
-  .incident-detail-panel {
-    gap: 12px;
-    padding: 14px;
-  }
-
-  .incident-detail-panel dl {
-    grid-template-columns: minmax(70px, 0.36fr) minmax(0, 1fr);
-    padding: 10px;
   }
 
   .baseline-summary-grid {

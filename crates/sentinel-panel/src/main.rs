@@ -1327,29 +1327,37 @@ async fn active_blocks(
             "ip",
             "(
                 SELECT network_prefix FROM probe_sources
-                WHERE probe_sources.node_id = active_blocks.node_id
-                  AND probe_sources.source_ip = active_blocks.ip
+                WHERE probe_sources.source_ip = active_blocks.ip
+                  AND network_prefix IS NOT NULL
+                  AND network_prefix <> ''
+                  AND LOWER(network_prefix) <> 'unknown'
                 ORDER BY probe_sources.last_seen DESC
                 LIMIT 1
              ) AS network_prefix",
             "(
                 SELECT country FROM probe_sources
-                WHERE probe_sources.node_id = active_blocks.node_id
-                  AND probe_sources.source_ip = active_blocks.ip
+                WHERE probe_sources.source_ip = active_blocks.ip
+                  AND country IS NOT NULL
+                  AND country <> ''
+                  AND LOWER(country) <> 'unknown'
                 ORDER BY probe_sources.last_seen DESC
                 LIMIT 1
              ) AS country",
             "(
                 SELECT asn FROM probe_sources
-                WHERE probe_sources.node_id = active_blocks.node_id
-                  AND probe_sources.source_ip = active_blocks.ip
+                WHERE probe_sources.source_ip = active_blocks.ip
+                  AND asn IS NOT NULL
+                  AND asn <> ''
+                  AND LOWER(asn) <> 'unknown'
                 ORDER BY probe_sources.last_seen DESC
                 LIMIT 1
              ) AS asn",
             "(
                 SELECT organization FROM probe_sources
-                WHERE probe_sources.node_id = active_blocks.node_id
-                  AND probe_sources.source_ip = active_blocks.ip
+                WHERE probe_sources.source_ip = active_blocks.ip
+                  AND organization IS NOT NULL
+                  AND organization <> ''
+                  AND LOWER(organization) <> 'unknown'
                 ORDER BY probe_sources.last_seen DESC
                 LIMIT 1
              ) AS organization",

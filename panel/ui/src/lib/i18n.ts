@@ -217,8 +217,6 @@ const ZH: Dictionary = {
   temporary: "临时",
   permanent: "永久",
   unblock: "解除",
-  responseQueue: "响应队列",
-  blockingPolicy: "封禁策略",
   evidenceThreshold: "证据阈值",
 };
 
@@ -437,8 +435,6 @@ const EN: Dictionary = {
   temporary: "Temporary",
   permanent: "Permanent",
   unblock: "Unblock",
-  responseQueue: "Response Queue",
-  blockingPolicy: "Blocking Policy",
   evidenceThreshold: "Evidence Threshold",
 };
 

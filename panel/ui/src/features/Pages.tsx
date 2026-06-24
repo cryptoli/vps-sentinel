@@ -223,11 +223,9 @@ export function IncidentsPageView({
   const activeRows = activeRiskRows(rows);
   const selected = activeRows[0] || rows[0] || null;
   const selectedScore = Number(selected?.score || 0);
-  const canReviewSelected = Boolean(selected && (selected.id || selected.finding_id));
   return (
     <div className="page-stack feature-page incidents-design">
-      <div className="incident-layout">
-        <div className="incident-main">
+      <div className="incident-main">
           <FeatureHeader title={translate(language, config.titleKey)} description={translate(language, config.descriptionKey)} />
           <section className="feature-metrics six">
             <StatTile icon={<GitBranch />} tone="red" label={copy(language, "Active Incidents", "活跃事件")} value={activeRows.length} detail={copy(language, "False positives excluded", "已排除误报")} />
@@ -278,36 +276,6 @@ export function IncidentsPageView({
             <MobileRiskList rows={rows} language={language} kind="incident" onDetails={onDetails} />
             <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
           </Card>
-        </div>
-        <aside className="incident-detail-panel">
-          <strong>{String(selected?.title || "INC-2026-0623-001")}</strong>
-          <Badge value={translate(language, String(selected?.severity || "unknown"))} tone={String(selected?.severity || "unknown")} />
-          <section className="incident-side-section">
-            <h4>{copy(language, "Overview", "概览")}</h4>
-            <dl>
-              <dt>{copy(language, "First Seen", "首次发现")}</dt><dd>{relativeTime(selected?.first_seen || selected?.last_seen, language)}</dd>
-              <dt>{copy(language, "Last Seen", "最后发现")}</dt><dd>{relativeTime(selected?.last_seen, language)}</dd>
-              <dt>{copy(language, "Score", "评分")}</dt><dd>{String(selectedScore || 0)}</dd>
-              <dt>{copy(language, "Status", "状态")}</dt><dd>{translate(language, String(selected?.status || "needs_review"))}</dd>
-            </dl>
-          </section>
-          <section className="incident-side-section">
-            <h4>{copy(language, "Summary", "摘要")}</h4>
-            <p>{String(selected?.summary || "Correlated detections were grouped into a coherent incident.")}</p>
-          </section>
-          <section className="incident-side-section">
-            <h4>{copy(language, "Attack Chain", "攻击链")}</h4>
-            <ul className="incident-chain-list">
-              {["Initial Access", "Execution", "Privilege Escalation", "Lateral Movement", "Impact"].map((label) => (
-                <li key={label}>
-                  <span>{copy(language, label, chainZh(label))}</span>
-                  <Badge value={copy(language, "Observed", "已观测")} tone="confirmed" />
-                </li>
-              ))}
-            </ul>
-          </section>
-          <button className="primary-button" type="button" disabled={!canReviewSelected} onClick={() => selected && onDetails(selected)}>{copy(language, "Review Incident", "复核事件")}</button>
-        </aside>
       </div>
     </div>
   );
@@ -412,19 +380,25 @@ export function BlocksPageView({
   const rows = filteredRows(page.items, state);
   const temporaryBlocks = rows.filter((row) => blockMode(row) === "temporary").length;
   const permanentBlocks = rows.length - temporaryBlocks;
+  const activeBlocks = rows.filter((row) => !truthy(row.expired)).length || page.total;
+  const recentBlocks = rows.filter((row) => isWithinPastHours(row.blocked_at, 24)).length;
+  const firewallSynced = rows.filter((row) => truthy(row.firewall_present)).length;
+  const expiringSoon = rows.filter((row) => isFutureWithinHours(row.expires_at, 24)).length;
   const columns = roleAllows(role, "admin") && config.adminColumns
     ? config.adminColumns
     : config.columns || ["blocked_at", "node_name", "rule_id", "reason", "expires_at"];
   return (
     <div className="page-stack feature-page blocks-design">
       <FeatureHeader title={translate(language, config.titleKey)} description={translate(language, config.descriptionKey)} />
-      <section className="blocks-grid">
+      <section className="blocks-grid full-width">
         <div className="blocks-main">
-          <section className="feature-metrics four">
-            <StatTile icon={<ShieldCheck />} tone="green" label={copy(language, "Currently Blocked", "当前封禁")} value={number(page.total)} detail={copy(language, "Across all nodes", "全部节点")} />
+          <section className="feature-metrics six">
+            <StatTile icon={<ShieldCheck />} tone="green" label={copy(language, "Currently Blocked", "当前封禁")} value={number(activeBlocks)} detail={copy(language, "Across all nodes", "全部节点")} />
             <StatTile icon={<Ban />} tone="red" label={copy(language, "Evidence Confirmed", "证据确认")} value={rows.length} detail={copy(language, "Blocked by policy", "策略已生效")} />
+            <StatTile icon={<Clock3 />} tone="orange" label={copy(language, "New Blocks (24h)", "24 小时新增")} value={recentBlocks} detail={copy(language, "Recent response", "近期响应")} />
+            <StatTile icon={<ShieldPlus />} tone="blue" label={copy(language, "Firewall Synced", "防火墙同步")} value={firewallSynced} detail={copy(language, "Backend active", "后端已生效")} />
             <StatTile icon={<Clock3 />} tone="orange" label={copy(language, "Temporary Blocks", "临时封禁")} value={temporaryBlocks} detail={copy(language, "Auto-expire", "自动过期")} />
-            <StatTile icon={<Infinity />} tone="green" label={copy(language, "Permanent Blocks", "永久封禁")} value={permanentBlocks} detail={copy(language, "Manual review", "人工复核")} />
+            <StatTile icon={<Infinity />} tone="green" label={copy(language, "Permanent Blocks", "永久封禁")} value={permanentBlocks} detail={copy(language, "Expiring soon", "即将过期") + ` ${expiringSoon}`} />
           </section>
           <Filters state={state} language={language} onChange={onStateChange} />
           <Card title={translate(language, config.labelKey)} className="feature-table-card">
@@ -435,25 +409,6 @@ export function BlocksPageView({
             <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
           </Card>
         </div>
-        <aside className="feature-side-stack">
-          <SideCard title={copy(language, "Response Queue", "响应队列")}>
-            <KeyValueRows
-              rows={[
-                [copy(language, "New detections (24h)", "新增检测（24 小时）"), 344],
-                [copy(language, "Auto-blocked (24h)", "自动封禁（24 小时）"), 278],
-                [copy(language, "Manually reviewed", "人工复核"), 12],
-                [copy(language, "Expired (24h)", "已过期（24 小时）"), 196],
-              ]}
-            />
-          </SideCard>
-          <SideCard title={copy(language, "Blocking Policy", "封禁策略")}>
-            <p className="side-note">{copy(language, "An IP is blocked only when evidence reaches the configured threshold.", "只有证据达到阈值时才封禁来源。")}</p>
-            <ScoreDots value={5} total={5} />
-          </SideCard>
-          <SideCard title={copy(language, "Legend", "图例")}>
-            <SeverityLegend counts={{ critical: 1, high: 2, medium: 2, low: 1 }} language={language} />
-          </SideCard>
-        </aside>
       </section>
     </div>
   );
@@ -491,7 +446,7 @@ export function SourcesPageView({
         <StatTile icon={<Database />} tone="orange" label={copy(language, "Organizations", "组织")} value={uniqueCount(rows, "organization")} detail={copy(language, "ASN context", "ASN 上下文")} />
       </section>
       <Filters state={state} language={language} onChange={onStateChange} />
-      <section className="feature-main-grid compact-side">
+      <section className="feature-main-grid full-width">
         <Card title={translate(language, config.labelKey)} className="feature-table-card">
           <div className="desktop-table-panel">
             <DataTable rows={rows} columns={columns} language={language} tableId="probe_sources" />
@@ -499,14 +454,6 @@ export function SourcesPageView({
           <MobileSourcesList rows={rows} language={language} visibleColumns={columns} />
           <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
         </Card>
-        <aside className="feature-side-stack">
-          <SideCard title={copy(language, "Top Categories", "主要分类")}>
-            <RankList rows={topValues(rows, "categories")} />
-          </SideCard>
-          <SideCard title={copy(language, "Block Status", "处置状态")}>
-            <RankList rows={topValues(rows, "block_status")} />
-          </SideCard>
-        </aside>
       </section>
     </div>
   );
@@ -537,7 +484,7 @@ export function AuditPageView({
         <StatTile icon={<Target />} tone="red" label={copy(language, "Target Types", "对象类型")} value={uniqueCount(rows, "target_type")} detail={copy(language, "Action coverage", "操作覆盖")} />
       </section>
       <Filters state={state} language={language} onChange={onStateChange} />
-      <section className="feature-main-grid compact-side">
+      <section className="feature-main-grid full-width">
         <Card title={translate(language, config.labelKey)} className="feature-table-card">
           <div className="desktop-table-panel">
             <DataTable rows={rows} columns={config.columns || []} language={language} tableId="audit_logs" />
@@ -545,14 +492,6 @@ export function AuditPageView({
           <MobileAuditTimeline rows={rows} language={language} />
           <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
         </Card>
-        <aside className="feature-side-stack">
-          <SideCard title={copy(language, "Actions", "操作类型")}>
-            <RankList rows={topValues(rows, "action")} />
-          </SideCard>
-          <SideCard title={copy(language, "Targets", "对象分布")}>
-            <RankList rows={topValues(rows, "target_type")} />
-          </SideCard>
-        </aside>
       </section>
     </div>
   );
@@ -795,19 +734,6 @@ function RankList({ rows }: { rows: Array<{ label: string; value: number }> }) {
           <span>{row.label}</span>
           <i><b style={{ width: `${Math.max(8, (row.value / max) * 100)}%` }} /></i>
           <strong>{number(row.value)}</strong>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function KeyValueRows({ rows }: { rows: Array<[string, string | number]> }) {
-  return (
-    <div className="key-value-rows">
-      {rows.map(([label, value]) => (
-        <div key={label}>
-          <span>{label}</span>
-          <strong>{value}</strong>
         </div>
       ))}
     </div>
@@ -1090,6 +1016,36 @@ function blockMode(row: PanelRecord): "temporary" | "permanent" {
   const value = String(expires).trim().toLowerCase();
   if (!value || ["-", "never", "none", "null", "manual", "manual review"].includes(value)) return "permanent";
   return "temporary";
+}
+
+function timestampMs(value: unknown): number | null {
+  if (value === undefined || value === null) return null;
+  if (value instanceof Date) return value.getTime();
+  const text = String(value).trim();
+  if (!text || ["-", "never", "none", "null", "manual", "manual review"].includes(text.toLowerCase())) return null;
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isWithinPastHours(value: unknown, hours: number): boolean {
+  const timestamp = timestampMs(value);
+  if (timestamp === null) return false;
+  const age = Date.now() - timestamp;
+  return age >= 0 && age <= hours * 60 * 60 * 1000;
+}
+
+function isFutureWithinHours(value: unknown, hours: number): boolean {
+  const timestamp = timestampMs(value);
+  if (timestamp === null) return false;
+  const delta = timestamp - Date.now();
+  return delta >= 0 && delta <= hours * 60 * 60 * 1000;
+}
+
+function truthy(value: unknown): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  const text = String(value || "").trim().toLowerCase();
+  return ["1", "true", "yes", "y", "on", "active", "present", "synced"].includes(text);
 }
 
 function ClassificationRows({ language }: { language: Language }) {

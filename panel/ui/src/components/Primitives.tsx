@@ -243,7 +243,7 @@ const TABLE_LAYOUTS: Record<string, TableLayout> = {
 
 function tableLayout(tableId: string | undefined, columns: string[], hasDetails: boolean): TableLayout {
   const layout = tableId ? TABLE_LAYOUTS[tableId] : undefined;
-  if (tableId === "probe_sources" && layout) {
+  if ((tableId === "probe_sources" || tableId === "active-blocks") && layout) {
     const width = columns.reduce((sum, column) => sum + px(layout.widths[column] || layout.defaultWidth), hasDetails ? px(layout.detailsWidth) : 0);
     return { ...layout, minWidth: `${Math.max(860, width)}px` };
   }

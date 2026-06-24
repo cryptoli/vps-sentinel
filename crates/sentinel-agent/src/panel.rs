@@ -18,7 +18,7 @@ use sentinel_core::{
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpStream, ToSocketAddrs};
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -819,7 +819,9 @@ impl IpIntelCatalog {
         if !config.panel.ip_intel_remote_enabled {
             return;
         }
+        let mut seen = BTreeSet::new();
         let lookup_ips = ips
+            .filter(|ip| seen.insert(*ip))
             .filter(|ip| self.lookup(*ip).is_none())
             .take(config.panel.ip_intel_remote_max_lookups)
             .collect::<Vec<_>>();
@@ -892,9 +894,30 @@ fn query_cymru_ip_intel(
         .write_all(request.as_bytes())
         .map_err(|err| SentinelError::Command(format!("write whois request: {err}")))?;
     let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|err| SentinelError::Command(format!("read whois response: {err}")))?;
+    let mut buffer = [0u8; 8192];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => response.push_str(&String::from_utf8_lossy(&buffer[..n])),
+            Err(err) if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                if response.is_empty() {
+                    return Err(SentinelError::Command(format!(
+                        "read whois response: {err}"
+                    )));
+                }
+                debug!(
+                    bytes = response.len(),
+                    "remote IP intelligence lookup ended after partial timeout"
+                );
+                break;
+            }
+            Err(err) => {
+                return Err(SentinelError::Command(format!(
+                    "read whois response: {err}"
+                )));
+            }
+        }
+    }
     Ok(response
         .lines()
         .filter_map(parse_cymru_ip_intel_line)
