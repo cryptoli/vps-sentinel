@@ -207,6 +207,7 @@ apply_d1_compat_migrations() {
       fail "D1 compatibility migration failed for ${table}.${column}"
     fi
   done <<'EOF'
+nodes|metrics_json|TEXT NOT NULL DEFAULT '{}'
 findings|review_signature|TEXT NOT NULL DEFAULT ''
 incidents|review_signature|TEXT NOT NULL DEFAULT ''
 baseline_drifts|review_signature|TEXT NOT NULL DEFAULT ''

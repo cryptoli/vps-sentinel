@@ -188,6 +188,7 @@ async function ensureCompatSchema(env) {
   if (!compatSchemaPromise) {
     compatSchemaPromise = (async () => {
       const columns = [
+        ["nodes", "metrics_json", "TEXT NOT NULL DEFAULT '{}'"],
         ["findings", "review_signature", "TEXT NOT NULL DEFAULT ''"],
         ["incidents", "review_signature", "TEXT NOT NULL DEFAULT ''"],
         ["baseline_drifts", "review_signature", "TEXT NOT NULL DEFAULT ''"],
@@ -1408,9 +1409,9 @@ function missingColumnError(error, column) {
 
 function safeInternalErrorCode(error) {
   const message = String(error?.message || error || "").toLowerCase();
-  if (error instanceof SyntaxError || message.includes("json")) return "payload_parse_error";
   if (message.includes("no such table")) return "storage_schema_missing";
   if (message.includes("no such column")) return "storage_schema_mismatch";
+  if (error instanceof SyntaxError || message.includes("json")) return "payload_parse_error";
   if (message.includes("constraint")) return "storage_constraint_error";
   if (message.includes("bind") || message.includes("d1_type_error")) return "storage_bind_error";
   if (message.includes("d1") || message.includes("sqlite")) return "storage_error";
