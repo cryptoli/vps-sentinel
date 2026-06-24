@@ -177,6 +177,43 @@ ensure_d1_database() {
   export PANEL_D1_ID
 }
 
+ignore_d1_compat_error() {
+  output="$1"
+  normalized="$(printf '%s' "$output" | tr '[:upper:]' '[:lower:]')"
+  case "$normalized" in
+    *"duplicate column"*|*"already exists"*|*"no such table"*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+apply_d1_compat_migrations() {
+  log "applying D1 compatibility migrations"
+  while IFS='|' read -r table column definition; do
+    [ -n "$table" ] || continue
+    command="ALTER TABLE ${table} ADD COLUMN ${column} ${definition}"
+    set +e
+    output="$(run_wrangler d1 execute "$PANEL_D1_NAME" --remote --command "$command" 2>&1)"
+    status="$?"
+    set -e
+    if [ "$status" -ne 0 ]; then
+      if ignore_d1_compat_error "$output"; then
+        continue
+      fi
+      printf '%s\n' "$output" >&2
+      fail "D1 compatibility migration failed for ${table}.${column}"
+    fi
+  done <<'EOF'
+findings|review_signature|TEXT NOT NULL DEFAULT ''
+incidents|review_signature|TEXT NOT NULL DEFAULT ''
+baseline_drifts|review_signature|TEXT NOT NULL DEFAULT ''
+panel_reviews|review_signature|TEXT NOT NULL DEFAULT ''
+EOF
+}
+
 write_config() {
   TMP_CONFIG="$1"
   export TMP_CONFIG
@@ -320,6 +357,8 @@ main() {
 
   log "validating Worker config"
   run_wrangler deploy --config "$TMP_CONFIG" --dry-run >/dev/null
+
+  apply_d1_compat_migrations
 
   log "applying D1 schema to ${PANEL_D1_NAME}"
   run_wrangler d1 execute "$PANEL_D1_NAME" --remote --file "$SCHEMA_FILE"
