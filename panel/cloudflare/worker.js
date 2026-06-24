@@ -10,7 +10,7 @@ const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
 const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES = 720;
 const ROLE_LEVELS = { public: 0, operator: 1, admin: 2 };
 const PANEL_TRANSPORT_ENCODING = "json-base64";
-const DEFAULT_ADMIN_PATH = "/cryptocaigou";
+const DEFAULT_ADMIN_PATH = "/panel-admin";
 const DEFAULT_THEMES = "default:Default";
 let compatSchemaPromise = null;
 

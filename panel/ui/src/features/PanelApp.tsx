@@ -296,7 +296,9 @@ export function PanelApp() {
             activeRoleRef.current = nextRole;
             setRole(nextRole);
           }
-          if (message?.type === "refresh") void loadVisibleData(currentPage, activeRoleRef.current);
+          if (message?.type === "refresh" && streamMessageTouchesPage(message, currentPage)) {
+            void loadVisibleData(currentPage, activeRoleRef.current);
+          }
         });
         socket.addEventListener("close", scheduleReconnect);
         socket.addEventListener("error", scheduleReconnect);
@@ -794,12 +796,25 @@ function streamLabel(state: StreamState, language: Language): string {
   return translate(language, "live");
 }
 
-function parseStreamMessage(value: string): { type?: string; role?: string } | null {
+interface StreamMessage {
+  type?: string;
+  role?: string;
+  datasets?: string[];
+}
+
+function parseStreamMessage(value: string): StreamMessage | null {
   try {
-    return JSON.parse(value) as { type?: string; role?: string };
+    return JSON.parse(value) as StreamMessage;
   } catch {
     return null;
   }
+}
+
+function streamMessageTouchesPage(message: StreamMessage, page: PageId): boolean {
+  if (!message.datasets?.length) return true;
+  const datasets = new Set(message.datasets);
+  if (page === "overview") return ["summary", "trends", "nodes", "findings", "incidents", "baseline_drifts", "active_blocks"].some((item) => datasets.has(item));
+  return datasets.has(page);
 }
 
 function emptyPage<T extends PanelRecord>(): DatasetPage<T> {
@@ -814,13 +829,13 @@ function initialPageFromLocation(): PageId {
 
 function isAdminRoute(adminPath: string | undefined): boolean {
   if (typeof window === "undefined") return false;
-  return normalizeLocationPath(window.location.pathname) === normalizeAdminPath(adminPath || "/cryptocaigou");
+  return normalizeLocationPath(window.location.pathname) === normalizeAdminPath(adminPath || "/panel-admin");
 }
 
 function normalizeAdminPath(value: string): string {
   const withSlash = value.startsWith("/") ? value : `/${value}`;
   const normalized = withSlash.replace(/\/+$/, "");
-  return normalized || "/cryptocaigou";
+  return normalized || "/panel-admin";
 }
 
 function normalizeLocationPath(value: string): string {

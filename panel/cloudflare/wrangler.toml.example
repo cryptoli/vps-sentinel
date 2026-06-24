@@ -21,6 +21,7 @@ database_id = "replace-with-d1-database-id"
 [vars]
 PANEL_MAX_BODY_BYTES = "1048576"
 PANEL_PUBLIC_ENABLED = "false"
-PANEL_ADMIN_PATH = "/cryptocaigou"
+# Prefer scripts/deploy-cloudflare-panel.sh, which generates and persists a random path.
+PANEL_ADMIN_PATH = "/replace-with-random-management-path"
 PANEL_THEME = "default"
 PANEL_THEMES = "default:Default"
