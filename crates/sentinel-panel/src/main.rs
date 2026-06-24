@@ -4347,11 +4347,12 @@ impl From<rusqlite::Error> for PanelApiError {
 #[cfg(test)]
 mod tests {
     use super::{
-        redact_ip_text, redact_panel_value, resolve_panel_role, scope_panel_value,
-        verify_admin_auth, verify_view_auth, view_token_from_headers, AppState, DbValue,
-        FindingReview, FindingReviewRequest, PageQuery, PageRequest, PanelDataset, PanelReview,
+        normalize_panel_path, parse_panel_themes, redact_ip_text, redact_panel_value,
+        resolve_panel_role, scope_panel_value, scope_probe_source_rows, verify_admin_auth,
+        verify_view_auth, view_token_from_headers, AppState, DbValue, FindingReview,
+        FindingReviewRequest, PageQuery, PageRequest, PanelDataset, PanelReview,
         PanelReviewRequest, PanelRole, PanelStreamEvent, Repository, RepositoryDriver,
-        ReviewTargetType, SecretResolver, MAX_PAGE_LIMIT,
+        ReviewTargetType, SecretResolver, DEFAULT_ADMIN_PATH, DEFAULT_THEMES, MAX_PAGE_LIMIT,
     };
     use axum::http::{header, HeaderMap, HeaderValue};
     use chrono::Utc;
@@ -4881,7 +4882,9 @@ mod tests {
             admin_token: admin_token.map(str::to_string),
             public_enabled: false,
             public_pages: BTreeSet::new(),
+            admin_path: DEFAULT_ADMIN_PATH.to_string(),
             theme: "default".to_string(),
+            themes: parse_panel_themes(DEFAULT_THEMES),
             max_body_bytes: 1024,
             events: broadcast::channel::<PanelStreamEvent>(8).0,
             stream_tickets: Arc::new(Mutex::new(BTreeMap::new())),
