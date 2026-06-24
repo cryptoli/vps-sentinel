@@ -65,7 +65,7 @@ button:disabled {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 238px minmax(0, 1fr);
+  grid-template-columns: 225px minmax(0, 1fr);
   min-height: 100vh;
   background: var(--bg);
 }
@@ -872,6 +872,10 @@ button:disabled {
   gap: 14px;
 }
 
+.mobile-overview-live {
+  display: none;
+}
+
 .node-summary-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1006,7 +1010,7 @@ button:disabled {
 
 .overview-grid {
   display: grid;
-  grid-template-columns: minmax(0, 1.58fr) minmax(390px, 0.78fr);
+  grid-template-columns: minmax(0, 1.45fr) minmax(440px, 0.95fr);
   gap: 16px;
   align-items: stretch;
 }
@@ -1191,8 +1195,8 @@ button:disabled {
 }
 
 .overview-severity-card .donut-card {
-  grid-template-columns: 176px 196px;
-  gap: 28px;
+  grid-template-columns: 168px minmax(170px, 196px);
+  gap: 24px;
   justify-content: center;
   align-items: center;
   min-height: 252px;
@@ -1213,8 +1217,8 @@ button:disabled {
 }
 
 .overview-severity-card .donut {
-  width: 176px;
-  height: 176px;
+  width: 168px;
+  height: 168px;
 }
 
 .donut-svg {
@@ -1291,8 +1295,8 @@ button:disabled {
 }
 
 .overview-severity-card .donut-center {
-  width: 88px;
-  height: 88px;
+  width: 84px;
+  height: 84px;
 }
 
 .donut-center strong {
@@ -1391,14 +1395,16 @@ button:disabled {
 
 .response-list {
   display: grid;
-  gap: 8px;
-  height: 100%;
+  grid-template-rows: repeat(3, 56px);
+  gap: 7px;
+  height: auto;
+  min-height: 0;
 }
 
 .response-row {
-  grid-template-columns: 42px minmax(42px, auto) minmax(0, 1fr);
-  min-height: 58px;
-  padding: 10px 12px;
+  grid-template-columns: 36px minmax(36px, auto) minmax(0, 1fr);
+  min-height: 0;
+  padding: 6px 10px;
   background: linear-gradient(180deg, #fbfdff, #f7fbff);
   border: 1px solid var(--line-soft);
   border-radius: var(--radius);
@@ -1406,8 +1412,8 @@ button:disabled {
 
 .response-row span {
   display: grid;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   place-items: center;
   color: white;
   border-radius: var(--radius);
@@ -1426,12 +1432,13 @@ button:disabled {
 }
 
 .response-row strong {
-  font-size: 22px;
+  font-size: 21px;
 }
 
 .response-row p {
   margin: 0;
   color: var(--muted);
+  font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2724,38 +2731,39 @@ tbody tr.row-muted:hover {
 .node-card {
   display: grid;
   grid-template-columns:
-    360px
-    78px
-    100px
-    78px
-    150px
-    78px
-    210px
-    150px
-    88px
-    82px
-    110px;
-  gap: 10px;
-  justify-content: start;
-  min-width: 1584px;
+    minmax(230px, 2.2fr)
+    minmax(72px, 0.7fr)
+    minmax(84px, 0.82fr)
+    minmax(58px, 0.54fr)
+    minmax(128px, 1.24fr)
+    minmax(58px, 0.54fr)
+    minmax(132px, 1.28fr)
+    minmax(86px, 0.84fr)
+    minmax(70px, 0.68fr)
+    minmax(64px, 0.62fr)
+    minmax(84px, 0.8fr);
+  gap: 8px;
+  justify-content: stretch;
+  min-width: 0;
+  width: 100%;
 }
 
 @media (max-width: 1500px) {
   .node-list-head,
   .node-card {
     grid-template-columns:
-      270px
-      76px
-      92px
-      72px
-      124px
-      70px
-      150px
-      108px
-      78px
-      78px
-      92px;
-    min-width: 1310px;
+      minmax(224px, 2.05fr)
+      minmax(70px, 0.68fr)
+      minmax(80px, 0.78fr)
+      minmax(56px, 0.52fr)
+      minmax(118px, 1.1fr)
+      minmax(54px, 0.5fr)
+      minmax(124px, 1.16fr)
+      minmax(78px, 0.72fr)
+      minmax(64px, 0.6fr)
+      minmax(58px, 0.54fr)
+      minmax(76px, 0.7fr);
+    min-width: 0;
   }
 }
 
@@ -3356,7 +3364,7 @@ tbody tr.row-muted:hover {
 
   .node-list-head,
   .node-card {
-    min-width: 1180px;
+    min-width: 1040px;
   }
 }
 
@@ -3759,6 +3767,36 @@ tbody tr.row-muted:hover {
     gap: 12px;
   }
 
+  .mobile-overview-live {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 26px;
+    padding: 0 2px;
+    color: #40516b;
+    font-size: 12px;
+    font-weight: 720;
+  }
+
+  .mobile-overview-live span {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .mobile-overview-live i {
+    width: 7px;
+    height: 7px;
+    background: var(--green);
+    border-radius: 50%;
+    box-shadow: 0 0 0 4px rgba(10, 167, 121, 0.1);
+  }
+
+  .mobile-overview-live em {
+    color: #637390;
+    font-style: normal;
+  }
+
   .overview-page .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 10px;
@@ -3812,29 +3850,29 @@ tbody tr.row-muted:hover {
 
   .overview-severity-card .donut-card,
   .node-status-card .donut-card {
-    grid-template-columns: 132px minmax(0, 1fr);
-    gap: 10px;
+    grid-template-columns: 118px minmax(0, 1fr);
+    gap: 12px;
     justify-items: stretch;
-    min-height: 152px;
+    min-height: 142px;
     padding: 12px;
   }
 
   .overview-severity-card .donut,
   .node-status-card .donut {
-    width: 124px;
-    height: 124px;
+    width: 112px;
+    height: 112px;
     justify-self: center;
   }
 
   .overview-severity-card .donut-center,
   .node-status-card .donut-center {
-    width: 66px;
-    height: 66px;
+    width: 58px;
+    height: 58px;
   }
 
   .overview-severity-card .donut-center strong,
   .node-status-card .donut-center strong {
-    font-size: 23px;
+    font-size: 21px;
   }
 
   .overview-severity-card .legend,
@@ -3857,6 +3895,8 @@ tbody tr.row-muted:hover {
 
   .response-activity-card .response-list {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: none;
+    min-height: 0;
     padding: 12px;
   }
 

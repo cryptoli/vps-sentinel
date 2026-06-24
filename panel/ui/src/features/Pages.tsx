@@ -63,6 +63,10 @@ export function OverviewPage({
 
   return (
     <div className="page-stack overview-page">
+      <section className="mobile-overview-live" aria-label={translate(language, "live")}>
+        <span><i aria-hidden="true" />{translate(language, "live")}</span>
+        <em>{translate(language, "updatedJustNow")}</em>
+      </section>
       <section className="metric-grid">
         <MetricCard label={translate(language, "nodesMetric")} value={summary.nodes || 0} detail={translate(language, "online")} tone="blue" icon={<Server />} sparkline={<Sparkline values={[4, 5, 4.6, 5.2, 4.7, 6, 4.8, 5.6, 4.9, 6.2, 5.1, 5.9, 4.4, 5.5, 5, 4.3]} />} />
         <MetricCard label={translate(language, "findingsMetric")} value={summary.findings || 0} detail={translate(language, "riskTrend")} tone="orange" icon={<ShieldAlert />} sparkline={<Sparkline tone="orange" values={[3, 3.2, 3.1, 3.7, 5.8, 3.4, 4.5, 3.4, 5, 4.5, 3.2, 5.7, 3.1, 6, 3.2, 3.6]} />} />
@@ -217,7 +221,9 @@ export function IncidentsPageView({
 }) {
   const rows = filteredRows(page.items, state);
   const activeRows = activeRiskRows(rows);
-  const selected = activeRows[0] || rows[0] || {};
+  const selected = activeRows[0] || rows[0] || null;
+  const selectedScore = Number(selected?.score || 0);
+  const canReviewSelected = Boolean(selected && (selected.id || selected.finding_id));
   return (
     <div className="page-stack feature-page incidents-design">
       <div className="incident-layout">
@@ -253,7 +259,7 @@ export function IncidentsPageView({
             <Card title={copy(language, "Correlation Score", "关联评分")} className="correlation-card">
               <div className="score-panel">
                 <div className="posture-ring posture-bad" style={{ "--score": "92%" } as React.CSSProperties}>
-                  <strong>{Number(selected.score || 92)}</strong>
+                  <strong>{selectedScore || 0}</strong>
                   <span>{copy(language, "High", "高")}</span>
                 </div>
                 <ul>
@@ -274,20 +280,20 @@ export function IncidentsPageView({
           </Card>
         </div>
         <aside className="incident-detail-panel">
-          <strong>{String(selected.title || "INC-2026-0623-001")}</strong>
-          <Badge value={translate(language, String(selected.severity || "high"))} tone={String(selected.severity || "high")} />
+          <strong>{String(selected?.title || "INC-2026-0623-001")}</strong>
+          <Badge value={translate(language, String(selected?.severity || "unknown"))} tone={String(selected?.severity || "unknown")} />
           <section className="incident-side-section">
             <h4>{copy(language, "Overview", "概览")}</h4>
             <dl>
-              <dt>{copy(language, "First Seen", "首次发现")}</dt><dd>{relativeTime(selected.first_seen || selected.last_seen, language)}</dd>
-              <dt>{copy(language, "Last Seen", "最后发现")}</dt><dd>{relativeTime(selected.last_seen, language)}</dd>
-              <dt>{copy(language, "Score", "评分")}</dt><dd>{String(selected.score || 92)}</dd>
-              <dt>{copy(language, "Status", "状态")}</dt><dd>{translate(language, String(selected.status || "needs_review"))}</dd>
+              <dt>{copy(language, "First Seen", "首次发现")}</dt><dd>{relativeTime(selected?.first_seen || selected?.last_seen, language)}</dd>
+              <dt>{copy(language, "Last Seen", "最后发现")}</dt><dd>{relativeTime(selected?.last_seen, language)}</dd>
+              <dt>{copy(language, "Score", "评分")}</dt><dd>{String(selectedScore || 0)}</dd>
+              <dt>{copy(language, "Status", "状态")}</dt><dd>{translate(language, String(selected?.status || "needs_review"))}</dd>
             </dl>
           </section>
           <section className="incident-side-section">
             <h4>{copy(language, "Summary", "摘要")}</h4>
-            <p>{String(selected.summary || "Correlated detections were grouped into a coherent incident.")}</p>
+            <p>{String(selected?.summary || "Correlated detections were grouped into a coherent incident.")}</p>
           </section>
           <section className="incident-side-section">
             <h4>{copy(language, "Attack Chain", "攻击链")}</h4>
@@ -300,7 +306,7 @@ export function IncidentsPageView({
               ))}
             </ul>
           </section>
-          <button className="primary-button" type="button" onClick={() => selected && onDetails(selected)}>{copy(language, "Review Incident", "复核事件")}</button>
+          <button className="primary-button" type="button" disabled={!canReviewSelected} onClick={() => selected && onDetails(selected)}>{copy(language, "Review Incident", "复核事件")}</button>
         </aside>
       </div>
     </div>
