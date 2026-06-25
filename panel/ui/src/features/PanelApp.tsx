@@ -802,6 +802,7 @@ function AccessGate({
 }
 
 function streamLabel(state: StreamState, language: Language): string {
+  if (state === "idle") return translate(language, "waiting");
   if (state === "connecting") return translate(language, "connecting");
   if (state === "reconnecting") return translate(language, "reconnecting");
   if (state === "fallback") return translate(language, "waiting");
