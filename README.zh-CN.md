@@ -29,7 +29,7 @@
 
 ## 部署
 
-README 只保留入口，完整部署步骤请看文档：
+完整部署步骤请看文档：
 
 - Agent 部署：[docs/deployment.zh-CN.md](docs/deployment.zh-CN.md) / [docs/deployment.md](docs/deployment.md)
 - 面板部署：[docs/panel-deployment.zh-CN.md](docs/panel-deployment.zh-CN.md) / [docs/panel-deployment.md](docs/panel-deployment.md)
@@ -90,7 +90,7 @@ Agent 面向常见 systemd Linux VPS，包括 Debian、Ubuntu、Alma/Rocky/RHEL 
 
 默认本地优先：不启用 `[panel]` 就不向面板上报，不配置通知就不发外部消息，文件扫描有大小限制，数据保存在本地 SQLite。面板遥测会移除节点 ID、主机名、原始证据、路径、命令行和通用网络字段；已确认的外部攻击源 IP 可以在公开黑名单中展示，但公开黑名单不会展示节点名称。
 
-token、密码、Webhook secret、SMTP 凭据、Cloudflare API token、面板 shared secret 都只能放在本地配置、Worker secrets 或 systemd 环境文件中，不能提交到仓库。
+token、密码、Webhook secret、SMTP 凭据、Cloudflare API token、面板 shared secret 应存放在本地配置、Worker secrets 或 systemd 环境文件中，源码仓库只保留示例占位符。
 
 ## Star 历史
 

@@ -12,6 +12,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Panel contract generated files
+        run: node scripts/generate-panel-contract.mjs --check
       - name: Format
         run: cargo fmt --check
       - name: Clippy

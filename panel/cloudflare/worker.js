@@ -1,103 +1,24 @@
+import {
+  DATASETS,
+  DEFAULT_ADMIN_PATH,
+  DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
+  DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
+  DEFAULT_PAGE_LIMIT,
+  DEFAULT_PUBLIC_PAGES,
+  DEFAULT_THEMES,
+  MAX_PAGE_LIMIT,
+  PANEL_TRANSPORT_ENCODING,
+  PUBLIC_PROBE_SOURCE_HIDDEN_KEYS,
+  ROLE_LEVELS,
+  SIGNATURE_WINDOW_SECONDS,
+} from "./panel-contract.generated.js";
+
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
 };
 
-const SIGNATURE_WINDOW_SECONDS = 300;
-const DEFAULT_PAGE_LIMIT = 50;
-const MAX_PAGE_LIMIT = 200;
-const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
-const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES = 720;
-const ROLE_LEVELS = { public: 0, private: 1 };
-const PANEL_TRANSPORT_ENCODING = "json-base64";
-const DEFAULT_ADMIN_PATH = "/panel-admin";
-const DEFAULT_THEMES = "default:Default";
 let compatSchemaPromise = null;
-
-const DATASETS = {
-  "/api/v1/nodes": {
-    pageId: "nodes",
-    minRole: "public",
-    table: "nodes",
-    orderColumn: "node_name",
-    orderDirection: "ASC",
-    filterColumn: "last_seen_at",
-    columns: ["last_seen_at", "node_name", "agent_version", "privacy_mode", "metrics_json"],
-  },
-  "/api/v1/findings": {
-    pageId: "findings",
-    minRole: "private",
-    table: "findings",
-    orderColumn: "timestamp",
-    columns: ["id", "timestamp", "node_id AS node_name", "severity", "rule_id", "category", "subject", "review_signature", "title"],
-  },
-  "/api/v1/incidents": {
-    pageId: "incidents",
-    minRole: "private",
-    table: "incidents",
-    orderColumn: "last_seen",
-    columns: ["id", "last_seen", "node_id AS node_name", "severity", "score", "title", "summary", "review_signature"],
-  },
-  "/api/v1/baseline-drifts": {
-    pageId: "baseline_drifts",
-    minRole: "private",
-    table: "baseline_drifts",
-    orderColumn: "timestamp",
-    columns: ["id", "finding_id", "timestamp", "node_id AS node_name", "severity", "rule_id", "tier", "subject", "review_signature", "review_action"],
-  },
-  "/api/v1/active-blocks": {
-    pageId: "active_blocks",
-    minRole: "private",
-    sensitive: true,
-    table: "active_blocks",
-    orderColumn: "blocked_at",
-    activeFilter: "expired = 0",
-    columns: [
-      "blocked_at",
-      "node_id AS node_name",
-      "ip",
-      "(SELECT network_prefix FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND network_prefix IS NOT NULL AND network_prefix <> '' AND LOWER(network_prefix) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS network_prefix",
-      "(SELECT country FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND country IS NOT NULL AND country <> '' AND LOWER(country) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS country",
-      "(SELECT asn FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND asn IS NOT NULL AND asn <> '' AND LOWER(asn) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS asn",
-      "(SELECT organization FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND organization IS NOT NULL AND organization <> '' AND LOWER(organization) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS organization",
-      "rule_id",
-      "backend",
-      "reason",
-      "expires_at",
-    ],
-  },
-  "/api/v1/probe-sources": {
-    pageId: "probe_sources",
-    minRole: "private",
-    sensitive: true,
-    optional: true,
-    table: "probe_sources",
-    orderColumn: "last_seen",
-    columns: [
-      "last_seen",
-      "node_id AS node_name",
-      "source_ip",
-      "ip_version",
-      "network_prefix",
-      "seen_count",
-      "block_status",
-      "country",
-      "asn",
-      "organization",
-      "categories_json",
-      "rule_ids_json",
-      "latest_reason",
-      "block_reason",
-    ],
-  },
-  "/api/v1/audit-logs": {
-    pageId: "audit_logs",
-    minRole: "private",
-    table: "panel_audit_logs",
-    orderColumn: "created_at",
-    columns: ["created_at", "action", "actor", "target_type", "target_id"],
-  },
-};
 
 export default {
   async fetch(request, env) {
@@ -831,7 +752,7 @@ function scopeProbeSourceRows(items, role) {
   if (role !== "public") return items;
   return (items || []).map((item) => {
     const next = { ...item };
-    for (const key of ["node_name", "network_prefix", "latest_reason", "block_reason", "first_seen"]) {
+    for (const key of PUBLIC_PROBE_SOURCE_HIDDEN_KEYS) {
       delete next[key];
     }
     return next;
@@ -1497,7 +1418,7 @@ function publicEnabled(env) {
 }
 
 function publicPages(env) {
-  const value = String(env.PANEL_PUBLIC_PAGES === undefined ? "overview,probe_sources,nodes" : env.PANEL_PUBLIC_PAGES);
+  const value = String(env.PANEL_PUBLIC_PAGES === undefined ? DEFAULT_PUBLIC_PAGES : env.PANEL_PUBLIC_PAGES);
   return [...new Set(value.split(",").map((page) => page.trim().toLowerCase()).filter(Boolean))];
 }
 

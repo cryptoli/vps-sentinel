@@ -350,9 +350,9 @@ const vars = {
   PANEL_PUBLIC_ENABLED: process.env.PANEL_PUBLIC_ENABLED || "false",
   PANEL_PUBLIC_PAGES: Object.prototype.hasOwnProperty.call(process.env, "PANEL_PUBLIC_PAGES")
     ? process.env.PANEL_PUBLIC_PAGES
-    : "overview,probe_sources,nodes",
+    : (process.env.PANEL_CONTRACT_DEFAULT_PUBLIC_PAGES || "overview,probe_sources,nodes"),
   PANEL_THEME: process.env.PANEL_THEME || "default",
-  PANEL_THEMES: process.env.PANEL_THEMES || "default:Default",
+  PANEL_THEMES: process.env.PANEL_THEMES || process.env.PANEL_CONTRACT_DEFAULT_THEMES || "default:Default",
   PANEL_ADMIN_PATH: process.env.PANEL_ADMIN_PATH,
 };
 if (process.env.PANEL_CORS_ORIGIN) {
@@ -425,11 +425,16 @@ main() {
 
   SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
   REPO_ROOT="$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)"
+  CONTRACT_ENV="${REPO_ROOT}/panel/shared/contract.env"
+  [ -f "$CONTRACT_ENV" ] && . "$CONTRACT_ENV"
+  export PANEL_CONTRACT_DEFAULT_PUBLIC_PAGES PANEL_CONTRACT_DEFAULT_THEMES
   WORKER_FILE="${REPO_ROOT}/panel/cloudflare/worker.js"
+  WORKER_CONTRACT_FILE="${REPO_ROOT}/panel/cloudflare/panel-contract.generated.js"
   SCHEMA_FILE="${REPO_ROOT}/panel/cloudflare/schema.sql"
   WEB_DIR="${REPO_ROOT}/panel/web"
 
   [ -f "$WORKER_FILE" ] || fail "missing ${WORKER_FILE}"
+  [ -f "$WORKER_CONTRACT_FILE" ] || fail "missing ${WORKER_CONTRACT_FILE}; run node scripts/generate-panel-contract.mjs"
   [ -f "$SCHEMA_FILE" ] || fail "missing ${SCHEMA_FILE}"
   [ -d "$WEB_DIR" ] || fail "missing ${WEB_DIR}"
 
@@ -443,10 +448,10 @@ main() {
   PANEL_COMPATIBILITY_DATE="${PANEL_COMPATIBILITY_DATE:-2026-06-22}"
   PANEL_PUBLIC_ENABLED="${PANEL_PUBLIC_ENABLED:-false}"
   if [ "${PANEL_PUBLIC_PAGES+x}" != "x" ]; then
-    PANEL_PUBLIC_PAGES="overview,probe_sources,nodes"
+    PANEL_PUBLIC_PAGES="${PANEL_CONTRACT_DEFAULT_PUBLIC_PAGES:-overview,probe_sources,nodes}"
   fi
   PANEL_THEME="${PANEL_THEME:-default}"
-  PANEL_THEMES="${PANEL_THEMES:-default:Default}"
+  PANEL_THEMES="${PANEL_THEMES:-${PANEL_CONTRACT_DEFAULT_THEMES:-default:Default}}"
   PANEL_MAX_BODY_BYTES="${PANEL_MAX_BODY_BYTES:-1048576}"
   ensure_panel_credentials
   export PANEL_WORKER_NAME PANEL_D1_NAME PANEL_COMPATIBILITY_DATE PANEL_PUBLIC_ENABLED PANEL_PUBLIC_PAGES PANEL_THEME PANEL_THEMES PANEL_ADMIN_PATH PANEL_MAX_BODY_BYTES
@@ -473,6 +478,7 @@ main() {
   TMP_CONFIG="${TMP_DIR}/wrangler.jsonc"
   export TMP_CONFIG
   cp "$WORKER_FILE" "${TMP_DIR}/worker.js"
+  cp "$WORKER_CONTRACT_FILE" "${TMP_DIR}/panel-contract.generated.js"
   mkdir -p "${TMP_DIR}/web"
   cp -R "${WEB_DIR}/." "${TMP_DIR}/web/"
   write_config "$TMP_CONFIG"

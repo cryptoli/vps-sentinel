@@ -218,7 +218,7 @@ PANEL_THEME='default'
 
 ## 安全注意事项
 
-- `PANEL_SHARED_SECRET`、`PANEL_TOKEN`、Cloudflare API token、数据库密码、SMTP 凭据和 webhook secret 都不能提交到 git。
+- `PANEL_SHARED_SECRET`、`PANEL_TOKEN`、Cloudflare API token、数据库密码、SMTP 凭据和 webhook secret 保存在本地配置、Worker secrets 或 systemd 环境文件中。
 - `node_name` 只能使用非敏感展示名称。
 - 公开页面不应暴露原始证据、主机名、文件路径、命令行、后端细节、私网 IP，公开黑名单也不应暴露节点名称。
 - 公开 `GET /api/v1/settings` 不应泄露 `PANEL_ADMIN_PATH`，只返回当前浏览器路径是否为管理入口。

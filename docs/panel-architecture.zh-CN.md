@@ -9,9 +9,20 @@
 | Repository | 为 SQLite、PostgreSQL、MySQL 或 Cloudflare D1 提供有界分页读取模型。 |
 | Web UI | 读取固定 API 数据集，执行前端隐私兜底，并只更新变化的数据区块，不整页刷新。 |
 
+## 共享契约
+
+Rust 自建面板、Cloudflare Worker 和前端页面定义共享 `panel/shared/contract.json`。执行 `node scripts/generate-panel-contract.mjs` 会生成：
+
+- `crates/sentinel-panel/src/panel_contract.rs`
+- `panel/cloudflare/panel-contract.generated.js`
+- `panel/ui/src/lib/panel-contract.generated.ts`
+- `panel/shared/contract.env`
+
+数据集、公开页、默认管理路径、公开黑名单脱敏字段和页面列定义都从这个契约生成。CI 会执行 `node scripts/generate-panel-contract.mjs --check`，防止三端实现漂移。
+
 ## 信任边界
 
-`PANEL_SHARED_SECRET` 和 `PANEL_NODE_SECRETS` 是 agent 上报凭据。`PANEL_TOKEN` 是唯一浏览器私有访问 token。通知 token 和 Cloudflare 部署凭据是独立凭据，不能提交到仓库。
+`PANEL_SHARED_SECRET` 和 `PANEL_NODE_SECRETS` 是 agent 上报凭据。`PANEL_TOKEN` 是唯一浏览器私有访问 token。通知 token 和 Cloudflare 部署凭据是独立凭据，存放在本地配置、Worker secrets 或 systemd 环境文件中。
 
 ## 实时策略
 

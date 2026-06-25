@@ -9,9 +9,20 @@
 | Repository | Provides bounded, paginated read models for SQLite, PostgreSQL, MySQL, or Cloudflare D1. |
 | Web UI | Reads fixed API datasets, applies client-side privacy guards, and updates changed datasets without full-page reloads. |
 
+## Shared Contract
+
+The self-hosted Rust panel, Cloudflare Worker, and frontend page definitions share `panel/shared/contract.json`. Run `node scripts/generate-panel-contract.mjs` to generate:
+
+- `crates/sentinel-panel/src/panel_contract.rs`
+- `panel/cloudflare/panel-contract.generated.js`
+- `panel/ui/src/lib/panel-contract.generated.ts`
+- `panel/shared/contract.env`
+
+Datasets, public pages, default management path, public blocklist redaction fields, and page columns are generated from this contract. CI runs `node scripts/generate-panel-contract.mjs --check` to prevent implementation drift.
+
 ## Trust Boundaries
 
-`PANEL_SHARED_SECRET` and `PANEL_NODE_SECRETS` are ingest credentials. `PANEL_TOKEN` is the only browser private-access token. Notification tokens and Cloudflare deployment credentials are separate and must never be committed.
+`PANEL_SHARED_SECRET` and `PANEL_NODE_SECRETS` are ingest credentials. `PANEL_TOKEN` is the only browser private-access token. Notification tokens and Cloudflare deployment credentials are separate credentials stored in local config, Worker secrets, or systemd environment files.
 
 ## Realtime Strategy
 

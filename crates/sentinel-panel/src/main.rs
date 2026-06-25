@@ -38,27 +38,20 @@ use uuid::Uuid;
 mod auth;
 mod http_security;
 mod ingest;
+mod panel_contract;
 mod repository;
 mod stream;
 
 use auth::*;
 use http_security::{panel_csp_header, security_headers};
 use ingest::ingest;
+use panel_contract::*;
 use stream::{stream, stream_ticket};
-const SIGNATURE_WINDOW_SECONDS: i64 = 300;
 const DEFAULT_MAX_BODY_BYTES: usize = 1024 * 1024;
 const DEFAULT_WEB_DIR: &str = "panel/web";
-const DEFAULT_PAGE_LIMIT: usize = 50;
-const MAX_PAGE_LIMIT: usize = 200;
-const DEFAULT_FRESHNESS_THRESHOLD_MINUTES: u64 = 30;
-const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES: u64 = 720;
 const STREAM_TICKET_TTL_SECONDS: i64 = 60;
 const STREAM_HEARTBEAT_SECONDS: u64 = 30;
 const STREAM_RETRY_SECONDS: u64 = 5;
-const PANEL_TRANSPORT_ENCODING: &str = "json-base64";
-const DEFAULT_PUBLIC_PAGES: &str = "overview,probe_sources,nodes";
-const DEFAULT_ADMIN_PATH: &str = "/panel-admin";
-const DEFAULT_THEMES: &str = "default:Default";
 
 #[derive(Debug, Parser)]
 #[command(name = "vps-sentinel-panel", version)]
@@ -157,20 +150,7 @@ struct PanelThemeOption {
 
 impl PanelStreamEvent {
     fn refresh(role: PanelRole) -> Self {
-        Self::refresh_datasets(
-            role,
-            vec![
-                "summary",
-                "trends",
-                "nodes",
-                "findings",
-                "incidents",
-                "baseline_drifts",
-                "active_blocks",
-                "probe_sources",
-                "audit_logs",
-            ],
-        )
+        Self::refresh_datasets(role, stream_refresh_datasets())
     }
 
     fn refresh_datasets(role: PanelRole, datasets: Vec<&'static str>) -> Self {
@@ -815,17 +795,7 @@ async fn nodes(
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
     let role = verify_panel_role(&state, &headers, PanelRole::Public)?;
-    let columns = match role {
-        PanelRole::Public => &["last_seen_at", "node_name", "agent_version", "metrics_json"][..],
-        PanelRole::Private => &[
-            "last_seen_at",
-            "node_name",
-            "agent_version",
-            "privacy_mode",
-            "storage_json",
-            "metrics_json",
-        ][..],
-    };
+    let columns = node_columns(role);
     let request = PageRequest::try_from(query)?;
     let (mut items, total) = state
         .repo
@@ -846,28 +816,7 @@ async fn findings(
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
     let role = verify_panel_page_role(&state, &headers, "findings", PanelRole::Private)?;
-    paginated_dataset(
-        &state,
-        query,
-        role,
-        PanelDataset {
-            table: "findings",
-            order_column: "timestamp",
-            active_filter: None,
-            columns: &[
-                "id",
-                "timestamp",
-                "node_id AS node_name",
-                "severity",
-                "rule_id",
-                "category",
-                "subject",
-                "review_signature",
-                "title",
-            ],
-        },
-    )
-    .await
+    paginated_dataset(&state, query, role, findings_dataset()).await
 }
 
 async fn finding_detail(
@@ -932,27 +881,7 @@ async fn incidents(
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
     let role = verify_panel_page_role(&state, &headers, "incidents", PanelRole::Private)?;
-    paginated_dataset(
-        &state,
-        query,
-        role,
-        PanelDataset {
-            table: "incidents",
-            order_column: "last_seen",
-            active_filter: None,
-            columns: &[
-                "id",
-                "last_seen",
-                "node_id AS node_name",
-                "severity",
-                "score",
-                "title",
-                "summary",
-                "review_signature",
-            ],
-        },
-    )
-    .await
+    paginated_dataset(&state, query, role, incidents_dataset()).await
 }
 
 async fn incident_detail(
@@ -971,30 +900,7 @@ async fn baseline_drifts(
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
     let role = verify_panel_page_role(&state, &headers, "baseline_drifts", PanelRole::Private)?;
-    paginated_dataset(
-        &state,
-        query,
-        role,
-        PanelDataset {
-            table: "baseline_drifts",
-            order_column: "timestamp",
-            active_filter: None,
-            columns: &[
-                "id",
-                "finding_id",
-                "timestamp",
-                "node_id AS node_name",
-                "severity",
-                "rule_id",
-                "category",
-                "tier",
-                "subject",
-                "review_signature",
-                "review_action",
-            ],
-        },
-    )
-    .await
+    paginated_dataset(&state, query, role, baseline_drifts_dataset()).await
 }
 
 async fn active_blocks(
@@ -1003,66 +909,7 @@ async fn active_blocks(
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
     let role = verify_panel_page_role(&state, &headers, "active_blocks", PanelRole::Private)?;
-    let columns = match role {
-        PanelRole::Private => &[
-            "blocked_at",
-            "node_id AS node_name",
-            "ip",
-            "(
-                SELECT network_prefix FROM probe_sources
-                WHERE probe_sources.source_ip = active_blocks.ip
-                  AND network_prefix IS NOT NULL
-                  AND network_prefix <> ''
-                  AND LOWER(network_prefix) <> 'unknown'
-                ORDER BY probe_sources.last_seen DESC
-                LIMIT 1
-             ) AS network_prefix",
-            "(
-                SELECT country FROM probe_sources
-                WHERE probe_sources.source_ip = active_blocks.ip
-                  AND country IS NOT NULL
-                  AND country <> ''
-                  AND LOWER(country) <> 'unknown'
-                ORDER BY probe_sources.last_seen DESC
-                LIMIT 1
-             ) AS country",
-            "(
-                SELECT asn FROM probe_sources
-                WHERE probe_sources.source_ip = active_blocks.ip
-                  AND asn IS NOT NULL
-                  AND asn <> ''
-                  AND LOWER(asn) <> 'unknown'
-                ORDER BY probe_sources.last_seen DESC
-                LIMIT 1
-             ) AS asn",
-            "(
-                SELECT organization FROM probe_sources
-                WHERE probe_sources.source_ip = active_blocks.ip
-                  AND organization IS NOT NULL
-                  AND organization <> ''
-                  AND LOWER(organization) <> 'unknown'
-                ORDER BY probe_sources.last_seen DESC
-                LIMIT 1
-             ) AS organization",
-            "rule_id",
-            "backend",
-            "reason",
-            "expires_at",
-        ][..],
-        PanelRole::Public => &["blocked_at", "node_id AS node_name"][..],
-    };
-    paginated_dataset(
-        &state,
-        query,
-        role,
-        PanelDataset {
-            table: "active_blocks",
-            order_column: "blocked_at",
-            active_filter: Some("expired = 0"),
-            columns,
-        },
-    )
-    .await
+    paginated_dataset(&state, query, role, active_blocks_dataset(role)).await
 }
 
 async fn probe_sources(
@@ -1089,18 +936,7 @@ async fn audit_logs(
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
     let role = verify_panel_page_role(&state, &headers, "audit_logs", PanelRole::Private)?;
-    paginated_dataset(
-        &state,
-        query,
-        role,
-        PanelDataset {
-            table: "panel_audit_logs",
-            order_column: "created_at",
-            active_filter: None,
-            columns: &["created_at", "action", "actor", "target_type", "target_id"],
-        },
-    )
-    .await
+    paginated_dataset(&state, query, role, audit_logs_dataset()).await
 }
 
 async fn paginated_dataset(
@@ -1604,13 +1440,7 @@ fn scope_probe_source_rows(value: &mut Value, role: PanelRole) {
         let Some(object) = row.as_object_mut() else {
             continue;
         };
-        for key in [
-            "node_name",
-            "network_prefix",
-            "latest_reason",
-            "block_reason",
-            "first_seen",
-        ] {
+        for key in PUBLIC_PROBE_SOURCE_HIDDEN_KEYS {
             object.remove(key);
         }
     }

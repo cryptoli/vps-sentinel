@@ -65,11 +65,15 @@ browser_token_value() {
 
 main() {
   output="${PANEL_ENV_FILE:-/etc/vps-sentinel-panel/panel.env}"
+  script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+  repo_root="$(CDPATH= cd -- "${script_dir}/.." && pwd)"
+  contract_env="${repo_root}/panel/shared/contract.env"
+  [ -f "$contract_env" ] && . "$contract_env"
   database_backend="${PANEL_DB_BACKEND:-sqlite}"
   database_url="${PANEL_DATABASE_URL:-sqlite:///var/lib/vps-sentinel-panel/panel.db}"
   bind="${PANEL_BIND:-127.0.0.1:8858}"
   web_dir="${PANEL_WEB_DIR:-/usr/local/share/vps-sentinel/panel/web}"
-  public_pages="${PANEL_PUBLIC_PAGES:-overview,probe_sources,nodes}"
+  public_pages="${PANEL_PUBLIC_PAGES:-${PANEL_CONTRACT_DEFAULT_PUBLIC_PAGES:-overview,probe_sources,nodes}}"
   shared_secret="${PANEL_SHARED_SECRET:-$(credential_value "$output" PANEL_SHARED_SECRET)}"
   panel_token="$(browser_token_value "$output")"
   admin_path="${PANEL_ADMIN_PATH:-$(credential_value "$output" PANEL_ADMIN_PATH)}"
