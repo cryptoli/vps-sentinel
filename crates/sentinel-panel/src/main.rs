@@ -1441,7 +1441,7 @@ fn scope_probe_source_rows(value: &mut Value, role: PanelRole) {
             continue;
         };
         for key in PUBLIC_PROBE_SOURCE_HIDDEN_KEYS {
-            object.remove(key);
+            object.remove(*key);
         }
     }
 }
