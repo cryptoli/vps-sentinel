@@ -537,13 +537,10 @@ post_update() {
 
 checkout_or_update() {
   if [ -d "$WORK_DIR/.git" ]; then
-    git -C "$WORK_DIR" fetch origin "$BRANCH:refs/remotes/origin/$BRANCH"
-    if git -C "$WORK_DIR" show-ref --verify --quiet "refs/heads/$BRANCH"; then
-      git -C "$WORK_DIR" checkout "$BRANCH"
-    else
-      git -C "$WORK_DIR" checkout -b "$BRANCH" "origin/$BRANCH"
-    fi
-    git -C "$WORK_DIR" pull --ff-only origin "$BRANCH"
+    git -C "$WORK_DIR" fetch --prune origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+    git -C "$WORK_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
+    git -C "$WORK_DIR" reset --hard "origin/$BRANCH"
+    git -C "$WORK_DIR" clean -fd
   else
     install -d "$(dirname "$WORK_DIR")"
     git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$WORK_DIR"
