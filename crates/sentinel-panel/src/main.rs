@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use axum::body::Body;
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -47,6 +47,8 @@ use http_security::{panel_csp_header, security_headers};
 use ingest::ingest;
 use panel_contract::*;
 use stream::{stream, stream_ticket};
+mod geoip;
+use geoip::PanelGeoIpResolver;
 const DEFAULT_MAX_BODY_BYTES: usize = 1024 * 1024;
 const DEFAULT_WEB_DIR: &str = "panel/web";
 const STREAM_TICKET_TTL_SECONDS: i64 = 60;
@@ -94,6 +96,12 @@ struct Args {
 
     #[arg(long, env = "PANEL_MAX_BODY_BYTES", default_value_t = DEFAULT_MAX_BODY_BYTES)]
     max_body_bytes: usize,
+
+    #[arg(long, env = "PANEL_GEOIP_CITY_DB")]
+    geoip_city_db: Option<PathBuf>,
+
+    #[arg(long, env = "PANEL_GEOIP_ASN_DB")]
+    geoip_asn_db: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -114,6 +122,7 @@ struct AppState {
     theme: String,
     themes: Vec<PanelThemeOption>,
     max_body_bytes: usize,
+    geoip: Arc<PanelGeoIpResolver>,
     events: broadcast::Sender<PanelStreamEvent>,
     stream_tickets: Arc<Mutex<BTreeMap<String, StreamTicket>>>,
     csp_header: HeaderValue,
@@ -285,6 +294,8 @@ struct PanelNode {
     #[serde(default)]
     node_id: String,
     node_name: String,
+    #[serde(default)]
+    hostname: String,
     agent_version: String,
     privacy_mode: String,
     #[serde(default)]
@@ -554,6 +565,9 @@ async fn main() -> Result<()> {
     }
     let (events, _) = broadcast::channel(128);
     let csp_header = panel_csp_header(&web_dir);
+    let geoip =
+        PanelGeoIpResolver::open(args.geoip_city_db.as_deref(), args.geoip_asn_db.as_deref())
+            .context("failed to initialize panel GeoIP resolver")?;
     let admin_path = match args
         .admin_path
         .as_deref()
@@ -580,6 +594,7 @@ async fn main() -> Result<()> {
         theme: args.theme,
         themes,
         max_body_bytes: args.max_body_bytes,
+        geoip: Arc::new(geoip),
         events,
         stream_tickets: Arc::new(Mutex::new(BTreeMap::new())),
         csp_header,
@@ -611,7 +626,11 @@ async fn main() -> Result<()> {
         .with_state(state);
     info!(bind = %args.bind, "vps-sentinel panel started");
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -640,6 +659,7 @@ async fn settings(
         "public_pages": public_pages,
         "role": role,
         "freshness_threshold_minutes": DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
+        "offline_threshold_minutes": DEFAULT_OFFLINE_THRESHOLD_MINUTES,
         "node_retired_threshold_minutes": DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
         "server_time": Utc::now().to_rfc3339()
     }))
@@ -753,7 +773,7 @@ fn panel_node_status(
         .num_minutes();
     if age_minutes < 0 || age_minutes > DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES as i64 {
         "retired"
-    } else if age_minutes > (DEFAULT_FRESHNESS_THRESHOLD_MINUTES * 6) as i64 {
+    } else if age_minutes > DEFAULT_OFFLINE_THRESHOLD_MINUTES as i64 {
         "offline"
     } else if age_minutes > DEFAULT_FRESHNESS_THRESHOLD_MINUTES as i64 {
         "stale"
@@ -1500,6 +1520,21 @@ fn public_node_name(value: &str) -> String {
         return "legacy-node".to_string();
     }
     redacted
+}
+
+fn safe_panel_hostname(value: &str) -> Option<String> {
+    let redacted = redact_ip_text(value).trim().to_string();
+    if redacted.is_empty()
+        || redacted == "redacted"
+        || redacted.contains("redacted")
+        || generated_panel_identity(&redacted)
+        || redacted.chars().any(|ch| {
+            ch.is_control() || matches!(ch, '/' | '\\' | '<' | '>' | '"' | '\'' | '`' | '$' | '|')
+        })
+    {
+        return None;
+    }
+    Some(redacted)
 }
 
 fn generated_panel_identity(value: &str) -> bool {

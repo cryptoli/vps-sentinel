@@ -4,8 +4,8 @@
 
 | Component | Responsibility |
 | --- | --- |
-| Agent panel client | Builds a bounded telemetry envelope, strips sensitive host identity, signs it with HMAC, and queues failed uploads locally. |
-| Receiver | Verifies signature, nonce, timestamp, and payload size; enriches non-sensitive node location from trusted proxy metadata; stores sanitized rows. |
+| Agent panel client | Builds a bounded telemetry envelope, strips sensitive host identity and raw evidence, adds safe display metadata, signs it with HMAC, and queues failed uploads locally. |
+| Receiver | Verifies signature, nonce, timestamp, and payload size; merges non-sensitive node location from agent metadata, trusted proxy metadata, or optional local GeoIP databases; stores sanitized rows. |
 | Repository | Provides bounded, paginated read models for SQLite, PostgreSQL, MySQL, or Cloudflare D1. |
 | Web UI | Reads fixed API datasets, applies client-side privacy guards, and updates changed datasets without full-page reloads. |
 
@@ -30,4 +30,4 @@ Self-hosted Rust uses WebSocket tickets so browser tokens are not placed in WebS
 
 ## Data Safety
 
-Panel APIs are allowlisted by dataset and column. Public pages expose only aggregate or explicitly public attacker-source data. Private pages can show review and response detail, but node IDs, host IDs, hostnames, and review signatures remain hidden from browser lists.
+Panel APIs are allowlisted by dataset and column. Public pages expose only aggregate or explicitly public attacker-source data. Private pages can show review and response detail. Node IDs, host IDs, public server IPs, raw paths, command lines, secrets, and review signatures remain hidden from browser lists; sanitized non-IP hostnames are only available on private node datasets.

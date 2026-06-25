@@ -7,6 +7,7 @@ pub(crate) const SIGNATURE_WINDOW_SECONDS: i64 = 300;
 pub(crate) const DEFAULT_PAGE_LIMIT: usize = 50;
 pub(crate) const MAX_PAGE_LIMIT: usize = 200;
 pub(crate) const DEFAULT_FRESHNESS_THRESHOLD_MINUTES: u64 = 30;
+pub(crate) const DEFAULT_OFFLINE_THRESHOLD_MINUTES: u64 = 90;
 pub(crate) const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES: u64 = 720;
 pub(crate) const PANEL_TRANSPORT_ENCODING: &str = "json-base64";
 pub(crate) const DEFAULT_PUBLIC_PAGES: &str = "overview,probe_sources,nodes";
@@ -36,6 +37,7 @@ const NODES_PUBLIC_COLUMNS: &[&str] =
 const NODES_PRIVATE_COLUMNS: &[&str] = &[
     "last_seen_at",
     "node_name",
+    "hostname",
     "agent_version",
     "privacy_mode",
     "storage_json",

@@ -2,6 +2,7 @@ import {
   DATASETS,
   DEFAULT_ADMIN_PATH,
   DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
+  DEFAULT_OFFLINE_THRESHOLD_MINUTES,
   DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
   DEFAULT_PAGE_LIMIT,
   DEFAULT_PUBLIC_PAGES,
@@ -49,6 +50,7 @@ export default {
           public_pages: pages,
           role,
           freshness_threshold_minutes: DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
+          offline_threshold_minutes: DEFAULT_OFFLINE_THRESHOLD_MINUTES,
           node_retired_threshold_minutes: DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
           server_time: new Date().toISOString(),
         }), request, env);
@@ -451,7 +453,7 @@ function panelNodeStatement(env, nodeName, node, sentAt, receivedAt, includeMetr
       nodeName,
       nodeName,
       "",
-      "",
+      safePanelHostname(node.hostname || ""),
       node.agent_version,
       node.privacy_mode,
       JSON.stringify(node.enabled_features || []),
@@ -479,7 +481,7 @@ function panelNodeStatement(env, nodeName, node, sentAt, receivedAt, includeMetr
     nodeName,
     nodeName,
     "",
-    "",
+    safePanelHostname(node.hostname || ""),
     node.agent_version,
     node.privacy_mode,
     JSON.stringify(node.enabled_features || []),
@@ -1196,7 +1198,7 @@ function panelNodeStatus(lastSeenAt, now, node = {}) {
   if (Number.isNaN(seen.getTime())) return "retired";
   const ageMinutes = Math.max(0, (now.getTime() - seen.getTime()) / 60000);
   if (ageMinutes > DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES) return "retired";
-  if (ageMinutes > DEFAULT_FRESHNESS_THRESHOLD_MINUTES * 6) return "offline";
+  if (ageMinutes > DEFAULT_OFFLINE_THRESHOLD_MINUTES) return "offline";
   if (ageMinutes > DEFAULT_FRESHNESS_THRESHOLD_MINUTES) return "stale";
   return "fresh";
 }
@@ -1259,6 +1261,13 @@ function publicNodeName(value) {
   const text = redactIpText(value).trim();
   if (!text || text === redactedIp()) return "unnamed-node";
   return generatedPanelIdentity(text) ? "legacy-node" : text;
+}
+
+function safePanelHostname(value) {
+  const text = redactIpText(value).trim();
+  if (!text || text === redactedIp() || text.includes(redactedIp()) || generatedPanelIdentity(text)) return "";
+  if (/[\/\\<>"'`$|\x00-\x1f\x7f]/.test(text)) return "";
+  return text.slice(0, 96);
 }
 
 function generatedPanelIdentity(value) {

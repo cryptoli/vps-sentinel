@@ -1432,7 +1432,7 @@ impl Repository {
                 DbValue::Text(node_name.to_string()),
                 DbValue::Text(node_name.to_string()),
                 DbValue::Text(String::new()),
-                DbValue::Text(String::new()),
+                DbValue::Text(safe_panel_hostname(&node.hostname).unwrap_or_default()),
                 DbValue::Text(node.agent_version.clone()),
                 DbValue::Text(node.privacy_mode.clone()),
                 DbValue::Text(json_string(&node.enabled_features)?),

@@ -17,6 +17,7 @@ INSTALL_METHOD="${INSTALL_METHOD:-auto}"
 RELEASE_VERSION="${RELEASE_VERSION:-latest}"
 RELEASE_ARTIFACT_URL="${RELEASE_ARTIFACT_URL:-}"
 TARGET_TRIPLE="${TARGET_TRIPLE:-}"
+CLEAN_SOURCE_TARGET="${CLEAN_SOURCE_TARGET:-yes}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-auto}"
 RESTART_SERVICE="${RESTART_SERVICE:-auto}"
 VALIDATE_CONFIG="${VALIDATE_CONFIG:-yes}"
@@ -478,6 +479,30 @@ install_helper_scripts() {
   done
 }
 
+cleanup_source_target() {
+  case "$CLEAN_SOURCE_TARGET" in
+    yes|true|1) ;;
+    no|false|0) return ;;
+    *)
+      echo "invalid CLEAN_SOURCE_TARGET value: $CLEAN_SOURCE_TARGET" >&2
+      exit 1
+      ;;
+  esac
+  if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+    echo "skipped source target cleanup because CARGO_TARGET_DIR is set"
+    return
+  fi
+  target_dir="$WORK_DIR/target"
+  if [ "$target_dir" = "/target" ] || [ "$target_dir" = "target" ] || [ "$target_dir" = "/" ]; then
+    echo "refusing unsafe source target cleanup path: $target_dir" >&2
+    exit 1
+  fi
+  if [ -d "$target_dir" ]; then
+    rm -rf "$target_dir"
+    echo "removed source build artifacts from $target_dir"
+  fi
+}
+
 ensure_config_exists() {
   source_config="$1"
   if [ ! -f "$CONFIG_DIR/config.toml" ]; then
@@ -579,6 +604,7 @@ build_and_install_from_source() {
   ensure_config_exists "$WORK_DIR/config/config.example.toml"
   SYSTEMD_TEMPLATE="$WORK_DIR/packaging/systemd/vps-sentinel.service"
   post_update
+  cleanup_source_target
   echo "vps-sentinel updated from $REPO_URL ($BRANCH)"
 }
 

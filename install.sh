@@ -17,6 +17,7 @@ INSTALL_METHOD="${INSTALL_METHOD:-auto}"
 RELEASE_VERSION="${RELEASE_VERSION:-latest}"
 RELEASE_ARTIFACT_URL="${RELEASE_ARTIFACT_URL:-}"
 TARGET_TRIPLE="${TARGET_TRIPLE:-}"
+CLEAN_SOURCE_TARGET="${CLEAN_SOURCE_TARGET:-yes}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-auto}"
 ENABLE_SERVICE="${ENABLE_SERVICE:-yes}"
 RUN_DOCTOR="${RUN_DOCTOR:-yes}"
@@ -40,6 +41,15 @@ ACTIVE_RESPONSE_PERMANENT_BLOCK_WINDOW_SECONDS="${ACTIVE_RESPONSE_PERMANENT_BLOC
 ACTIVE_RESPONSE_WEB_PROBE_BLOCK_THRESHOLD="${ACTIVE_RESPONSE_WEB_PROBE_BLOCK_THRESHOLD:-}"
 ACTIVE_RESPONSE_WEB_EXPLOIT_BLOCK_THRESHOLD="${ACTIVE_RESPONSE_WEB_EXPLOIT_BLOCK_THRESHOLD:-}"
 ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD="${ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD:-}"
+PANEL_ENABLED="${PANEL_ENABLED:-}"
+PANEL_URL="${PANEL_URL:-}"
+PANEL_SHARED_SECRET="${PANEL_SHARED_SECRET:-${PANEL_SECRET:-}}"
+PANEL_NODE_NAME="${PANEL_NODE_NAME:-}"
+PANEL_MIN_SEVERITY="${PANEL_MIN_SEVERITY:-}"
+PANEL_PRIVACY_MODE="${PANEL_PRIVACY_MODE:-}"
+PANEL_UPLOAD_HOSTNAME="${PANEL_UPLOAD_HOSTNAME:-}"
+PANEL_NODE_LOCATION_ENABLED="${PANEL_NODE_LOCATION_ENABLED:-}"
+PANEL_NODE_LOCATION_URL="${PANEL_NODE_LOCATION_URL:-}"
 CONFIG_CREATED=0
 SYSTEMD_UNIT_INSTALLED=0
 
@@ -272,6 +282,60 @@ configure_active_response() {
   echo "configured active response in $config_path"
 }
 
+configure_panel_upload() {
+  if [ -z "$PANEL_ENABLED" ] \
+    && [ -z "$PANEL_URL" ] \
+    && [ -z "$PANEL_SHARED_SECRET" ] \
+    && [ -z "$PANEL_NODE_NAME" ] \
+    && [ -z "$PANEL_MIN_SEVERITY" ] \
+    && [ -z "$PANEL_PRIVACY_MODE" ] \
+    && [ -z "$PANEL_UPLOAD_HOSTNAME" ] \
+    && [ -z "$PANEL_NODE_LOCATION_ENABLED" ] \
+    && [ -z "$PANEL_NODE_LOCATION_URL" ]; then
+    return
+  fi
+  if [ -n "$PANEL_URL" ] || [ -n "$PANEL_SHARED_SECRET" ]; then
+    if [ -z "$PANEL_URL" ] || [ -z "$PANEL_SHARED_SECRET" ]; then
+      echo "PANEL_URL and PANEL_SHARED_SECRET must be provided together" >&2
+      exit 1
+    fi
+  fi
+  config_path="$CONFIG_DIR/config.toml"
+  if [ -n "$PANEL_ENABLED" ]; then
+    set_toml_value "$config_path" "panel" "enabled" "$(toml_bool "$PANEL_ENABLED")"
+  elif [ -n "$PANEL_URL" ]; then
+    set_toml_value "$config_path" "panel" "enabled" "true"
+  fi
+  if [ -n "$PANEL_URL" ]; then
+    set_toml_value "$config_path" "panel" "url" "$(toml_string "$PANEL_URL")"
+  fi
+  if [ -n "$PANEL_SHARED_SECRET" ]; then
+    set_toml_value "$config_path" "panel" "secret" "$(toml_string "$PANEL_SHARED_SECRET")"
+  fi
+  if [ -n "$PANEL_NODE_NAME" ]; then
+    set_toml_value "$config_path" "panel" "node_name" "$(toml_string "$PANEL_NODE_NAME")"
+  elif [ -n "$VPS_NAME" ]; then
+    set_toml_value "$config_path" "panel" "node_name" "$(toml_string "$VPS_NAME")"
+  fi
+  if [ -n "$PANEL_MIN_SEVERITY" ]; then
+    set_toml_value "$config_path" "panel" "min_severity" "$(toml_string "$PANEL_MIN_SEVERITY")"
+  fi
+  if [ -n "$PANEL_PRIVACY_MODE" ]; then
+    set_toml_value "$config_path" "panel" "privacy_mode" "$(toml_string "$PANEL_PRIVACY_MODE")"
+  fi
+  if [ -n "$PANEL_UPLOAD_HOSTNAME" ]; then
+    set_toml_value "$config_path" "panel" "upload_hostname" "$(toml_bool "$PANEL_UPLOAD_HOSTNAME")"
+  fi
+  if [ -n "$PANEL_NODE_LOCATION_ENABLED" ]; then
+    set_toml_value "$config_path" "panel" "node_location_enabled" "$(toml_bool "$PANEL_NODE_LOCATION_ENABLED")"
+  fi
+  if [ -n "$PANEL_NODE_LOCATION_URL" ]; then
+    set_toml_value "$config_path" "panel" "node_location_url" "$(toml_string "$PANEL_NODE_LOCATION_URL")"
+  fi
+  chmod 0600 "$config_path"
+  echo "configured panel upload in $config_path"
+}
+
 detect_hostname() {
   hostname -f 2>/dev/null || hostname 2>/dev/null || printf '%s\n' "local-host"
 }
@@ -420,6 +484,30 @@ install_optional_panel() {
   fi
 }
 
+cleanup_source_target() {
+  case "$CLEAN_SOURCE_TARGET" in
+    yes|true|1) ;;
+    no|false|0) return ;;
+    *)
+      echo "invalid CLEAN_SOURCE_TARGET value: $CLEAN_SOURCE_TARGET" >&2
+      exit 1
+      ;;
+  esac
+  if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+    echo "skipped source target cleanup because CARGO_TARGET_DIR is set"
+    return
+  fi
+  target_dir="$WORK_DIR/target"
+  if [ "$target_dir" = "/target" ] || [ "$target_dir" = "target" ] || [ "$target_dir" = "/" ]; then
+    echo "refusing unsafe source target cleanup path: $target_dir" >&2
+    exit 1
+  fi
+  if [ -d "$target_dir" ]; then
+    rm -rf "$target_dir"
+    echo "removed source build artifacts from $target_dir"
+  fi
+}
+
 install_from_release() {
   url="$(release_url)" || return 1
   tmp_dir="$(mktemp -d)"
@@ -458,6 +546,7 @@ install_from_release() {
   configure_storage_limits
   configure_telegram
   configure_active_response
+  configure_panel_upload
   install_systemd_unit_file
   post_install_setup
   activate_systemd_service
@@ -489,9 +578,11 @@ build_and_install() {
   configure_storage_limits
   configure_telegram
   configure_active_response
+  configure_panel_upload
   install_systemd_unit_file
   post_install_setup
   activate_systemd_service
+  cleanup_source_target
 }
 
 yes_enabled() {

@@ -53,7 +53,7 @@ pub struct PanelNodeSnapshot {
     pub node_name: String,
     #[serde(default, skip_serializing)]
     pub host_id: String,
-    #[serde(default, skip_serializing)]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hostname: String,
     pub agent_version: String,
     pub privacy_mode: String,
@@ -189,6 +189,19 @@ struct SignedRequest {
     nonce: String,
     body_hash: String,
     signature: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct NodeLocationState {
+    fetched_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    country_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    country: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    city: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -401,12 +414,15 @@ fn node_snapshot(
     store: &SqliteStore,
 ) -> SentinelResult<PanelNodeSnapshot> {
     let node_name = panel_node_name(config);
-    let metrics = collect_node_metrics(store).ok();
+    let mut metrics = collect_node_metrics(store).ok();
+    if let Some(metrics) = metrics.as_mut() {
+        enrich_node_metrics(config, store, metrics);
+    }
     Ok(PanelNodeSnapshot {
         node_id: node_name.clone(),
         node_name,
         host_id: String::new(),
-        hostname: String::new(),
+        hostname: panel_hostname(config).unwrap_or_default(),
         agent_version: env!("CARGO_PKG_VERSION").to_string(),
         privacy_mode: config.panel.privacy_mode.clone(),
         enabled_features: enabled_features(config),
@@ -1333,7 +1349,7 @@ fn sanitize_panel_envelope(config: &SentinelConfig, mut payload: PanelEnvelope) 
     payload.node.node_id = node_name.clone();
     payload.node.node_name = node_name;
     payload.node.host_id.clear();
-    payload.node.hostname.clear();
+    payload.node.hostname = panel_hostname(config).unwrap_or_default();
     payload.node.agent_version = env!("CARGO_PKG_VERSION").to_string();
     payload.node.privacy_mode = config.panel.privacy_mode.clone();
     payload.node.enabled_features = enabled_features(config);
@@ -1423,6 +1439,27 @@ fn safe_node_name(value: &str) -> Option<String> {
     Some(truncate_node_name(&sanitized))
 }
 
+fn panel_hostname(config: &SentinelConfig) -> Option<String> {
+    if !config.panel.upload_hostname {
+        return None;
+    }
+    safe_hostname(&config.agent.hostname)
+}
+
+fn safe_hostname(value: &str) -> Option<String> {
+    let sanitized = remove_ips_in_text(value).trim().to_string();
+    if sanitized.is_empty()
+        || sanitized == "redacted"
+        || sanitized.contains("redacted")
+        || sanitized.chars().any(|ch| {
+            ch.is_control() || matches!(ch, '/' | '\\' | '<' | '>' | '"' | '\'' | '`' | '$' | '|')
+        })
+    {
+        return None;
+    }
+    Some(truncate_node_name(&sanitized))
+}
+
 fn truncate_node_name(value: &str) -> String {
     const MAX_NODE_NAME_BYTES: usize = 96;
     if value.len() <= MAX_NODE_NAME_BYTES {
@@ -1433,6 +1470,144 @@ fn truncate_node_name(value: &str) -> String {
         end -= 1;
     }
     value[..end].to_string()
+}
+
+fn enrich_node_metrics(config: &SentinelConfig, store: &SqliteStore, metrics: &mut NodeMetrics) {
+    if !config.panel.node_location_enabled {
+        sanitize_node_metrics(metrics);
+        return;
+    }
+    if let Some(location) = cached_or_fetch_node_location(config, store) {
+        if metrics.country_code.is_none() {
+            metrics.country_code = location.country_code;
+        }
+        if metrics.country.is_none() {
+            metrics.country = location.country;
+        }
+        if metrics.region.is_none() {
+            metrics.region = location.region;
+        }
+        if metrics.city.is_none() {
+            metrics.city = location.city;
+        }
+    }
+    sanitize_node_metrics(metrics);
+}
+
+fn cached_or_fetch_node_location(
+    config: &SentinelConfig,
+    store: &SqliteStore,
+) -> Option<NodeLocationState> {
+    const STATE_RULE_ID: &str = "panel_node_location";
+    let now = Utc::now();
+    let refresh_seconds = config.panel.node_location_refresh_seconds as i64;
+    if let Ok(Some(cached)) = store.load_rule_state::<NodeLocationState>(STATE_RULE_ID) {
+        if now.signed_duration_since(cached.fetched_at).num_seconds() < refresh_seconds
+            && node_location_has_value(&cached)
+        {
+            return Some(cached);
+        }
+    }
+    let fetched = fetch_node_location(config)?;
+    let _ = store.save_rule_state(STATE_RULE_ID, &fetched);
+    Some(fetched)
+}
+
+fn node_location_has_value(location: &NodeLocationState) -> bool {
+    location.country_code.is_some()
+        || location.country.is_some()
+        || location.region.is_some()
+        || location.city.is_some()
+}
+
+fn fetch_node_location(config: &SentinelConfig) -> Option<NodeLocationState> {
+    let timeout = Duration::from_millis(config.panel.node_location_timeout_ms);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(timeout)
+        .build()
+        .ok()?;
+    let response = client
+        .get(config.panel.node_location_url.trim())
+        .header(
+            reqwest::header::USER_AGENT,
+            format!("vps-sentinel-agent/{}", env!("CARGO_PKG_VERSION")),
+        )
+        .send()
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let body = response.text().ok()?;
+    let mut location = if content_type.contains("json") || body.trim_start().starts_with('{') {
+        parse_node_location_json(&body)
+    } else {
+        parse_node_location_trace(&body)
+    }?;
+    location.fetched_at = Utc::now();
+    Some(location)
+}
+
+fn parse_node_location_json(body: &str) -> Option<NodeLocationState> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let country_code = first_json_string(
+        &value,
+        &["country_code", "countryCode", "country_code2", "country"],
+    )
+    .and_then(|value| normalize_node_country_code(&value));
+    let country = first_json_string(
+        &value,
+        &["country_name", "countryName", "country_name_en", "country"],
+    )
+    .and_then(|value| safe_node_location_value(&value));
+    let region = first_json_string(&value, &["region", "regionName", "region_name"])
+        .and_then(|value| safe_node_location_value(&value));
+    let city =
+        first_json_string(&value, &["city"]).and_then(|value| safe_node_location_value(&value));
+    let location = NodeLocationState {
+        fetched_at: Utc::now(),
+        country_code,
+        country,
+        region,
+        city,
+    };
+    node_location_has_value(&location).then_some(location)
+}
+
+fn first_json_string(value: &serde_json::Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .filter_map(|key| value.get(*key))
+        .filter_map(|item| item.as_str())
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
+        .next()
+}
+
+fn parse_node_location_trace(body: &str) -> Option<NodeLocationState> {
+    let mut values = BTreeMap::new();
+    for line in body.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        values.insert(key.trim().to_ascii_lowercase(), value.trim().to_string());
+    }
+    let country_code = values
+        .get("loc")
+        .or_else(|| values.get("country"))
+        .and_then(|value| normalize_node_country_code(value));
+    let location = NodeLocationState {
+        fetched_at: Utc::now(),
+        country_code,
+        country: None,
+        region: None,
+        city: None,
+    };
+    node_location_has_value(&location).then_some(location)
 }
 
 fn enabled_features(config: &SentinelConfig) -> Vec<String> {
@@ -1542,9 +1717,10 @@ fn duration_seconds(seconds: u64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        enqueue_payload, panel_envelope, panel_transport_body, sanitize_panel_envelope,
-        sign_request, summary_from_state, PanelActiveBlock, PanelBaselineDrift, PanelEnvelopeParts,
-        PanelFinding, PanelIncident, PanelOutboxState, PanelScanSummary, PANEL_TRANSPORT_ENCODING,
+        enqueue_payload, panel_envelope, panel_transport_body, parse_node_location_json,
+        parse_node_location_trace, sanitize_panel_envelope, sign_request, summary_from_state,
+        PanelActiveBlock, PanelBaselineDrift, PanelEnvelopeParts, PanelFinding, PanelIncident,
+        PanelOutboxState, PanelScanSummary, PANEL_TRANSPORT_ENCODING,
     };
     use crate::active_response::BlockEntry;
     use crate::storage::SqliteStore;
@@ -1589,6 +1765,7 @@ mod tests {
         let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
         let mut config = SentinelConfig::default();
         config.panel.node_name = "node-a".to_string();
+        config.panel.node_location_enabled = false;
         let payload = panel_envelope(
             &config,
             &store,
@@ -1650,6 +1827,7 @@ mod tests {
         config.panel.secret = "secret-secret-secret".to_string();
         config.panel.url = "https://panel.example.test/api/v1/ingest".to_string();
         config.panel.outbox_max_items = 2;
+        config.panel.node_location_enabled = false;
         let scan = PanelScanSummary {
             finished_at: Utc::now(),
             raw_events: 0,
@@ -1722,6 +1900,7 @@ mod tests {
         config.agent.display_name = String::new();
         config.panel.node_id = String::new();
         config.panel.node_name = String::new();
+        config.panel.node_location_enabled = false;
         let scan = PanelScanSummary {
             finished_at: Utc::now(),
             raw_events: 0,
@@ -1763,11 +1942,13 @@ mod tests {
     }
 
     #[test]
-    fn panel_node_location_is_not_configured_by_agent() -> Result<(), Box<dyn std::error::Error>> {
+    fn panel_node_location_uploads_safe_public_location() -> Result<(), Box<dyn std::error::Error>>
+    {
         let temp = tempfile::tempdir()?;
         let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
         let mut config = SentinelConfig::default();
         config.panel.node_name = "apernet-sg".to_string();
+        config.panel.node_location_enabled = false;
 
         let payload = panel_envelope(
             &config,
@@ -1798,6 +1979,18 @@ mod tests {
         assert!(metrics.country.is_none());
         assert!(metrics.city.is_none());
 
+        let parsed = parse_node_location_json(
+            r#"{"country_code":"SG","country_name":"Singapore","region":"Singapore","city":"Singapore","ip":"203.0.113.10"}"#,
+        )
+        .expect("parsed node location");
+        assert_eq!(parsed.country_code.as_deref(), Some("SG"));
+        assert_eq!(parsed.country.as_deref(), Some("Singapore"));
+        assert_eq!(parsed.city.as_deref(), Some("Singapore"));
+
+        let trace = parse_node_location_trace("ip=203.0.113.10\nloc=JP\ncolo=NRT\n")
+            .expect("parsed cf trace");
+        assert_eq!(trace.country_code.as_deref(), Some("JP"));
+
         let mut tampered = payload.clone();
         let metrics = tampered.node.metrics.as_mut().expect("node metrics");
         metrics.country_code = Some("US".to_string());
@@ -1820,6 +2013,7 @@ mod tests {
         config.agent.hostname = "203.0.113.20".to_string();
         config.agent.host_id = String::new();
         config.agent.display_name = String::new();
+        config.panel.node_location_enabled = false;
         let scan = PanelScanSummary {
             finished_at: Utc::now(),
             raw_events: 0,

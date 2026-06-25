@@ -10,11 +10,37 @@
 - 只有安装器无法使用兼容 release 二进制、需要回退源码编译时才需要 Rust。
 - 可选工具会增强可见性：`journalctl`、`ss`、`nft`、`iptables`、`dpkg`/`rpm`/`apk`/`pacman`、`nvidia-smi`、`rocm-smi`、`auditd`、`bpftrace`。
 
-## 基础一键安装
+## 推荐完整一键安装
+
+真实节点建议第一次安装就把通知、面板上报、主动响应、存储限制和节点地域探测配置好：
+
+```bash
+sudo VPS_NAME="prod-web-1" \
+  TELEGRAM_BOT_TOKEN="<your-bot-token>" \
+  TELEGRAM_CHAT_ID="<your-chat-id>" \
+  TELEGRAM_MIN_SEVERITY="Medium" \
+  PANEL_URL="https://your-panel.example.com/api/v1/ingest" \
+  PANEL_SHARED_SECRET="<same-secret-as-panel>" \
+  PANEL_NODE_NAME="prod-web-1" \
+  PANEL_MIN_SEVERITY="Low" \
+  PANEL_PRIVACY_MODE="strict" \
+  PANEL_UPLOAD_HOSTNAME="yes" \
+  PANEL_NODE_LOCATION_ENABLED="yes" \
+  ACTIVE_RESPONSE_ENABLED="yes" \
+  ACTIVE_RESPONSE_PERMANENT_BLOCK_ENABLED="yes" \
+  STORAGE_MAX_DATABASE_SIZE_MB="256" \
+  sh -c 'curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/install.sh | sh'
+```
+
+这条命令会启用主要本地防护能力、Telegram 告警，以及向面板推送隐私脱敏后的遥测。如果不填写 `TELEGRAM_*`，就不会发送 Telegram；如果同时不填写 `PANEL_URL` 和 `PANEL_SHARED_SECRET`，就不会配置面板上报。
+
+## 本地试用安装
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/install.sh | sudo sh
 ```
+
+这条最短命令只适合快速本地试用。它会安装守护进程和本地检测，但不会配置 Telegram、邮件/webhook 通知或面板上报。
 
 安装脚本会：
 
@@ -26,7 +52,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/install.
 - systemd 可用时安装并启动服务；
 - 重装时保留已有配置、SQLite 状态、基线、通知凭据、面板密钥和封禁历史。
 
-## 安装时直接启用 Telegram
+## 只启用 Telegram 的安装方式
 
 推荐使用下面这种形式，便于查看脚本内容和错误输出：
 
@@ -60,6 +86,19 @@ sudo VPS_NAME="prod-web-1" \
 
 如果只填了 `TELEGRAM_BOT_TOKEN` 或只填了 `TELEGRAM_CHAT_ID`，安装器会直接停止，避免写入不可用的通知配置。
 
+面板相关参数：
+
+| 变量 | 含义 | 是否必须 |
+| --- | --- | --- |
+| `PANEL_URL` | 面板上报地址，通常是 `https://<panel-domain>/api/v1/ingest`。 | 启用面板上报时必须 |
+| `PANEL_SHARED_SECRET` | 面板部署脚本生成的 HMAC 共享密钥。 | 启用面板上报时必须 |
+| `PANEL_NODE_NAME` | 面板展示的节点名称；不填时使用 `VPS_NAME`。不要使用公网 IP。 | 建议填写 |
+| `PANEL_MIN_SEVERITY` | 上报到面板的最低风险等级，默认 `Low`。 | 可选 |
+| `PANEL_PRIVACY_MODE` | 正常使用保持 `strict`。它会在上报前移除服务器公网 IP、节点 ID、路径、命令行和原始证据。 | 可选 |
+| `PANEL_UPLOAD_HOSTNAME` | `yes` 表示允许上传不含 IP、不像云实例 ID、且通过脱敏校验的主机名。 | 可选 |
+| `PANEL_NODE_LOCATION_ENABLED` | `yes` 表示 agent 自动探测国家/地区/城市，并只上传这些非敏感展示字段，不上传公网 IP。 | 可选 |
+| `PANEL_NODE_LOCATION_URL` | 可选 HTTPS JSON 或 Cloudflare trace 地域接口，默认 `https://ipapi.co/json/`。 | 可选 |
+
 ## 常用安装参数
 
 ```bash
@@ -83,6 +122,7 @@ sudo BRANCH="main" \
 | `INSTALL_METHOD` | `auto`、`release` 或 `source`。`auto` 会先验证 release 二进制，不兼容再源码编译。 |
 | `INSTALL_DEPS` | `yes` 或 `no`，是否通过系统包管理器安装依赖。 |
 | `INSTALL_SYSTEMD` | `auto`、`yes` 或 `no`，是否安装 systemd 服务。 |
+| `CLEAN_SOURCE_TARGET` | `yes` 或 `no`，默认 `yes`。源码安装/升级成功后删除 `$WORK_DIR/target`，避免 Rust 构建产物长期占用数 GB 磁盘。 |
 | `ENABLE_SERVICE` | `yes` 或 `no`，安装后是否启用并启动服务。 |
 | `RUN_DOCTOR` | `yes` 或 `no`，安装后是否执行 `vs doctor`。 |
 | `RUN_FIRST_SCAN` | `yes` 或 `no`，是否执行一次不通知的预热扫描。 |
@@ -101,7 +141,7 @@ sudo BRANCH="main" \
 curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.sh | sudo sh
 ```
 
-升级脚本会保留已有配置和状态。它会先验证目标二进制能否运行，再替换当前版本；如果二进制不兼容，会使用源码编译，并确保 Rust 有默认 stable toolchain。
+升级脚本会保留已有配置和状态。它会先验证目标二进制能否运行，再替换当前版本；如果二进制不兼容，会使用源码编译，并确保 Rust 有默认 stable toolchain。源码升级成功后默认清理 `$WORK_DIR/target`；只有明确需要保留 Rust 构建缓存时才设置 `CLEAN_SOURCE_TARGET=no`。
 
 常用升级参数：
 
@@ -156,6 +196,9 @@ url = "https://panel.example.com/api/v1/ingest"
 node_name = "prod-sg-1"
 secret = "same-long-secret-as-panel"
 privacy_mode = "strict"
+upload_hostname = true
+node_location_enabled = true
+node_location_url = "https://ipapi.co/json/"
 ```
 
 验证：
@@ -167,7 +210,7 @@ sudo vs panel outbox
 sudo vs reload
 ```
 
-`node_name` 只应使用非敏感展示名称，不要填公网 IP、私有主机名、云厂商实例 ID 或密钥。面板接收端会在可信反代头可用时自动补充国家、城市等非敏感展示信息，例如 Cloudflare 地理位置头。
+`node_name` 只应使用非敏感展示名称，不要填公网 IP、云厂商实例 ID 或密钥。agent 只会在主机名不含 IP、不含危险字符时上传脱敏后的主机名。国家、地区、城市属于展示字段；用于推导地域的服务器公网 IP 不会上报。自建面板还可以通过本地 MaxMind/DB-IP MMDB 文件补充请求来源地域；Cloudflare 面板会优先使用 Cloudflare 请求地域。
 
 ## 主动封禁
 

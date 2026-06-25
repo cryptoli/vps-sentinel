@@ -770,7 +770,6 @@ pub struct ReportsConfig {
     pub scheduled_enabled: bool,
     pub scheduled_hour: u8,
     pub scheduled_period: String,
-    pub min_interval_seconds: u64,
 }
 
 impl Default for ReportsConfig {
@@ -779,7 +778,6 @@ impl Default for ReportsConfig {
             scheduled_enabled: true,
             scheduled_hour: 8,
             scheduled_period: "today".to_string(),
-            min_interval_seconds: 82_800,
         }
     }
 }
@@ -905,6 +903,11 @@ pub struct PanelConfig {
     pub outbox_max_items: usize,
     pub max_payload_bytes: usize,
     pub privacy_mode: String,
+    pub upload_hostname: bool,
+    pub node_location_enabled: bool,
+    pub node_location_url: String,
+    pub node_location_refresh_seconds: u64,
+    pub node_location_timeout_ms: u64,
     pub ip_intel_paths: Vec<PathBuf>,
     pub ip_intel_max_entries: usize,
     pub ip_intel_remote_enabled: bool,
@@ -928,6 +931,11 @@ impl Default for PanelConfig {
             outbox_max_items: 128,
             max_payload_bytes: 512 * 1024,
             privacy_mode: "strict".to_string(),
+            upload_hostname: true,
+            node_location_enabled: true,
+            node_location_url: "https://ipapi.co/json/".to_string(),
+            node_location_refresh_seconds: 86_400,
+            node_location_timeout_ms: 1500,
             ip_intel_paths: Vec::new(),
             ip_intel_max_entries: 20_000,
             ip_intel_remote_enabled: true,

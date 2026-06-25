@@ -2,7 +2,7 @@ use crate::report::{build_report_finding, send_report_finding, ReportPeriod};
 use crate::runtime_probe::{spawn_runtime_probe, RuntimeProbeHandle, RuntimeProbeLaunch};
 use crate::scanner::{run_scan, ScanOptions};
 use crate::storage::SqliteStore;
-use chrono::{DateTime, Local, Timelike, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
 use sentinel_core::{NotificationTimeZone, SentinelConfig, SentinelResult};
 use serde::{Deserialize, Serialize};
 use std::future;
@@ -16,6 +16,8 @@ const SCHEDULED_REPORT_STATE_RULE_ID: &str = "scheduled_report_state";
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct ScheduledReportState {
     last_sent_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    last_scheduled_for: Option<DateTime<Utc>>,
 }
 
 #[cfg(unix)]
@@ -136,21 +138,23 @@ async fn maybe_send_scheduled_report(config: &SentinelConfig) -> SentinelResult<
     if !any_notification_channel_enabled(config) {
         return Ok(());
     }
-    if !scheduled_hour_reached(config) {
+    let now = Utc::now();
+    let Some(scheduled_for) = scheduled_report_due_slot_at(config, now) else {
         return Ok(());
-    }
+    };
     let store = SqliteStore::open(config.storage.path.clone())?;
     let state = store
         .load_rule_state::<ScheduledReportState>(SCHEDULED_REPORT_STATE_RULE_ID)?
         .unwrap_or_default();
-    if let Some(last_sent_at) = state.last_sent_at {
-        let elapsed = Utc::now().signed_duration_since(last_sent_at);
-        if elapsed >= chrono::Duration::zero()
-            && elapsed
-                < chrono::Duration::seconds(duration_seconds(config.reports.min_interval_seconds))
-        {
-            return Ok(());
-        }
+    if report_already_sent_for_slot(config, &state, scheduled_for) {
+        return Ok(());
+    }
+    if state
+        .last_sent_at
+        .is_some_and(|last_sent_at| last_sent_at > now + chrono::Duration::minutes(5))
+    {
+        warn!("scheduled report state is in the future; skipping this scan");
+        return Ok(());
     }
     let period = report_period_from_config(config);
     let finding = build_report_finding(config, &store, period)?;
@@ -168,10 +172,15 @@ async fn maybe_send_scheduled_report(config: &SentinelConfig) -> SentinelResult<
         store.save_rule_state(
             SCHEDULED_REPORT_STATE_RULE_ID,
             &ScheduledReportState {
-                last_sent_at: Some(Utc::now()),
+                last_sent_at: Some(now),
+                last_scheduled_for: Some(scheduled_for),
             },
         )?;
-        info!(channels = delivery.delivered, "scheduled report sent");
+        info!(
+            channels = delivery.delivered,
+            scheduled_for = %scheduled_for,
+            "scheduled report sent"
+        );
     }
     Ok(())
 }
@@ -186,25 +195,49 @@ fn any_notification_channel_enabled(config: &SentinelConfig) -> bool {
         || config.notifications.serverchan.enabled
 }
 
-fn scheduled_hour_reached(config: &SentinelConfig) -> bool {
+fn scheduled_report_due_slot_at(
+    config: &SentinelConfig,
+    now: DateTime<Utc>,
+) -> Option<DateTime<Utc>> {
     match config.notifications.time_zone {
-        NotificationTimeZone::Local => Local::now().hour() as u8 >= config.reports.scheduled_hour,
-        NotificationTimeZone::Utc => Utc::now().hour() as u8 >= config.reports.scheduled_hour,
+        NotificationTimeZone::Local => {
+            local_scheduled_report_slot(now, config.reports.scheduled_hour)
+        }
+        NotificationTimeZone::Utc => utc_scheduled_report_slot(now, config.reports.scheduled_hour),
     }
+}
+
+fn utc_scheduled_report_slot(now: DateTime<Utc>, scheduled_hour: u8) -> Option<DateTime<Utc>> {
+    let slot = Utc.from_utc_datetime(&now.date_naive().and_hms_opt(scheduled_hour as u32, 0, 0)?);
+    (now >= slot).then_some(slot)
+}
+
+fn local_scheduled_report_slot(now: DateTime<Utc>, scheduled_hour: u8) -> Option<DateTime<Utc>> {
+    let local_now = now.with_timezone(&Local);
+    let naive_slot = local_now
+        .date_naive()
+        .and_hms_opt(scheduled_hour as u32, 0, 0)?;
+    let slot = Local.from_local_datetime(&naive_slot).earliest()?;
+    (local_now >= slot).then_some(slot.with_timezone(&Utc))
+}
+
+fn report_already_sent_for_slot(
+    config: &SentinelConfig,
+    state: &ScheduledReportState,
+    scheduled_for: DateTime<Utc>,
+) -> bool {
+    if state.last_scheduled_for == Some(scheduled_for) {
+        return true;
+    }
+    state.last_sent_at.is_some_and(|last_sent_at| {
+        scheduled_report_due_slot_at(config, last_sent_at) == Some(scheduled_for)
+    })
 }
 
 fn report_period_from_config(config: &SentinelConfig) -> ReportPeriod {
     match config.reports.scheduled_period.as_str() {
         "last24h" => ReportPeriod::Last24h,
         _ => ReportPeriod::Today,
-    }
-}
-
-fn duration_seconds(seconds: u64) -> i64 {
-    if seconds > i64::MAX as u64 {
-        i64::MAX
-    } else {
-        seconds as i64
     }
 }
 
@@ -249,4 +282,60 @@ async fn recv_reload_signal(_signal: &mut Option<ReloadSignal>) {
         }
     }
     future::pending::<()>().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{report_already_sent_for_slot, scheduled_report_due_slot_at, ScheduledReportState};
+    use chrono::{TimeZone, Utc};
+    use sentinel_core::{NotificationTimeZone, SentinelConfig};
+
+    fn utc_report_config(hour: u8) -> SentinelConfig {
+        let mut config = SentinelConfig::default();
+        config.notifications.time_zone = NotificationTimeZone::Utc;
+        config.reports.scheduled_hour = hour;
+        config
+    }
+
+    #[test]
+    fn scheduled_report_waits_until_configured_utc_hour() {
+        let config = utc_report_config(8);
+        let before = Utc.with_ymd_and_hms(2026, 6, 18, 7, 59, 59).unwrap();
+        let due = Utc.with_ymd_and_hms(2026, 6, 18, 8, 0, 0).unwrap();
+        let later = Utc.with_ymd_and_hms(2026, 6, 18, 23, 0, 0).unwrap();
+
+        assert_eq!(scheduled_report_due_slot_at(&config, before), None);
+        assert_eq!(scheduled_report_due_slot_at(&config, due), Some(due));
+        assert_eq!(scheduled_report_due_slot_at(&config, later), Some(due));
+    }
+
+    #[test]
+    fn scheduled_report_state_suppresses_only_the_same_daily_slot() {
+        let config = utc_report_config(8);
+        let yesterday_slot = Utc.with_ymd_and_hms(2026, 6, 18, 8, 0, 0).unwrap();
+        let today_slot = Utc.with_ymd_and_hms(2026, 6, 19, 8, 0, 0).unwrap();
+        let state = ScheduledReportState {
+            last_sent_at: Some(Utc.with_ymd_and_hms(2026, 6, 18, 23, 0, 0).unwrap()),
+            last_scheduled_for: Some(yesterday_slot),
+        };
+
+        assert!(!report_already_sent_for_slot(&config, &state, today_slot));
+        assert!(report_already_sent_for_slot(
+            &config,
+            &state,
+            yesterday_slot
+        ));
+    }
+
+    #[test]
+    fn legacy_scheduled_report_state_is_mapped_to_its_daily_slot() {
+        let config = utc_report_config(8);
+        let slot = Utc.with_ymd_and_hms(2026, 6, 18, 8, 0, 0).unwrap();
+        let state = ScheduledReportState {
+            last_sent_at: Some(Utc.with_ymd_and_hms(2026, 6, 18, 12, 30, 0).unwrap()),
+            last_scheduled_for: None,
+        };
+
+        assert!(report_already_sent_for_slot(&config, &state, slot));
+    }
 }

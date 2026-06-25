@@ -10,6 +10,7 @@ export const ROLE_LEVELS = {
 } as const;
 
 export const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
+export const DEFAULT_OFFLINE_THRESHOLD_MINUTES = 90;
 export const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES = 720;
 export const PAGES = [
   {
@@ -162,6 +163,7 @@ export const PAGES = [
     "privateColumns": [
       "last_seen_at",
       "node_name",
+      "hostname",
       "agent_version",
       "privacy_mode"
     ]

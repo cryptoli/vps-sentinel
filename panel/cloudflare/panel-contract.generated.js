@@ -6,6 +6,7 @@ export const SIGNATURE_WINDOW_SECONDS = 300;
 export const DEFAULT_PAGE_LIMIT = 50;
 export const MAX_PAGE_LIMIT = 200;
 export const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
+export const DEFAULT_OFFLINE_THRESHOLD_MINUTES = 90;
 export const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES = 720;
 export const ROLE_LEVELS = Object.freeze({ public: 0, private: 1 });
 export const PANEL_TRANSPORT_ENCODING = "json-base64";

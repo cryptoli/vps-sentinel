@@ -4,6 +4,7 @@
     "defaultPageLimit": 50,
     "maxPageLimit": 200,
     "defaultFreshnessThresholdMinutes": 30,
+    "defaultOfflineThresholdMinutes": 90,
     "defaultNodeRetiredThresholdMinutes": 720,
     "panelTransportEncoding": "json-base64",
     "defaultPublicPages": ["overview", "probe_sources", "nodes"],
@@ -100,7 +101,7 @@
       "minRole": "public",
       "endpoint": "/nodes",
       "columns": ["last_seen_at", "node_name", "agent_version"],
-      "privateColumns": ["last_seen_at", "node_name", "agent_version", "privacy_mode"]
+      "privateColumns": ["last_seen_at", "node_name", "hostname", "agent_version", "privacy_mode"]
     }
   ],
   "datasets": {
@@ -175,6 +176,6 @@
   },
   "rustColumnSets": {
     "nodesPublic": ["last_seen_at", "node_name", "agent_version", "metrics_json"],
-    "nodesPrivate": ["last_seen_at", "node_name", "agent_version", "privacy_mode", "storage_json", "metrics_json"]
+    "nodesPrivate": ["last_seen_at", "node_name", "hostname", "agent_version", "privacy_mode", "storage_json", "metrics_json"]
   }
 }

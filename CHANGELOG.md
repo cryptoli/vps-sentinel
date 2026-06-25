@@ -4,11 +4,11 @@
 
 ## 0.3.0
 
-- Fleet panel: added the Rust self-hosted panel and Cloudflare Worker/D1 panel, Next.js/React UI, public/private access model, self-hosted WebSocket refresh, Cloudflare REST fallback, review flows, blacklist attribution, node metrics, and theme extension hooks.
+- Fleet panel: added the Rust self-hosted panel and Cloudflare Worker/D1 panel, Next.js/React UI, public/private access model, self-hosted WebSocket refresh, Cloudflare REST fallback, review flows, blacklist attribution, node metrics, explicit fresh/stale/offline status windows, and theme extension hooks.
 - Shared panel contract: Rust panel, Cloudflare Worker, frontend page definitions, deployment defaults, public pages, dataset columns, and public blacklist redaction now come from `panel/shared/contract.json` with generated code and CI drift checks.
 - Detection intelligence: added bounded evidence scoring, semantic baseline-drift scoring/review actions, scan-window timeline correlation, explainable attack fingerprint clusters, auditd behavior rules, local behavior profiling, GPU compute signals, layered active-response escalation, and external TOML rule validation.
-- Privacy and access: simplified panel access to a single `PANEL_TOKEN`, random management path generation, public `settings` path protection, public blacklist node-name redaction, and agent-side privacy-preserving telemetry.
-- Operations: improved memory-conscious collectors, storage retention, panel deployment scripts, Cloudflare deployment workflow, detailed English/Chinese deployment docs, and one-command agent/panel update paths.
+- Privacy and access: simplified panel access to a single `PANEL_TOKEN`, random management path generation, public `settings` path protection, public blacklist node-name redaction, optional GeoIP enrichment, and agent-side telemetry that avoids uploading public server IPs, node IDs, paths, command lines, or raw evidence.
+- Operations: improved memory-conscious collectors, fixed-slot daily reports, storage retention, build-cache cleanup after source install/update, panel deployment scripts, Cloudflare deployment workflow, detailed English/Chinese deployment docs, and one-command agent/panel update paths.
 
 ## 0.2.0
 

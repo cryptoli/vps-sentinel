@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) async fn ingest(
     State(state): State<AppState>,
+    ConnectInfo(remote_addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<Value>, PanelApiError> {
@@ -23,7 +24,7 @@ pub(super) async fn ingest(
         ));
     }
     state.repo.insert_nonce(&headers, &node_name).await?;
-    apply_header_node_location(&headers, &mut payload);
+    apply_node_location(&state, &headers, remote_addr.ip(), &mut payload);
     state.repo.persist_payload(&payload, &node_name).await?;
     let _ = state.events.send(PanelStreamEvent::refresh_datasets(
         PanelRole::Public,
@@ -80,14 +81,34 @@ fn valid_panel_payload_identity(payload: &PanelEnvelope, signed_node_name: &str)
     }
 }
 
-fn apply_header_node_location(headers: &HeaderMap, payload: &mut PanelEnvelope) {
-    let Some(location) = detected_location_from_headers(headers) else {
-        return;
-    };
+fn apply_node_location(
+    state: &AppState,
+    headers: &HeaderMap,
+    remote_ip: IpAddr,
+    payload: &mut PanelEnvelope,
+) {
     let metrics = payload.node.metrics.get_or_insert_with(|| json!({}));
     let Some(map) = metrics.as_object_mut() else {
         return;
     };
+    if let Some(location) = detected_location_from_headers(headers) {
+        apply_location_fields(map, location);
+    }
+    if let Some(location) = state.geoip.lookup(remote_ip) {
+        let values = [
+            ("country_code", location.country_code),
+            ("country", location.country),
+            ("region", location.region),
+            ("city", location.city),
+        ]
+        .into_iter()
+        .filter_map(|(key, value)| value.map(|value| (key, value)))
+        .collect::<Vec<_>>();
+        apply_location_fields(map, values);
+    }
+}
+
+fn apply_location_fields(map: &mut serde_json::Map<String, Value>, location: Vec<(&str, String)>) {
     for (key, value) in location {
         if !map.contains_key(key) {
             map.insert(key.to_string(), Value::String(value));
