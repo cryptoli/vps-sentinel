@@ -313,6 +313,9 @@ fn finding_signals(finding: &Finding, assessment: &mut DriftBuilder) {
         if dynamic_udp_finding(finding) {
             assessment.add_downgrade(40, "dynamic UDP listener");
         }
+        if managed_service_listener_finding(finding) {
+            assessment.add_downgrade(30, "managed service listener");
+        }
         if evidence_value(&finding.evidence, "firewall_status").is_some_and(|value| {
             value.contains("protected") || value.contains("active") || value.contains("observed")
         }) {
@@ -407,6 +410,11 @@ fn public_listener_evidence(finding: &Finding) -> bool {
 
 fn dynamic_udp_finding(finding: &Finding) -> bool {
     evidence_value(&finding.evidence, "dynamic_udp_listener") == Some("true")
+}
+
+fn managed_service_listener_finding(finding: &Finding) -> bool {
+    finding.rule_id == "NET-001"
+        && evidence_value(&finding.evidence, "managed_service_listener") == Some("true")
 }
 
 fn large_file_size_change(event: &RawEvent) -> bool {
@@ -736,6 +744,41 @@ mod tests {
             .evidence
             .iter()
             .any(|item| item.key == "baseline_drift_tier" && item.value == "routine"));
+    }
+
+    #[test]
+    fn managed_service_listener_drift_stays_low_risk() {
+        let mut findings = vec![Finding::new(
+            "host",
+            "new listener",
+            "new listener",
+            Severity::Medium,
+            Category::Network,
+            "NET-001",
+            "*:8443",
+        )
+        .with_evidence(vec![
+            Evidence::new("protocol", "tcp6"),
+            Evidence::new("local_addr", "::"),
+            Evidence::new("local_port", "8443"),
+            Evidence::new("process_name", "proxy-service"),
+            Evidence::new("executable", "/usr/bin/proxy-service"),
+            Evidence::new("systemd_unit", "proxy-service.service"),
+            Evidence::new("managed_service_listener", "true"),
+        ])];
+
+        enrich_findings(&mut findings);
+
+        assert_eq!(findings[0].severity, Severity::Low);
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|item| item.key == "baseline_drift_tier" && item.value == "routine"));
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|item| item.key == "baseline_drift_downgrades"
+                && item.value.contains("managed service listener")));
     }
 
     #[test]

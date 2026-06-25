@@ -204,6 +204,18 @@ pub struct ListenerBaseline {
     pub local_port: String,
     pub process_name: String,
     pub executable: String,
+    #[serde(default)]
+    pub cmdline: String,
+    #[serde(default)]
+    pub systemd_unit: String,
+    #[serde(default)]
+    pub container_context: String,
+    #[serde(default)]
+    pub container_id: String,
+    #[serde(default)]
+    pub container_cgroup: String,
+    #[serde(default)]
+    pub exe_hash_blake3: String,
 }
 
 impl ListenerBaseline {
@@ -214,6 +226,21 @@ impl ListenerBaseline {
             local_port: event.field("local_port").unwrap_or_default().to_string(),
             process_name: event.field("process_name").unwrap_or_default().to_string(),
             executable: event.field("executable").unwrap_or_default().to_string(),
+            cmdline: event.field("cmdline").unwrap_or_default().to_string(),
+            systemd_unit: event.field("systemd_unit").unwrap_or_default().to_string(),
+            container_context: event
+                .field("container_context")
+                .unwrap_or_default()
+                .to_string(),
+            container_id: event.field("container_id").unwrap_or_default().to_string(),
+            container_cgroup: event
+                .field("container_cgroup")
+                .unwrap_or_default()
+                .to_string(),
+            exe_hash_blake3: event
+                .field("exe_hash_blake3")
+                .unwrap_or_default()
+                .to_string(),
         }
     }
 
@@ -256,13 +283,19 @@ mod tests {
             .with_field("local_addr", "0.0.0.0")
             .with_field("local_port", "443")
             .with_field("process_name", "nginx")
-            .with_field("executable", "/usr/sbin/nginx");
+            .with_field("executable", "/usr/sbin/nginx")
+            .with_field("systemd_unit", "nginx.service")
+            .with_field("exe_hash_blake3", "abc123");
         let snapshot = BaselineSnapshot::from_events(&[event]);
         let service = snapshot.listening_services.get("tcp:0.0.0.0:443");
         assert!(service.is_some());
         assert_eq!(
             service.map(|item| item.process_name.as_str()),
             Some("nginx")
+        );
+        assert_eq!(
+            service.map(|item| item.systemd_unit.as_str()),
+            Some("nginx.service")
         );
     }
 

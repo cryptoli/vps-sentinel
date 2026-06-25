@@ -232,7 +232,19 @@ fn add_listener_owner_fields(mut event: RawEvent, service: &ListenerBaseline) ->
     event
         .fields
         .insert("executable".to_string(), service.executable.clone());
+    add_listener_field(&mut event, "cmdline", &service.cmdline);
+    add_listener_field(&mut event, "systemd_unit", &service.systemd_unit);
+    add_listener_field(&mut event, "container_context", &service.container_context);
+    add_listener_field(&mut event, "container_id", &service.container_id);
+    add_listener_field(&mut event, "container_cgroup", &service.container_cgroup);
+    add_listener_field(&mut event, "exe_hash_blake3", &service.exe_hash_blake3);
     event
+}
+
+fn add_listener_field(event: &mut RawEvent, key: &str, value: &str) {
+    if !value.trim().is_empty() {
+        event.fields.insert(key.to_string(), value.to_string());
+    }
 }
 
 #[cfg(test)]

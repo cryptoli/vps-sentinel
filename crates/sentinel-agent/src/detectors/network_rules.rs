@@ -187,7 +187,13 @@ fn public_listen(
         listener_subject(event),
     )
     .with_evidence_deduped_by(
-        socket_evidence_with_context(event, firewall, process),
+        {
+            let mut items = socket_evidence_with_context(event, firewall, process);
+            if managed_service_listener(event, ctx) {
+                items.push(evidence("managed_service_listener", "true"));
+            }
+            items
+        },
         &["protocol", "local_addr", "local_port"],
     )
     .with_recommendations(vec![
@@ -323,6 +329,11 @@ fn socket_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
     push_evidence_if_present(&mut items, event, "cmdline");
     push_evidence_if_present(&mut items, event, "previous_process_name");
     push_evidence_if_present(&mut items, event, "previous_executable");
+    push_evidence_if_present(&mut items, event, "systemd_unit");
+    push_evidence_if_present(&mut items, event, "container_context");
+    push_evidence_if_present(&mut items, event, "container_id");
+    push_evidence_if_present(&mut items, event, "container_cgroup");
+    push_evidence_if_present(&mut items, event, "exe_hash_blake3");
     items
 }
 
@@ -548,6 +559,30 @@ fn is_tcp_protocol(event: &RawEvent) -> bool {
     event
         .field("protocol")
         .is_some_and(|protocol| protocol.starts_with("tcp"))
+}
+
+fn managed_service_listener(event: &RawEvent, ctx: &DetectContext) -> bool {
+    let managed_by_system = event
+        .field("systemd_unit")
+        .is_some_and(|value| !value.trim().is_empty())
+        || event
+            .field("container_context")
+            .is_some_and(|value| !value.trim().is_empty());
+    if !managed_by_system {
+        return false;
+    }
+    let executable = string_field(event, "executable");
+    if executable.trim().is_empty()
+        || path_in_suspicious_dirs(&executable, &ctx.config.process.suspicious_dirs)
+        || behavior_profile::hidden_basename(&executable)
+    {
+        return false;
+    }
+    let process_name = string_field(event, "process_name").to_ascii_lowercase();
+    if is_shell_process_name(process_name.as_str()) {
+        return false;
+    }
+    !network_execution_assessment_from_event(event).is_suspicious()
 }
 
 fn listener_subject(event: &RawEvent) -> String {
