@@ -36,11 +36,21 @@
 - 面板架构：[docs/panel-architecture.zh-CN.md](docs/panel-architecture.zh-CN.md) / [docs/panel-architecture.md](docs/panel-architecture.md)
 - 面板主题扩展：[docs/panel-themes.zh-CN.md](docs/panel-themes.zh-CN.md) / [docs/panel-themes.md](docs/panel-themes.md)
 
-快速安装 agent：
+推荐完整安装 agent：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/install.sh | sudo sh
+sudo VPS_NAME="prod-web-1" \
+  TELEGRAM_BOT_TOKEN="<telegram-bot-token>" \
+  TELEGRAM_CHAT_ID="<telegram-chat-id>" \
+  PANEL_URL="https://your-panel.example.com/api/v1/ingest" \
+  PANEL_SHARED_SECRET="<panel-shared-secret>" \
+  ACTIVE_RESPONSE_ENABLED="yes" \
+  ACTIVE_RESPONSE_PERMANENT_BLOCK_ENABLED="yes" \
+  STORAGE_MAX_DATABASE_SIZE_MB="256" \
+  sh -c 'curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/install.sh | sh'
 ```
+
+更短的 `curl ... | sudo sh` 仍然支持，但它只会安装本地守护进程，不会配置 Telegram 或面板上报。真实节点建议按部署教程使用完整命令。
 
 快速升级：
 
@@ -88,7 +98,7 @@ Agent 面向常见 systemd Linux VPS，包括 Debian、Ubuntu、Alma/Rocky/RHEL 
 
 ## 隐私
 
-默认本地优先：不启用 `[panel]` 就不向面板上报，不配置通知就不发外部消息，文件扫描有大小限制，数据保存在本地 SQLite。面板遥测会移除节点 ID、主机名、原始证据、路径、命令行和通用网络字段；已确认的外部攻击源 IP 可以在公开黑名单中展示，但公开黑名单不会展示节点名称。
+默认本地优先：不启用 `[panel]` 就不向面板上报，不配置通知就不发外部消息，文件扫描有大小限制，数据保存在本地 SQLite。面板遥测会移除节点 ID、主机 ID、服务器公网 IP、原始证据、路径、命令行和通用内部网络字段；节点名称、脱敏后的非 IP 主机名、国家、地区和城市等展示字段可以用于面板。已确认的外部攻击源 IP 可以在公开黑名单中展示，但公开黑名单不会展示节点名称。
 
 token、密码、Webhook secret、SMTP 凭据、Cloudflare API token、面板 shared secret 应存放在本地配置、Worker secrets 或 systemd 环境文件中，源码仓库只保留示例占位符。
 

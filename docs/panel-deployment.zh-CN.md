@@ -51,6 +51,8 @@ scripts/deploy-cloudflare-panel.sh
 - 设置 `PANEL_ADMIN_PATH`、`PANEL_PUBLIC_PAGES`、主题等非 secret 变量；
 - 部署后验证 `GET /api/v1/settings`。
 
+Cloudflare 部署会使用 Cloudflare 请求地域以及 agent 上传的安全节点地域字段来显示国家图标。agent 不会上报自己的公网 IP，只会在启用节点地域探测时上传已脱敏的国家、地区和城市。
+
 如果确实要固定管理路径，可以显式指定：
 
 ```bash
@@ -135,6 +137,17 @@ sudo cat /etc/vps-sentinel-panel/panel.env
 ```
 
 如果环境文件已经存在，生成脚本会复用已有值；缺少的 `PANEL_SHARED_SECRET`、`PANEL_TOKEN`、`PANEL_ADMIN_PATH` 会随机生成。
+
+可选本地 GeoIP 数据库：
+
+```bash
+sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env \
+PANEL_GEOIP_CITY_DB="/opt/geoip/GeoLite2-City.mmdb" \
+PANEL_GEOIP_ASN_DB="/opt/geoip/GeoLite2-ASN.mmdb" \
+scripts/create-panel-env.sh
+```
+
+`PANEL_GEOIP_CITY_DB` 和 `PANEL_GEOIP_ASN_DB` 支持 MaxMind 兼容的 MMDB 文件，包括 MaxMind GeoLite2/GeoIP2 和 DB-IP Lite/Commercial 数据库。它们是可选项，只用于自建面板看到的真实远端请求 IP；如果 agent 上报到 `localhost` 或经过内网代理，面板会使用 agent 自己上传的脱敏国家/地区/城市，而不是把 `127.0.0.1` 当成节点地域。
 
 数据库示例：
 

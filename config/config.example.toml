@@ -290,9 +290,8 @@ public_fanout_min_delta = 8
 
 [reports]
 scheduled_enabled = true
-scheduled_hour = 8
+scheduled_hour = 8 # fixed daily hour in notifications.time_zone; one scheduled report per calendar-day slot
 scheduled_period = "today" # today or last24h
-min_interval_seconds = 82800
 
 [advanced_collectors]
 auditd_enabled = true
@@ -342,7 +341,12 @@ push_interval_seconds = 60
 request_timeout_seconds = 60
 outbox_max_items = 128
 max_payload_bytes = 524288
-privacy_mode = "strict" # strict removes node identity details and raw evidence; admin response datasets may still carry external public source IPs
+privacy_mode = "strict" # strict removes IPs, raw paths, command lines, raw evidence, and node IDs; safe hostnames and country/city may still be uploaded
+upload_hostname = true # Upload sanitized hostname when it does not contain an IP address
+node_location_enabled = true # Auto-detect country/region/city without uploading the public IP
+node_location_url = "https://ipapi.co/json/" # JSON endpoint or Cloudflare trace endpoint; public IP is read then discarded
+node_location_refresh_seconds = 86400
+node_location_timeout_ms = 1500
 ip_intel_paths = [] # Optional CSV files: cidr,country,asn,organization
 ip_intel_max_entries = 20000
 ip_intel_remote_enabled = true # Best-effort ASN/country/org enrichment for public external probe IPs

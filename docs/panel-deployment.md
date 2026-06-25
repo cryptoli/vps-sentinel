@@ -51,6 +51,8 @@ The script will:
 - set non-secret Worker variables such as `PANEL_ADMIN_PATH`, `PANEL_PUBLIC_PAGES`, and theme settings;
 - verify `GET /api/v1/settings` after deployment.
 
+Cloudflare deployments use Cloudflare request geolocation plus the agent's safe node-location fields for country flags. The agent never uploads its public IP; it only uploads sanitized country, region, and city values when node-location detection is enabled.
+
 For a fixed management path, set it explicitly:
 
 ```bash
@@ -135,6 +137,17 @@ sudo cat /etc/vps-sentinel-panel/panel.env
 ```
 
 The generator preserves existing values when the file already exists. Missing `PANEL_SHARED_SECRET`, `PANEL_TOKEN`, and `PANEL_ADMIN_PATH` are generated randomly.
+
+Optional local GeoIP databases:
+
+```bash
+sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env \
+PANEL_GEOIP_CITY_DB="/opt/geoip/GeoLite2-City.mmdb" \
+PANEL_GEOIP_ASN_DB="/opt/geoip/GeoLite2-ASN.mmdb" \
+scripts/create-panel-env.sh
+```
+
+`PANEL_GEOIP_CITY_DB` and `PANEL_GEOIP_ASN_DB` accept MaxMind-compatible MMDB files, including MaxMind GeoLite2/GeoIP2 and DB-IP Lite/Commercial databases. They are optional. They enrich real remote request IPs seen by the self-hosted panel; when an agent reports to `localhost` or through an internal proxy, the panel uses the agent's own sanitized country/region/city fields instead of treating `127.0.0.1` as the node location.
 
 Optional database examples:
 

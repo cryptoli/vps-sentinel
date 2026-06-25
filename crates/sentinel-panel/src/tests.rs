@@ -1,13 +1,14 @@
 use super::{
-    normalize_panel_path, panel_token_from_headers, parse_panel_themes, redact_ip_text,
-    redact_panel_value, request_path_matches_admin, resolve_panel_role, scope_panel_value,
-    scope_probe_source_rows, verify_private_auth, verify_private_write_auth, AppState, DbValue,
-    FindingReview, FindingReviewRequest, PageQuery, PageRequest, PanelDataset, PanelReview,
-    PanelReviewRequest, PanelRole, PanelStreamEvent, Repository, RepositoryDriver,
+    normalize_panel_path, panel_node_status, panel_token_from_headers, parse_panel_themes,
+    redact_ip_text, redact_panel_value, request_path_matches_admin, resolve_panel_role,
+    scope_panel_value, scope_probe_source_rows, verify_private_auth, verify_private_write_auth,
+    AppState, DbValue, FindingReview, FindingReviewRequest, PageQuery, PageRequest, PanelDataset,
+    PanelReview, PanelReviewRequest, PanelRole, PanelStreamEvent, Repository, RepositoryDriver,
     ReviewTargetType, SecretResolver, DEFAULT_ADMIN_PATH, DEFAULT_THEMES, MAX_PAGE_LIMIT,
 };
+use crate::geoip::PanelGeoIpResolver;
 use axum::http::{header, HeaderMap, HeaderValue};
-use chrono::Utc;
+use chrono::{TimeZone, Utc};
 use rusqlite::Connection;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -280,6 +281,38 @@ fn panel_admin_path_and_theme_config_are_normalized() {
     assert_eq!(themes[2].id, "bad");
 }
 
+#[test]
+fn panel_node_status_uses_explicit_staleness_windows() {
+    let now = Utc.with_ymd_and_hms(2026, 6, 25, 8, 0, 0).unwrap();
+    let at = |minutes: i64| {
+        serde_json::json!(now
+            .checked_sub_signed(chrono::Duration::minutes(minutes))
+            .expect("timestamp")
+            .to_rfc3339())
+    };
+    let fresh = at(30);
+    let stale = at(31);
+    let offline = at(91);
+    let retired = at(721);
+
+    assert_eq!(
+        panel_node_status("node-a", "0.3.0", Some(&fresh), now),
+        "fresh"
+    );
+    assert_eq!(
+        panel_node_status("node-a", "0.3.0", Some(&stale), now),
+        "stale"
+    );
+    assert_eq!(
+        panel_node_status("node-a", "0.3.0", Some(&offline), now),
+        "offline"
+    );
+    assert_eq!(
+        panel_node_status("node-a", "0.3.0", Some(&retired), now),
+        "retired"
+    );
+}
+
 #[tokio::test]
 async fn node_page_expands_probe_metrics_without_sensitive_identity() {
     let repo = test_repo();
@@ -541,6 +574,7 @@ fn test_state(panel_token: Option<&str>) -> AppState {
         theme: "default".to_string(),
         themes: parse_panel_themes(DEFAULT_THEMES),
         max_body_bytes: 1024,
+        geoip: Arc::new(PanelGeoIpResolver::default()),
         events: broadcast::channel::<PanelStreamEvent>(8).0,
         stream_tickets: Arc::new(Mutex::new(BTreeMap::new())),
         csp_header: HeaderValue::from_static(

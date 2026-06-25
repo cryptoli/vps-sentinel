@@ -586,11 +586,6 @@ fn validate_reports(config: &ReportsConfig) -> SentinelResult<()> {
             )));
         }
     }
-    if config.min_interval_seconds == 0 {
-        return Err(SentinelError::Config(
-            "reports.min_interval_seconds must be greater than 0".to_string(),
-        ));
-    }
     Ok(())
 }
 
@@ -774,7 +769,32 @@ fn validate_panel(config: &PanelConfig) -> SentinelResult<()> {
         other => Err(SentinelError::Config(format!(
             "panel.privacy_mode '{other}' is invalid; use normal or strict"
         ))),
+    }?;
+    if config.node_location_enabled {
+        let location_url = config.node_location_url.trim();
+        if location_url.is_empty() {
+            return Err(SentinelError::Config(
+                "panel.node_location_url must not be empty when node location detection is enabled"
+                    .to_string(),
+            ));
+        }
+        if !location_url.starts_with("https://") {
+            return Err(SentinelError::Config(
+                "panel.node_location_url must use https://".to_string(),
+            ));
+        }
+        if config.node_location_refresh_seconds == 0 {
+            return Err(SentinelError::Config(
+                "panel.node_location_refresh_seconds must be greater than 0".to_string(),
+            ));
+        }
+        if config.node_location_timeout_ms == 0 {
+            return Err(SentinelError::Config(
+                "panel.node_location_timeout_ms must be greater than 0".to_string(),
+            ));
+        }
     }
+    Ok(())
 }
 
 fn validate_maintenance(config: &MaintenanceConfig) -> SentinelResult<()> {

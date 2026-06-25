@@ -27,6 +27,7 @@ export interface PanelSettings {
   public_pages?: PageId[];
   role?: PanelRole | null;
   freshness_threshold_minutes?: number;
+  offline_threshold_minutes?: number;
   node_retired_threshold_minutes?: number;
   server_time?: string;
 }

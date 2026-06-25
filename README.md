@@ -36,11 +36,21 @@ Detailed agent and panel deployment guides:
 - Panel architecture: [docs/panel-architecture.md](docs/panel-architecture.md)
 - Panel theme extensions: [docs/panel-themes.md](docs/panel-themes.md)
 
-Quick agent install:
+Recommended full agent install:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/install.sh | sudo sh
+sudo VPS_NAME="prod-web-1" \
+  TELEGRAM_BOT_TOKEN="<telegram-bot-token>" \
+  TELEGRAM_CHAT_ID="<telegram-chat-id>" \
+  PANEL_URL="https://your-panel.example.com/api/v1/ingest" \
+  PANEL_SHARED_SECRET="<panel-shared-secret>" \
+  ACTIVE_RESPONSE_ENABLED="yes" \
+  ACTIVE_RESPONSE_PERMANENT_BLOCK_ENABLED="yes" \
+  STORAGE_MAX_DATABASE_SIZE_MB="256" \
+  sh -c 'curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/install.sh | sh'
 ```
+
+The shorter `curl ... | sudo sh` form is still supported, but it installs a local-only daemon without Telegram or panel upload. Use the deployment guide when installing a real node.
 
 Quick update:
 
@@ -88,7 +98,7 @@ Runtime footprint depends on enabled collectors, log volume, and file-integrity 
 
 ## Privacy
 
-Defaults are local-first: no panel upload unless `[panel].enabled = true`, no notification channel unless configured, bounded file scanning, and local SQLite storage. Panel telemetry removes node IDs, hostnames, raw evidence, paths, command lines, and general network fields before remote storage. Confirmed external attacker IPs can be shown on the public blocklist when active-response evidence supports it, but public blocklist rows do not expose node names.
+Defaults are local-first: no panel upload unless `[panel].enabled = true`, no notification channel unless configured, bounded file scanning, and local SQLite storage. Panel telemetry removes node IDs, host IDs, public server IPs, raw evidence, paths, command lines, and general internal network fields before remote storage. Safe display fields such as node name, sanitized hostname, country, region, and city may be uploaded for dashboard use. Confirmed external attacker IPs can be shown on the public blocklist when active-response evidence supports it, but public blocklist rows do not expose node names.
 
 Secrets belong in local config files, Worker secrets, or systemd environment files. Repository files only contain placeholder examples for tokens, passwords, webhook secrets, SMTP credentials, Cloudflare API tokens, and panel shared secrets.
 

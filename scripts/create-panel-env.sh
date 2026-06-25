@@ -74,6 +74,8 @@ main() {
   bind="${PANEL_BIND:-127.0.0.1:8858}"
   web_dir="${PANEL_WEB_DIR:-/usr/local/share/vps-sentinel/panel/web}"
   public_pages="${PANEL_PUBLIC_PAGES:-${PANEL_CONTRACT_DEFAULT_PUBLIC_PAGES:-overview,probe_sources,nodes}}"
+  geoip_city_db="${PANEL_GEOIP_CITY_DB:-$(credential_value "$output" PANEL_GEOIP_CITY_DB)}"
+  geoip_asn_db="${PANEL_GEOIP_ASN_DB:-$(credential_value "$output" PANEL_GEOIP_ASN_DB)}"
   shared_secret="${PANEL_SHARED_SECRET:-$(credential_value "$output" PANEL_SHARED_SECRET)}"
   panel_token="$(browser_token_value "$output")"
   admin_path="${PANEL_ADMIN_PATH:-$(credential_value "$output" PANEL_ADMIN_PATH)}"
@@ -98,6 +100,12 @@ main() {
     printf "PANEL_TOKEN='%s'\n" "$(shell_quote_value "$panel_token")"
     printf "PANEL_ADMIN_PATH='%s'\n" "$(shell_quote_value "$admin_path")"
     printf "PANEL_PUBLIC_PAGES='%s'\n" "$(shell_quote_value "$public_pages")"
+    if [ -n "$geoip_city_db" ]; then
+      printf "PANEL_GEOIP_CITY_DB='%s'\n" "$(shell_quote_value "$geoip_city_db")"
+    fi
+    if [ -n "$geoip_asn_db" ]; then
+      printf "PANEL_GEOIP_ASN_DB='%s'\n" "$(shell_quote_value "$geoip_asn_db")"
+    fi
   } >"$tmp"
   chmod 0600 "$tmp"
   mv "$tmp" "$output"

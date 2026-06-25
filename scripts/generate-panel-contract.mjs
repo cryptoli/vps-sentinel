@@ -75,6 +75,7 @@ pub(crate) const SIGNATURE_WINDOW_SECONDS: i64 = ${constants.signatureWindowSeco
 pub(crate) const DEFAULT_PAGE_LIMIT: usize = ${constants.defaultPageLimit};
 pub(crate) const MAX_PAGE_LIMIT: usize = ${constants.maxPageLimit};
 pub(crate) const DEFAULT_FRESHNESS_THRESHOLD_MINUTES: u64 = ${constants.defaultFreshnessThresholdMinutes};
+pub(crate) const DEFAULT_OFFLINE_THRESHOLD_MINUTES: u64 = ${constants.defaultOfflineThresholdMinutes};
 pub(crate) const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES: u64 = ${constants.defaultNodeRetiredThresholdMinutes};
 pub(crate) const PANEL_TRANSPORT_ENCODING: &str = ${rustString(constants.panelTransportEncoding)};
 pub(crate) const DEFAULT_PUBLIC_PAGES: &str = ${rustString(constants.defaultPublicPages.join(","))};
@@ -142,6 +143,7 @@ export const SIGNATURE_WINDOW_SECONDS = ${constants.signatureWindowSeconds};
 export const DEFAULT_PAGE_LIMIT = ${constants.defaultPageLimit};
 export const MAX_PAGE_LIMIT = ${constants.maxPageLimit};
 export const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = ${constants.defaultFreshnessThresholdMinutes};
+export const DEFAULT_OFFLINE_THRESHOLD_MINUTES = ${constants.defaultOfflineThresholdMinutes};
 export const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES = ${constants.defaultNodeRetiredThresholdMinutes};
 export const ROLE_LEVELS = Object.freeze({ public: 0, private: 1 });
 export const PANEL_TRANSPORT_ENCODING = ${jsonInline(constants.panelTransportEncoding)};
@@ -173,6 +175,7 @@ export const ROLE_LEVELS = {
 } as const;
 
 export const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = ${constants.defaultFreshnessThresholdMinutes};
+export const DEFAULT_OFFLINE_THRESHOLD_MINUTES = ${constants.defaultOfflineThresholdMinutes};
 export const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES = ${constants.defaultNodeRetiredThresholdMinutes};
 export const PAGES = ${jsonExpression(value.pages)} satisfies PageConfig[];
 `;
