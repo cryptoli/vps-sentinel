@@ -39,6 +39,7 @@ cleanup_on_exit() {
 }
 
 trap cleanup_on_exit EXIT
+trap 'exit 130' HUP INT TERM
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "please run as root, for example: sudo sh update.sh" >&2
@@ -591,9 +592,9 @@ build_and_install_from_source() {
   checkout_or_update
   install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
   start_update_maintenance
-  stop_service_before_update
   cd "$WORK_DIR"
   cargo build --release --locked
+  stop_service_before_update
   install -m 0755 target/release/vps-sentinel "$PREFIX/bin/vps-sentinel"
   install_optional_panel "$WORK_DIR"
   install_binary_aliases
