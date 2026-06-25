@@ -92,7 +92,7 @@ export function PanelApp() {
   const activeRoleRef = useRef<PanelRole>("public");
 
   const publicPages = useMemo(() => new Set(settings.public_pages || []), [settings.public_pages]);
-  const managementRouteActive = settingsLoaded && isManagementRoute(settings.admin_path);
+  const managementRouteActive = settingsLoaded && (settings.management_route === true || isManagementRoute(settings.admin_path));
   const themeOptions = useMemo(() => normalizeThemeOptions(settings.themes), [settings.themes]);
   const pageMinRole = useCallback(
     (page: PageConfig): PanelRole => (publicPages.has(page.id) ? "public" : page.minRole),
@@ -200,7 +200,8 @@ export function PanelApp() {
         const nextSettings = await fetchSettings(initialRole);
         if (cancelled) return;
         setSettings(nextSettings);
-        const nextRole = selectedRole(nextSettings.role, Boolean(panelToken()));
+        const nextRole = selectedRole(nextSettings.role, false);
+        if (panelToken() && nextRole !== "private") clearPanelToken();
         activeRoleRef.current = nextRole;
         setRole(nextRole);
         setTheme(selectConfiguredTheme(nextSettings.theme, nextSettings.themes));
@@ -220,13 +221,14 @@ export function PanelApp() {
 
   useEffect(() => {
     if (!settingsLoaded) return;
+    if (managementRouteActive && role !== "private") return;
     if (settings.auth_required && !panelToken() && !roleAllows("public", pageMinRole(activePage))) return;
     connectStream();
     return () => {
       socketRef.current?.close();
       if (reconnectRef.current) window.clearTimeout(reconnectRef.current);
     };
-  }, [activePage, pageMinRole, settingsLoaded, settings.auth_required, role]);
+  }, [activePage, managementRouteActive, pageMinRole, settingsLoaded, settings.auth_required, role]);
 
   useEffect(() => {
     if (!settingsLoaded) return;
@@ -237,17 +239,18 @@ export function PanelApp() {
 
   useEffect(() => {
     if (!settingsLoaded) return;
+    if (managementRouteActive && role !== "private") return;
     if (settings.auth_required && !panelToken() && !roleAllows("public", pageMinRole(activePage))) return;
     void loadVisibleData(currentPage, role);
-  }, [activePage, currentPage, datasetStates, loadVisibleData, pageMinRole, role, settingsLoaded, settings.auth_required]);
+  }, [activePage, currentPage, datasetStates, loadVisibleData, managementRouteActive, pageMinRole, role, settingsLoaded, settings.auth_required]);
 
   async function unlock(token: string) {
     setPanelToken(token);
     try {
       const nextSettings = await fetchSettings(role);
-      const nextRole = selectedRole(nextSettings.role, true);
-        if (isManagementRoute(nextSettings.admin_path) && nextRole !== "private") {
-          throw new PanelApiError("panel token required", 403);
+      const nextRole = selectedRole(nextSettings.role, false);
+      if ((nextSettings.management_route === true || isManagementRoute(nextSettings.admin_path)) && nextRole !== "private") {
+        throw new PanelApiError("panel token required", 403);
       }
       activeRoleRef.current = nextRole;
       setRole(nextRole);
@@ -836,8 +839,9 @@ function initialPageFromLocation(): PageId {
   return isPageId(page) ? page : "overview";
 }
 
-function isManagementRoute(adminPath: string | undefined): boolean {
+function isManagementRoute(adminPath: string | null | undefined): boolean {
   if (typeof window === "undefined") return false;
+  if (!adminPath) return false;
   return normalizeLocationPath(window.location.pathname) === normalizeAdminPath(adminPath || "/panel-admin");
 }
 

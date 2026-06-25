@@ -64,6 +64,15 @@ export function formatValue(column: string, value: unknown, language: "zh" | "en
   return String(value);
 }
 
+export function countryDisplay(value: unknown): { flag: string; label: string } {
+  const label = String(value || "").trim();
+  const code = countryCodeFromValue(label);
+  return {
+    flag: code ? flagForCountry(code) : "\u25CF",
+    label: label && label.toLowerCase() !== "unknown" ? label : "Unknown",
+  };
+}
+
 export function metricsFromNode(node: NodeRecord): NodeMetrics {
   if (node.metrics && typeof node.metrics === "object") return normalizeNodeMetrics(node.metrics as NodeMetrics);
   if (node.metrics_json && typeof node.metrics_json === "object") return normalizeNodeMetrics(node.metrics_json as NodeMetrics);
@@ -141,7 +150,7 @@ function ratioPercent(used: unknown, total: unknown): number | undefined {
 
 export function nodeLocation(node: NodeRecord): { countryCode: string; flag: string; label: string } {
   const metrics = metricsFromNode(node);
-  const countryCode = String(metrics.country_code || "").toUpperCase();
+  const countryCode = countryCodeFromValue(metrics.country_code) || countryCodeFromValue(metrics.country);
   if (countryCode) {
     const label = [metrics.city, metrics.region, metrics.country].filter(Boolean).join(", ") || countryCode;
     return { countryCode, flag: flagForCountry(countryCode), label };
@@ -149,11 +158,70 @@ export function nodeLocation(node: NodeRecord): { countryCode: string; flag: str
   return { countryCode: "", flag: "\u25CF", label: "Unknown" };
 }
 
-function flagForCountry(code: string): string {
+export function flagForCountry(code: string): string {
   if (!/^[A-Z]{2}$/.test(code)) return "\u25CF";
   const base = 0x1f1e6;
   return String.fromCodePoint(...[...code].map((letter) => base + letter.charCodeAt(0) - 65));
 }
+
+function countryCodeFromValue(value: unknown): string {
+  const text = String(value || "").trim();
+  if (/^[A-Za-z]{2}$/.test(text)) return text.toUpperCase();
+  const normalized = text.toLowerCase().replace(/[._-]+/g, " ").replace(/\s+/g, " ").trim();
+  return COUNTRY_NAME_TO_CODE[normalized] || "";
+}
+
+const COUNTRY_NAME_TO_CODE: Record<string, string> = {
+  "argentina": "AR",
+  "australia": "AU",
+  "austria": "AT",
+  "belgium": "BE",
+  "brazil": "BR",
+  "canada": "CA",
+  "chile": "CL",
+  "china": "CN",
+  "colombia": "CO",
+  "czech republic": "CZ",
+  "denmark": "DK",
+  "finland": "FI",
+  "france": "FR",
+  "georgia": "GE",
+  "germany": "DE",
+  "hong kong": "HK",
+  "india": "IN",
+  "indonesia": "ID",
+  "ireland": "IE",
+  "israel": "IL",
+  "italy": "IT",
+  "japan": "JP",
+  "malaysia": "MY",
+  "mexico": "MX",
+  "netherlands": "NL",
+  "new zealand": "NZ",
+  "norway": "NO",
+  "poland": "PL",
+  "portugal": "PT",
+  "romania": "RO",
+  "russia": "RU",
+  "russian federation": "RU",
+  "singapore": "SG",
+  "south africa": "ZA",
+  "south korea": "KR",
+  "spain": "ES",
+  "sweden": "SE",
+  "switzerland": "CH",
+  "taiwan": "TW",
+  "thailand": "TH",
+  "turkey": "TR",
+  "ukraine": "UA",
+  "united arab emirates": "AE",
+  "united kingdom": "GB",
+  "uk": "GB",
+  "united states": "US",
+  "united states of america": "US",
+  "usa": "US",
+  "vietnam": "VN",
+};
 
 export function sortedNodes(nodes: NodeRecord[]): NodeRecord[] {
   return [...nodes].sort((left, right) =>

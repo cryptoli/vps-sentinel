@@ -16,11 +16,12 @@ export type JsonValue = Primitive | JsonValue[] | { [key: string]: JsonValue };
 export type PanelRecord = Record<string, unknown>;
 
 export interface PanelSettings {
-  admin_path?: string;
+  admin_path?: string | null;
   theme?: string;
   themes?: ThemeOption[];
   auth_required?: boolean;
   auth_configured?: boolean;
+  management_route?: boolean;
   stream_supported?: boolean;
   public_enabled?: boolean;
   public_pages?: PageId[];
@@ -129,5 +130,6 @@ export interface PageConfig {
   minRole: PanelRole;
   endpoint?: string;
   columns?: string[];
+  publicColumns?: string[];
   privateColumns?: string[];
 }

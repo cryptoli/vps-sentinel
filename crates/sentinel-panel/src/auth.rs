@@ -105,6 +105,22 @@ pub(super) fn normalize_panel_path(value: &str) -> String {
     }
 }
 
+pub(super) fn request_path_matches_admin(admin_path: &str, candidate: Option<&str>) -> bool {
+    let Some(candidate) = candidate else {
+        return false;
+    };
+    let path = candidate
+        .trim()
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim();
+    if path.is_empty() {
+        return false;
+    }
+    normalize_panel_path(path) == normalize_panel_path(admin_path)
+}
+
 pub(super) fn random_panel_admin_path() -> String {
     let id = Uuid::new_v4().simple().to_string();
     format!("/{}", &id[..12])

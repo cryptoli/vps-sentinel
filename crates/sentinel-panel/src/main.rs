@@ -223,6 +223,11 @@ struct PanelDataset {
 }
 
 #[derive(Debug, Deserialize)]
+struct SettingsQuery {
+    path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct PageQuery {
     from: Option<String>,
     to: Option<String>,
@@ -630,11 +635,22 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn settings(State(state): State<AppState>, headers: HeaderMap) -> Json<Value> {
+async fn settings(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<SettingsQuery>,
+) -> Json<Value> {
     let role = resolve_panel_role(&state, &headers).ok();
     let public_pages = state.public_pages.iter().cloned().collect::<Vec<_>>();
+    let management_route = request_path_matches_admin(&state.admin_path, query.path.as_deref());
+    let admin_path = if role == Some(PanelRole::Private) {
+        Value::String(state.admin_path.clone())
+    } else {
+        Value::Null
+    };
     Json(json!({
-        "admin_path": state.admin_path,
+        "admin_path": admin_path,
+        "management_route": management_route,
         "theme": state.theme,
         "themes": state.themes,
         "auth_required": !panel_public_access_enabled(&state),
@@ -1589,15 +1605,13 @@ fn scope_probe_source_rows(value: &mut Value, role: PanelRole) {
             continue;
         };
         for key in [
+            "node_name",
             "network_prefix",
             "latest_reason",
             "block_reason",
             "first_seen",
         ] {
             object.remove(key);
-        }
-        if let Some(Value::String(node_name)) = object.get_mut("node_name") {
-            *node_name = public_node_name(node_name);
         }
     }
 }

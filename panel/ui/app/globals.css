@@ -2437,6 +2437,32 @@ td {
   vertical-align: middle;
 }
 
+.country-cell,
+.country-inline {
+  display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.country-cell > span:last-child,
+.country-inline > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.country-flag {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 18px;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+}
+
 td.col-reason .cell-value,
 td.col-latest-reason .cell-value,
 td.col-block-reason .cell-value,

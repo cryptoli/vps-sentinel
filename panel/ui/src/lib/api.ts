@@ -43,7 +43,10 @@ export async function fetchJson<T>(path: string, role: PanelRole, init: RequestI
 }
 
 export async function fetchSettings(role: PanelRole): Promise<PanelSettings> {
-  return fetchJson<PanelSettings>("/settings", role);
+  const params = new URLSearchParams();
+  if (typeof window !== "undefined") params.set("path", window.location.pathname);
+  const query = params.toString();
+  return fetchJson<PanelSettings>(`/settings${query ? `?${query}` : ""}`, role);
 }
 
 export async function fetchDataset<T extends PanelRecord>(

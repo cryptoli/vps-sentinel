@@ -1,10 +1,10 @@
 use super::{
     normalize_panel_path, panel_token_from_headers, parse_panel_themes, redact_ip_text,
-    redact_panel_value, resolve_panel_role, scope_panel_value, scope_probe_source_rows,
-    verify_private_auth, verify_private_write_auth, AppState, DbValue, FindingReview,
-    FindingReviewRequest, PageQuery, PageRequest, PanelDataset, PanelReview, PanelReviewRequest,
-    PanelRole, PanelStreamEvent, Repository, RepositoryDriver, ReviewTargetType, SecretResolver,
-    DEFAULT_ADMIN_PATH, DEFAULT_THEMES, MAX_PAGE_LIMIT,
+    redact_panel_value, request_path_matches_admin, resolve_panel_role, scope_panel_value,
+    scope_probe_source_rows, verify_private_auth, verify_private_write_auth, AppState, DbValue,
+    FindingReview, FindingReviewRequest, PageQuery, PageRequest, PanelDataset, PanelReview,
+    PanelReviewRequest, PanelRole, PanelStreamEvent, Repository, RepositoryDriver,
+    ReviewTargetType, SecretResolver, DEFAULT_ADMIN_PATH, DEFAULT_THEMES, MAX_PAGE_LIMIT,
 };
 use axum::http::{header, HeaderMap, HeaderValue};
 use chrono::Utc;
@@ -247,7 +247,10 @@ async fn probe_source_page_preserves_public_block_source_ip() {
 
     assert!(private_text.contains("8.8.8.8"));
     assert!(private_text.contains(r#""categories":["web"]"#));
+    assert!(private_text.contains("node-a"));
     assert!(public_text.contains("8.8.8.8"));
+    assert!(!public_text.contains("node-a"));
+    assert!(!public_text.contains("node_name"));
     assert!(!public_text.contains("8.8.8.0/24"));
     assert!(!public_text.contains("web probe request_count=3"));
 }
@@ -256,6 +259,20 @@ async fn probe_source_page_preserves_public_block_source_ip() {
 fn panel_admin_path_and_theme_config_are_normalized() {
     assert_eq!(normalize_panel_path("secure-admin/"), "/secure-admin");
     assert_eq!(normalize_panel_path(""), DEFAULT_ADMIN_PATH);
+    assert!(request_path_matches_admin(
+        "/cryptocaigou",
+        Some("/cryptocaigou")
+    ));
+    assert!(request_path_matches_admin(
+        "/cryptocaigou",
+        Some("cryptocaigou/")
+    ));
+    assert!(request_path_matches_admin(
+        "/cryptocaigou",
+        Some("/cryptocaigou?page=nodes")
+    ));
+    assert!(!request_path_matches_admin("/cryptocaigou", Some("/")));
+    assert!(!request_path_matches_admin("/cryptocaigou", Some("")));
 
     let themes = parse_panel_themes("default:Default, ocean:Ocean Theme, ../bad:Bad");
     assert_eq!(themes[0].id, "default");

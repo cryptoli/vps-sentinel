@@ -88,7 +88,7 @@ Runtime footprint depends on enabled collectors, log volume, and file-integrity 
 
 ## Privacy
 
-Defaults are local-first: no panel upload unless `[panel].enabled = true`, no notification channel unless configured, bounded file scanning, and local SQLite storage. Panel telemetry removes node IDs, hostnames, raw evidence, paths, command lines, and general network fields before remote storage. Confirmed external attacker IPs can be shown on the public blocklist when active-response evidence supports it.
+Defaults are local-first: no panel upload unless `[panel].enabled = true`, no notification channel unless configured, bounded file scanning, and local SQLite storage. Panel telemetry removes node IDs, hostnames, raw evidence, paths, command lines, and general network fields before remote storage. Confirmed external attacker IPs can be shown on the public blocklist when active-response evidence supports it, but public blocklist rows do not expose node names.
 
 Secrets belong in local config files, Worker secrets, or systemd environment files. Do not commit tokens, passwords, webhook secrets, SMTP credentials, Cloudflare API tokens, or panel shared secrets.
 

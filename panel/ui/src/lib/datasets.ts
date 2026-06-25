@@ -66,7 +66,8 @@ export const PAGES: PageConfig[] = [
     descriptionKey: "blacklistDescription",
     minRole: "private",
     endpoint: "/probe-sources",
-    columns: [
+    columns: ["last_seen", "source_ip", "seen_count", "block_status", "country", "asn", "organization", "categories", "rule_ids"],
+    privateColumns: [
       "last_seen",
       "node_name",
       "source_ip",

@@ -1,4 +1,4 @@
-import { formatValue, rowTone } from "@/lib/format";
+import { countryDisplay, formatValue, rowTone } from "@/lib/format";
 import { formatTemplate, translate } from "@/lib/i18n";
 import type { Language, PanelRecord } from "@/types";
 import type { CSSProperties } from "react";
@@ -314,6 +314,15 @@ function renderCell(column: string, value: unknown, language: Language) {
   }
   if (["country", "asn", "organization", "network_prefix"].includes(column) && (!value || String(value).toLowerCase() === "unknown")) {
     return <span className="muted-cell">{translate(language, "unknown")}</span>;
+  }
+  if (column === "country") {
+    const country = countryDisplay(value);
+    return (
+      <span className="country-cell">
+        <span className="country-flag" aria-hidden="true">{country.flag}</span>
+        <span>{country.label}</span>
+      </span>
+    );
   }
   return formatValue(column, value, language);
 }

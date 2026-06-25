@@ -115,10 +115,12 @@ export default {
       if (request.method === "GET" && url.pathname === "/api/v1/settings") {
         const role = resolvePanelRole(request, env, { allowAnonymous: true });
         const pages = publicPages(env);
+        const resolvedAdminPath = adminPath(env);
         return withCors(json({
           theme: env.PANEL_THEME || "default",
           themes: panelThemes(env),
-          admin_path: adminPath(env),
+          admin_path: role === "private" ? resolvedAdminPath : null,
+          management_route: requestPathMatchesAdmin(resolvedAdminPath, url.searchParams.get("path")),
           auth_required: !publicAccessEnabled(env),
           auth_configured: Boolean(panelToken(env)),
           stream_supported: false,
@@ -829,10 +831,9 @@ function scopeProbeSourceRows(items, role) {
   if (role !== "public") return items;
   return (items || []).map((item) => {
     const next = { ...item };
-    for (const key of ["network_prefix", "latest_reason", "block_reason", "first_seen"]) {
+    for (const key of ["node_name", "network_prefix", "latest_reason", "block_reason", "first_seen"]) {
       delete next[key];
     }
-    if (next.node_name) next.node_name = publicNodeName(next.node_name);
     return next;
   });
 }
@@ -1507,6 +1508,20 @@ function adminPath(env) {
   return normalized || DEFAULT_ADMIN_PATH;
 }
 
+function requestPathMatchesAdmin(resolvedAdminPath, candidate) {
+  const raw = String(candidate || "").trim();
+  if (!raw) return false;
+  const path = raw.split(/[?#]/, 1)[0].trim();
+  if (!path) return false;
+  return normalizePanelPath(path) === normalizePanelPath(resolvedAdminPath);
+}
+
+function normalizePanelPath(value) {
+  const raw = String(value || "").trim() || DEFAULT_ADMIN_PATH;
+  const withSlash = raw.startsWith("/") ? raw : `/${raw}`;
+  return withSlash.replace(/\/+$/, "") || DEFAULT_ADMIN_PATH;
+}
+
 function panelThemes(env) {
   const seen = new Set();
   const themes = String(env.PANEL_THEMES || DEFAULT_THEMES)
@@ -1625,7 +1640,7 @@ function withCors(response, request, env) {
     headers.set("access-control-allow-origin", origin);
     headers.set("vary", "Origin");
     headers.set("access-control-allow-methods", "GET,POST,OPTIONS");
-    headers.set("access-control-allow-headers", "authorization,content-type,x-vps-sentinel-node-name,x-vps-sentinel-node,x-vps-sentinel-payload-encoding,x-vps-sentinel-timestamp,x-vps-sentinel-nonce,x-vps-sentinel-body-sha256,x-vps-sentinel-signature,x-vps-sentinel-view-token");
+    headers.set("access-control-allow-headers", "authorization,content-type,x-vps-sentinel-node-name,x-vps-sentinel-node,x-vps-sentinel-payload-encoding,x-vps-sentinel-timestamp,x-vps-sentinel-nonce,x-vps-sentinel-body-sha256,x-vps-sentinel-signature");
   }
   headers.set("x-content-type-options", "nosniff");
   headers.set("referrer-policy", "no-referrer");

@@ -32,7 +32,7 @@ import { DonutChart, MiniBars, RiskTrend, Sparkline } from "@/components/Charts"
 import { Badge, Card, DataTable, MetricCard, Pagination } from "@/components/Primitives";
 import { SearchField } from "@/components/Controls";
 import { Filters } from "@/components/Filters";
-import { metricsFromNode, nodeLocation, number, percent, relativeTime, bitrate, bytes, sortedNodes } from "@/lib/format";
+import { countryDisplay, metricsFromNode, nodeLocation, number, percent, relativeTime, bitrate, bytes, sortedNodes } from "@/lib/format";
 import { translate } from "@/lib/i18n";
 import { roleAllows } from "@/lib/rbac";
 import type { DatasetPage, DatasetState, Language, NodeRecord, PageConfig, PanelRecord, PanelRole, Summary, TrendPoint } from "@/types";
@@ -431,9 +431,9 @@ export function SourcesPageView({
 }) {
   const rows = filteredRows(page.items, state);
   const blocked = rows.filter((row) => String(row.block_status || "").toLowerCase().includes("block")).length;
-  const columns = roleAllows(role, "private")
-    ? config.columns || []
-    : ["last_seen", "node_name", "source_ip", "seen_count", "block_status", "country", "asn", "organization", "categories", "rule_ids"];
+  const columns = roleAllows(role, "private") && config.privateColumns
+    ? config.privateColumns
+    : config.publicColumns || config.columns || [];
   return (
     <div className="page-stack feature-page sources-design">
       <FeatureHeader title={translate(language, config.titleKey)} description={translate(language, config.descriptionKey)} />
@@ -829,7 +829,7 @@ function MobileBlocksList({
               </header>
               {canShowAttribution && (
                 <div className="mobile-record-subline">
-                  <span>{recordText(row, ["country"], translate(language, "unknown"))}</span>
+                  <CountryInline value={recordText(row, ["country"], translate(language, "unknown"))} />
                   <span>{recordText(row, ["asn"], translate(language, "unknown"))}</span>
                   <span>{recordText(row, ["organization"], "")}</span>
                 </div>
@@ -873,7 +873,7 @@ function MobileSourcesList({
               <Badge value={translate(language, status)} tone={status} />
             </header>
             <div className="mobile-record-subline">
-              <span>{recordText(row, ["country"], translate(language, "unknown"))}</span>
+              <CountryInline value={recordText(row, ["country"], translate(language, "unknown"))} />
               <span>{recordText(row, ["asn"], translate(language, "unknown"))}</span>
               <span>{recordText(row, ["organization"], "")}</span>
             </div>
@@ -886,6 +886,16 @@ function MobileSourcesList({
         );
       })}
     </div>
+  );
+}
+
+function CountryInline({ value }: { value: string }) {
+  const country = countryDisplay(value);
+  return (
+    <span className="country-inline">
+      <span className="country-flag" aria-hidden="true">{country.flag}</span>
+      <span>{country.label}</span>
+    </span>
   );
 }
 

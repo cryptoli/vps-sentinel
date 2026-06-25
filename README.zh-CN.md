@@ -19,17 +19,17 @@
 | --- | --- |
 | SSH 与账号 | 成功登录、密码登录、爆破、爆破后成功、`authorized_keys` 漂移、key 文件危险状态、新用户、UID 0 用户和权限相关变化。 |
 | 基线漂移 | 对用户、SSH key、关键文件、持久化项、监听端口和服务身份建立本地基线；通过语义漂移评分减少软件包升级、动态端口和正常运维噪声。 |
-| 进程与 GPU 行为 | procfs、父进程链、systemd 身份、包归属、可执行文件 hash/owner、出站画像、行为画像漂移、已知矿工/扫描器身份、NVIDIA/ROCm GPU 计算进程信号。 |
-| 网络与 Web 探查 | 公网监听 owner、辅助防火墙状态、可信代理真实客户端 IP 还原、Web 探查家族分类、攻击路径聚合、错误爆发和封禁候选。 |
+| 进程与 GPU 行为 | procfs、父进程链、systemd 身份、包归属、可执行文件 hash/owner、出站画像、行为画像漂移、已知矿工/扫描器身份、NVIDIA/ROCm GPU 计算信号。 |
+| 网络与 Web 探查 | 公网监听 owner、防火墙上下文、可信代理真实客户端 IP 还原、Web 探查家族分类、攻击路径聚合、错误爆发和封禁候选。 |
 | 主动响应 | 对高置信 SSH/Web 攻击源执行可选 nftables/iptables 来源 IP 封禁，支持临时/永久升级、白名单、可信代理保护和 CLI 解封。 |
-| 攻击指纹 | 用精确 hash 和 SimHash 风格近似匹配聚合同一攻击手法，即使来源 IP 变化也能归类。 |
-| 报告与通知 | 支持每日安全报告，以及 Telegram、邮件 SMTP、Webhook、ntfy、Gotify、Bark、ServerChan；通知默认中文。 |
-| 多 VPS 面板 | 推模式 Rust 自建面板或 Cloudflare Worker/D1 面板；支持公开/私有访问、隐私脱敏、节点指标、黑名单归属、复核流程、自建 WebSocket 刷新和主题扩展入口。 |
-| 资源控制 | 有界日志解析、事件预算、SQLite 保留策略、数据库大小限制、原始证据裁剪和小内存 VPS 友好的常驻占用。 |
+| 攻击指纹 | 使用精确 hash 和 SimHash 风格近似匹配聚合同一攻击手法，即使来源 IP 变化也能归类。 |
+| 报告与通知 | 支持每日安全报告，以及 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan；通知默认中文。 |
+| 多 VPS 面板 | 推模式 Rust 自建面板或 Cloudflare Worker/D1 面板，支持公开/私有访问、隐私脱敏、节点指标、黑名单归属、复核流程、自建 WebSocket 刷新和主题扩展入口。 |
+| 资源控制 | 有界日志解析、事件预算、SQLite 保留策略、数据库大小限制、原始证据裁剪，对小内存 VPS 友好。 |
 
 ## 部署
 
-部署教程不再放在 README 中：
+README 只保留入口，完整部署步骤请看文档：
 
 - Agent 部署：[docs/deployment.zh-CN.md](docs/deployment.zh-CN.md) / [docs/deployment.md](docs/deployment.md)
 - 面板部署：[docs/panel-deployment.zh-CN.md](docs/panel-deployment.zh-CN.md) / [docs/panel-deployment.md](docs/panel-deployment.md)
@@ -69,16 +69,16 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 
 ## Token 类型
 
-系统保留少量必要 token，避免个人项目中过度分层：
+系统只保留少量必要 token，避免个人项目中过度分层：
 
 | Token 或 secret | 使用方 | 用途 | 是否必须 |
 | --- | --- | --- | --- |
-| `panel.secret` / `PANEL_SHARED_SECRET` | Agent 和面板 | `POST /api/v1/ingest` HMAC 签名。 | 启用面板上报时必须。 |
-| `PANEL_NODE_SECRETS` | 面板 | 按非敏感节点名称配置单节点上报密钥。 | 可选。 |
-| `PANEL_TOKEN` | 浏览器和面板 | 私有访问 token，用于详情、复核、审计日志和管理入口。 | 使用私有面板功能时必须。 |
-| 通知渠道 token | Agent 和通知服务 | Telegram/Gotify/ntfy/Bark/ServerChan/Webhook/邮件凭据。 | 仅启用对应渠道时需要。 |
+| `panel.secret` / `PANEL_SHARED_SECRET` | Agent 和面板 | `POST /api/v1/ingest` HMAC 签名。 | 启用面板上报时必须 |
+| `PANEL_NODE_SECRETS` | 面板 | 按非敏感节点名称配置单节点上报密钥。 | 可选 |
+| `PANEL_TOKEN` | 浏览器和面板 | 私有访问 token，用于详情、复核、审计日志和管理入口。 | 使用私有面板功能时必须 |
+| 通知渠道 token | Agent 和通知服务 | Telegram/Gotify/ntfy/Bark/ServerChan/Webhook/邮件凭据。 | 仅启用对应渠道时需要 |
 
-部署脚本会在复用旧凭据文件时，把旧的 `PANEL_ADMIN_TOKEN`、`PANEL_OPERATOR_TOKEN` 或 `PANEL_VIEW_TOKEN` 迁移为新的 `PANEL_TOKEN`。
+部署脚本复用旧凭据文件时，会把旧的 `PANEL_ADMIN_TOKEN`、`PANEL_OPERATOR_TOKEN` 或 `PANEL_VIEW_TOKEN` 迁移为新的 `PANEL_TOKEN`。
 
 ## 兼容性
 
@@ -88,9 +88,9 @@ Agent 面向常见 systemd Linux VPS，包括 Debian、Ubuntu、Alma/Rocky/RHEL 
 
 ## 隐私
 
-默认本地优先：不启用 `[panel]` 就不上报面板，不配置通知就不发外部消息，文件扫描有大小限制，数据保存在本地 SQLite。面板遥测会移除节点 ID、主机名、原始证据、路径、命令行和通用网络字段；已确认的外部攻击源 IP 可以在公开黑名单中展示。
+默认本地优先：不启用 `[panel]` 就不向面板上报，不配置通知就不发外部消息，文件扫描有大小限制，数据保存在本地 SQLite。面板遥测会移除节点 ID、主机名、原始证据、路径、命令行和通用网络字段；已确认的外部攻击源 IP 可以在公开黑名单中展示，但公开黑名单不会展示节点名称。
 
-token、密码、Webhook secret、SMTP 凭据、Cloudflare API token、面板 shared secret 都只能放在本地配置、Worker secrets 或 systemd 环境文件中，不应提交到仓库。
+token、密码、Webhook secret、SMTP 凭据、Cloudflare API token、面板 shared secret 都只能放在本地配置、Worker secrets 或 systemd 环境文件中，不能提交到仓库。
 
 ## Star 历史
 
