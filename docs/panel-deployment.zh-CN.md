@@ -15,13 +15,11 @@
 | --- | --- | --- |
 | `PANEL_SHARED_SECRET` | HMAC 上报密钥，agent 的 `[panel].secret` 必须使用同一个值。 | 使用共享密钥时必须。 |
 | `PANEL_NODE_SECRETS` | 可选，按非敏感 `panel.node_name` 配置单节点上报密钥的 JSON map。 | 可选。 |
-| `PANEL_OPERATOR_TOKEN` | 浏览器运维层 token，用于查看脱敏运维页面。 | 脚本未传入时自动生成。 |
-| `PANEL_ADMIN_TOKEN` | 浏览器管理层 token，用于复核等管理操作。 | 脚本未传入时自动生成。 |
-| `PANEL_VIEW_TOKEN` | 旧版运维层别名。 | 仅兼容旧部署，新部署不推荐。 |
+| `PANEL_TOKEN` | 浏览器私有访问 token，用于私有页面和复核操作。 | 脚本未传入时自动生成。 |
 | `PANEL_ADMIN_PATH` | 浏览器管理入口路径。它不是 API 安全边界，API 仍由 token 授权。 | 脚本未传入时自动生成。 |
 | `PANEL_PUBLIC_PAGES` | 不输入 token 也能访问的页面，例如 `overview,probe_sources,nodes`。 | 可选。 |
 
-新部署不应该使用固定 `/admin`。部署脚本会自动生成类似 `/4f9a12d0c8ab` 的随机管理路径，并和 token 一起保存。
+新部署不应该使用固定 `/admin`。部署脚本会自动生成类似 `/4f9a12d0c8ab` 的随机管理路径，并和 token 一起保存。旧凭据文件中的 `PANEL_ADMIN_TOKEN`、`PANEL_OPERATOR_TOKEN` 或 `PANEL_VIEW_TOKEN` 会迁移为新的 `PANEL_TOKEN`。
 
 ## Cloudflare Worker/D1
 
@@ -54,8 +52,7 @@ cat ~/.config/vps-sentinel/cloudflare-panel.env
 这个文件里包含：
 
 - `PANEL_SHARED_SECRET`：写入每台 agent 的 `[panel].secret`；
-- `PANEL_OPERATOR_TOKEN`：运维层访问 token；
-- `PANEL_ADMIN_TOKEN`：管理入口使用的 token；
+- `PANEL_TOKEN`：管理入口和私有页面使用的访问 token；
 - `PANEL_ADMIN_PATH`：浏览器管理入口路径，例如 `https://worker.example.workers.dev/<随机路径>`。
 
 可以自定义凭据保存位置：
@@ -104,7 +101,7 @@ sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env scripts/create-panel-env.s
 sudo cat /etc/vps-sentinel-panel/panel.env
 ```
 
-如果环境文件已经存在，生成脚本会复用已有值；缺少的 `PANEL_SHARED_SECRET`、`PANEL_OPERATOR_TOKEN`、`PANEL_ADMIN_TOKEN`、`PANEL_ADMIN_PATH` 会自动随机生成。
+如果环境文件已经存在，生成脚本会复用已有值；缺少的 `PANEL_SHARED_SECRET`、`PANEL_TOKEN`、`PANEL_ADMIN_PATH` 会自动随机生成。旧的 `PANEL_ADMIN_TOKEN`、`PANEL_OPERATOR_TOKEN` 或 `PANEL_VIEW_TOKEN` 会作为 `PANEL_TOKEN` 迁移复用。
 
 随机值优先使用 `openssl`，其次使用 `/dev/urandom` + `od`，最后才回退到 Node.js。极简系统需要安装 `openssl`，或者在执行脚本前手动设置这四个 `PANEL_*` 值。
 

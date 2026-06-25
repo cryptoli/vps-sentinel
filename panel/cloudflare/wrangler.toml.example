@@ -16,8 +16,7 @@ database_id = "replace-with-d1-database-id"
 # Set secrets with:
 # wrangler secret put PANEL_SHARED_SECRET
 # wrangler secret put PANEL_NODE_SECRETS
-# wrangler secret put PANEL_OPERATOR_TOKEN
-# wrangler secret put PANEL_ADMIN_TOKEN
+# wrangler secret put PANEL_TOKEN
 [vars]
 PANEL_MAX_BODY_BYTES = "1048576"
 PANEL_PUBLIC_ENABLED = "false"

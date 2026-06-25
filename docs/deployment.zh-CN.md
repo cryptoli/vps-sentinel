@@ -83,11 +83,6 @@ url = "https://panel.example.com/api/v1/ingest"
 node_name = "prod-sg-1"
 secret = "same-long-secret-as-panel"
 privacy_mode = "strict"
-
-[panel.location]
-country_code = "SG"
-country = "Singapore"
-city = "Singapore"
 ```
 
 验证：
@@ -99,7 +94,7 @@ sudo vs panel outbox
 sudo vs reload
 ```
 
-`node_name` 只应该使用非敏感展示名，不要填公网 IP、私有主机名、云厂商实例 ID 或密钥。
+`node_name` 只应该使用非敏感展示名，不要填公网 IP、私有主机名、云厂商实例 ID 或密钥。面板接收端会在可信反代头可用时自动补充国家、城市等非敏感展示信息，例如 Cloudflare 地理位置头。
 
 ## 主动响应
 

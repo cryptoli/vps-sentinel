@@ -83,11 +83,6 @@ url = "https://panel.example.com/api/v1/ingest"
 node_name = "prod-sg-1"
 secret = "same-long-secret-as-panel"
 privacy_mode = "strict"
-
-[panel.location]
-country_code = "SG"
-country = "Singapore"
-city = "Singapore"
 ```
 
 Then verify:
@@ -99,7 +94,7 @@ sudo vs panel outbox
 sudo vs reload
 ```
 
-Use non-sensitive `node_name` values. Do not use public IPs, private hostnames, provider instance IDs, or secrets as node names.
+Use non-sensitive `node_name` values. Do not use public IPs, private hostnames, provider instance IDs, or secrets as node names. The panel receiver adds non-sensitive country/city display metadata automatically when trusted reverse-proxy headers such as Cloudflare geolocation are available.
 
 ## Active Response
 

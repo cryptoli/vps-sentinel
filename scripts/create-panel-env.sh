@@ -48,6 +48,21 @@ credential_value() {
   sed -n "s/^${key}='\\([^']*\\)'$/\\1/p" "$file" | tail -n 1
 }
 
+browser_token_value() {
+  file="$1"
+  if [ -n "${PANEL_TOKEN:-}" ]; then
+    printf '%s\n' "$PANEL_TOKEN"
+    return
+  fi
+  for key in PANEL_TOKEN PANEL_ADMIN_TOKEN PANEL_OPERATOR_TOKEN PANEL_VIEW_TOKEN; do
+    value="$(credential_value "$file" "$key")"
+    if [ -n "$value" ]; then
+      printf '%s\n' "$value"
+      return
+    fi
+  done
+}
+
 main() {
   output="${PANEL_ENV_FILE:-/etc/vps-sentinel-panel/panel.env}"
   database_backend="${PANEL_DB_BACKEND:-sqlite}"
@@ -56,13 +71,11 @@ main() {
   web_dir="${PANEL_WEB_DIR:-/usr/local/share/vps-sentinel/panel/web}"
   public_pages="${PANEL_PUBLIC_PAGES:-overview,probe_sources,nodes}"
   shared_secret="${PANEL_SHARED_SECRET:-$(credential_value "$output" PANEL_SHARED_SECRET)}"
-  operator_token="${PANEL_OPERATOR_TOKEN:-$(credential_value "$output" PANEL_OPERATOR_TOKEN)}"
-  admin_token="${PANEL_ADMIN_TOKEN:-$(credential_value "$output" PANEL_ADMIN_TOKEN)}"
+  panel_token="$(browser_token_value "$output")"
   admin_path="${PANEL_ADMIN_PATH:-$(credential_value "$output" PANEL_ADMIN_PATH)}"
 
   [ -n "$shared_secret" ] || shared_secret="$(random_token)"
-  [ -n "$operator_token" ] || operator_token="$(random_token)"
-  [ -n "$admin_token" ] || admin_token="$(random_token)"
+  [ -n "$panel_token" ] || panel_token="$(random_token)"
   [ -n "$admin_path" ] || admin_path="$(random_admin_path)"
 
   dir="$(dirname "$output")"
@@ -78,8 +91,7 @@ main() {
     printf "PANEL_DATABASE_URL='%s'\n" "$(shell_quote_value "$database_url")"
     printf "PANEL_WEB_DIR='%s'\n" "$(shell_quote_value "$web_dir")"
     printf "PANEL_SHARED_SECRET='%s'\n" "$(shell_quote_value "$shared_secret")"
-    printf "PANEL_OPERATOR_TOKEN='%s'\n" "$(shell_quote_value "$operator_token")"
-    printf "PANEL_ADMIN_TOKEN='%s'\n" "$(shell_quote_value "$admin_token")"
+    printf "PANEL_TOKEN='%s'\n" "$(shell_quote_value "$panel_token")"
     printf "PANEL_ADMIN_PATH='%s'\n" "$(shell_quote_value "$admin_path")"
     printf "PANEL_PUBLIC_PAGES='%s'\n" "$(shell_quote_value "$public_pages")"
   } >"$tmp"
@@ -88,7 +100,7 @@ main() {
 
   log "panel environment written to $output"
   log "management path: $admin_path"
-  log "read $output as root to configure agent panel.secret and browser tokens"
+  log "read $output as root to configure agent panel.secret, PANEL_TOKEN, and the management path"
 }
 
 main "$@"

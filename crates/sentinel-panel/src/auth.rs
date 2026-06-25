@@ -30,57 +30,45 @@ pub(super) fn verify_panel_page_role(
 }
 
 #[cfg(test)]
-pub(super) fn verify_view_auth(state: &AppState, headers: &HeaderMap) -> Result<(), PanelApiError> {
-    verify_panel_role(state, headers, PanelRole::Operator).map(|_| ())
+pub(super) fn verify_private_auth(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<(), PanelApiError> {
+    verify_panel_role(state, headers, PanelRole::Private).map(|_| ())
 }
 
 pub(super) fn resolve_panel_role(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<PanelRole, PanelApiError> {
-    if state.view_token.is_none()
-        && state.operator_token.is_none()
-        && state.admin_token.is_none()
-        && !panel_public_access_enabled(state)
-    {
+    if state.panel_token.is_none() && !panel_public_access_enabled(state) {
         return Err(PanelApiError::new(
             StatusCode::FORBIDDEN,
-            "panel_view_token_not_configured",
+            "panel_token_not_configured",
         ));
-    };
-    let Some(actual) = view_token_from_headers(headers) else {
+    }
+    let Some(actual) = panel_token_from_headers(headers) else {
         if panel_public_access_enabled(state) {
             return Ok(PanelRole::Public);
         }
         return Err(PanelApiError::new(
             StatusCode::UNAUTHORIZED,
-            "missing_view_token",
+            "missing_panel_token",
         ));
     };
-    let admin_match = state
-        .admin_token
+    if state
+        .panel_token
         .as_deref()
-        .is_some_and(|expected| constant_time_eq(expected, actual));
-    if admin_match {
-        return Ok(PanelRole::Admin);
-    }
-    let operator_match = state
-        .operator_token
-        .as_deref()
-        .is_some_and(|expected| constant_time_eq(expected, actual));
-    let view_match = state
-        .view_token
-        .as_deref()
-        .is_some_and(|expected| constant_time_eq(expected, actual));
-    if operator_match || view_match {
-        return Ok(PanelRole::Operator);
+        .is_some_and(|expected| constant_time_eq(expected, actual))
+    {
+        return Ok(PanelRole::Private);
     }
     if panel_public_access_enabled(state) {
         return Ok(PanelRole::Public);
     }
     Err(PanelApiError::new(
         StatusCode::UNAUTHORIZED,
-        "invalid_view_token",
+        "invalid_panel_token",
     ))
 }
 
@@ -165,32 +153,24 @@ fn sanitize_theme_id(value: &str) -> String {
         .collect::<String>()
 }
 
-pub(super) fn verify_admin_auth(
+pub(super) fn verify_private_write_auth(
     state: &AppState,
     headers: &HeaderMap,
 ) -> Result<(), PanelApiError> {
-    if state.admin_token.is_none() {
+    if state.panel_token.is_none() {
         return Err(PanelApiError::new(
             StatusCode::FORBIDDEN,
-            "panel_admin_token_not_configured",
+            "panel_token_not_configured",
         ));
     }
-    verify_panel_role(state, headers, PanelRole::Admin).map(|_| ())
+    verify_panel_role(state, headers, PanelRole::Private).map(|_| ())
 }
 
-pub(super) fn view_token_from_headers(headers: &HeaderMap) -> Option<&str> {
-    if let Some(value) = headers
+pub(super) fn panel_token_from_headers(headers: &HeaderMap) -> Option<&str> {
+    headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(bearer_token)
-    {
-        return Some(value);
-    }
-    headers
-        .get("x-vps-sentinel-view-token")
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
 }
 
 fn bearer_token(value: &str) -> Option<&str> {

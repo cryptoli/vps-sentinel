@@ -897,7 +897,6 @@ pub struct PanelConfig {
     pub url: String,
     pub node_id: String,
     pub node_name: String,
-    pub location: PanelLocationConfig,
     pub secret: String,
     pub min_severity: Severity,
     pub batch_size: usize,
@@ -914,15 +913,6 @@ pub struct PanelConfig {
     pub ip_intel_remote_max_lookups: usize,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct PanelLocationConfig {
-    pub country_code: String,
-    pub country: String,
-    pub region: String,
-    pub city: String,
-}
-
 impl Default for PanelConfig {
     fn default() -> Self {
         Self {
@@ -930,7 +920,6 @@ impl Default for PanelConfig {
             url: String::new(),
             node_id: String::new(),
             node_name: String::new(),
-            location: PanelLocationConfig::default(),
             secret: String::new(),
             min_severity: Severity::Medium,
             batch_size: 100,

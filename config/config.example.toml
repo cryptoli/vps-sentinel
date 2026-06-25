@@ -350,12 +350,6 @@ ip_intel_remote_endpoint = "whois.cymru.com:43"
 ip_intel_remote_timeout_ms = 1200
 ip_intel_remote_max_lookups = 64
 
-[panel.location]
-country_code = "" # Optional two-letter country code for dashboard flags, for example SG, JP, US
-country = "" # Optional display-only country name; do not put IPs or hostnames here
-region = ""
-city = ""
-
 [maintenance]
 enabled = false
 suppress_baseline_drift = true

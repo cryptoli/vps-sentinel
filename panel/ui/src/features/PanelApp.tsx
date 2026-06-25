@@ -92,7 +92,7 @@ export function PanelApp() {
   const activeRoleRef = useRef<PanelRole>("public");
 
   const publicPages = useMemo(() => new Set(settings.public_pages || []), [settings.public_pages]);
-  const adminRouteActive = settingsLoaded && isAdminRoute(settings.admin_path);
+  const managementRouteActive = settingsLoaded && isManagementRoute(settings.admin_path);
   const themeOptions = useMemo(() => normalizeThemeOptions(settings.themes), [settings.themes]);
   const pageMinRole = useCallback(
     (page: PageConfig): PanelRole => (publicPages.has(page.id) ? "public" : page.minRole),
@@ -246,8 +246,8 @@ export function PanelApp() {
     try {
       const nextSettings = await fetchSettings(role);
       const nextRole = selectedRole(nextSettings.role, true);
-      if (isAdminRoute(nextSettings.admin_path) && nextRole !== "admin") {
-        throw new PanelApiError("admin token required", 403);
+        if (isManagementRoute(nextSettings.admin_path) && nextRole !== "private") {
+          throw new PanelApiError("panel token required", 403);
       }
       activeRoleRef.current = nextRole;
       setRole(nextRole);
@@ -278,7 +278,7 @@ export function PanelApp() {
     ) {
       return;
     }
-    if (!("WebSocket" in window)) {
+    if (settings.stream_supported === false || !("WebSocket" in window)) {
       setStreamState("fallback");
       return;
     }
@@ -303,10 +303,20 @@ export function PanelApp() {
         socket.addEventListener("close", scheduleReconnect);
         socket.addEventListener("error", scheduleReconnect);
       })
-      .catch(() => scheduleReconnect());
+      .catch((error) => {
+        if (error instanceof PanelApiError && (error.status === 404 || error.status === 501)) {
+          setStreamState("fallback");
+          return;
+        }
+        scheduleReconnect();
+      });
   }
 
   function scheduleReconnect() {
+    if (settings.stream_supported === false) {
+      setStreamState("fallback");
+      return;
+    }
     setStreamState("reconnecting");
     if (reconnectRef.current) return;
     reconnectRef.current = window.setTimeout(() => {
@@ -318,7 +328,7 @@ export function PanelApp() {
   const needsAccess = Boolean(
     settingsLoaded
       && (
-        (adminRouteActive && role !== "admin")
+        (managementRouteActive && role !== "private")
         || (settings.auth_required && !panelToken() && !roleAllows("public", pageMinRole(activePage)))
       ),
   );
@@ -547,7 +557,7 @@ function Topbar({
           options={languageOptions}
           onChange={onLanguage}
         />
-        {roleAllows(role, "operator") && <UserMenu role={role} language={language} onLogout={onLogout} />}
+        {roleAllows(role, "private") && <UserMenu role={role} language={language} onLogout={onLogout} />}
       </div>
     </header>
   );
@@ -621,8 +631,7 @@ function UserMenu({
 }
 
 function roleLabel(role: PanelRole, language: Language): string {
-  if (role === "admin") return translate(language, "adminRole");
-  if (role === "operator") return translate(language, "operatorRole");
+  if (role === "private") return translate(language, "privateRole");
   return translate(language, "publicRole");
 }
 
@@ -827,7 +836,7 @@ function initialPageFromLocation(): PageId {
   return isPageId(page) ? page : "overview";
 }
 
-function isAdminRoute(adminPath: string | undefined): boolean {
+function isManagementRoute(adminPath: string | undefined): boolean {
   if (typeof window === "undefined") return false;
   return normalizeLocationPath(window.location.pathname) === normalizeAdminPath(adminPath || "/panel-admin");
 }

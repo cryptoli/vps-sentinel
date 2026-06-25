@@ -24,7 +24,7 @@
 | 主动响应 | 对高置信 SSH/Web 攻击源执行可选 nftables/iptables 来源 IP 封禁，支持临时/永久升级、白名单、可信代理保护和 CLI 解封。 |
 | 攻击指纹 | 用精确 hash 和 SimHash 风格近似匹配聚合同一攻击手法，即使来源 IP 变化也能归类。 |
 | 报告与通知 | 支持每日安全报告，以及 Telegram、邮件 SMTP、Webhook、ntfy、Gotify、Bark、ServerChan；通知默认中文。 |
-| 多 VPS 面板 | 推模式 Rust 自建面板或 Cloudflare Worker/D1 面板；支持公开/运维/管理三层权限、隐私脱敏、节点指标、黑名单归属、复核流程、自建 WebSocket 刷新和主题扩展入口。 |
+| 多 VPS 面板 | 推模式 Rust 自建面板或 Cloudflare Worker/D1 面板；支持公开/私有访问、隐私脱敏、节点指标、黑名单归属、复核流程、自建 WebSocket 刷新和主题扩展入口。 |
 | 资源控制 | 有界日志解析、事件预算、SQLite 保留策略、数据库大小限制、原始证据裁剪和小内存 VPS 友好的常驻占用。 |
 
 ## 部署
@@ -33,7 +33,8 @@
 
 - Agent 部署：[docs/deployment.zh-CN.md](docs/deployment.zh-CN.md) / [docs/deployment.md](docs/deployment.md)
 - 面板部署：[docs/panel-deployment.zh-CN.md](docs/panel-deployment.zh-CN.md) / [docs/panel-deployment.md](docs/panel-deployment.md)
-- 面板架构和主题扩展：[docs/panel.md](docs/panel.md)
+- 面板架构：[docs/panel-architecture.zh-CN.md](docs/panel-architecture.zh-CN.md) / [docs/panel-architecture.md](docs/panel-architecture.md)
+- 面板主题扩展：[docs/panel-themes.zh-CN.md](docs/panel-themes.zh-CN.md) / [docs/panel-themes.md](docs/panel-themes.md)
 
 快速安装 agent：
 
@@ -68,18 +69,16 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 
 ## Token 类型
 
-系统按信任边界拆分 token，不建议把所有权限混成一个：
+系统保留少量必要 token，避免个人项目中过度分层：
 
 | Token 或 secret | 使用方 | 用途 | 是否必须 |
 | --- | --- | --- | --- |
 | `panel.secret` / `PANEL_SHARED_SECRET` | Agent 和面板 | `POST /api/v1/ingest` HMAC 签名。 | 启用面板上报时必须。 |
 | `PANEL_NODE_SECRETS` | 面板 | 按非敏感节点名称配置单节点上报密钥。 | 可选。 |
-| `PANEL_OPERATOR_TOKEN` | 浏览器和面板 | 运维层访问，查看脱敏运维数据。 | 公开页面够用时可选。 |
-| `PANEL_ADMIN_TOKEN` | 浏览器和面板 | 管理层访问，复核、写操作、完整脱敏详情和敏感操作。 | 管理功能需要。 |
-| `PANEL_VIEW_TOKEN` | 浏览器和面板 | 旧版只读 token，等价于运维层读权限。 | 兼容旧部署；新部署建议不用。 |
+| `PANEL_TOKEN` | 浏览器和面板 | 私有访问 token，用于详情、复核、审计日志和管理入口。 | 使用私有面板功能时必须。 |
 | 通知渠道 token | Agent 和通知服务 | Telegram/Gotify/ntfy/Bark/ServerChan/Webhook/邮件凭据。 | 仅启用对应渠道时需要。 |
 
-当前唯一明显“多余但保留”的是 `PANEL_VIEW_TOKEN`：它是兼容旧版本的别名，新部署使用 `PANEL_OPERATOR_TOKEN` 和 `PANEL_ADMIN_TOKEN` 即可。
+部署脚本会在复用旧凭据文件时，把旧的 `PANEL_ADMIN_TOKEN`、`PANEL_OPERATOR_TOKEN` 或 `PANEL_VIEW_TOKEN` 迁移为新的 `PANEL_TOKEN`。
 
 ## 兼容性
 

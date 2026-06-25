@@ -78,14 +78,8 @@ struct Args {
     #[arg(long, env = "PANEL_NODE_SECRETS")]
     node_secrets_json: Option<String>,
 
-    #[arg(long, env = "PANEL_VIEW_TOKEN")]
-    view_token: Option<String>,
-
-    #[arg(long, env = "PANEL_OPERATOR_TOKEN")]
-    operator_token: Option<String>,
-
-    #[arg(long, env = "PANEL_ADMIN_TOKEN")]
-    admin_token: Option<String>,
+    #[arg(long, env = "PANEL_TOKEN")]
+    panel_token: Option<String>,
 
     #[arg(long, env = "PANEL_PUBLIC_ENABLED", default_value_t = false)]
     public_enabled: bool,
@@ -120,9 +114,7 @@ enum DatabaseBackend {
 struct AppState {
     repo: Arc<Repository>,
     secrets: Arc<SecretResolver>,
-    view_token: Option<String>,
-    operator_token: Option<String>,
-    admin_token: Option<String>,
+    panel_token: Option<String>,
     public_enabled: bool,
     public_pages: BTreeSet<String>,
     admin_path: String,
@@ -138,8 +130,7 @@ struct AppState {
 #[serde(rename_all = "lowercase")]
 enum PanelRole {
     Public = 0,
-    Operator = 1,
-    Admin = 2,
+    Private = 1,
 }
 
 #[derive(Debug, Clone)]
@@ -566,32 +557,15 @@ async fn main() -> Result<()> {
     let repo = Repository::connect(args.database_backend, &args.database_url).await?;
     repo.init_schema().await?;
     let secrets = SecretResolver::new(args.shared_secret, args.node_secrets_json)?;
-    let view_token = args
-        .view_token
-        .as_deref()
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .map(str::to_string);
-    let operator_token = args
-        .operator_token
-        .as_deref()
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .map(str::to_string);
-    let admin_token = args
-        .admin_token
+    let panel_token = args
+        .panel_token
         .as_deref()
         .map(str::trim)
         .filter(|token| !token.is_empty())
         .map(str::to_string);
     let public_pages = parse_public_pages(&args.public_pages);
-    if view_token.is_none()
-        && operator_token.is_none()
-        && admin_token.is_none()
-        && !args.public_enabled
-        && public_pages.is_empty()
-    {
-        warn!("PANEL_VIEW_TOKEN, PANEL_OPERATOR_TOKEN, PANEL_ADMIN_TOKEN, PANEL_PUBLIC_ENABLED=true, or PANEL_PUBLIC_PAGES is not configured; panel read APIs will reject browser access");
+    if panel_token.is_none() && !args.public_enabled && public_pages.is_empty() {
+        warn!("PANEL_TOKEN, PANEL_PUBLIC_ENABLED=true, or PANEL_PUBLIC_PAGES is not configured; panel browser APIs will reject access");
     }
     let (events, _) = broadcast::channel(128);
     let csp_header = panel_csp_header(&web_dir);
@@ -614,9 +588,7 @@ async fn main() -> Result<()> {
     let state = AppState {
         repo: Arc::new(repo),
         secrets: Arc::new(secrets),
-        view_token,
-        operator_token,
-        admin_token,
+        panel_token,
         public_enabled: args.public_enabled,
         public_pages,
         admin_path,
@@ -666,11 +638,10 @@ async fn settings(State(state): State<AppState>, headers: HeaderMap) -> Json<Val
         "theme": state.theme,
         "themes": state.themes,
         "auth_required": !panel_public_access_enabled(&state),
-        "auth_configured": state.view_token.is_some() || state.operator_token.is_some() || state.admin_token.is_some(),
+        "auth_configured": state.panel_token.is_some(),
+        "stream_supported": true,
         "public_enabled": panel_public_access_enabled(&state),
         "public_pages": public_pages,
-        "operator_configured": state.view_token.is_some() || state.operator_token.is_some(),
-        "admin_configured": state.admin_token.is_some(),
         "role": role,
         "freshness_threshold_minutes": DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
         "node_retired_threshold_minutes": DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
@@ -829,10 +800,8 @@ async fn nodes(
 ) -> Result<Json<Value>, PanelApiError> {
     let role = verify_panel_role(&state, &headers, PanelRole::Public)?;
     let columns = match role {
-        PanelRole::Public | PanelRole::Operator => {
-            &["last_seen_at", "node_name", "agent_version", "metrics_json"][..]
-        }
-        PanelRole::Admin => &[
+        PanelRole::Public => &["last_seen_at", "node_name", "agent_version", "metrics_json"][..],
+        PanelRole::Private => &[
             "last_seen_at",
             "node_name",
             "agent_version",
@@ -860,7 +829,7 @@ async fn findings(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    let role = verify_panel_page_role(&state, &headers, "findings", PanelRole::Operator)?;
+    let role = verify_panel_page_role(&state, &headers, "findings", PanelRole::Private)?;
     paginated_dataset(
         &state,
         query,
@@ -890,7 +859,7 @@ async fn finding_detail(
     headers: HeaderMap,
     Query(query): Query<DetailQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    let role = verify_panel_role(&state, &headers, PanelRole::Operator)?;
+    let role = verify_panel_role(&state, &headers, PanelRole::Private)?;
     let detail = state.repo.finding_detail(&query.id, role).await?;
     Ok(Json(detail))
 }
@@ -900,7 +869,7 @@ async fn finding_review(
     headers: HeaderMap,
     Json(request): Json<FindingReviewRequest>,
 ) -> Result<Json<Value>, PanelApiError> {
-    verify_admin_auth(&state, &headers)?;
+    verify_private_write_auth(&state, &headers)?;
     let review = FindingReview::try_from(request)?;
     let panel_review = state.repo.upsert_finding_review(&review).await?;
     let _ = state.events.send(PanelStreamEvent::refresh_datasets(
@@ -919,7 +888,7 @@ async fn panel_review(
     headers: HeaderMap,
     Json(request): Json<PanelReviewRequest>,
 ) -> Result<Json<Value>, PanelApiError> {
-    verify_admin_auth(&state, &headers)?;
+    verify_private_write_auth(&state, &headers)?;
     let review = PanelReview::try_from(request)?;
     let review = state.repo.upsert_panel_review(&review).await?;
     let datasets = match review.target_type {
@@ -946,7 +915,7 @@ async fn incidents(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    let role = verify_panel_page_role(&state, &headers, "incidents", PanelRole::Operator)?;
+    let role = verify_panel_page_role(&state, &headers, "incidents", PanelRole::Private)?;
     paginated_dataset(
         &state,
         query,
@@ -975,7 +944,7 @@ async fn incident_detail(
     headers: HeaderMap,
     Query(query): Query<DetailQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    let role = verify_panel_role(&state, &headers, PanelRole::Operator)?;
+    let role = verify_panel_role(&state, &headers, PanelRole::Private)?;
     let detail = state.repo.incident_detail(&query.id, role).await?;
     Ok(Json(detail))
 }
@@ -985,7 +954,7 @@ async fn baseline_drifts(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    let role = verify_panel_page_role(&state, &headers, "baseline_drifts", PanelRole::Operator)?;
+    let role = verify_panel_page_role(&state, &headers, "baseline_drifts", PanelRole::Private)?;
     paginated_dataset(
         &state,
         query,
@@ -1017,9 +986,9 @@ async fn active_blocks(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    let role = verify_panel_page_role(&state, &headers, "active_blocks", PanelRole::Operator)?;
+    let role = verify_panel_page_role(&state, &headers, "active_blocks", PanelRole::Private)?;
     let columns = match role {
-        PanelRole::Admin => &[
+        PanelRole::Private => &[
             "blocked_at",
             "node_id AS node_name",
             "ip",
@@ -1064,13 +1033,6 @@ async fn active_blocks(
             "reason",
             "expires_at",
         ][..],
-        PanelRole::Operator => &[
-            "blocked_at",
-            "node_id AS node_name",
-            "rule_id",
-            "reason",
-            "expires_at",
-        ][..],
         PanelRole::Public => &["blocked_at", "node_id AS node_name"][..],
     };
     paginated_dataset(
@@ -1092,7 +1054,7 @@ async fn probe_sources(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    let role = verify_panel_page_role(&state, &headers, "probe_sources", PanelRole::Admin)?;
+    let role = verify_panel_page_role(&state, &headers, "probe_sources", PanelRole::Private)?;
     let request = PageRequest::try_from(query)?;
     let (mut items, total) = state.repo.probe_sources_page(&request, role).await?;
     scope_panel_value(&mut items, role);
@@ -1110,7 +1072,7 @@ async fn audit_logs(
     headers: HeaderMap,
     Query(query): Query<PageQuery>,
 ) -> Result<Json<Value>, PanelApiError> {
-    let role = verify_panel_page_role(&state, &headers, "audit_logs", PanelRole::Admin)?;
+    let role = verify_panel_page_role(&state, &headers, "audit_logs", PanelRole::Private)?;
     paginated_dataset(
         &state,
         query,
@@ -1599,9 +1561,9 @@ fn scope_panel_value(value: &mut Value, role: PanelRole) {
             map.retain(|key, _| {
                 let normalized = key.to_ascii_lowercase();
                 !(hidden.iter().any(|candidate| *candidate == normalized)
-                    || role != PanelRole::Admin && normalized.ends_with("_backend"))
+                    || role != PanelRole::Private && normalized.ends_with("_backend"))
             });
-            if role != PanelRole::Admin {
+            if role != PanelRole::Private {
                 if let Some(reason) = map.get_mut("reason") {
                     *reason =
                         Value::String(panel_block_reason_summary(reason.as_str().unwrap_or("")));
@@ -1666,27 +1628,7 @@ fn hidden_panel_keys(role: PanelRole) -> &'static [&'static str] {
             "storage",
             "storage_json",
         ],
-        PanelRole::Operator => &[
-            "active_response_backend",
-            "backend",
-            "dedup_key",
-            "evidence",
-            "evidence_json",
-            "firewall_backend",
-            "firewall_present",
-            "host_id",
-            "hostname",
-            "payload",
-            "payload_json",
-            "raw_log",
-            "received_at",
-            "review",
-            "review_signature",
-            "reviewer",
-            "storage",
-            "storage_json",
-        ],
-        PanelRole::Admin => &["review_signature"],
+        PanelRole::Private => &["review_signature"],
     }
 }
 
@@ -1905,7 +1847,7 @@ fn attach_node_statuses(rows: &mut Value) {
 }
 
 fn should_redact_dataset(table: &str, role: PanelRole) -> bool {
-    if role == PanelRole::Admin && matches!(table, "active_blocks" | "probe_sources") {
+    if role == PanelRole::Private && matches!(table, "active_blocks" | "probe_sources") {
         return false;
     }
     if table == "probe_sources" {

@@ -1,4 +1,4 @@
-export type PanelRole = "public" | "operator" | "admin";
+export type PanelRole = "public" | "private";
 export type Language = "zh" | "en";
 export type StreamState = "idle" | "connecting" | "live" | "reconnecting" | "fallback";
 export type PageId =
@@ -21,10 +21,9 @@ export interface PanelSettings {
   themes?: ThemeOption[];
   auth_required?: boolean;
   auth_configured?: boolean;
+  stream_supported?: boolean;
   public_enabled?: boolean;
   public_pages?: PageId[];
-  operator_configured?: boolean;
-  admin_configured?: boolean;
   role?: PanelRole | null;
   freshness_threshold_minutes?: number;
   node_retired_threshold_minutes?: number;
@@ -130,5 +129,5 @@ export interface PageConfig {
   minRole: PanelRole;
   endpoint?: string;
   columns?: string[];
-  adminColumns?: string[];
+  privateColumns?: string[];
 }

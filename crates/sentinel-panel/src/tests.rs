@@ -1,7 +1,7 @@
 use super::{
-    normalize_panel_path, parse_panel_themes, redact_ip_text, redact_panel_value,
-    resolve_panel_role, scope_panel_value, scope_probe_source_rows, verify_admin_auth,
-    verify_view_auth, view_token_from_headers, AppState, DbValue, FindingReview,
+    normalize_panel_path, panel_token_from_headers, parse_panel_themes, redact_ip_text,
+    redact_panel_value, resolve_panel_role, scope_panel_value, scope_probe_source_rows,
+    verify_private_auth, verify_private_write_auth, AppState, DbValue, FindingReview,
     FindingReviewRequest, PageQuery, PageRequest, PanelDataset, PanelReview, PanelReviewRequest,
     PanelRole, PanelStreamEvent, Repository, RepositoryDriver, ReviewTargetType, SecretResolver,
     DEFAULT_ADMIN_PATH, DEFAULT_THEMES, MAX_PAGE_LIMIT,
@@ -160,16 +160,16 @@ async fn repository_read_paths_redact_legacy_raw_ip_rows() {
                 limit: 10,
                 offset: 0,
             },
-            PanelRole::Operator,
+            PanelRole::Private,
         )
         .await
         .expect("page query");
     let finding_detail = repo
-        .finding_detail("finding-raw", PanelRole::Admin)
+        .finding_detail("finding-raw", PanelRole::Private)
         .await
         .expect("finding detail");
     let incident_detail = repo
-        .incident_detail("incident-raw", PanelRole::Admin)
+        .incident_detail("incident-raw", PanelRole::Private)
         .await
         .expect("incident detail");
     let output = serde_json::to_string(&(page, finding_detail, incident_detail)).expect("json");
@@ -232,8 +232,8 @@ async fn probe_source_page_preserves_public_block_source_ip() {
         limit: 10,
         offset: 0,
     };
-    let (admin_page, _) = repo
-        .query_page(dataset, &request, PanelRole::Admin)
+    let (private_page, _) = repo
+        .query_page(dataset, &request, PanelRole::Private)
         .await
         .expect("admin query");
     let (mut public_page, _) = repo
@@ -242,11 +242,11 @@ async fn probe_source_page_preserves_public_block_source_ip() {
         .expect("public query");
     scope_panel_value(&mut public_page, PanelRole::Public);
     scope_probe_source_rows(&mut public_page, PanelRole::Public);
-    let admin_text = serde_json::to_string(&admin_page).expect("json");
+    let private_text = serde_json::to_string(&private_page).expect("json");
     let public_text = serde_json::to_string(&public_page).expect("json");
 
-    assert!(admin_text.contains("8.8.8.8"));
-    assert!(admin_text.contains(r#""categories":["web"]"#));
+    assert!(private_text.contains("8.8.8.8"));
+    assert!(private_text.contains(r#""categories":["web"]"#));
     assert!(public_text.contains("8.8.8.8"));
     assert!(!public_text.contains("8.8.8.0/24"));
     assert!(!public_text.contains("web probe request_count=3"));
@@ -364,37 +364,37 @@ async fn node_page_expands_probe_metrics_without_sensitive_identity() {
 }
 
 #[test]
-fn view_token_accepts_bearer_authorization() {
+fn panel_token_accepts_bearer_authorization() {
     let mut headers = HeaderMap::new();
     headers.insert(
         header::AUTHORIZATION,
         HeaderValue::from_static("Bearer panel-token"),
     );
 
-    assert_eq!(view_token_from_headers(&headers), Some("panel-token"));
+    assert_eq!(panel_token_from_headers(&headers), Some("panel-token"));
 }
 
 #[test]
-fn view_token_accepts_legacy_header() {
+fn panel_token_rejects_legacy_header() {
     let mut headers = HeaderMap::new();
     headers.insert(
         "x-vps-sentinel-view-token",
         HeaderValue::from_static("panel-token"),
     );
 
-    assert_eq!(view_token_from_headers(&headers), Some("panel-token"));
+    assert_eq!(panel_token_from_headers(&headers), None);
 }
 
 #[test]
-fn view_token_rejects_missing_or_malformed_header() {
+fn panel_token_rejects_missing_or_malformed_header() {
     let mut headers = HeaderMap::new();
-    assert_eq!(view_token_from_headers(&headers), None);
+    assert_eq!(panel_token_from_headers(&headers), None);
 
     headers.insert(
         header::AUTHORIZATION,
         HeaderValue::from_static("Basic panel-token"),
     );
-    assert_eq!(view_token_from_headers(&headers), None);
+    assert_eq!(panel_token_from_headers(&headers), None);
 }
 
 #[test]
@@ -411,43 +411,31 @@ fn per_node_secret_overrides_shared_secret() {
 }
 
 #[test]
-fn admin_token_can_read_but_view_token_cannot_write() {
-    let state = test_state(Some("view-token"), Some("admin-token"));
-    let mut admin_headers = HeaderMap::new();
-    admin_headers.insert(
+fn panel_token_can_read_and_write() {
+    let state = test_state(Some("panel-token"));
+    let mut headers = HeaderMap::new();
+    headers.insert(
         header::AUTHORIZATION,
-        HeaderValue::from_static("Bearer admin-token"),
-    );
-    let mut view_headers = HeaderMap::new();
-    view_headers.insert(
-        header::AUTHORIZATION,
-        HeaderValue::from_static("Bearer view-token"),
+        HeaderValue::from_static("Bearer panel-token"),
     );
 
-    assert!(verify_view_auth(&state, &admin_headers).is_ok());
-    assert!(verify_view_auth(&state, &view_headers).is_ok());
-    assert!(verify_admin_auth(&state, &admin_headers).is_ok());
-    assert_eq!(
-        verify_admin_auth(&state, &view_headers)
-            .expect_err("view token cannot administer")
-            .code,
-        "insufficient_panel_role"
-    );
+    assert!(verify_private_auth(&state, &headers).is_ok());
+    assert!(verify_private_write_auth(&state, &headers).is_ok());
 }
 
 #[test]
 fn public_role_requires_enabled_public_access() {
-    let state = test_state(Some("view-token"), Some("admin-token"));
+    let state = test_state(Some("panel-token"));
     let headers = HeaderMap::new();
 
     assert_eq!(
         resolve_panel_role(&state, &headers)
             .expect_err("public access is disabled by default")
             .code,
-        "missing_view_token"
+        "missing_panel_token"
     );
 
-    let mut public_state = test_state(Some("view-token"), Some("admin-token"));
+    let mut public_state = test_state(Some("panel-token"));
     public_state.public_enabled = true;
     assert_eq!(
         resolve_panel_role(&public_state, &headers).expect("public role"),
@@ -456,7 +444,7 @@ fn public_role_requires_enabled_public_access() {
 }
 
 #[test]
-fn scope_removes_sensitive_fields_for_operator() {
+fn scope_removes_sensitive_fields_for_public() {
     let mut value = serde_json::json!({
         "id": "finding-1",
         "node_name": "node-a",
@@ -468,7 +456,7 @@ fn scope_removes_sensitive_fields_for_operator() {
         "recommendations": ["review service"]
     });
 
-    scope_panel_value(&mut value, PanelRole::Operator);
+    scope_panel_value(&mut value, PanelRole::Public);
     let text = serde_json::to_string(&value).expect("json");
 
     assert!(text.contains("SSH-001"));
@@ -476,7 +464,7 @@ fn scope_removes_sensitive_fields_for_operator() {
     assert!(!text.contains("nftables"));
     assert!(!text.contains("cmdline"));
     assert!(!text.contains("payload"));
-    assert!(text.contains("recommendations"));
+    assert!(!text.contains("recommendations"));
 }
 
 #[test]
@@ -522,16 +510,14 @@ fn panel_review_rejects_unknown_target_type() {
     assert_eq!(err.code, "invalid_review_target_type");
 }
 
-fn test_state(view_token: Option<&str>, admin_token: Option<&str>) -> AppState {
+fn test_state(panel_token: Option<&str>) -> AppState {
     AppState {
         repo: Arc::new(test_repo()),
         secrets: Arc::new(SecretResolver {
             shared_secret: Some("shared".to_string()),
             node_secrets: BTreeMap::new(),
         }),
-        view_token: view_token.map(str::to_string),
-        operator_token: None,
-        admin_token: admin_token.map(str::to_string),
+        panel_token: panel_token.map(str::to_string),
         public_enabled: false,
         public_pages: BTreeSet::new(),
         admin_path: DEFAULT_ADMIN_PATH.to_string(),

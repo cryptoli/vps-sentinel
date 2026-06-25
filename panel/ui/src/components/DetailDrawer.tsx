@@ -111,7 +111,7 @@ export function DetailDrawer({
               </div>
             ))}
         </dl>
-        {roleAllows(role, "admin") && (
+        {roleAllows(role, "private") && (
           <section className="review-box">
             <h3>{translate(language, "reviewRecord")}</h3>
             {currentReview?.verdict && (

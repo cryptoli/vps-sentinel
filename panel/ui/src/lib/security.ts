@@ -23,16 +23,16 @@ const HIDDEN_KEYS = new Set([
 
 export function sanitizePanelValue<T>(value: T, role: PanelRole): T {
   if (value === null || value === undefined) return value;
-  if (typeof value === "string") return (roleAllows(role, "admin") ? value : redactIpText(value)) as T;
+  if (typeof value === "string") return (roleAllows(role, "private") ? value : redactIpText(value)) as T;
   if (Array.isArray(value)) return value.map((item) => sanitizePanelValue(item, role)) as T;
   if (typeof value === "object") {
     const clean: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
       const lower = key.toLowerCase();
       if (shouldHidePanelField(lower, role)) continue;
-      if (!roleAllows(role, "admin") && lower === "source_ip") {
+      if (!roleAllows(role, "private") && lower === "source_ip") {
         clean[key] = item;
-      } else if (!roleAllows(role, "admin") && (lower === "ip" || lower.includes("_ip") || lower.includes("addr"))) {
+      } else if (!roleAllows(role, "private") && (lower === "ip" || lower.includes("_ip") || lower.includes("addr"))) {
         clean[key] = "redacted";
       } else {
         clean[key] = sanitizePanelValue(item, role);
@@ -44,7 +44,7 @@ export function sanitizePanelValue<T>(value: T, role: PanelRole): T {
 }
 
 function shouldHidePanelField(key: string, role: PanelRole): boolean {
-  if (roleAllows(role, "admin")) return ["node_id", "host_id", "hostname", "review_signature"].includes(key);
+  if (roleAllows(role, "private")) return ["node_id", "host_id", "hostname", "review_signature"].includes(key);
   return HIDDEN_KEYS.has(key) || key.endsWith("_backend");
 }
 

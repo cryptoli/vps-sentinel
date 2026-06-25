@@ -8,7 +8,7 @@ const DEFAULT_PAGE_LIMIT = 50;
 const MAX_PAGE_LIMIT = 200;
 const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = 30;
 const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES = 720;
-const ROLE_LEVELS = { public: 0, operator: 1, admin: 2 };
+const ROLE_LEVELS = { public: 0, private: 1 };
 const PANEL_TRANSPORT_ENCODING = "json-base64";
 const DEFAULT_ADMIN_PATH = "/panel-admin";
 const DEFAULT_THEMES = "default:Default";
@@ -26,28 +26,28 @@ const DATASETS = {
   },
   "/api/v1/findings": {
     pageId: "findings",
-    minRole: "operator",
+    minRole: "private",
     table: "findings",
     orderColumn: "timestamp",
     columns: ["id", "timestamp", "node_id AS node_name", "severity", "rule_id", "category", "subject", "review_signature", "title"],
   },
   "/api/v1/incidents": {
     pageId: "incidents",
-    minRole: "operator",
+    minRole: "private",
     table: "incidents",
     orderColumn: "last_seen",
     columns: ["id", "last_seen", "node_id AS node_name", "severity", "score", "title", "summary", "review_signature"],
   },
   "/api/v1/baseline-drifts": {
     pageId: "baseline_drifts",
-    minRole: "operator",
+    minRole: "private",
     table: "baseline_drifts",
     orderColumn: "timestamp",
     columns: ["id", "finding_id", "timestamp", "node_id AS node_name", "severity", "rule_id", "tier", "subject", "review_signature", "review_action"],
   },
   "/api/v1/active-blocks": {
     pageId: "active_blocks",
-    minRole: "operator",
+    minRole: "private",
     sensitive: true,
     table: "active_blocks",
     orderColumn: "blocked_at",
@@ -68,7 +68,7 @@ const DATASETS = {
   },
   "/api/v1/probe-sources": {
     pageId: "probe_sources",
-    minRole: "admin",
+    minRole: "private",
     sensitive: true,
     optional: true,
     table: "probe_sources",
@@ -92,7 +92,7 @@ const DATASETS = {
   },
   "/api/v1/audit-logs": {
     pageId: "audit_logs",
-    minRole: "admin",
+    minRole: "private",
     table: "panel_audit_logs",
     orderColumn: "created_at",
     columns: ["created_at", "action", "actor", "target_type", "target_id"],
@@ -120,9 +120,8 @@ export default {
           themes: panelThemes(env),
           admin_path: adminPath(env),
           auth_required: !publicAccessEnabled(env),
-          auth_configured: Boolean(operatorTokens(env).length || adminToken(env)),
-          operator_configured: Boolean(operatorTokens(env).length),
-          admin_configured: Boolean(adminToken(env)),
+          auth_configured: Boolean(panelToken(env)),
+          stream_supported: false,
           public_enabled: publicAccessEnabled(env),
           public_pages: pages,
           role,
@@ -148,22 +147,22 @@ export default {
         return withCors(json(await queryPage(env, dataset, url, auth.role)), request, env);
       }
       if (request.method === "GET" && url.pathname === "/api/v1/finding") {
-        const authError = viewAuthError(request, env);
+        const authError = privateAuthError(request, env);
         if (authError) return withCors(authError, request, env);
         return withCors(json(await findingDetail(env, url)), request, env);
       }
       if (request.method === "GET" && url.pathname === "/api/v1/incident") {
-        const authError = viewAuthError(request, env);
+        const authError = privateAuthError(request, env);
         if (authError) return withCors(authError, request, env);
         return withCors(json(await incidentDetail(env, url)), request, env);
       }
       if (request.method === "POST" && url.pathname === "/api/v1/finding-review") {
-        const authError = adminAuthError(request, env);
+        const authError = privateWriteAuthError(request, env);
         if (authError) return withCors(authError, request, env);
         return withCors(json(await findingReview(request, env)), request, env);
       }
       if (request.method === "POST" && url.pathname === "/api/v1/review") {
-        const authError = adminAuthError(request, env);
+        const authError = privateWriteAuthError(request, env);
         if (authError) return withCors(authError, request, env);
         return withCors(json(await panelReview(request, env)), request, env);
       }
@@ -268,6 +267,7 @@ async function ingest(request, env) {
   if (!validPanelPayloadIdentity(payload, nodeName)) {
     return json({ error: "invalid_payload" }, 400);
   }
+  applyRequestLocation(payload, request);
   await persistPayload(env, payload, nodeName);
   return json({ ok: true, message_id: payload.message_id });
 }
@@ -310,6 +310,66 @@ function validPanelPayloadIdentity(payload, nodeName) {
     return payload?.node?.node_id === nodeName || payload?.node?.node_name === nodeName;
   }
   return false;
+}
+
+function applyRequestLocation(payload, request) {
+  const location = detectedLocation(request);
+  if (!location.length) return;
+  const metrics = payload.node.metrics && typeof payload.node.metrics === "object" && !Array.isArray(payload.node.metrics)
+    ? payload.node.metrics
+    : {};
+  for (const [key, value] of location) {
+    if (!metrics[key]) metrics[key] = value;
+  }
+  payload.node.metrics = metrics;
+}
+
+function detectedLocation(request) {
+  const values = [];
+  const cf = request.cf || {};
+  const countryCode = normalizeCountryCode(cf.country || firstCleanHeader(request, COUNTRY_CODE_HEADERS));
+  if (countryCode) values.push(["country_code", countryCode]);
+  const country = safeLocationValue(cf.country || firstCleanHeader(request, COUNTRY_HEADERS));
+  if (country && country !== countryCode) values.push(["country", country]);
+  const region = safeLocationValue(cf.region || firstCleanHeader(request, REGION_HEADERS));
+  if (region) values.push(["region", region]);
+  const city = safeLocationValue(cf.city || firstCleanHeader(request, CITY_HEADERS));
+  if (city) values.push(["city", city]);
+  return values;
+}
+
+const COUNTRY_CODE_HEADERS = ["cf-ipcountry", "x-vercel-ip-country", "cloudfront-viewer-country", "x-appengine-country", "x-geoip-country-code"];
+const COUNTRY_HEADERS = ["x-geoip-country", "x-country"];
+const REGION_HEADERS = ["x-vercel-ip-country-region", "x-geoip-region", "x-region"];
+const CITY_HEADERS = ["x-vercel-ip-city", "x-geoip-city", "x-city"];
+
+function firstCleanHeader(request, names) {
+  for (const name of names) {
+    const value = safeLocationValue(decodeHeaderValue(request.headers.get(name) || ""));
+    if (value) return value;
+  }
+  return "";
+}
+
+function decodeHeaderValue(value) {
+  try {
+    return decodeURIComponent(String(value).replace(/\+/g, " "));
+  } catch {
+    return String(value || "");
+  }
+}
+
+function normalizeCountryCode(value) {
+  const trimmed = String(value || "").trim();
+  return /^[A-Za-z]{2}$/.test(trimmed) ? trimmed.toUpperCase() : "";
+}
+
+function safeLocationValue(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed || trimmed.length > 96) return "";
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/.test(trimmed) || trimmed.includes(":")) return "";
+  if (/[\u0000-\u001F\u007F<>"']/.test(trimmed)) return "";
+  return trimmed;
 }
 
 async function persistPayload(env, payload, signedNodeName) {
@@ -661,7 +721,7 @@ function reviewNotFalsePositiveFilter(table, targetType) {
   )`;
 }
 
-async function queryPage(env, dataset, url, role = "operator") {
+async function queryPage(env, dataset, url, role = "private") {
   if (dataset.table === "probe_sources") {
     return queryProbeSourcesPage(env, dataset, url, role);
   }
@@ -701,7 +761,7 @@ async function queryPage(env, dataset, url, role = "operator") {
   }
 }
 
-async function queryProbeSourcesPage(env, dataset, url, role = "operator") {
+async function queryProbeSourcesPage(env, dataset, url, role = "private") {
   const page = pageRequest(url);
   const values = [];
   const parts = [blockedProbeSourceFilter()];
@@ -810,7 +870,7 @@ async function attachPanelReviews(env, table, items, role) {
     if (!review) return { ...item, review_verdict: "needs_review", status: "needs_review" };
     const verdict = review.verdict || "needs_review";
     const next = { ...item, review_verdict: verdict, status: verdict };
-    if (role === "admin") next.review = { target_type: targetType, ...review };
+    if (role === "private") next.review = { target_type: targetType, ...review };
     return next;
   });
 }
@@ -1193,7 +1253,7 @@ function expandDatasetJsonColumns(table, rows) {
 
 function shouldRedactDataset(dataset, role) {
   if (dataset.table === "probe_sources") return false;
-  return !(dataset.sensitive && role === "admin");
+  return !(dataset.sensitive && role === "private");
 }
 
 function nodeStatusCounts(nodes) {
@@ -1427,14 +1487,8 @@ function secretForNode(env, nodeId) {
   return env.PANEL_SHARED_SECRET || "";
 }
 
-function operatorTokens(env) {
-  return [env.PANEL_OPERATOR_TOKEN, env.PANEL_VIEW_TOKEN]
-    .map((value) => String(value || "").trim())
-    .filter(Boolean);
-}
-
-function adminToken(env) {
-  return String(env.PANEL_ADMIN_TOKEN || "").trim();
+function panelToken(env) {
+  return String(env.PANEL_TOKEN || "").trim();
 }
 
 function publicEnabled(env) {
@@ -1474,16 +1528,16 @@ function publicAccessEnabled(env) {
 }
 
 function datasetMinimumRole(dataset, env) {
-  return publicPages(env).includes(dataset.pageId) ? "public" : dataset.minRole || "operator";
+  return publicPages(env).includes(dataset.pageId) ? "public" : dataset.minRole || "private";
 }
 
 function panelAuth(request, env, minimumRole) {
   const role = resolvePanelRole(request, env);
   if (!role) {
-    const hasAnyToken = Boolean(operatorTokens(env).length || adminToken(env));
+    const hasAnyToken = Boolean(panelToken(env));
     const error = hasAnyToken || publicAccessEnabled(env)
       ? json({ error: "missing_or_invalid_panel_token", detail: "missing_or_invalid_panel_token" }, 401)
-      : json({ error: "panel_view_token_not_configured", detail: "panel_view_token_not_configured" }, 403);
+      : json({ error: "panel_token_not_configured", detail: "panel_token_not_configured" }, 403);
     return { error, role: "public" };
   }
   if (!roleAllows(role, minimumRole)) {
@@ -1496,11 +1550,9 @@ function panelAuth(request, env, minimumRole) {
 }
 
 function resolvePanelRole(request, env, options = {}) {
-  const actual = bearerToken(request.headers.get("authorization") || "")
-    || String(request.headers.get("x-vps-sentinel-view-token") || "").trim();
-  const admin = adminToken(env);
-  if (admin && actual && timingSafeEqual(admin, actual)) return "admin";
-  if (actual && operatorTokens(env).some((token) => timingSafeEqual(token, actual))) return "operator";
+  const actual = bearerToken(request.headers.get("authorization") || "");
+  const expected = panelToken(env);
+  if (expected && actual && timingSafeEqual(expected, actual)) return "private";
   if (!actual && (publicAccessEnabled(env) || options.allowAnonymous)) return "public";
   return null;
 }
@@ -1509,13 +1561,13 @@ function roleAllows(role, minimumRole) {
   return (ROLE_LEVELS[role] ?? 0) >= (ROLE_LEVELS[minimumRole] ?? 0);
 }
 
-function viewAuthError(request, env) {
-  return panelAuth(request, env, "operator").error;
+function privateAuthError(request, env) {
+  return panelAuth(request, env, "private").error;
 }
 
-function adminAuthError(request, env) {
-  if (!adminToken(env)) return json({ error: "panel_admin_token_not_configured", detail: "panel_admin_token_not_configured" }, 403);
-  return panelAuth(request, env, "admin").error;
+function privateWriteAuthError(request, env) {
+  if (!panelToken(env)) return json({ error: "panel_token_not_configured", detail: "panel_token_not_configured" }, 403);
+  return panelAuth(request, env, "private").error;
 }
 
 function bearerToken(value) {

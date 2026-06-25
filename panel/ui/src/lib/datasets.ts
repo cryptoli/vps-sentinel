@@ -2,8 +2,7 @@ import type { PageConfig, PageId } from "@/types";
 
 export const ROLE_LEVELS = {
   public: 0,
-  operator: 1,
-  admin: 2,
+  private: 1,
 } as const;
 
 export const DEFAULT_LIMIT = 25;
@@ -28,7 +27,7 @@ export const PAGES: PageConfig[] = [
     labelKey: "findings",
     titleKey: "findingsTitle",
     descriptionKey: "findingsDescription",
-    minRole: "operator",
+    minRole: "private",
     endpoint: "/findings",
     columns: ["timestamp", "node_name", "severity", "rule_id", "category", "review_verdict", "subject", "title"],
   },
@@ -37,7 +36,7 @@ export const PAGES: PageConfig[] = [
     labelKey: "incidents",
     titleKey: "incidentsTitle",
     descriptionKey: "incidentsDescription",
-    minRole: "operator",
+    minRole: "private",
     endpoint: "/incidents",
     columns: ["last_seen", "node_name", "severity", "score", "review_verdict", "title", "summary"],
   },
@@ -46,7 +45,7 @@ export const PAGES: PageConfig[] = [
     labelKey: "drifts",
     titleKey: "driftsTitle",
     descriptionKey: "driftsDescription",
-    minRole: "operator",
+    minRole: "private",
     endpoint: "/baseline-drifts",
     columns: ["timestamp", "node_name", "severity", "rule_id", "tier", "review_verdict", "subject", "review_action"],
   },
@@ -55,17 +54,17 @@ export const PAGES: PageConfig[] = [
     labelKey: "blocks",
     titleKey: "blocksTitle",
     descriptionKey: "blocksDescription",
-    minRole: "operator",
+    minRole: "private",
     endpoint: "/active-blocks",
     columns: ["blocked_at", "node_name", "rule_id", "reason", "expires_at"],
-    adminColumns: ["blocked_at", "node_name", "ip", "country", "asn", "organization", "reason", "rule_id", "backend", "expires_at"],
+    privateColumns: ["blocked_at", "node_name", "ip", "country", "asn", "organization", "reason", "rule_id", "backend", "expires_at"],
   },
   {
     id: "probe_sources",
     labelKey: "blacklist",
     titleKey: "blacklistTitle",
     descriptionKey: "blacklistDescription",
-    minRole: "admin",
+    minRole: "private",
     endpoint: "/probe-sources",
     columns: [
       "last_seen",
@@ -87,7 +86,7 @@ export const PAGES: PageConfig[] = [
     labelKey: "auditLogs",
     titleKey: "auditLogsTitle",
     descriptionKey: "auditLogsDescription",
-    minRole: "admin",
+    minRole: "private",
     endpoint: "/audit-logs",
     columns: ["created_at", "action", "actor", "target_type", "target_id"],
   },
@@ -99,7 +98,7 @@ export const PAGES: PageConfig[] = [
     minRole: "public",
     endpoint: "/nodes",
     columns: ["last_seen_at", "node_name", "agent_version"],
-    adminColumns: ["last_seen_at", "node_name", "agent_version", "privacy_mode"],
+    privateColumns: ["last_seen_at", "node_name", "agent_version", "privacy_mode"],
   },
 ];
 

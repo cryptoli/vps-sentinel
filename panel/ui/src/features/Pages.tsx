@@ -126,7 +126,7 @@ export function OverviewPage({
       </section>
 
       <section className="overview-table-row">
-        {roleAllows(role, "operator") && (
+        {roleAllows(role, "private") && (
           <Card title={translate(language, "recentFindings")} className="wide-card">
             <DataTable
               rows={findings.slice(0, 6)}
@@ -384,8 +384,8 @@ export function BlocksPageView({
   const recentBlocks = rows.filter((row) => isWithinPastHours(row.blocked_at, 24)).length;
   const firewallSynced = rows.filter((row) => truthy(row.firewall_present)).length;
   const expiringSoon = rows.filter((row) => isFutureWithinHours(row.expires_at, 24)).length;
-  const columns = roleAllows(role, "admin") && config.adminColumns
-    ? config.adminColumns
+  const columns = roleAllows(role, "private") && config.privateColumns
+    ? config.privateColumns
     : config.columns || ["blocked_at", "node_name", "rule_id", "reason", "expires_at"];
   return (
     <div className="page-stack feature-page blocks-design">
@@ -431,11 +431,9 @@ export function SourcesPageView({
 }) {
   const rows = filteredRows(page.items, state);
   const blocked = rows.filter((row) => String(row.block_status || "").toLowerCase().includes("block")).length;
-  const columns = roleAllows(role, "admin")
+  const columns = roleAllows(role, "private")
     ? config.columns || []
-    : roleAllows(role, "operator")
-      ? ["last_seen", "node_name", "source_ip", "seen_count", "block_status", "country", "asn", "organization", "categories", "rule_ids", "block_reason"]
-      : ["last_seen", "node_name", "source_ip", "seen_count", "block_status", "country", "asn", "organization", "categories", "rule_ids"];
+    : ["last_seen", "node_name", "source_ip", "seen_count", "block_status", "country", "asn", "organization", "categories", "rule_ids"];
   return (
     <div className="page-stack feature-page sources-design">
       <FeatureHeader title={translate(language, config.titleKey)} description={translate(language, config.descriptionKey)} />
@@ -515,7 +513,7 @@ export function DatasetPageView({
   onDetails: (dataset: string, row: PanelRecord) => void;
 }) {
   const query = state.query.trim().toLowerCase();
-  const columns = roleAllows(role, "admin") && config.adminColumns ? config.adminColumns : config.columns || [];
+  const columns = roleAllows(role, "private") && config.privateColumns ? config.privateColumns : config.columns || [];
   const rows = query
     ? page.items.filter((row) => JSON.stringify(row).toLowerCase().includes(query))
     : page.items;

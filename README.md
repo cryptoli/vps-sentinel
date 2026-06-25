@@ -24,7 +24,7 @@ It is not antivirus software, an exploit framework, a brute-force tool, a third-
 | Active response | Optional nftables/iptables source-IP blocking for high-confidence SSH and Web attack sources, temporary/permanent escalation, allowlists, trusted-proxy safety, and CLI unblock commands. |
 | Attack fingerprints | Method-based fingerprints using exact hashes plus SimHash-style similarity, so repeated attack methods can be grouped even when source IPs rotate. |
 | Reports and notifications | Daily reports and alert messages through Telegram, Email SMTP, webhook, ntfy, Gotify, Bark, and ServerChan; Chinese is the default notification language. |
-| Fleet panel | Push-mode Rust or Cloudflare Worker/D1 panel with public/operator/admin roles, privacy redaction, node metrics, blocklist attribution, review flows, WebSocket refresh on self-hosted panel, and theme extension hooks. |
+| Fleet panel | Push-mode Rust or Cloudflare Worker/D1 panel with public/private access, privacy redaction, node metrics, blocklist attribution, review flows, WebSocket refresh on self-hosted panel, and theme extension hooks. |
 | Resource control | Bounded log parsing, event budgets, SQLite retention, database size limits, raw-evidence reduction, and small daemon RSS on VPS-class hosts. |
 
 ## Deployment
@@ -33,7 +33,8 @@ Agent and panel deployment are documented outside the README:
 
 - Agent deployment: [docs/deployment.md](docs/deployment.md) / [docs/deployment.zh-CN.md](docs/deployment.zh-CN.md)
 - Panel deployment: [docs/panel-deployment.md](docs/panel-deployment.md) / [docs/panel-deployment.zh-CN.md](docs/panel-deployment.zh-CN.md)
-- Panel architecture and theme extensions: [docs/panel.md](docs/panel.md)
+- Panel architecture: [docs/panel-architecture.md](docs/panel-architecture.md)
+- Panel theme extensions: [docs/panel-themes.md](docs/panel-themes.md)
 
 Quick agent install:
 
@@ -68,18 +69,16 @@ The installer and updater preserve existing `/etc/vps-sentinel/config.toml` unle
 
 ## Token Types
 
-`vps-sentinel` intentionally separates tokens by trust boundary:
+`vps-sentinel` keeps the panel token model small:
 
 | Token or secret | Used by | Purpose | Required? |
 | --- | --- | --- | --- |
 | `panel.secret` / `PANEL_SHARED_SECRET` | Agent and panel | HMAC signing for `POST /api/v1/ingest`. | Required when panel upload is enabled. |
 | `PANEL_NODE_SECRETS` | Panel | Optional per-node ingest secrets keyed by non-sensitive node name. | Optional. |
-| `PANEL_OPERATOR_TOKEN` | Browser and panel | Operator role for redacted operational data. | Optional when public pages are enough. |
-| `PANEL_ADMIN_TOKEN` | Browser and panel | Admin role for review writes, full redacted details, and sensitive operations. | Required for management workflows. |
-| `PANEL_VIEW_TOKEN` | Browser and panel | Legacy alias for operator read access. | Kept for compatibility; new deployments should prefer `PANEL_OPERATOR_TOKEN`. |
+| `PANEL_TOKEN` | Browser and panel | Single private access token for details, reviews, audit logs, and management pages. | Required for private panel workflows. |
 | Notification tokens | Agent and notification provider | Telegram/Gotify/ntfy/Bark/ServerChan/webhook/email credentials. | Only required for enabled channels. |
 
-There is one compatibility token that can be considered redundant for new installs: `PANEL_VIEW_TOKEN`. It remains supported so older deployments do not break, but new panel deployments should use `PANEL_OPERATOR_TOKEN` and `PANEL_ADMIN_TOKEN`.
+Deployment scripts migrate old `PANEL_ADMIN_TOKEN`, `PANEL_OPERATOR_TOKEN`, or `PANEL_VIEW_TOKEN` values into `PANEL_TOKEN` when an existing credential file is reused.
 
 ## Compatibility
 

@@ -14,8 +14,7 @@ Required for real deploy:
 
 Generated automatically when omitted:
   PANEL_SHARED_SECRET, unless PANEL_NODE_SECRETS is set
-  PANEL_OPERATOR_TOKEN
-  PANEL_ADMIN_TOKEN
+  PANEL_TOKEN
   PANEL_ADMIN_PATH
 
 Common configuration:
@@ -121,6 +120,10 @@ credential_file_path() {
     printf '%s\n' "$PANEL_CREDENTIAL_FILE"
     return
   fi
+  if [ "${PANEL_DEPLOY_DRY_RUN:-0}" = "1" ]; then
+    printf '%s\n' "${TMPDIR:-/tmp}/vps-sentinel-cloudflare-panel-dry-run.$$"
+    return
+  fi
   home_dir="${HOME:-}"
   [ -n "$home_dir" ] || home_dir="$(pwd)"
   printf '%s\n' "${home_dir}/.config/vps-sentinel/cloudflare-panel.env"
@@ -179,6 +182,22 @@ load_or_generate_panel_secret() {
   "$generator"
 }
 
+load_or_generate_browser_token() {
+  file="$1"
+  if [ -n "${PANEL_TOKEN:-}" ]; then
+    printf '%s\n' "$PANEL_TOKEN"
+    return
+  fi
+  for key in PANEL_TOKEN PANEL_ADMIN_TOKEN PANEL_OPERATOR_TOKEN PANEL_VIEW_TOKEN; do
+    stored="$(credential_value "$file" "$key")"
+    if [ -n "$stored" ]; then
+      printf '%s\n' "$stored"
+      return
+    fi
+  done
+  random_token
+}
+
 write_credential_file() {
   file="$1"
   dir="$(dirname "$file")"
@@ -190,8 +209,7 @@ write_credential_file() {
     printf '%s\n' '# vps-sentinel Cloudflare panel credentials'
     printf '%s\n' '# Keep this file private. Reuse these values when rotating or redeploying agents.'
     printf "PANEL_SHARED_SECRET='%s'\n" "$(shell_quote_value "${PANEL_SHARED_SECRET:-}")"
-    printf "PANEL_OPERATOR_TOKEN='%s'\n" "$(shell_quote_value "${PANEL_OPERATOR_TOKEN:-}")"
-    printf "PANEL_ADMIN_TOKEN='%s'\n" "$(shell_quote_value "${PANEL_ADMIN_TOKEN:-}")"
+    printf "PANEL_TOKEN='%s'\n" "$(shell_quote_value "${PANEL_TOKEN:-}")"
     printf "PANEL_ADMIN_PATH='%s'\n" "$(shell_quote_value "${PANEL_ADMIN_PATH:-}")"
   } >"$tmp"
   chmod 0600 "$tmp"
@@ -205,10 +223,9 @@ ensure_panel_credentials() {
     PANEL_SHARED_SECRET="$(load_or_generate_panel_secret PANEL_SHARED_SECRET random_token "$PANEL_CREDENTIAL_FILE")"
     export PANEL_SHARED_SECRET
   fi
-  PANEL_OPERATOR_TOKEN="$(load_or_generate_panel_secret PANEL_OPERATOR_TOKEN random_token "$PANEL_CREDENTIAL_FILE")"
-  PANEL_ADMIN_TOKEN="$(load_or_generate_panel_secret PANEL_ADMIN_TOKEN random_token "$PANEL_CREDENTIAL_FILE")"
+  PANEL_TOKEN="$(load_or_generate_browser_token "$PANEL_CREDENTIAL_FILE")"
   PANEL_ADMIN_PATH="$(load_or_generate_panel_secret PANEL_ADMIN_PATH random_admin_path "$PANEL_CREDENTIAL_FILE")"
-  export PANEL_OPERATOR_TOKEN PANEL_ADMIN_TOKEN PANEL_ADMIN_PATH
+  export PANEL_TOKEN PANEL_ADMIN_PATH
   write_credential_file "$PANEL_CREDENTIAL_FILE"
 }
 
@@ -374,6 +391,12 @@ put_secret() {
   printf '%s' "$secret_value" | run_wrangler secret put "$secret_name" --config "$TMP_CONFIG"
 }
 
+delete_legacy_secret() {
+  secret_name="$1"
+  log "removing legacy Worker secret ${secret_name} if present"
+  printf 'y\n' | run_wrangler secret delete "$secret_name" --config "$TMP_CONFIG" >/dev/null 2>&1 || true
+}
+
 verify_deploy() {
   deploy_output="$1"
   verify_url="${PANEL_VERIFY_URL:-}"
@@ -433,8 +456,8 @@ main() {
 
   if [ "${PANEL_DEPLOY_DRY_RUN}" != "1" ]; then
     [ -n "${CLOUDFLARE_ACCOUNT_ID:-}" ] || warn "CLOUDFLARE_ACCOUNT_ID is not set; wrangler must infer the account from login"
-    if ! is_enabled "$PANEL_PUBLIC_ENABLED" && [ -z "$PANEL_PUBLIC_PAGES" ] && [ -z "${PANEL_OPERATOR_TOKEN:-}" ] && [ -z "${PANEL_ADMIN_TOKEN:-}" ]; then
-      fail "set PANEL_OPERATOR_TOKEN or PANEL_ADMIN_TOKEN, set PANEL_PUBLIC_PAGES, or set PANEL_PUBLIC_ENABLED=true"
+    if ! is_enabled "$PANEL_PUBLIC_ENABLED" && [ -z "$PANEL_PUBLIC_PAGES" ] && [ -z "${PANEL_TOKEN:-}" ]; then
+      fail "set PANEL_TOKEN, set PANEL_PUBLIC_PAGES, or set PANEL_PUBLIC_ENABLED=true"
     fi
     log "checking Cloudflare authentication"
     run_wrangler whoami >/dev/null
@@ -478,9 +501,10 @@ main() {
 
   put_secret "PANEL_SHARED_SECRET" "${PANEL_SHARED_SECRET:-}"
   put_secret "PANEL_NODE_SECRETS" "${PANEL_NODE_SECRETS:-}"
-  put_secret "PANEL_OPERATOR_TOKEN" "${PANEL_OPERATOR_TOKEN:-}"
-  put_secret "PANEL_VIEW_TOKEN" "${PANEL_VIEW_TOKEN:-}"
-  put_secret "PANEL_ADMIN_TOKEN" "${PANEL_ADMIN_TOKEN:-}"
+  put_secret "PANEL_TOKEN" "${PANEL_TOKEN:-}"
+  delete_legacy_secret "PANEL_OPERATOR_TOKEN"
+  delete_legacy_secret "PANEL_VIEW_TOKEN"
+  delete_legacy_secret "PANEL_ADMIN_TOKEN"
 
   verify_deploy "$deploy_output"
   log "panel credentials saved to ${PANEL_CREDENTIAL_FILE}"

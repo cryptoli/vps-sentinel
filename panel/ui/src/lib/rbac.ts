@@ -4,7 +4,7 @@ import type { PanelRole } from "@/types";
 export function selectedRole(value: unknown, hasToken = false): PanelRole {
   const role = String(value || "").toLowerCase() as PanelRole;
   if (role in ROLE_LEVELS) return role;
-  return hasToken ? "operator" : "public";
+  return hasToken ? "private" : "public";
 }
 
 export function roleAllows(role: PanelRole, minRole: PanelRole): boolean {

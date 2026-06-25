@@ -401,10 +401,7 @@ fn node_snapshot(
     store: &SqliteStore,
 ) -> SentinelResult<PanelNodeSnapshot> {
     let node_name = panel_node_name(config);
-    let mut metrics = collect_node_metrics(store).ok();
-    if let Some(metrics) = metrics.as_mut() {
-        apply_configured_node_location(config, metrics);
-    }
+    let metrics = collect_node_metrics(store).ok();
     Ok(PanelNodeSnapshot {
         node_id: node_name.clone(),
         node_name,
@@ -1341,9 +1338,8 @@ fn sanitize_panel_envelope(config: &SentinelConfig, mut payload: PanelEnvelope) 
     payload.node.privacy_mode = config.panel.privacy_mode.clone();
     payload.node.enabled_features = enabled_features(config);
     if let Some(metrics) = payload.node.metrics.as_mut() {
-        apply_configured_node_location(config, metrics);
+        sanitize_node_metrics(metrics);
     }
-
     for finding in &mut payload.findings {
         sanitize_panel_finding(config, finding);
     }
@@ -1439,42 +1435,6 @@ fn truncate_node_name(value: &str) -> String {
     value[..end].to_string()
 }
 
-fn apply_configured_node_location(config: &SentinelConfig, metrics: &mut NodeMetrics) {
-    let location = &config.panel.location;
-    metrics.country_code = normalize_country_code(&location.country_code);
-    metrics.country = safe_location_value(&location.country);
-    metrics.region = safe_location_value(&location.region);
-    metrics.city = safe_location_value(&location.city);
-}
-
-fn normalize_country_code(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.len() == 2 && trimmed.chars().all(|ch| ch.is_ascii_alphabetic()) {
-        return Some(trimmed.to_ascii_uppercase());
-    }
-    None
-}
-
-fn safe_location_value(value: &str) -> Option<String> {
-    let cleaned = remove_ips_in_text(value).trim().to_string();
-    if cleaned.is_empty() || cleaned == "redacted" || cleaned.contains("redacted") {
-        return None;
-    }
-    Some(truncate_location_value(&cleaned))
-}
-
-fn truncate_location_value(value: &str) -> String {
-    const MAX_LOCATION_BYTES: usize = 96;
-    if value.len() <= MAX_LOCATION_BYTES {
-        return value.to_string();
-    }
-    let mut end = MAX_LOCATION_BYTES;
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value[..end].to_string()
-}
-
 fn enabled_features(config: &SentinelConfig) -> Vec<String> {
     [
         ("ssh", config.ssh.enabled),
@@ -1493,6 +1453,48 @@ fn enabled_features(config: &SentinelConfig) -> Vec<String> {
     .into_iter()
     .filter_map(|(name, enabled)| enabled.then_some(name.to_string()))
     .collect()
+}
+
+fn sanitize_node_metrics(metrics: &mut NodeMetrics) {
+    metrics.country_code = metrics
+        .country_code
+        .as_deref()
+        .and_then(normalize_node_country_code);
+    metrics.country = metrics
+        .country
+        .as_deref()
+        .and_then(safe_node_location_value);
+    metrics.region = metrics.region.as_deref().and_then(safe_node_location_value);
+    metrics.city = metrics.city.as_deref().and_then(safe_node_location_value);
+}
+
+fn normalize_node_country_code(value: &str) -> Option<String> {
+    let code = value.trim().to_ascii_uppercase();
+    if code.len() == 2 && code.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        Some(code)
+    } else {
+        None
+    }
+}
+
+fn safe_node_location_value(value: &str) -> Option<String> {
+    let redacted = remove_ips_in_text(value).trim().to_string();
+    if redacted.is_empty() || redacted.eq_ignore_ascii_case("redacted") {
+        return None;
+    }
+    Some(truncate_node_location_value(&redacted))
+}
+
+fn truncate_node_location_value(value: &str) -> String {
+    const MAX_LOCATION_BYTES: usize = 96;
+    if value.len() <= MAX_LOCATION_BYTES {
+        return value.to_string();
+    }
+    let mut end = MAX_LOCATION_BYTES;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }
 
 fn redact_subject(config: &SentinelConfig, value: &str) -> String {
@@ -1761,15 +1763,11 @@ mod tests {
     }
 
     #[test]
-    fn panel_node_location_uses_explicit_non_sensitive_config(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn panel_node_location_is_not_configured_by_agent() -> Result<(), Box<dyn std::error::Error>> {
         let temp = tempfile::tempdir()?;
         let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
         let mut config = SentinelConfig::default();
         config.panel.node_name = "apernet-sg".to_string();
-        config.panel.location.country_code = "sg".to_string();
-        config.panel.location.country = "Singapore".to_string();
-        config.panel.location.city = "Singapore".to_string();
 
         let payload = panel_envelope(
             &config,
@@ -1796,18 +1794,20 @@ mod tests {
             },
         )?;
         let metrics = payload.node.metrics.as_ref().expect("node metrics");
-        assert_eq!(metrics.country_code.as_deref(), Some("SG"));
-        assert_eq!(metrics.country.as_deref(), Some("Singapore"));
-        assert_eq!(metrics.city.as_deref(), Some("Singapore"));
+        assert!(metrics.country_code.is_none());
+        assert!(metrics.country.is_none());
+        assert!(metrics.city.is_none());
 
         let mut tampered = payload.clone();
         let metrics = tampered.node.metrics.as_mut().expect("node metrics");
         metrics.country_code = Some("US".to_string());
-        metrics.country = Some("203.0.113.10".to_string());
+        metrics.country = Some("United States".to_string());
+        metrics.city = Some("203.0.113.10".to_string());
         let sanitized = sanitize_panel_envelope(&config, tampered);
         let metrics = sanitized.node.metrics.as_ref().expect("node metrics");
-        assert_eq!(metrics.country_code.as_deref(), Some("SG"));
-        assert_eq!(metrics.country.as_deref(), Some("Singapore"));
+        assert_eq!(metrics.country_code.as_deref(), Some("US"));
+        assert_eq!(metrics.country.as_deref(), Some("United States"));
+        assert!(metrics.city.is_none());
         Ok(())
     }
 

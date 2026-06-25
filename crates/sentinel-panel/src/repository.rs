@@ -605,7 +605,7 @@ impl Repository {
         expand_json_column(&mut detail, "evidence_json", "evidence");
         expand_json_column(&mut detail, "impact_json", "impact");
         expand_json_column(&mut detail, "recommendations_json", "recommendations");
-        if role == PanelRole::Admin {
+        if role == PanelRole::Private {
             let signature = detail
                 .get("review_signature")
                 .and_then(Value::as_str)
@@ -658,7 +658,7 @@ impl Repository {
             ));
         };
         expand_json_column(&mut detail, "payload_json", "payload");
-        if role == PanelRole::Admin {
+        if role == PanelRole::Private {
             let signature = detail
                 .get("review_signature")
                 .and_then(Value::as_str)
@@ -818,7 +818,7 @@ impl Repository {
                     .to_string();
                 item["review_verdict"] = Value::String(verdict);
                 item["status"] = item["review_verdict"].clone();
-                if role == PanelRole::Admin {
+                if role == PanelRole::Private {
                     item["review"] = review;
                 }
             } else {
