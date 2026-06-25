@@ -1,12 +1,14 @@
 use super::{
     normalize_panel_path, panel_node_status, panel_token_from_headers, parse_panel_themes,
     redact_ip_text, redact_panel_value, request_path_matches_admin, resolve_panel_role,
-    scope_panel_value, scope_probe_source_rows, verify_private_auth, verify_private_write_auth,
-    AppState, DbValue, FindingReview, FindingReviewRequest, PageQuery, PageRequest, PanelDataset,
-    PanelReview, PanelReviewRequest, PanelRole, PanelStreamEvent, Repository, RepositoryDriver,
-    ReviewTargetType, SecretResolver, DEFAULT_ADMIN_PATH, DEFAULT_THEMES, MAX_PAGE_LIMIT,
+    scope_panel_value, scope_probe_source_rows, settings, verify_private_auth,
+    verify_private_write_auth, AppState, DbValue, FindingReview, FindingReviewRequest, PageQuery,
+    PageRequest, PanelDataset, PanelReview, PanelReviewRequest, PanelRole, PanelStreamEvent,
+    Repository, RepositoryDriver, ReviewTargetType, SecretResolver, SettingsQuery,
+    DEFAULT_ADMIN_PATH, DEFAULT_THEMES, MAX_PAGE_LIMIT,
 };
 use crate::geoip::PanelGeoIpResolver;
+use axum::extract::{Query, State};
 use axum::http::{header, HeaderMap, HeaderValue};
 use chrono::{TimeZone, Utc};
 use rusqlite::Connection;
@@ -311,6 +313,29 @@ fn panel_node_status_uses_explicit_staleness_windows() {
         panel_node_status("node-a", "0.3.0", Some(&retired), now),
         "retired"
     );
+}
+
+#[tokio::test]
+async fn settings_requires_auth_on_management_route_even_with_public_pages() {
+    let mut state = test_state(Some("panel-token"));
+    state.public_enabled = true;
+    state.public_pages.insert("overview".to_string());
+    state.public_pages.insert("nodes".to_string());
+    state.admin_path = "/cryptocaigou".to_string();
+
+    let axum::Json(value) = settings(
+        State(state),
+        HeaderMap::new(),
+        Query(SettingsQuery {
+            path: Some("/cryptocaigou".to_string()),
+        }),
+    )
+    .await;
+
+    assert_eq!(value["management_route"], true);
+    assert_eq!(value["auth_required"], true);
+    assert_eq!(value["role"], "public");
+    assert_eq!(value["admin_path"], serde_json::Value::Null);
 }
 
 #[tokio::test]

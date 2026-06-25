@@ -38,12 +38,13 @@ export default {
         const role = resolvePanelRole(request, env, { allowAnonymous: true });
         const pages = publicPages(env);
         const resolvedAdminPath = adminPath(env);
+        const managementRoute = requestPathMatchesAdmin(resolvedAdminPath, url.searchParams.get("path"));
         return withCors(json({
           theme: env.PANEL_THEME || "default",
           themes: panelThemes(env),
           admin_path: role === "private" ? resolvedAdminPath : null,
-          management_route: requestPathMatchesAdmin(resolvedAdminPath, url.searchParams.get("path")),
-          auth_required: !publicAccessEnabled(env),
+          management_route: managementRoute,
+          auth_required: managementRoute || !publicAccessEnabled(env),
           auth_configured: Boolean(panelToken(env)),
           stream_supported: false,
           public_enabled: publicAccessEnabled(env),

@@ -642,6 +642,7 @@ async fn settings(
     let role = resolve_panel_role(&state, &headers).ok();
     let public_pages = state.public_pages.iter().cloned().collect::<Vec<_>>();
     let management_route = request_path_matches_admin(&state.admin_path, query.path.as_deref());
+    let auth_required = management_route || !panel_public_access_enabled(&state);
     let admin_path = if role == Some(PanelRole::Private) {
         Value::String(state.admin_path.clone())
     } else {
@@ -652,7 +653,7 @@ async fn settings(
         "management_route": management_route,
         "theme": state.theme,
         "themes": state.themes,
-        "auth_required": !panel_public_access_enabled(&state),
+        "auth_required": auth_required,
         "auth_configured": state.panel_token.is_some(),
         "stream_supported": true,
         "public_enabled": panel_public_access_enabled(&state),
