@@ -1,7 +1,7 @@
 use crate::notify::{http_client, transport_error, MessageTemplate, Notifier, NotifyContext};
 use async_trait::async_trait;
 use sentinel_core::{FeishuConfig, SentinelError, SentinelResult, Severity};
-use serde_json::json;
+use serde_json::{json, Value};
 
 pub struct FeishuNotifier {
     config: FeishuConfig,
@@ -70,6 +70,64 @@ impl Notifier for FeishuNotifier {
                 response.status()
             )));
         }
+
+        // Check the business response code from Feishu.
+        // A successful HTTP response does not guarantee that the message was accepted by Feishu,
+        // as it may still return a business error code in the JSON body.
+        // for more information, see https://github.com/cryptoli/vps-sentinel/pull/1
+        validate_feishu_response(
+            response
+                .json::<Value>()
+                .await
+                .map_err(|err| transport_error(self.name(), err))?,
+        )?;
         Ok(())
+    }
+}
+
+fn validate_feishu_response(body: Value) -> SentinelResult<()> {
+    let code = body
+        .get("code")
+        .or_else(|| body.get("StatusCode"))
+        .and_then(Value::as_i64);
+    match code {
+        Some(0) => Ok(()),
+        Some(code) => Err(SentinelError::Notify(format!(
+            "feishu returned business error {code}: {}",
+            body.get("msg")
+                .or_else(|| body.get("StatusMessage"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error")
+        ))),
+        None => Err(SentinelError::Notify(
+            "feishu response missing business code".to_string(),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_feishu_response;
+    use serde_json::json;
+
+    #[test]
+    fn accepts_code_success() {
+        assert!(validate_feishu_response(json!({ "code": 0, "msg": "success" })).is_ok());
+    }
+
+    #[test]
+    fn accepts_status_code_success() {
+        assert!(
+            validate_feishu_response(json!({ "StatusCode": 0, "StatusMessage": "success" }))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn rejects_failed_business_code() {
+        let err = validate_feishu_response(json!({ "code": 19001, "msg": "invalid webhook" }))
+            .expect_err("business failure should be an error");
+
+        assert!(err.to_string().contains("business error 19001"));
     }
 }

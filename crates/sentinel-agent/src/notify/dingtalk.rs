@@ -1,7 +1,7 @@
 use crate::notify::{http_client, transport_error, MessageTemplate, Notifier, NotifyContext};
 use async_trait::async_trait;
 use sentinel_core::{DingTalkConfig, SentinelError, SentinelResult, Severity};
-use serde_json::json;
+use serde_json::{json, Value};
 
 pub struct DingTalkNotifier {
     config: DingTalkConfig,
@@ -61,6 +61,53 @@ impl Notifier for DingTalkNotifier {
                 response.status()
             )));
         }
+
+        // Check the business response code from DingTalk.
+        // A successful HTTP response does not guarantee that the message was accepted by DingTalk,
+        // as it may still return a business error code in the JSON body.
+        // for more information, see https://github.com/cryptoli/vps-sentinel/pull/1
+        validate_dingtalk_response(
+            response
+                .json::<Value>()
+                .await
+                .map_err(|err| transport_error(self.name(), err))?,
+        )?;
         Ok(())
+    }
+}
+
+fn validate_dingtalk_response(body: Value) -> SentinelResult<()> {
+    match body.get("errcode").and_then(Value::as_i64) {
+        Some(0) => Ok(()),
+        Some(code) => Err(SentinelError::Notify(format!(
+            "dingtalk returned business error {code}: {}",
+            body.get("errmsg")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error")
+        ))),
+        None => Err(SentinelError::Notify(
+            "dingtalk response missing errcode".to_string(),
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_dingtalk_response;
+    use serde_json::json;
+
+    #[test]
+    fn accepts_success_business_code() {
+        assert!(validate_dingtalk_response(json!({ "errcode": 0, "errmsg": "ok" })).is_ok());
+    }
+
+    #[test]
+    fn rejects_failed_business_code() {
+        let err = validate_dingtalk_response(
+            json!({ "errcode": 310000, "errmsg": "keywords not in content" }),
+        )
+        .expect_err("business failure should be an error");
+
+        assert!(err.to_string().contains("business error 310000"));
     }
 }
