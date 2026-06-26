@@ -37,6 +37,7 @@
 .feature-side-stack,
 .overview-grid,
 .overview-triad,
+.overview-health-row,
 .overview-table-row {
   gap: 14px;
 }

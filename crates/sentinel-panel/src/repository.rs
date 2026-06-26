@@ -147,6 +147,12 @@ impl Repository {
                 "panel_reviews",
                 "target_type, review_signature, verdict, reviewed_at",
             ),
+            (
+                "idx_attack_fingerprints_verdict",
+                "attack_fingerprints",
+                "verdict, last_seen_at",
+            ),
+            ("idx_incidents_score_time", "incidents", "score, last_seen"),
         ] {
             self.ensure_index(name, table, columns).await?;
         }
@@ -282,6 +288,14 @@ impl Repository {
         match self.backend {
             DatabaseBackend::Postgres => format!("${index}"),
             DatabaseBackend::Sqlite | DatabaseBackend::Mysql => "?".to_string(),
+        }
+    }
+
+    pub(super) fn hour_bucket_expr(&self, column: &str) -> String {
+        match self.backend {
+            DatabaseBackend::Sqlite | DatabaseBackend::Postgres | DatabaseBackend::Mysql => {
+                format!("SUBSTR({column}, 1, 13)")
+            }
         }
     }
 
@@ -738,9 +752,14 @@ impl Repository {
         }
         let where_sql = format!(" WHERE {}", filters.join(" AND "));
         let limit_placeholder = self.placeholder(values.len() + 1);
-        values.push(DbValue::Integer(5000));
+        values.push(DbValue::Integer(request.limit.min(500) as i64));
+        let bucket_expr = self.hour_bucket_expr("timestamp");
         let sql = format!(
-            "SELECT timestamp, severity FROM findings{where_sql} ORDER BY timestamp DESC LIMIT {limit_placeholder}"
+            "SELECT {bucket_expr} AS bucket, severity, COUNT(*) AS count
+             FROM findings{where_sql}
+             GROUP BY {bucket_expr}, severity
+             ORDER BY bucket ASC
+             LIMIT {limit_placeholder}"
         );
         let rows = self.query_all_with_values(&sql, &values).await?;
         let Value::Array(rows) = rows else {
@@ -748,11 +767,11 @@ impl Repository {
         };
         let mut buckets: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
         for row in rows {
-            let timestamp = row
-                .get("timestamp")
+            let bucket = row
+                .get("bucket")
                 .and_then(Value::as_str)
-                .unwrap_or_default();
-            let bucket = timestamp.chars().take(13).collect::<String>();
+                .unwrap_or_default()
+                .to_string();
             if bucket.len() != 13 {
                 continue;
             }
@@ -761,11 +780,12 @@ impl Repository {
                 .and_then(Value::as_str)
                 .unwrap_or("Unknown")
                 .to_string();
+            let count = row.get("count").and_then(Value::as_i64).unwrap_or(0);
             *buckets
                 .entry(bucket)
                 .or_default()
                 .entry(severity)
-                .or_default() += 1;
+                .or_default() += count;
         }
         let items = buckets
             .into_iter()
@@ -911,6 +931,7 @@ impl Repository {
             reviewed_at: review.reviewed_at,
         };
         self.write_panel_review_row(&panel_review).await?;
+        self.sync_review_feedback(&panel_review).await?;
         self.insert_audit_log(
             "finding_review",
             &review.reviewer,
@@ -963,6 +984,7 @@ impl Repository {
             };
             self.write_finding_review_row(&legacy_review).await?;
         }
+        self.sync_review_feedback(&scoped_review).await?;
         self.insert_audit_log(
             "panel_review",
             &scoped_review.reviewer,
@@ -977,6 +999,107 @@ impl Repository {
         )
         .await?;
         Ok(scoped_review)
+    }
+
+    pub(super) async fn sync_review_feedback(
+        &self,
+        review: &PanelReview,
+    ) -> Result<(), PanelApiError> {
+        if review.target_type != ReviewTargetType::Finding {
+            return Ok(());
+        }
+        let Some(verdict) = fingerprint_verdict_from_review(&review.verdict) else {
+            return Ok(());
+        };
+        let sql = format!(
+            "SELECT evidence_json FROM findings WHERE id = {}",
+            self.placeholder(1)
+        );
+        let Some(row) = self
+            .query_one_with_values(&sql, &[DbValue::Text(review.target_id.clone())])
+            .await?
+        else {
+            return Ok(());
+        };
+        let Some(fingerprint_id) =
+            evidence_value_from_json(row.get("evidence_json"), "attack_fingerprint_id")
+        else {
+            return Ok(());
+        };
+        if fingerprint_id.trim().is_empty() {
+            return Ok(());
+        }
+        let updated = self
+            .update_attack_fingerprint_verdict(&fingerprint_id, verdict)
+            .await?;
+        if updated {
+            self.insert_audit_log(
+                "fingerprint_feedback",
+                &review.reviewer,
+                "attack_fingerprint",
+                &fingerprint_id,
+                json!({
+                    "source_review_target": &review.target_id,
+                    "source_review_signature": &review.review_signature,
+                    "review_verdict": &review.verdict,
+                    "fingerprint_verdict": verdict
+                }),
+                review.reviewed_at,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn update_attack_fingerprint_verdict(
+        &self,
+        fingerprint_id: &str,
+        verdict: &str,
+    ) -> Result<bool, PanelApiError> {
+        let existing = self
+            .query_one_with_values(
+                &format!(
+                    "SELECT verdict FROM attack_fingerprints WHERE id = {}",
+                    self.placeholder(1)
+                ),
+                &[DbValue::Text(fingerprint_id.to_string())],
+            )
+            .await?;
+        let Some(existing) = existing else {
+            return Ok(false);
+        };
+        let merged = strongest_fingerprint_verdict(
+            existing
+                .get("verdict")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            verdict,
+        );
+        self.execute_write(
+            &format!(
+                "UPDATE attack_fingerprints SET verdict = {}, updated_at = {} WHERE id = {}",
+                self.placeholder(1),
+                self.placeholder(2),
+                self.placeholder(3)
+            ),
+            &[
+                DbValue::Text(merged),
+                DbValue::Text(Utc::now().to_rfc3339()),
+                DbValue::Text(fingerprint_id.to_string()),
+            ],
+        )
+        .await?;
+        Ok(true)
+    }
+
+    pub(super) async fn review_feedback_summary(&self) -> Result<Value, PanelApiError> {
+        self.query_all(
+            "SELECT target_type, verdict, COUNT(*) AS count
+             FROM panel_reviews
+             GROUP BY target_type, verdict
+             ORDER BY target_type ASC, verdict ASC",
+        )
+        .await
     }
 
     pub(super) async fn write_finding_review_row(
@@ -1185,6 +1308,27 @@ impl Repository {
         &self,
         request: &PanelActionRequest,
     ) -> Result<PanelActionRequest, PanelApiError> {
+        if let Some(existing) = self
+            .existing_queued_action_request(request)
+            .await?
+            .and_then(panel_action_request_from_value)
+        {
+            self.insert_audit_log(
+                "action_request_duplicate",
+                &request.requested_by,
+                &request.target_type,
+                &request.target_id,
+                json!({
+                    "action_id": &existing.id,
+                    "action": &request.action,
+                    "status": &existing.status,
+                    "node_name": &request.node_name
+                }),
+                request.requested_at,
+            )
+            .await?;
+            return Ok(existing);
+        }
         let columns = [
             "id",
             "action",
@@ -1234,6 +1378,42 @@ impl Repository {
         )
         .await?;
         Ok(request.clone())
+    }
+
+    async fn existing_queued_action_request(
+        &self,
+        request: &PanelActionRequest,
+    ) -> Result<Option<Value>, PanelApiError> {
+        let columns = [
+            "id",
+            "action",
+            "target_type",
+            "target_id",
+            "node_name",
+            "payload_json",
+            "status",
+            "requested_by",
+            "requested_at",
+            "updated_at",
+        ];
+        let sql = format!(
+            "SELECT {} FROM panel_action_requests
+             WHERE action = {} AND target_type = {} AND target_id = {} AND status = 'queued'
+             ORDER BY requested_at DESC LIMIT 1",
+            columns.join(", "),
+            self.placeholder(1),
+            self.placeholder(2),
+            self.placeholder(3)
+        );
+        self.query_one_with_values(
+            &sql,
+            &[
+                DbValue::Text(request.action.clone()),
+                DbValue::Text(request.target_type.clone()),
+                DbValue::Text(request.target_id.clone()),
+            ],
+        )
+        .await
     }
 
     pub(super) fn page_where_clause(

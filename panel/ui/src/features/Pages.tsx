@@ -10,6 +10,7 @@ import {
   Cpu,
   Database,
   FileText,
+  Fingerprint,
   GitBranch,
   Globe2,
   Infinity,
@@ -32,8 +33,9 @@ import { DonutChart, MiniBars, RiskTrend, Sparkline } from "@/components/Charts"
 import { Badge, Card, DataTable, MetricCard, Pagination } from "@/components/Primitives";
 import { SearchField } from "@/components/Controls";
 import { Filters } from "@/components/Filters";
+import { submitPanelReview } from "@/lib/api";
 import { countryDisplay, metricsFromNode, nodeLocation, number, percent, relativeTime, bitrate, bytes, sortedNodes } from "@/lib/format";
-import { translate } from "@/lib/i18n";
+import { formatTemplate, translate } from "@/lib/i18n";
 import { roleAllows } from "@/lib/rbac";
 import type { DatasetPage, DatasetState, Language, NodeRecord, PageConfig, PanelActionRequestInput, PanelDictionaries, PanelDictionaryItem, PanelRecord, PanelRole, Summary, TrendPoint } from "@/types";
 
@@ -128,6 +130,15 @@ export function OverviewPage({
         </Card>
       </section>
 
+      <section className="overview-health-row">
+        <Card title={translate(language, "dataHealth")} className="data-health-card">
+          <DataHealthPanel summary={summary} language={language} />
+        </Card>
+        <Card title={translate(language, "reviewFeedback")} className="review-feedback-card">
+          <ReviewFeedbackPanel summary={summary} language={language} />
+        </Card>
+      </section>
+
       <section className="overview-table-row">
         {roleAllows(role, "private") && (
           <Card title={translate(language, "recentFindings")} className="wide-card">
@@ -149,6 +160,7 @@ export function FindingsPageView({
   page,
   state,
   language,
+  role,
   onStateChange,
   onDetails,
 }: {
@@ -156,6 +168,7 @@ export function FindingsPageView({
   page: DatasetPage;
   state: DatasetState;
   language: Language;
+  role: PanelRole;
   onStateChange: (patch: Partial<DatasetState>) => void;
   onDetails: (row: PanelRecord) => void;
 }) {
@@ -176,6 +189,7 @@ export function FindingsPageView({
         </div>
       </div>
       <Filters state={state} language={language} onChange={onStateChange} />
+      <BulkReviewBar rows={rows} targetType="finding" role={role} language={language} />
       <section className="feature-main-grid">
         <Card title={translate(language, config.labelKey)} className="feature-table-card">
           <div className="desktop-table-panel">
@@ -217,6 +231,7 @@ export function IncidentsPageView({
   page,
   state,
   language,
+  role,
   onStateChange,
   onDetails,
 }: {
@@ -224,6 +239,7 @@ export function IncidentsPageView({
   page: DatasetPage;
   state: DatasetState;
   language: Language;
+  role: PanelRole;
   onStateChange: (patch: Partial<DatasetState>) => void;
   onDetails: (row: PanelRecord) => void;
 }) {
@@ -283,6 +299,7 @@ export function IncidentsPageView({
           </Card>
         </section>
         <Filters state={state} language={language} onChange={onStateChange} />
+        <BulkReviewBar rows={rows} targetType="incident" role={role} language={language} />
         <Card title={translate(language, config.labelKey)} className="feature-table-card">
           <div className="desktop-table-panel">
             <DataTable rows={rows} columns={["last_seen", "severity", "score", "node_name", "title", "review_verdict"]} language={language} onDetails={onDetails} tableId="incidents" />
@@ -300,6 +317,7 @@ export function BaselinePageView({
   page,
   state,
   language,
+  role,
   dictionaries,
   onStateChange,
   onDetails,
@@ -308,6 +326,7 @@ export function BaselinePageView({
   page: DatasetPage;
   state: DatasetState;
   language: Language;
+  role: PanelRole;
   dictionaries: PanelDictionaries;
   onStateChange: (patch: Partial<DatasetState>) => void;
   onDetails: (row: PanelRecord) => void;
@@ -362,6 +381,7 @@ export function BaselinePageView({
         </SideCard>
       </section>
       <div ref={queueRef}>
+        <BulkReviewBar rows={rows} targetType="baseline_drift" role={role} language={language} />
         <Card title={copy(language, "Review Queue", "复核队列")} className="feature-table-card">
           <div className="review-tabs" role="group" aria-label={copy(language, "Review queue filters", "复核队列筛选")}>
             {reviewFilters.map((filter) => (
@@ -417,7 +437,7 @@ export function BlocksPageView({
     : config.columns || ["blocked_at", "node_name", "rule_id", "reason", "expires_at"];
   const canRequestActions = roleAllows(role, "private") && Boolean(onActionRequest);
 
-  async function requestUnblock(row: PanelRecord) {
+  async function requestBlockAction(row: PanelRecord, action: "unblock" | "allowlist") {
     if (!onActionRequest) return;
     const targetId = String(row.id || "");
     if (!targetId) {
@@ -428,7 +448,7 @@ export function BlocksPageView({
     setActionMessage(null);
     try {
       await onActionRequest({
-        action: "unblock",
+        action,
         target_type: "active_block",
         target_id: targetId,
         node_name: String(row.node_name || ""),
@@ -447,17 +467,27 @@ export function BlocksPageView({
     }
   }
 
-  function unblockButton(row: PanelRecord) {
+  function blockActionButtons(row: PanelRecord) {
     const targetId = String(row.id || "");
     return (
-      <button
-        className="ghost-button compact"
-        type="button"
-        disabled={!targetId || pendingActionId === targetId}
-        onClick={() => void requestUnblock(row)}
-      >
-        {translate(language, "requestUnblock")}
-      </button>
+      <div className="row-action-pair">
+        <button
+          className="ghost-button compact"
+          type="button"
+          disabled={!targetId || pendingActionId === targetId}
+          onClick={() => void requestBlockAction(row, "unblock")}
+        >
+          {translate(language, "requestUnblock")}
+        </button>
+        <button
+          className="ghost-button compact"
+          type="button"
+          disabled={!targetId || pendingActionId === targetId}
+          onClick={() => void requestBlockAction(row, "allowlist")}
+        >
+          {translate(language, "allowlist")}
+        </button>
+      </div>
     );
   }
 
@@ -481,14 +511,14 @@ export function BlocksPageView({
                 columns={columns}
                 language={language}
                 tableId="active-blocks"
-                rowAction={canRequestActions ? unblockButton : undefined}
+                rowAction={canRequestActions ? blockActionButtons : undefined}
               />
             </div>
             <MobileBlocksList
               rows={rows}
               language={language}
               visibleColumns={columns}
-              rowAction={canRequestActions ? unblockButton : undefined}
+              rowAction={canRequestActions ? blockActionButtons : undefined}
             />
             <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
           </Card>
@@ -500,6 +530,63 @@ export function BlocksPageView({
           expiringSoon={expiringSoon}
           total={rows.length}
         />
+      </section>
+    </div>
+  );
+}
+
+export function AttackFingerprintsPageView({
+  config,
+  page,
+  state,
+  language,
+  onStateChange,
+}: {
+  config: PageConfig;
+  page: DatasetPage;
+  state: DatasetState;
+  language: Language;
+  onStateChange: (patch: Partial<DatasetState>) => void;
+}) {
+  const rows = page.items;
+  const malicious = rows.filter((row) => String(row.verdict || "").toLowerCase() === "malicious").length;
+  const benign = rows.filter((row) => String(row.verdict || "").toLowerCase() === "benign").length;
+  const highScore = rows.filter((row) => Number(row.score || 0) >= 75).length;
+  const repeated = rows.filter((row) => Number(row.seen_count || 0) >= 2).length;
+  return (
+    <div className="page-stack feature-page fingerprints-design">
+      <FeatureHeader title={translate(language, config.titleKey)} description={translate(language, config.descriptionKey)} />
+      <section className="feature-metrics four">
+        <StatTile icon={<Fingerprint />} tone="red" label={translate(language, "malicious")} value={malicious} detail={translate(language, "confirmed")} />
+        <StatTile icon={<ShieldCheck />} tone="green" label={translate(language, "benign")} value={benign} detail={translate(language, "false_positive")} />
+        <StatTile icon={<Target />} tone="orange" label={translate(language, "score")} value={highScore} detail=">= 75" />
+        <StatTile icon={<Network />} tone="blue" label={translate(language, "seen_count")} value={repeated} detail={translate(language, "observed")} />
+      </section>
+      <Filters state={state} language={language} onChange={onStateChange} />
+      <section className="feature-main-grid">
+        <Card title={translate(language, config.labelKey)} className="feature-table-card">
+          <div className="desktop-table-panel">
+            <DataTable
+              rows={rows}
+              columns={["last_seen_at", "kind", "score", "confidence", "verdict", "node_count", "source_count", "seen_count"]}
+              language={language}
+              tableId="attack-fingerprints"
+            />
+          </div>
+          <MobileFingerprintList rows={rows} language={language} />
+          <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
+        </Card>
+        <aside className="feature-side-stack">
+          <SideCard title={translate(language, "rule_ids")}>
+            <RankList rows={topArrayValues(rows, "rule_ids")} />
+          </SideCard>
+          <SideCard title={translate(language, "categories")}>
+            <RankList rows={topArrayValues(rows, "categories")} />
+          </SideCard>
+          <SideCard title={translate(language, "reviewFeedback")}>
+            <RankList rows={topValues(rows, "verdict")} />
+          </SideCard>
+        </aside>
       </section>
     </div>
   );
@@ -637,12 +724,14 @@ export function DatasetPageView({
 export function NodesPageView({
   page,
   state,
+  summary,
   language,
   dictionaries,
   onStateChange,
 }: {
   page: DatasetPage<NodeRecord>;
   state: DatasetState;
+  summary: Summary;
   language: Language;
   dictionaries: PanelDictionaries;
   onStateChange: (patch: Partial<DatasetState>) => void;
@@ -706,6 +795,9 @@ export function NodesPageView({
         <MetricCard label={translate(language, "fleetTraffic")} value={resource.trafficIsRate ? bitrate(resource.traffic) : bytes(resource.traffic)} detail={translate(language, "inOut")} tone="violet" icon={<Wifi />} sparkline={<Sparkline tone="violet" values={resource.trafficValues} />} />
         <MetricCard label={translate(language, "onlineFreshness")} value={percent(fleetOnlineRatio(nodes), 0)} detail={translate(language, "nodes")} tone="green" icon={<BarChart3 />} sparkline={<MiniBars values={freshnessBars(nodes)} />} />
       </section>
+      <Card title={translate(language, "dataHealth")} className="node-health-card">
+        <DataHealthPanel summary={summary} language={language} compact />
+      </Card>
       <section className="node-list">
         <div className="node-list-head">
           <span>{translate(language, "nodes")}</span>
@@ -804,6 +896,58 @@ function SideCard({ title, action, children }: { title: string; action?: string;
         {action && <span>{action}</span>}
       </header>
       {children}
+    </section>
+  );
+}
+
+function BulkReviewBar({
+  rows,
+  targetType,
+  role,
+  language,
+}: {
+  rows: PanelRecord[];
+  targetType: "finding" | "incident" | "baseline_drift";
+  role: PanelRole;
+  language: Language;
+}) {
+  const [working, setWorking] = useState(false);
+  const [message, setMessage] = useState("");
+  const candidates = rows
+    .filter((row) => reviewVerdict(row) === "needs_review")
+    .filter((row) => String(row.id || row.finding_id || "").trim())
+    .slice(0, 25);
+  if (!roleAllows(role, "private") || !candidates.length) return null;
+
+  async function apply(verdict: "confirmed" | "false_positive") {
+    setWorking(true);
+    setMessage("");
+    try {
+      await Promise.all(candidates.map((row) => submitPanelReview(role, {
+        target_type: targetType,
+        target_id: String(row.id || row.finding_id || ""),
+        verdict,
+        note: "bulk review",
+      })));
+      setMessage(formatTemplate(translate(language, "selectedCount"), { count: candidates.length }));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  return (
+    <section className="bulk-review-bar" aria-label={translate(language, "bulkReview")}>
+      <strong>{translate(language, "bulkReview")}</strong>
+      <span>{formatTemplate(translate(language, "selectedCount"), { count: candidates.length })}</span>
+      <button className="ghost-button compact" type="button" disabled={working} onClick={() => void apply("confirmed")}>
+        {translate(language, "markConfirmed")}
+      </button>
+      <button className="ghost-button compact" type="button" disabled={working} onClick={() => void apply("false_positive")}>
+        {translate(language, "markFalsePositive")}
+      </button>
+      {message && <em>{message}</em>}
     </section>
   );
 }
@@ -1065,6 +1209,37 @@ function MobileSourcesList({
               <span>{copy(language, "Last seen", "最近")} {formatRecordDate(recordText(row, ["last_seen"], ""), language)}</span>
             </div>
             <TagList values={[...recordValues(row.categories), ...recordValues(row.rule_ids)].slice(0, 4)} />
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function MobileFingerprintList({ rows, language }: { rows: PanelRecord[]; language: Language }) {
+  if (!rows.length) return <MobileEmptyState language={language} />;
+  return (
+    <div className="mobile-record-list mobile-fingerprint-list">
+      {rows.map((row, index) => {
+        const verdict = String(row.verdict || "unknown").toLowerCase();
+        return (
+          <article className={`mobile-record-card fingerprint-card verdict-${verdict}`} key={recordKey(row, index)}>
+            <span className="mobile-record-icon tone-blue"><Fingerprint size={20} /></span>
+            <div className="mobile-record-body">
+              <header className="mobile-record-title-row">
+                <div>
+                  <strong>{recordText(row, ["title", "kind", "id"], translate(language, "attackFingerprints"))}</strong>
+                  <span>{recordText(row, ["summary"], "")}</span>
+                </div>
+                <Badge value={translate(language, verdict)} tone={verdict} />
+              </header>
+              <div className="mobile-record-meta">
+                <span>{translate(language, "score")} {recordText(row, ["score"], "0")}</span>
+                <span>{translate(language, "confidence")} {recordText(row, ["confidence"], "0")}</span>
+                <span>{translate(language, "seen_count")} {recordText(row, ["seen_count"], "0")}</span>
+              </div>
+              <TagList values={[...recordValues(row.rule_ids), ...recordValues(row.categories)].slice(0, 5)} />
+            </div>
           </article>
         );
       })}
@@ -1347,6 +1522,18 @@ function topValues(rows: PanelRecord[], key: string): Array<{ label: string; val
     .sort((left, right) => right.value - left.value || left.label.localeCompare(right.label));
 }
 
+function topArrayValues(rows: PanelRecord[], key: string): Array<{ label: string; value: number }> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    for (const value of recordValues(row[key])) {
+      counts.set(value, (counts.get(value) || 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .map(([label, value]) => ({ label, value }))
+    .sort((left, right) => right.value - left.value || left.label.localeCompare(right.label));
+}
+
 function uniqueCount(rows: PanelRecord[], key: string): number {
   const values = new Set<string>();
   for (const row of rows) {
@@ -1450,6 +1637,28 @@ interface AttackChainStage {
 }
 
 function attackChainFromIncident(row: PanelRecord, language: Language): AttackChainStage[] {
+  const payload = incidentPayload(row);
+  const payloadStages = Array.isArray(payload.attack_chain) ? payload.attack_chain : [];
+  if (payloadStages.length) {
+    return payloadStages.map((stage) => {
+      const record = asRecord(stage);
+      const key = recordText(record, ["stage"], "unknown");
+      const label = recordText(record, ["label"], stageLabelFromKey(key));
+      const severity = normalizedSeverity(record.severity || row.severity);
+      const findingCount = Number(record.finding_count || 0);
+      const subjects = recordValues(record.subjects).slice(0, 2).join(", ");
+      const ruleIds = recordValues(record.rule_ids).slice(0, 2).join(", ");
+      const evidence = [findingCount ? `${number(findingCount)} ${translate(language, "findings")}` : "", subjects, ruleIds]
+        .filter(Boolean)
+        .join(" · ");
+      return {
+        label,
+        severity,
+        evidence: evidence || recordText(row, ["summary", "title"], copy(language, "Observed in incident payload", "来自事件载荷")),
+        icon: stageIcon(key),
+      };
+    });
+  }
   const text = [
     row.tactics,
     row.techniques,
@@ -1521,16 +1730,24 @@ function postureToneFromSeverity(value: unknown): "good" | "warn" | "bad" {
 
 function correlationFacts(row: PanelRecord, language: Language): string[] {
   const facts: string[] = [];
+  const payload = incidentPayload(row);
+  const correlation = asRecord(payload.correlation);
   const nodeCount = Number(row.node_count || row.affected_nodes || 0);
-  const findingCount = Number(row.finding_count || 0);
+  const findingCount = Number(correlation.finding_count || row.finding_count || 0);
   const eventCount = Number(row.event_count || 0);
-  const score = Number(row.score || 0);
+  const score = Number(row.score || correlation.score || 0);
+  const subjectCount = Number(correlation.subject_count || 0);
+  const stageCount = Number(correlation.stage_count || 0);
+  const ruleCount = Number(correlation.rule_count || 0);
   const nodeName = recordText(row, ["node_name", "node_id"], "");
   const firstSeen = parseDate(row.first_seen || row.created_at || row.timestamp);
   const lastSeen = parseDate(row.last_seen || row.updated_at || row.timestamp);
   if (Number.isFinite(nodeCount) && nodeCount > 1) facts.push(copy(language, `${number(nodeCount)} affected nodes`, `${number(nodeCount)} 个受影响节点`));
   if (Number.isFinite(findingCount) && findingCount > 0) facts.push(copy(language, `${number(findingCount)} linked findings`, `${number(findingCount)} 条关联告警`));
   if (Number.isFinite(eventCount) && eventCount > 0) facts.push(copy(language, `${number(eventCount)} linked events`, `${number(eventCount)} 条关联事件`));
+  if (Number.isFinite(stageCount) && stageCount > 0) facts.push(copy(language, `${number(stageCount)} attack stages`, `${number(stageCount)} 个攻击阶段`));
+  if (Number.isFinite(subjectCount) && subjectCount > 1) facts.push(copy(language, `${number(subjectCount)} subjects`, `${number(subjectCount)} 个对象`));
+  if (Number.isFinite(ruleCount) && ruleCount > 1) facts.push(copy(language, `${number(ruleCount)} rules`, `${number(ruleCount)} 条规则`));
   if (firstSeen && lastSeen && lastSeen.getTime() >= firstSeen.getTime()) {
     facts.push(copy(language, `Window ${durationLabel(lastSeen.getTime() - firstSeen.getTime(), "en")}`, `窗口 ${durationLabel(lastSeen.getTime() - firstSeen.getTime(), "zh")}`));
   }
@@ -1538,6 +1755,40 @@ function correlationFacts(row: PanelRecord, language: Language): string[] {
   if (Number.isFinite(score) && score > 0) facts.push(copy(language, `Correlation score ${number(score)}`, `关联评分 ${number(score)}`));
   if (lastSeen) facts.push(copy(language, `Last seen ${relativeTime(lastSeen.toISOString(), "en")}`, `最后出现 ${relativeTime(lastSeen.toISOString(), "zh")}`));
   return facts;
+}
+
+function incidentPayload(row: PanelRecord): PanelRecord {
+  const expanded = asRecord(row.payload);
+  if (Object.keys(expanded).length) return expanded;
+  const raw = row.payload_json;
+  if (typeof raw !== "string" || !raw.trim()) return {};
+  try {
+    return asRecord(JSON.parse(raw));
+  } catch {
+    return {};
+  }
+}
+
+function asRecord(value: unknown): PanelRecord {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as PanelRecord : {};
+}
+
+function stageIcon(stage: string): React.ReactNode {
+  const key = stage.toLowerCase();
+  if (key.includes("initial")) return <Target size={16} />;
+  if (key.includes("execution")) return <Zap size={16} />;
+  if (key.includes("privilege")) return <ShieldAlert size={16} />;
+  if (key.includes("lateral") || key.includes("command")) return <Network size={16} />;
+  if (key.includes("impact")) return <Siren size={16} />;
+  return <GitBranch size={16} />;
+}
+
+function stageLabelFromKey(stage: string): string {
+  return stage
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ") || "Unknown";
 }
 
 function parseDate(value: unknown): Date | null {
@@ -1555,12 +1806,23 @@ function durationLabel(ms: number, language: Language): string {
   return language === "zh" ? `${days} 天` : `${days}d`;
 }
 
+function millisecondsLabel(ms: number, language: Language): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "-";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return language === "zh" ? `${seconds.toFixed(1)} 秒` : `${seconds.toFixed(1)}s`;
+  return durationLabel(ms, language);
+}
+
 function chainZh(label: string): string {
   return {
     "Initial Access": "初始访问",
     Execution: "执行",
     "Privilege Escalation": "权限提升",
+    Persistence: "持久化",
+    Discovery: "发现",
     "Lateral Movement": "横向移动",
+    "Command and Control": "命令与控制",
     Impact: "影响",
   }[label] || label;
 }
@@ -1725,6 +1987,85 @@ function ResponseRow({ icon, value, label, tone }: { icon: React.ReactNode; valu
       <span>{icon}</span>
       <strong>{number(value)}</strong>
       <p>{label}</p>
+    </div>
+  );
+}
+
+function DataHealthPanel({ summary, language, compact = false }: { summary: Summary; language: Language; compact?: boolean }) {
+  const health = summary.data_health || {};
+  const status = String(health.status || "unknown").toLowerCase();
+  const slowStage = String(health.slowest_stage || "-");
+  const slowMs = Number(health.slowest_stage_ms || 0);
+  const latestHeartbeat = health.latest_heartbeat_at ? relativeTime(health.latest_heartbeat_at, language) : "-";
+  const items = [
+    {
+      label: translate(language, "collectorErrors"),
+      value: number(Number(health.collector_errors || 0)),
+      detail: copy(language, "Latest heartbeat sample", "最近心跳样本"),
+      icon: <AlertTriangle size={16} />,
+      tone: Number(health.collector_errors || 0) > 0 ? "orange" : "green",
+    },
+    {
+      label: translate(language, "queuedActions"),
+      value: number(Number(health.queued_actions || 0)),
+      detail: translate(language, "responsePolicy"),
+      icon: <ListChecks size={16} />,
+      tone: Number(health.queued_actions || 0) > 0 ? "blue" : "green",
+    },
+    {
+      label: translate(language, "slowestStage"),
+      value: slowStage,
+      detail: slowMs > 0 ? millisecondsLabel(slowMs, language) : "-",
+      icon: <Clock3 size={16} />,
+      tone: slowMs > 5000 ? "orange" : "blue",
+    },
+    {
+      label: translate(language, "latestHeartbeat"),
+      value: latestHeartbeat,
+      detail: copy(language, `${number(Number(health.heartbeat_samples || 0))} samples`, `${number(Number(health.heartbeat_samples || 0))} 个样本`),
+      icon: <Wifi size={16} />,
+      tone: status === "degraded" ? "red" : status === "attention" ? "orange" : "green",
+    },
+  ];
+  return (
+    <div className={`data-health-panel ${compact ? "compact" : ""}`}>
+      <header>
+        <span className={`health-state health-${status}`}>{translate(language, status)}</span>
+        <small>{copy(language, "Stale", "过期")} {number(Number(health.stale_nodes || 0))} · {translate(language, "offline")} {number(Number(health.offline_nodes || 0))}</small>
+      </header>
+      <div className="data-health-grid">
+        {items.map((item) => (
+          <div className={`data-health-item tone-${item.tone}`} key={item.label}>
+            <span>{item.icon}</span>
+            <small>{item.label}</small>
+            <strong title={item.value}>{item.value}</strong>
+            <em>{item.detail}</em>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ReviewFeedbackPanel({ summary, language }: { summary: Summary; language: Language }) {
+  const rows = summary.review_feedback || [];
+  if (!rows.length) {
+    return <div className="empty-state compact">{translate(language, "noData")}</div>;
+  }
+  const total = rows.reduce((sum, row) => sum + Number(row.count || 0), 0);
+  return (
+    <div className="review-feedback-list">
+      {rows.slice(0, 6).map((row) => {
+        const value = Number(row.count || 0);
+        const label = `${translate(language, row.target_type)} · ${translate(language, row.verdict)}`;
+        return (
+          <div key={`${row.target_type}:${row.verdict}`}>
+            <span>{label}</span>
+            <i><b style={{ width: `${Math.min(100, total ? (value / total) * 100 : 0)}%` }} /></i>
+            <strong>{number(value)}</strong>
+          </div>
+        );
+      })}
     </div>
   );
 }

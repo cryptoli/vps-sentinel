@@ -254,7 +254,8 @@ export const DATASETS = deepFreeze({
       "score",
       "title",
       "summary",
-      "review_signature"
+      "review_signature",
+      "payload_json"
     ]
   },
   "/api/v1/baseline-drifts": {

@@ -11,8 +11,8 @@ pub mod time_window;
 
 pub use config::{
     ActiveResponseConfig, BarkConfig, EmailConfig, EmailTlsMode, GotifyConfig,
-    NotificationLanguage, NotificationTimeZone, NtfyConfig, SentinelConfig, ServerChanConfig,
-    TelegramConfig, WebhookConfig, DEFAULT_DYNAMIC_UDP_MIN_PORT,
+    NotificationLanguage, NotificationTimeZone, NtfyConfig, RiskScoringConfig, SentinelConfig,
+    ServerChanConfig, TelegramConfig, WebhookConfig, DEFAULT_DYNAMIC_UDP_MIN_PORT,
 };
 pub use error::{SentinelError, SentinelResult};
 pub use event::RawEvent;

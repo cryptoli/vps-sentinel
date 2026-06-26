@@ -141,7 +141,7 @@
     position: fixed;
     inset: auto 0 0;
     z-index: 40;
-    height: calc(64px + env(safe-area-inset-bottom));
+    height: calc(66px + env(safe-area-inset-bottom));
     padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
     color: #5f7089;
     background: rgba(255, 255, 255, 0.94);
@@ -152,9 +152,9 @@
 
   .main-nav {
     display: grid;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(7, minmax(0, 1fr));
     width: 100%;
-    gap: 4px;
+    gap: 3px;
     margin: 0;
     justify-content: stretch;
     overflow: hidden;
@@ -190,7 +190,7 @@
     display: grid;
     gap: 3px;
     min-width: 0;
-    min-height: 48px;
+    min-height: 49px;
     place-items: center;
     padding: 5px 3px;
     color: #66758c;
@@ -208,7 +208,7 @@
     display: block;
     max-width: 100%;
     overflow: hidden;
-    font-size: 9.5px;
+    font-size: 8.8px;
     font-weight: 680;
     line-height: 1.1;
     text-overflow: ellipsis;
@@ -508,6 +508,11 @@
     line-height: 1.25;
   }
 
+  .data-health-grid,
+  .data-health-panel.compact .data-health-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .blocks-design .filter-card,
   .sources-design .filter-card,
   .audit-design .filter-card {
@@ -647,6 +652,7 @@
   .incidents-design .desktop-table-panel,
   .baseline-design .desktop-table-panel,
   .blocks-design .desktop-table-panel,
+  .fingerprints-design .desktop-table-panel,
   .sources-design .desktop-table-panel,
   .audit-design .desktop-table-panel {
     display: none;
@@ -656,6 +662,7 @@
   .incidents-design .mobile-record-list,
   .baseline-design .mobile-record-list,
   .blocks-design .mobile-record-list,
+  .fingerprints-design .mobile-record-list,
   .sources-design .mobile-record-list,
   .audit-design .mobile-record-list {
     display: grid;
@@ -665,6 +672,7 @@
   .incidents-design .feature-table-card > .panel-card-head,
   .baseline-design .feature-table-card > .panel-card-head,
   .blocks-design .feature-table-card > .panel-card-head,
+  .fingerprints-design .feature-table-card > .panel-card-head,
   .sources-design .feature-table-card > .panel-card-head,
   .audit-design .feature-table-card > .panel-card-head {
     display: none;

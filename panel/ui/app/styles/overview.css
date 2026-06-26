@@ -157,6 +157,12 @@
   gap: 16px;
 }
 
+.overview-health-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+  gap: 16px;
+}
+
 .overview-table-row {
   display: grid;
   gap: 16px;

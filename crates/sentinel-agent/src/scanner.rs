@@ -194,7 +194,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     let intel = threat_intel::load_threat_intel(&config).await;
     threat_intel::enrich_findings(&mut findings, &intel);
     evidence_score::enrich_findings(&mut findings);
-    risk_score::enrich_findings(&mut findings);
+    risk_score::enrich_findings_with_scoring(&mut findings, &config.risk_scoring);
     let mut maintenance_suppressed_count = 0;
     if options.persist {
         let (retained, decision) = apply_maintenance_policy(findings, &config, store.as_ref())?;
@@ -311,7 +311,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     let mut timeline_findings = timeline::correlate_timelines(&findings, &config);
     if !timeline_findings.is_empty() {
         evidence_score::enrich_findings(&mut timeline_findings);
-        risk_score::enrich_findings(&mut timeline_findings);
+        risk_score::enrich_findings_with_scoring(&mut timeline_findings, &config.risk_scoring);
         findings.append(&mut timeline_findings);
         normalize_finding_evidence(&mut findings);
     }

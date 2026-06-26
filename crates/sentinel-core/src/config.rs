@@ -17,8 +17,8 @@ pub use sections::{
     FileIntegrityConfig, FleetConfig, GpuConfig, IncidentConfig, LogIntegrityConfig,
     MaintenanceConfig, NetworkConfig, NoiseControlConfig, PackageManagerConfig, PanelConfig,
     PerformanceConfig, PersistenceConfig, PrivacyConfig, ProcessConfig, ReportsConfig,
-    ResourceBudgetConfig, ResponsePolicyConfig, ResponsePolicyRule, SentinelPaths,
-    ServiceProfileConfig, SshConfig, StorageConfig, ThreatIntelConfig, WebConfig,
+    ResourceBudgetConfig, ResponsePolicyConfig, ResponsePolicyRule, RiskScoringConfig,
+    SentinelPaths, ServiceProfileConfig, SshConfig, StorageConfig, ThreatIntelConfig, WebConfig,
     DEFAULT_DYNAMIC_UDP_MIN_PORT,
 };
 
@@ -32,6 +32,7 @@ pub struct SentinelConfig {
     pub privacy: PrivacyConfig,
     pub performance: PerformanceConfig,
     pub resource_budget: ResourceBudgetConfig,
+    pub risk_scoring: RiskScoringConfig,
     pub storage: StorageConfig,
     pub ssh: SshConfig,
     pub file_integrity: FileIntegrityConfig,
@@ -106,6 +107,7 @@ impl SentinelConfig {
             ));
         }
         validate_resource_budget(&self.resource_budget)?;
+        validate_risk_scoring(&self.risk_scoring)?;
         validate_ip_patterns("ssh.trusted_admin_ips", &self.ssh.trusted_admin_ips)?;
         if self.ssh.failed_login_threshold == 0 {
             return Err(SentinelError::Config(
@@ -403,6 +405,23 @@ fn validate_response_policy(config: &ResponsePolicyConfig) -> SentinelResult<()>
         if policy.permanent_after == Some(0) {
             return Err(SentinelError::Config(format!(
                 "response_policy.policies.{name}.permanent_after must be greater than 0 when set"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_risk_scoring(config: &RiskScoringConfig) -> SentinelResult<()> {
+    for (name, value) in [
+        ("threat_intel_bonus", config.threat_intel_bonus),
+        ("active_response_bonus", config.active_response_bonus),
+        ("rootkit_context_bonus", config.rootkit_context_bonus),
+        ("state_drift_deduction", config.state_drift_deduction),
+        ("high_stage_count_bonus", config.high_stage_count_bonus),
+    ] {
+        if value > 100 {
+            return Err(SentinelError::Config(format!(
+                "risk_scoring.{name} must be between 0 and 100"
             )));
         }
     }

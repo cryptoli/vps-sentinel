@@ -151,6 +151,28 @@ fn panel_action_request_requires_object_payload() {
     .expect_err("scalar payload should fail");
 
     assert_eq!(invalid.code, "invalid_action_payload");
+
+    let traversal = PanelActionRequest::try_from(PanelActionRequestBody {
+        action: "unblock".to_string(),
+        target_type: "active_block".to_string(),
+        target_id: "block-1".to_string(),
+        node_name: "node-a".to_string(),
+        payload: serde_json::json!({"reason": "../etc/passwd"}),
+        requester: "panel".to_string(),
+    })
+    .expect_err("path traversal payload should fail");
+    assert_eq!(traversal.code, "invalid_action_payload_path");
+
+    let bad_key = PanelActionRequest::try_from(PanelActionRequestBody {
+        action: "unblock".to_string(),
+        target_type: "active_block".to_string(),
+        target_id: "block-1".to_string(),
+        node_name: "node-a".to_string(),
+        payload: serde_json::json!({"../path": "value"}),
+        requester: "panel".to_string(),
+    })
+    .expect_err("payload keys should be constrained");
+    assert_eq!(bad_key.code, "invalid_action_payload_key");
 }
 
 #[test]

@@ -1,6 +1,6 @@
 import { API_BASE, TOKEN_STORAGE_KEY } from "@/lib/datasets";
 import { sanitizePanelValue } from "@/lib/security";
-import type { DatasetPage, DatasetState, PanelRecord, PanelRole, PanelSettings, TrendPoint } from "@/types";
+import type { DatasetPage, DatasetState, PanelRecord, PanelReviewInput, PanelRole, PanelSettings, TrendPoint } from "@/types";
 
 export class PanelApiError extends Error {
   readonly status: number;
@@ -80,6 +80,10 @@ export async function postJson<T>(path: string, role: PanelRole, payload: unknow
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export async function submitPanelReview(role: PanelRole, review: PanelReviewInput): Promise<unknown> {
+  return postJson("/review", role, { reviewer: "panel", ...review });
 }
 
 function authHeader(): Record<string, string> {

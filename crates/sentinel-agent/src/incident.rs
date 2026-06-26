@@ -1,3 +1,4 @@
+use crate::rules::model::RuleAttackStage;
 use crate::storage::SqliteStore;
 use chrono::{DateTime, Duration, Utc};
 use sentinel_core::{Category, Evidence, Finding, SentinelConfig, SentinelResult, Severity};
@@ -24,6 +25,10 @@ pub struct Incident {
     pub finding_ids: Vec<String>,
     pub summary: String,
     pub timeline: Vec<IncidentTimelineItem>,
+    #[serde(default)]
+    pub attack_chain: Vec<IncidentAttackStage>,
+    #[serde(default)]
+    pub correlation: IncidentCorrelation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,6 +39,45 @@ pub struct IncidentTimelineItem {
     pub severity: Severity,
     pub title: String,
     pub subject: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IncidentAttackStage {
+    pub stage: String,
+    pub label: String,
+    pub severity: Severity,
+    pub finding_count: usize,
+    pub rule_ids: Vec<String>,
+    pub subjects: Vec<String>,
+    pub first_seen: DateTime<Utc>,
+    pub last_seen: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IncidentCorrelation {
+    pub key: String,
+    pub method: String,
+    pub window_seconds: u64,
+    pub finding_count: usize,
+    pub subject_count: usize,
+    pub category_count: usize,
+    pub rule_count: usize,
+    pub stage_count: usize,
+}
+
+impl Default for IncidentCorrelation {
+    fn default() -> Self {
+        Self {
+            key: String::new(),
+            method: "unknown".to_string(),
+            window_seconds: 0,
+            finding_count: 0,
+            subject_count: 0,
+            category_count: 0,
+            rule_count: 0,
+            stage_count: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -160,6 +204,17 @@ fn build_incident(findings: &[&Finding], config: &SentinelConfig) -> Incident {
     let subjects = subjects.into_iter().collect::<Vec<_>>();
     let rules = rules.into_iter().collect::<Vec<_>>();
     let title = incident_title(severity, &categories, &subjects);
+    let attack_chain = build_attack_chain(&timeline);
+    let correlation = IncidentCorrelation {
+        key: correlation_key.clone(),
+        method: correlation_method(&correlation_key),
+        window_seconds: config.incidents.correlation_window_seconds,
+        finding_count: finding_ids.len(),
+        subject_count: subjects.len(),
+        category_count: categories.len(),
+        rule_count: rules.len(),
+        stage_count: attack_chain.len(),
+    };
     Incident {
         id,
         host_id: first.host_id.clone(),
@@ -174,12 +229,15 @@ fn build_incident(findings: &[&Finding], config: &SentinelConfig) -> Incident {
         rules,
         finding_ids,
         summary: format!(
-            "{} related finding(s) correlated within {} seconds on {}.",
+            "{} related finding(s) correlated across {} stage(s) within {} seconds on {}.",
             findings.len(),
+            attack_chain.len().max(1),
             config.incidents.correlation_window_seconds,
             config.display_name()
         ),
         timeline,
+        attack_chain,
+        correlation,
     }
 }
 
@@ -235,6 +293,61 @@ fn incident_title(severity: Severity, categories: &[String], subjects: &[String]
         .cloned()
         .unwrap_or_else(|| "host".to_string());
     format!("{severity} correlated {category} activity on {subject}")
+}
+
+fn build_attack_chain(timeline: &[IncidentTimelineItem]) -> Vec<IncidentAttackStage> {
+    let mut stages = BTreeMap::<String, Vec<&IncidentTimelineItem>>::new();
+    for item in timeline {
+        let stage = RuleAttackStage::from_signal(
+            &item.rule_id,
+            &format!("{} {}", item.subject, item.title),
+        );
+        stages
+            .entry(stage.key().to_string())
+            .or_default()
+            .push(item);
+    }
+    let mut result = Vec::new();
+    for (stage, mut items) in stages {
+        items.sort_by_key(|item| item.timestamp);
+        let first = items.first().expect("stage group is non-empty");
+        let last = items.last().expect("stage group is non-empty");
+        let severity = items
+            .iter()
+            .map(|item| item.severity)
+            .max()
+            .unwrap_or(Severity::Info);
+        let rule_ids = items
+            .iter()
+            .map(|item| item.rule_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let subjects = items
+            .iter()
+            .map(|item| item.subject.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        result.push(IncidentAttackStage {
+            label: RuleAttackStage::from_key(&stage).label().to_string(),
+            stage,
+            severity,
+            finding_count: items.len(),
+            rule_ids,
+            subjects,
+            first_seen: first.timestamp,
+            last_seen: last.timestamp,
+        });
+    }
+    result.sort_by_key(|stage| RuleAttackStage::from_key(&stage.stage).rank());
+    result
+}
+
+fn correlation_method(key: &str) -> String {
+    key.split_once(':')
+        .map(|(method, _)| method.to_string())
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn incident_id(host_id: &str, correlation_key: &str, timestamp: DateTime<Utc>) -> String {

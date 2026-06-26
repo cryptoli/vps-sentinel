@@ -214,6 +214,21 @@ const TABLE_LAYOUTS: Record<string, TableLayout> = {
       expires_at: "142px",
     },
   },
+  "attack-fingerprints": {
+    defaultWidth: "118px",
+    detailsWidth: "96px",
+    minWidth: "940px",
+    widths: {
+      last_seen_at: "146px",
+      kind: "118px",
+      score: "76px",
+      confidence: "96px",
+      verdict: "112px",
+      node_count: "94px",
+      source_count: "104px",
+      seen_count: "96px",
+    },
+  },
   probe_sources: {
     defaultWidth: "120px",
     detailsWidth: "96px",

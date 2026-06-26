@@ -8,7 +8,8 @@
   }
 
   .overview-grid,
-  .overview-triad {
+  .overview-triad,
+  .overview-health-row {
     grid-template-columns: 1fr;
   }
 

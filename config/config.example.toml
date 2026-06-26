@@ -24,6 +24,15 @@ max_findings_per_scan = 500
 max_evidence_items_per_finding = 64
 max_evidence_value_bytes = 2048
 
+[risk_scoring]
+# Bonuses/deductions are bounded to 0-100 and applied after rule severity,
+# confidence, evidence strength, threat intel, active response, and baseline context.
+threat_intel_bonus = 15
+active_response_bonus = 10
+rootkit_context_bonus = 10
+state_drift_deduction = 10
+high_stage_count_bonus = 5
+
 [storage]
 type = "sqlite"
 path = "/var/lib/vps-sentinel/sentinel.db"

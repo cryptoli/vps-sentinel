@@ -103,6 +103,22 @@ pub struct PanelIncident {
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
     pub summary: String,
+    #[serde(default)]
+    pub correlation_key: String,
+    #[serde(default)]
+    pub subjects: Vec<String>,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub rules: Vec<String>,
+    #[serde(default)]
+    pub finding_ids: Vec<String>,
+    #[serde(default)]
+    pub timeline: Vec<crate::incident::IncidentTimelineItem>,
+    #[serde(default)]
+    pub attack_chain: Vec<crate::incident::IncidentAttackStage>,
+    #[serde(default)]
+    pub correlation: crate::incident::IncidentCorrelation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1178,6 +1194,46 @@ fn panel_incident(config: &SentinelConfig, incident: &Incident) -> PanelIncident
         first_seen: incident.first_seen,
         last_seen: incident.last_seen,
         summary: redact_text(config, &incident.summary),
+        correlation_key: redact_text(config, &incident.correlation_key),
+        subjects: incident
+            .subjects
+            .iter()
+            .map(|item| redact_subject(config, item))
+            .collect(),
+        categories: incident.categories.clone(),
+        rules: incident.rules.clone(),
+        finding_ids: incident.finding_ids.clone(),
+        timeline: incident
+            .timeline
+            .iter()
+            .map(|item| crate::incident::IncidentTimelineItem {
+                timestamp: item.timestamp,
+                finding_id: item.finding_id.clone(),
+                rule_id: item.rule_id.clone(),
+                severity: item.severity,
+                title: redact_text(config, &item.title),
+                subject: redact_subject(config, &item.subject),
+            })
+            .collect(),
+        attack_chain: incident
+            .attack_chain
+            .iter()
+            .map(|stage| crate::incident::IncidentAttackStage {
+                stage: stage.stage.clone(),
+                label: stage.label.clone(),
+                severity: stage.severity,
+                finding_count: stage.finding_count,
+                rule_ids: stage.rule_ids.clone(),
+                subjects: stage
+                    .subjects
+                    .iter()
+                    .map(|item| redact_subject(config, item))
+                    .collect(),
+                first_seen: stage.first_seen,
+                last_seen: stage.last_seen,
+            })
+            .collect(),
+        correlation: incident.correlation.clone(),
     }
 }
 
@@ -1398,6 +1454,23 @@ fn sanitize_panel_finding(config: &SentinelConfig, finding: &mut PanelFinding) {
 fn sanitize_panel_incident(config: &SentinelConfig, incident: &mut PanelIncident) {
     incident.title = redact_text(config, &incident.title);
     incident.summary = redact_text(config, &incident.summary);
+    incident.correlation_key = redact_text(config, &incident.correlation_key);
+    incident.subjects = incident
+        .subjects
+        .iter()
+        .map(|item| redact_subject(config, item))
+        .collect();
+    for item in &mut incident.timeline {
+        item.title = redact_text(config, &item.title);
+        item.subject = redact_subject(config, &item.subject);
+    }
+    for stage in &mut incident.attack_chain {
+        stage.subjects = stage
+            .subjects
+            .iter()
+            .map(|item| redact_subject(config, item))
+            .collect();
+    }
 }
 
 fn sanitize_panel_baseline_drift(config: &SentinelConfig, drift: &mut PanelBaselineDrift) {
@@ -2076,6 +2149,14 @@ mod tests {
             first_seen: Utc::now(),
             last_seen: Utc::now(),
             summary: "198.51.100.8 correlated across events".to_string(),
+            correlation_key: "ssh:198.51.100.8".to_string(),
+            subjects: vec!["root@198.51.100.8".to_string()],
+            categories: vec!["ssh".to_string()],
+            rules: vec!["SSH-001".to_string()],
+            finding_ids: vec!["finding-1".to_string()],
+            timeline: Vec::new(),
+            attack_chain: Vec::new(),
+            correlation: crate::incident::IncidentCorrelation::default(),
         });
         payload.baseline_drifts.push(PanelBaselineDrift {
             finding_id: "finding-2".to_string(),

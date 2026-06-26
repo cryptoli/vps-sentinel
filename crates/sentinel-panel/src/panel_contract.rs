@@ -274,6 +274,7 @@ pub(crate) fn incidents_dataset() -> PanelDataset {
             "title",
             "summary",
             "review_signature",
+            "payload_json",
         ],
     }
 }

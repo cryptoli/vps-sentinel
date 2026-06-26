@@ -183,7 +183,9 @@ CREATE INDEX idx_panel_action_requests_status ON panel_action_requests(status, r
 CREATE INDEX idx_panel_action_requests_target ON panel_action_requests(target_type, target_id);
 CREATE INDEX idx_attack_fingerprints_seen ON attack_fingerprints(last_seen_at);
 CREATE INDEX idx_attack_fingerprints_score ON attack_fingerprints(score, last_seen_at);
+CREATE INDEX idx_attack_fingerprints_verdict ON attack_fingerprints(verdict, last_seen_at);
 CREATE INDEX idx_incidents_node_time ON incidents(node_id, last_seen);
+CREATE INDEX idx_incidents_score_time ON incidents(score, last_seen);
 CREATE INDEX idx_incidents_review_signature ON incidents(review_signature);
 CREATE INDEX idx_baseline_node_time ON baseline_drifts(node_id, timestamp);
 CREATE INDEX idx_baseline_review_signature ON baseline_drifts(review_signature);

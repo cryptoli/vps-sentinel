@@ -37,6 +37,7 @@ import { selectedLanguage, translate } from "@/lib/i18n";
 import { roleAllows, selectedRole } from "@/lib/rbac";
 import {
   AuditPageView,
+  AttackFingerprintsPageView,
   BaselinePageView,
   BlocksPageView,
   DatasetPageView,
@@ -76,7 +77,8 @@ const ICONS: Record<PageId, React.ReactNode> = {
   nodes: <Database size={18} />,
 };
 
-const MOBILE_PRIMARY_PAGES: PageId[] = ["overview", "findings", "incidents", "baseline_drifts", "probe_sources", "nodes"];
+const MOBILE_NAV_MAX_ITEMS = 7;
+const MOBILE_PRIMARY_PAGES: PageId[] = ["overview", "findings", "incidents", "baseline_drifts", "active_blocks", "probe_sources", "nodes"];
 const NAV_GROUPS: Array<{ key: string; labels: Record<Language, string>; pages: PageId[] }> = [
   { key: "monitor", labels: { zh: "监控", en: "Monitor" }, pages: ["overview", "findings", "incidents", "baseline_drifts"] },
   { key: "response", labels: { zh: "响应", en: "Response" }, pages: ["active_blocks", "attack_fingerprints", "probe_sources"] },
@@ -455,8 +457,8 @@ function Sidebar({
     const primary = MOBILE_PRIMARY_PAGES.filter((id) => visibleIds.has(id));
     const next = primary.includes(currentPage)
       ? primary
-      : [...primary.slice(0, 5), currentPage].filter((id, index, list) => list.indexOf(id) === index);
-    return new Set(next.slice(0, 6));
+      : [...primary.slice(0, MOBILE_NAV_MAX_ITEMS - 1), currentPage].filter((id, index, list) => list.indexOf(id) === index);
+    return new Set(next.slice(0, MOBILE_NAV_MAX_ITEMS));
   }, [currentPage, pages]);
   const groupedPages = useMemo(() => {
     const pageMap = new Map(pages.map((page) => [page.id, page]));
@@ -737,6 +739,7 @@ function Content({
       <NodesPageView
         page={(datasets.nodes || emptyPage()) as DatasetPage<NodeRecord>}
         state={datasetState("nodes")}
+        summary={summary}
         language={language}
         dictionaries={dictionaries}
         onStateChange={(patch) => updateDatasetState("nodes", patch)}
@@ -750,6 +753,7 @@ function Content({
         page={datasets.findings || emptyPage()}
         state={datasetState("findings")}
         language={language}
+        role={role}
         onStateChange={(patch) => updateDatasetState("findings", patch)}
         onDetails={(row) => onDetails("findings", row)}
       />
@@ -762,6 +766,7 @@ function Content({
         page={datasets.incidents || emptyPage()}
         state={datasetState("incidents")}
         language={language}
+        role={role}
         onStateChange={(patch) => updateDatasetState("incidents", patch)}
         onDetails={(row) => onDetails("incidents", row)}
       />
@@ -774,6 +779,7 @@ function Content({
         page={datasets.baseline_drifts || emptyPage()}
         state={datasetState("baseline_drifts")}
         language={language}
+        role={role}
         dictionaries={dictionaries}
         onStateChange={(patch) => updateDatasetState("baseline_drifts", patch)}
         onDetails={(row) => onDetails("baseline_drifts", row)}
@@ -790,6 +796,17 @@ function Content({
         role={role}
         onStateChange={(patch) => updateDatasetState("active_blocks", patch)}
         onActionRequest={onActionRequest}
+      />
+    );
+  }
+  if (page.id === "attack_fingerprints") {
+    return (
+      <AttackFingerprintsPageView
+        config={page}
+        page={datasets.attack_fingerprints || emptyPage()}
+        state={datasetState("attack_fingerprints")}
+        language={language}
+        onStateChange={(patch) => updateDatasetState("attack_fingerprints", patch)}
       />
     );
   }
@@ -892,7 +909,7 @@ function parseStreamMessage(value: string): StreamMessage | null {
 function streamMessageTouchesPage(message: StreamMessage, page: PageId): boolean {
   if (!message.datasets?.length) return true;
   const datasets = new Set(message.datasets);
-  if (page === "overview") return ["summary", "trends", "nodes", "findings", "incidents", "baseline_drifts", "active_blocks"].some((item) => datasets.has(item));
+  if (page === "overview") return ["summary", "trends", "nodes", "findings", "incidents", "baseline_drifts", "active_blocks", "attack_fingerprints"].some((item) => datasets.has(item));
   return datasets.has(page);
 }
 

@@ -179,7 +179,7 @@
       "table": "incidents",
       "orderColumn": "last_seen",
       "searchColumns": ["node_id", "severity", "title", "summary"],
-      "columns": ["id", "last_seen", "node_id AS node_name", "severity", "score", "title", "summary", "review_signature"]
+      "columns": ["id", "last_seen", "node_id AS node_name", "severity", "score", "title", "summary", "review_signature", "payload_json"]
     },
     "/api/v1/baseline-drifts": {
       "pageId": "baseline_drifts",

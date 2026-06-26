@@ -129,6 +129,156 @@ impl Display for RuleResponseScope {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuleAttackStage {
+    InitialAccess,
+    Execution,
+    PrivilegeEscalation,
+    Persistence,
+    Discovery,
+    LateralMovement,
+    CommandAndControl,
+    Impact,
+    Unknown,
+}
+
+impl RuleAttackStage {
+    pub fn from_signal(rule_id: &str, text: &str) -> Self {
+        let prefix = rule_id
+            .split_once('-')
+            .map(|(prefix, _)| prefix)
+            .unwrap_or("");
+        match prefix {
+            "SSH" | "WEB" => Self::InitialAccess,
+            "PROC" => Self::Execution,
+            "USER" | "PRIV" | "ROOTKIT" => Self::PrivilegeEscalation,
+            "PERSIST" | "SERVICE" => Self::Persistence,
+            "NET" => Self::CommandAndControl,
+            "ACTIVE" | "TAMPER" => Self::Impact,
+            "DOCKER" | "CONFIG" | "FILE" => Self::Discovery,
+            _ => Self::from_text(text),
+        }
+    }
+
+    pub fn from_text(text: &str) -> Self {
+        let lowered = text.to_ascii_lowercase();
+        if contains_any(&lowered, &["lateral", "pivot", "spread", "multi-node"]) {
+            return Self::LateralMovement;
+        }
+        if contains_any(
+            &lowered,
+            &["impact", "blocked", "tamper", "contain", "deny"],
+        ) {
+            return Self::Impact;
+        }
+        if contains_any(&lowered, &["sudo", "root", "privilege", "escalat", "admin"]) {
+            return Self::PrivilegeEscalation;
+        }
+        if contains_any(
+            &lowered,
+            &[
+                "cron",
+                "systemd",
+                "startup",
+                "authorized_key",
+                "persistence",
+            ],
+        ) {
+            return Self::Persistence;
+        }
+        if contains_any(&lowered, &["shell", "exec", "command", "script", "process"]) {
+            return Self::Execution;
+        }
+        if contains_any(
+            &lowered,
+            &[
+                "connect",
+                "outbound",
+                "beacon",
+                "dns",
+                "c2",
+                "command control",
+            ],
+        ) {
+            return Self::CommandAndControl;
+        }
+        if contains_any(&lowered, &["scan", "probe", "discovery", "fingerprint"]) {
+            return Self::Discovery;
+        }
+        if contains_any(&lowered, &["ssh", "login", "web", "brute", "auth"]) {
+            return Self::InitialAccess;
+        }
+        Self::Unknown
+    }
+
+    pub fn from_key(key: &str) -> Self {
+        match key {
+            "initial_access" => Self::InitialAccess,
+            "execution" => Self::Execution,
+            "privilege_escalation" => Self::PrivilegeEscalation,
+            "persistence" => Self::Persistence,
+            "discovery" => Self::Discovery,
+            "lateral_movement" => Self::LateralMovement,
+            "command_and_control" => Self::CommandAndControl,
+            "impact" => Self::Impact,
+            _ => Self::Unknown,
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::InitialAccess => "initial_access",
+            Self::Execution => "execution",
+            Self::PrivilegeEscalation => "privilege_escalation",
+            Self::Persistence => "persistence",
+            Self::Discovery => "discovery",
+            Self::LateralMovement => "lateral_movement",
+            Self::CommandAndControl => "command_and_control",
+            Self::Impact => "impact",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::InitialAccess => "Initial Access",
+            Self::Execution => "Execution",
+            Self::PrivilegeEscalation => "Privilege Escalation",
+            Self::Persistence => "Persistence",
+            Self::Discovery => "Discovery",
+            Self::LateralMovement => "Lateral Movement",
+            Self::CommandAndControl => "Command and Control",
+            Self::Impact => "Impact",
+            Self::Unknown => "Unknown",
+        }
+    }
+
+    pub fn rank(self) -> u8 {
+        match self {
+            Self::InitialAccess => 10,
+            Self::Execution => 20,
+            Self::PrivilegeEscalation => 30,
+            Self::Persistence => 35,
+            Self::Discovery => 40,
+            Self::LateralMovement => 50,
+            Self::CommandAndControl => 60,
+            Self::Impact => 70,
+            Self::Unknown => 90,
+        }
+    }
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
+impl Display for RuleAttackStage {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.key())
+    }
+}
+
 /// Static metadata for one built-in detection rule.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RuleMetadata {

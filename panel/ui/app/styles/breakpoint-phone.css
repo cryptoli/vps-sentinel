@@ -9,12 +9,16 @@
   .overview-page .overview-grid > .wide-card,
   .overview-page .response-activity-card,
   .overview-page .node-freshness-card,
+  .overview-page .overview-health-row,
+  .overview-page .data-health-card,
+  .overview-page .review-feedback-card,
   .overview-page .overview-table-row {
     grid-column: 1 / -1;
   }
 
   .overview-page .overview-grid,
-  .overview-page .overview-triad {
+  .overview-page .overview-triad,
+  .overview-page .overview-health-row {
     display: contents;
   }
 

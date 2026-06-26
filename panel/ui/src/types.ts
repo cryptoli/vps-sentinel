@@ -28,6 +28,14 @@ export interface PanelActionRequestInput {
   requester?: string;
 }
 
+export interface PanelReviewInput {
+  target_type: "finding" | "incident" | "baseline_drift";
+  target_id: string;
+  verdict: "needs_review" | "confirmed" | "false_positive";
+  note?: string;
+  reviewer?: string;
+}
+
 export interface PanelDictionaryItem {
   value: string;
   labelKey?: string;
@@ -89,6 +97,19 @@ export interface Summary {
   by_category?: Array<{ category: string; count: number }>;
   by_block_status?: Array<{ block_status: string; count: number }>;
   node_status?: Record<string, number>;
+  review_feedback?: Array<{ target_type: string; verdict: string; count: number }>;
+  data_health?: {
+    status?: string;
+    latest_heartbeat_at?: string;
+    heartbeat_samples?: number;
+    collector_errors?: number;
+    queued_actions?: number;
+    stale_nodes?: number;
+    offline_nodes?: number;
+    retired_nodes?: number;
+    slowest_stage?: string;
+    slowest_stage_ms?: number;
+  };
 }
 
 export interface TrendPoint {

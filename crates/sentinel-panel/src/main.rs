@@ -57,6 +57,10 @@ const STREAM_HEARTBEAT_SECONDS: u64 = 30;
 const STREAM_RETRY_SECONDS: u64 = 5;
 const SUMMARY_CACHE_TTL_SECONDS: i64 = 5;
 const MAX_SEARCH_QUERY_CHARS: usize = 96;
+const MAX_ACTION_PAYLOAD_DEPTH: usize = 4;
+const MAX_ACTION_PAYLOAD_KEYS: usize = 24;
+const MAX_ACTION_PAYLOAD_ARRAY_ITEMS: usize = 32;
+const MAX_ACTION_PAYLOAD_STRING_CHARS: usize = 512;
 
 #[derive(Debug, Parser)]
 #[command(name = "vps-sentinel-panel", version)]
@@ -367,6 +371,22 @@ struct PanelIncident {
     first_seen: DateTime<Utc>,
     last_seen: DateTime<Utc>,
     summary: String,
+    #[serde(default)]
+    correlation_key: String,
+    #[serde(default)]
+    subjects: Vec<String>,
+    #[serde(default)]
+    categories: Vec<String>,
+    #[serde(default)]
+    rules: Vec<String>,
+    #[serde(default)]
+    finding_ids: Vec<String>,
+    #[serde(default)]
+    timeline: Vec<Value>,
+    #[serde(default)]
+    attack_chain: Vec<Value>,
+    #[serde(default)]
+    correlation: Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -508,6 +528,40 @@ impl PanelActionRequest {
             "updated_at": self.updated_at.to_rfc3339(),
         })
     }
+}
+
+fn panel_action_request_from_value(value: Value) -> Option<PanelActionRequest> {
+    let payload = value
+        .get("payload_json")
+        .and_then(Value::as_str)
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .unwrap_or_else(|| json!({}));
+    Some(PanelActionRequest {
+        id: value.get("id")?.as_str()?.to_string(),
+        action: value.get("action")?.as_str()?.to_string(),
+        target_type: value.get("target_type")?.as_str()?.to_string(),
+        target_id: value.get("target_id")?.as_str()?.to_string(),
+        node_name: value
+            .get("node_name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        payload,
+        status: value.get("status")?.as_str()?.to_string(),
+        requested_by: value
+            .get("requested_by")
+            .and_then(Value::as_str)
+            .unwrap_or("panel")
+            .to_string(),
+        requested_at: parse_panel_value_time(value.get("requested_at")?)?,
+        updated_at: parse_panel_value_time(value.get("updated_at")?)?,
+    })
+}
+
+fn parse_panel_value_time(value: &Value) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(value.as_str()?)
+        .ok()
+        .map(|time| time.with_timezone(&Utc))
 }
 
 #[derive(Debug, Serialize)]
@@ -704,12 +758,94 @@ fn panel_action_target_allowed(action: &str, target_type: &str) -> bool {
 fn normalize_action_payload(value: Value) -> Result<Value, PanelApiError> {
     match value {
         Value::Null => Ok(json!({})),
-        Value::Object(_) => Ok(value),
+        Value::Object(_) => {
+            validate_action_payload_value(&value, 0)?;
+            Ok(value)
+        }
         _ => Err(PanelApiError::new(
             StatusCode::BAD_REQUEST,
             "invalid_action_payload",
         )),
     }
+}
+
+fn validate_action_payload_value(value: &Value, depth: usize) -> Result<(), PanelApiError> {
+    if depth > MAX_ACTION_PAYLOAD_DEPTH {
+        return Err(PanelApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_action_payload_depth",
+        ));
+    }
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => Ok(()),
+        Value::String(text) => validate_action_payload_string(text),
+        Value::Array(items) => {
+            if items.len() > MAX_ACTION_PAYLOAD_ARRAY_ITEMS {
+                return Err(PanelApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_action_payload_array",
+                ));
+            }
+            for item in items {
+                validate_action_payload_value(item, depth + 1)?;
+            }
+            Ok(())
+        }
+        Value::Object(map) => {
+            if map.len() > MAX_ACTION_PAYLOAD_KEYS {
+                return Err(PanelApiError::new(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_action_payload_size",
+                ));
+            }
+            for (key, value) in map {
+                validate_action_payload_key(key)?;
+                validate_action_payload_value(value, depth + 1)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn validate_action_payload_key(key: &str) -> Result<(), PanelApiError> {
+    let valid = !key.is_empty()
+        && key.len() <= 64
+        && key
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-');
+    if valid {
+        Ok(())
+    } else {
+        Err(PanelApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_action_payload_key",
+        ))
+    }
+}
+
+fn validate_action_payload_string(text: &str) -> Result<(), PanelApiError> {
+    if text.chars().count() > MAX_ACTION_PAYLOAD_STRING_CHARS {
+        return Err(PanelApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_action_payload_string",
+        ));
+    }
+    let trimmed = text.trim();
+    let looks_like_absolute_windows_path = trimmed.len() >= 3
+        && trimmed.as_bytes()[1] == b':'
+        && matches!(trimmed.as_bytes()[2], b'\\' | b'/');
+    if trimmed.contains("../")
+        || trimmed.contains("..\\")
+        || trimmed.starts_with('/')
+        || trimmed.starts_with('\\')
+        || looks_like_absolute_windows_path
+    {
+        return Err(PanelApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_action_payload_path",
+        ));
+    }
+    Ok(())
 }
 
 fn panel_write_body_limit(max_body_bytes: usize, configured_write_bytes: usize) -> usize {
@@ -926,6 +1062,8 @@ async fn build_summary(state: &AppState) -> Result<Value, PanelApiError> {
         )
         .await?;
     let node_count = nodes.len();
+    let nodes_value = Value::Array(nodes.clone());
+    let data_health = build_data_health(state, &nodes_value).await?;
     Ok(json!({
         "nodes": node_count,
         "findings": state.repo.count("findings", Some(&active_findings_filter)).await?,
@@ -934,10 +1072,90 @@ async fn build_summary(state: &AppState) -> Result<Value, PanelApiError> {
         "active_blocks": state.repo.count("active_blocks", Some("expired = 0")).await?,
         "probe_sources": state.repo.count_distinct("probe_sources", "source_ip", Some(blocked_probe_source_filter())).await?,
         "attack_fingerprints": state.repo.count("attack_fingerprints", None).await?,
+        "review_feedback": state.repo.review_feedback_summary().await?,
+        "data_health": data_health,
         "by_severity": by_severity,
         "by_category": by_category,
         "by_block_status": by_block_status,
         "node_status": node_status_counts(&Value::Array(nodes))
+    }))
+}
+
+async fn build_data_health(state: &AppState, nodes: &Value) -> Result<Value, PanelApiError> {
+    let heartbeats = state
+        .repo
+        .query_all("SELECT node_id, received_at, scan_json FROM heartbeats ORDER BY received_at DESC LIMIT 100")
+        .await?;
+    let queued_actions = state
+        .repo
+        .count("panel_action_requests", Some("status = 'queued'"))
+        .await?;
+    let mut latest_received_at = String::new();
+    let mut collector_errors = 0i64;
+    let mut slowest_stage_ms = 0i64;
+    let mut slowest_stage = String::new();
+    if let Value::Array(items) = &heartbeats {
+        for item in items {
+            if latest_received_at.is_empty() {
+                latest_received_at = item
+                    .get("received_at")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+            }
+            let Some(scan) = item
+                .get("scan_json")
+                .and_then(Value::as_str)
+                .and_then(|text| serde_json::from_str::<Value>(text).ok())
+            else {
+                continue;
+            };
+            collector_errors += scan
+                .get("collector_errors")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            if let Some(stages) = scan.get("stage_durations_ms").and_then(Value::as_object) {
+                for (name, value) in stages {
+                    let duration = value.as_i64().unwrap_or(0);
+                    if duration > slowest_stage_ms {
+                        slowest_stage_ms = duration;
+                        slowest_stage = name.clone();
+                    }
+                }
+            }
+        }
+    }
+    let status_counts = node_status_counts(nodes);
+    let stale_nodes = status_counts
+        .get("stale")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let offline_nodes = status_counts
+        .get("offline")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let retired_nodes = status_counts
+        .get("retired")
+        .and_then(Value::as_i64)
+        .unwrap_or(0);
+    let status = if collector_errors > 0 || offline_nodes > 0 || retired_nodes > 0 {
+        "degraded"
+    } else if stale_nodes > 0 || queued_actions > 0 {
+        "attention"
+    } else {
+        "healthy"
+    };
+    Ok(json!({
+        "status": status,
+        "latest_heartbeat_at": latest_received_at,
+        "heartbeat_samples": heartbeats.as_array().map(Vec::len).unwrap_or(0),
+        "collector_errors": collector_errors,
+        "queued_actions": queued_actions,
+        "stale_nodes": stale_nodes,
+        "offline_nodes": offline_nodes,
+        "retired_nodes": retired_nodes,
+        "slowest_stage": slowest_stage,
+        "slowest_stage_ms": slowest_stage_ms
     }))
 }
 
@@ -1682,6 +1900,22 @@ fn panel_evidence_value(evidence: &[Value], key: &str) -> Option<String> {
     })
 }
 
+fn evidence_value_from_json(value: Option<&Value>, key: &str) -> Option<String> {
+    let evidence = value
+        .and_then(Value::as_str)
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())?;
+    let items = evidence.as_array()?;
+    panel_evidence_value(items, key)
+}
+
+fn fingerprint_verdict_from_review(verdict: &str) -> Option<&'static str> {
+    match verdict.trim().to_ascii_lowercase().as_str() {
+        "confirmed" => Some("malicious"),
+        "false_positive" => Some("benign"),
+        _ => None,
+    }
+}
+
 fn panel_first_evidence_value(evidence: &[Value], keys: &[&str]) -> Option<String> {
     keys.iter()
         .find_map(|key| panel_evidence_value(evidence, key))
@@ -2149,6 +2383,9 @@ fn expand_dataset_json_columns(table: &str, rows: &mut Value) {
         if table == "attack_fingerprints" {
             expand_json_column(row, "categories_json", "categories");
             expand_json_column(row, "rule_ids_json", "rule_ids");
+        }
+        if table == "incidents" {
+            expand_json_column(row, "payload_json", "payload");
         }
         if table == "nodes" {
             expand_json_column(row, "storage_json", "storage");
