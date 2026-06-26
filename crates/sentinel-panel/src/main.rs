@@ -50,6 +50,7 @@ use stream::{stream, stream_ticket};
 mod geoip;
 use geoip::PanelGeoIpResolver;
 const DEFAULT_MAX_BODY_BYTES: usize = 1024 * 1024;
+const DEFAULT_PANEL_WRITE_BODY_BYTES: usize = 64 * 1024;
 const DEFAULT_WEB_DIR: &str = "panel/web";
 const STREAM_TICKET_TTL_SECONDS: i64 = 60;
 const STREAM_HEARTBEAT_SECONDS: u64 = 30;
@@ -98,6 +99,13 @@ struct Args {
 
     #[arg(long, env = "PANEL_MAX_BODY_BYTES", default_value_t = DEFAULT_MAX_BODY_BYTES)]
     max_body_bytes: usize,
+
+    #[arg(
+        long,
+        env = "PANEL_WRITE_MAX_BODY_BYTES",
+        default_value_t = DEFAULT_PANEL_WRITE_BODY_BYTES
+    )]
+    panel_write_max_body_bytes: usize,
 
     #[arg(long, env = "PANEL_GEOIP_CITY_DB")]
     geoip_city_db: Option<PathBuf>,
@@ -704,6 +712,15 @@ fn normalize_action_payload(value: Value) -> Result<Value, PanelApiError> {
     }
 }
 
+fn panel_write_body_limit(max_body_bytes: usize, configured_write_bytes: usize) -> usize {
+    let write_bytes = if configured_write_bytes == 0 {
+        DEFAULT_PANEL_WRITE_BODY_BYTES
+    } else {
+        configured_write_bytes
+    };
+    write_bytes.min(max_body_bytes.max(1))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
@@ -768,6 +785,8 @@ async fn main() -> Result<()> {
         csp_header,
     };
     let index_file = web_dir.join("index.html");
+    let write_body_limit =
+        panel_write_body_limit(args.max_body_bytes, args.panel_write_max_body_bytes);
     let app = Router::new()
         .route("/api/v1/settings", get(settings))
         .route("/api/v1/dictionaries", get(dictionaries))
@@ -778,9 +797,18 @@ async fn main() -> Result<()> {
         .route("/api/v1/nodes", get(nodes))
         .route("/api/v1/findings", get(findings))
         .route("/api/v1/finding", get(finding_detail))
-        .route("/api/v1/finding-review", post(finding_review))
-        .route("/api/v1/review", post(panel_review))
-        .route("/api/v1/action-request", post(action_request))
+        .route(
+            "/api/v1/finding-review",
+            post(finding_review).layer(DefaultBodyLimit::max(write_body_limit)),
+        )
+        .route(
+            "/api/v1/review",
+            post(panel_review).layer(DefaultBodyLimit::max(write_body_limit)),
+        )
+        .route(
+            "/api/v1/action-request",
+            post(action_request).layer(DefaultBodyLimit::max(write_body_limit)),
+        )
         .route("/api/v1/action-requests", get(action_requests))
         .route("/api/v1/incidents", get(incidents))
         .route("/api/v1/incident", get(incident_detail))

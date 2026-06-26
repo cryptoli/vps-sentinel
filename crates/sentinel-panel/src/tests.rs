@@ -1,12 +1,12 @@
 use super::{
-    normalize_panel_path, panel_node_status, panel_token_from_headers, parse_panel_themes,
-    redact_ip_text, redact_panel_value, request_path_matches_admin, resolve_panel_role,
-    scope_panel_value, scope_probe_source_rows, settings, verify_private_auth,
+    normalize_panel_path, panel_node_status, panel_token_from_headers, panel_write_body_limit,
+    parse_panel_themes, redact_ip_text, redact_panel_value, request_path_matches_admin,
+    resolve_panel_role, scope_panel_value, scope_probe_source_rows, settings, verify_private_auth,
     verify_private_write_auth, AppState, DbValue, FindingReview, FindingReviewRequest, PageQuery,
     PageRequest, PanelActionRequest, PanelActionRequestBody, PanelDataset, PanelReview,
     PanelReviewRequest, PanelRole, PanelStreamEvent, Repository, RepositoryDriver,
-    ReviewTargetType, SecretResolver, SettingsQuery,
-    DEFAULT_ADMIN_PATH, DEFAULT_THEMES, MAX_PAGE_LIMIT,
+    ReviewTargetType, SecretResolver, SettingsQuery, DEFAULT_ADMIN_PATH, DEFAULT_MAX_BODY_BYTES,
+    DEFAULT_PANEL_WRITE_BODY_BYTES, DEFAULT_THEMES, MAX_PAGE_LIMIT,
 };
 use crate::geoip::PanelGeoIpResolver;
 use axum::extract::{Query, State};
@@ -151,6 +151,16 @@ fn panel_action_request_requires_object_payload() {
     .expect_err("scalar payload should fail");
 
     assert_eq!(invalid.code, "invalid_action_payload");
+}
+
+#[test]
+fn panel_write_body_limit_uses_default_and_global_cap() {
+    assert_eq!(
+        panel_write_body_limit(DEFAULT_MAX_BODY_BYTES, 0),
+        DEFAULT_PANEL_WRITE_BODY_BYTES
+    );
+    assert_eq!(panel_write_body_limit(4096, 65536), 4096);
+    assert_eq!(panel_write_body_limit(0, 65536), 1);
 }
 
 #[test]
