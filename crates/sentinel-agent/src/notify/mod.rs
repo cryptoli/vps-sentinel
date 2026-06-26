@@ -5,7 +5,9 @@ use std::time::Duration;
 
 pub mod bark;
 mod content;
+pub mod dingtalk;
 pub mod email;
+pub mod feishu;
 pub mod gotify;
 mod i18n;
 pub mod ntfy;
@@ -118,6 +120,18 @@ impl NotificationManager {
         if config.notifications.serverchan.enabled {
             notifiers.push(Box::new(serverchan::ServerChanNotifier::new(
                 config.notifications.serverchan.clone(),
+                timeout_seconds,
+            )));
+        }
+        if config.notifications.dingtalk.enabled {
+            notifiers.push(Box::new(dingtalk::DingTalkNotifier::new(
+                config.notifications.dingtalk.clone(),
+                timeout_seconds,
+            )));
+        }
+        if config.notifications.feishu.enabled {
+            notifiers.push(Box::new(feishu::FeishuNotifier::new(
+                config.notifications.feishu.clone(),
                 timeout_seconds,
             )));
         }

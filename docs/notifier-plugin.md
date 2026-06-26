@@ -20,4 +20,4 @@ pub trait Notifier: Send + Sync {
 - Honor `minimum_severity`.
 - Keep retries and rate limiting outside the detector path.
 
-MVP channels include Telegram, Email SMTP, Webhook, ntfy, Gotify, Bark, and ServerChan.
+MVP channels include Telegram, Email SMTP, Webhook, ntfy, Gotify, Bark, ServerChan, DingTalk, and Feishu.

@@ -7,9 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::{env, fs, path::Path, process::Command, sync::OnceLock};
 
 pub use notifications::{
-    BarkConfig, EmailConfig, EmailTlsMode, GotifyConfig, NotificationLanguage,
-    NotificationTimeZone, NotificationsConfig, NtfyConfig, ServerChanConfig, TelegramConfig,
-    WebhookConfig,
+    BarkConfig, DingTalkConfig, EmailConfig, EmailTlsMode, FeishuConfig, GotifyConfig,
+    NotificationLanguage, NotificationTimeZone, NotificationsConfig, NtfyConfig, ServerChanConfig,
+    TelegramConfig, WebhookConfig,
 };
 pub use sections::{
     ActiveResponseConfig, AdvancedCollectorsConfig, AgentConfig, AllowlistConfig,
@@ -966,6 +966,16 @@ fn validate_notifications(config: &NotificationsConfig) -> SentinelResult<()> {
     if config.serverchan.enabled && config.serverchan.send_key.trim().is_empty() {
         return Err(SentinelError::Config(
             "notifications.serverchan.send_key is required when serverchan is enabled".to_string(),
+        ));
+    }
+    if config.dingtalk.enabled && config.dingtalk.access_token.trim().is_empty() {
+        return Err(SentinelError::Config(
+            "notifications.dingtalk.access_token is required when dingtalk is enabled".to_string(),
+        ));
+    }
+    if config.feishu.enabled && config.feishu.webhook_url.trim().is_empty() {
+        return Err(SentinelError::Config(
+            "notifications.feishu.webhook_url is required when feishu is enabled".to_string(),
         ));
     }
     Ok(())
