@@ -3,24 +3,30 @@
 }
 
 .sidebar-shell {
-  background: linear-gradient(180deg, #071322 0%, #08182a 100%);
+  background:
+    radial-gradient(circle at 18% 8%, rgba(8, 169, 200, 0.12), transparent 30%),
+    linear-gradient(180deg, #071322 0%, #061527 100%);
 }
 
 .brand-mark,
 .user-avatar {
-  background: var(--color-accent);
-  box-shadow: none;
+  background:
+    radial-gradient(circle at 34% 22%, rgba(255, 255, 255, 0.28), transparent 24%),
+    linear-gradient(145deg, #16d5c4, var(--color-accent));
+  box-shadow: 0 16px 28px rgba(8, 169, 200, 0.18);
 }
 
 .topbar {
-  min-height: 60px;
+  min-height: 64px;
   background: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 1px 0 var(--color-border);
+  box-shadow:
+    0 1px 0 var(--color-border),
+    0 8px 22px rgba(18, 36, 59, 0.035);
 }
 
 .content-shell,
 .app-shell:not(.page-overview) .content-shell {
-  padding: 18px 18px 24px;
+  padding: 24px 28px 30px;
   background: var(--color-canvas-muted);
   box-shadow: none;
 }
@@ -67,7 +73,7 @@
   background: var(--color-surface);
   border-color: var(--color-border);
   border-radius: var(--radius-md);
-  box-shadow: var(--shadow-soft);
+  box-shadow: var(--shadow);
 }
 
 .metric-grid,
@@ -81,15 +87,15 @@
 }
 
 .metric-card {
-  min-height: 106px;
-  padding: 12px;
+  min-height: 126px;
+  padding: 14px 15px;
 }
 
 .node-summary-grid .metric-card {
   min-height: 118px;
   padding: 14px;
   background: var(--color-surface);
-  box-shadow: var(--shadow-soft);
+  box-shadow: var(--shadow);
 }
 
 .stat-tile,
@@ -101,7 +107,7 @@
 
 .stat-tile strong,
 .metric-copy strong {
-  font-size: 24px;
+  font-size: 28px;
 }
 
 .stat-tile p,
@@ -114,7 +120,7 @@
 
 .primary-button {
   background: var(--color-accent);
-  box-shadow: none;
+  box-shadow: 0 10px 22px rgba(18, 109, 242, 0.16);
 }
 
 .ghost-button,

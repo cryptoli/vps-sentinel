@@ -2,9 +2,14 @@
   position: relative;
   z-index: 30;
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 12px;
-  padding: 12px 14px 13px;
+  align-items: stretch;
+  padding: 16px 18px;
   background: rgba(255, 255, 255, 0.985);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   overflow: visible;
 }
 
@@ -12,16 +17,32 @@
 .filter-fields {
   display: flex;
   flex-wrap: wrap;
-  gap: 9px;
+  gap: 9px 10px;
+}
+
+.quick-ranges {
+  gap: 6px;
+  overflow: visible;
+  padding-bottom: 2px;
+  scrollbar-gutter: auto;
+}
+
+.quick-ranges .chip,
+.quick-ranges .chip-button {
+  flex: 0 0 auto;
+  min-height: var(--control-height-compact);
+  white-space: nowrap;
 }
 
 .filter-fields {
-  align-items: flex-end;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(160px, 1.15fr) auto;
+  align-items: end;
 }
 
 .chip {
-  min-height: 31px;
-  padding: 0 12px;
+  min-height: var(--control-height);
+  padding: 0 14px;
   color: #34445f;
   background: linear-gradient(180deg, #ffffff, #fafcff);
   border: 1px solid #dae5f2;
@@ -38,25 +59,25 @@
 }
 
 .filter-fields .control-field {
-  flex: 0 1 156px;
+  min-width: 0;
 }
 
 .filter-fields .date-field {
-  flex: 0 1 205px;
+  min-width: 0;
 }
 
 .filter-fields .page-size-field {
-  flex-basis: 118px;
+  min-width: 0;
 }
 
 .search-field {
-  flex: 1 1 180px;
-  min-width: 160px;
+  min-width: 0;
 }
 
 .filter-fields > .ghost-button {
   align-self: flex-end;
-  min-height: 34px;
+  min-width: 110px;
+  min-height: var(--control-height);
   padding: 0 12px;
 }
 
@@ -95,7 +116,7 @@
 
 th,
 td {
-  padding: 9px 10px;
+  padding: 11px 12px;
   border-bottom: 1px solid var(--line-soft);
   overflow: hidden;
   text-align: left;
@@ -107,7 +128,7 @@ td {
 th {
   color: #62728a;
   background: linear-gradient(180deg, #fcfeff, #f9fbfe);
-  font-size: 9.8px;
+  font-size: 10.5px;
   font-weight: 700;
   letter-spacing: 0;
   text-transform: none;
@@ -115,7 +136,7 @@ th {
 
 td {
   color: #203049;
-  font-size: 11.8px;
+  font-size: 12.5px;
   line-height: 1.35;
 }
 
@@ -228,6 +249,65 @@ td .ghost-button {
   color: #8390a5;
 }
 
+.score-badge {
+  position: relative;
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  color: #14233a;
+  background:
+    radial-gradient(circle at center, #ffffff 57%, transparent 58%),
+    conic-gradient(var(--red) var(--score), #edf3fa 0);
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 820;
+  font-variant-numeric: tabular-nums;
+}
+
+.evidence-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #41536f;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.evidence-dots i {
+  width: 7px;
+  height: 7px;
+  background: #d4deea;
+  border-radius: 50%;
+}
+
+.evidence-dots i.active {
+  background: var(--red);
+}
+
+.evidence-dots small {
+  margin-left: 4px;
+  color: #52627c;
+  font-size: 11px;
+}
+
+.reason-chip {
+  display: inline-flex;
+  max-width: 100%;
+  min-height: 24px;
+  align-items: center;
+  padding: 0 9px;
+  overflow: hidden;
+  color: #a22416;
+  background: #fff0eb;
+  border: 1px solid #ffd4c8;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 tbody tr {
   background: rgba(255, 255, 255, 0.96);
   transition:
@@ -238,6 +318,13 @@ tbody tr {
 tbody tr:hover {
   background: #fcfeff;
   box-shadow: inset 2px 0 0 rgba(18, 109, 242, 0.11);
+}
+
+.data-table-incidents tbody tr:first-child {
+  background:
+    linear-gradient(90deg, rgba(18, 109, 242, 0.08), rgba(255, 255, 255, 0.98) 38%),
+    #ffffff;
+  box-shadow: inset 3px 0 0 var(--blue);
 }
 
 tbody tr.row-muted {
@@ -259,13 +346,13 @@ tbody tr.row-muted:hover {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 20px;
-  padding: 0 7px;
+  min-height: 24px;
+  padding: 0 9px;
   color: #17406b;
   background: #eef6ff;
   border: 1px solid #dbeafb;
   border-radius: 5px;
-  font-size: 11px;
+  font-size: 11.5px;
   font-weight: 690;
   line-height: 1;
 }

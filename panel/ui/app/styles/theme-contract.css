@@ -9,6 +9,9 @@
   --theme-border: #e8f0f8;
   --theme-border-soft: #f2f6fb;
   --theme-accent: #126df2;
+  --theme-brand-bg:
+    radial-gradient(circle at 34% 22%, rgba(255, 255, 255, 0.28), transparent 24%),
+    linear-gradient(145deg, #16d5c4, #126df2);
   --theme-info: #08a9c8;
   --theme-success: #0aa779;
   --theme-warning: #d69a00;
@@ -50,7 +53,17 @@
 }
 
 .primary-button,
-.brand-mark,
 .user-avatar {
   background: var(--theme-accent);
+}
+
+.brand-mark {
+  background: var(--theme-brand-bg);
+}
+
+@media (max-width: 860px) {
+  .sidebar-shell {
+    color: #5f7089;
+    background: rgba(255, 255, 255, 0.96);
+  }
 }

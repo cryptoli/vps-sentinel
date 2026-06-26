@@ -57,6 +57,7 @@ export function OverviewPage({
   const incidents = activeRiskRows(datasets.incidents?.items || []);
   const blocks = datasets.active_blocks?.items || [];
   const severityRows = summary.by_severity || [];
+  const severityChartRows = normalizedSeveritySummary(severityRows);
   const highRisk = severityRows
     .filter((row) => ["critical", "high"].includes(String(row.severity).toLowerCase()))
     .reduce((sum, row) => sum + Number(row.count || 0), 0);
@@ -85,8 +86,7 @@ export function OverviewPage({
         <Card title={translate(language, "findingsBySeverity")} className="overview-severity-card">
           <DonutChart
             centerLabel={translate(language, "total")}
-            hideZero
-            items={severityRows.map((row) => ({
+            items={severityChartRows.map((row) => ({
               label: translate(language, String(row.severity || "unknown").toLowerCase()),
               value: Number(row.count || 0),
               className: `severity-${String(row.severity || "unknown").toLowerCase()}`,
@@ -165,7 +165,7 @@ export function FindingsPageView({
   const alertVolume = volumeBars(rows, "timestamp");
   return (
     <div className="page-stack feature-page findings-design">
-      <section className="feature-topline findings-topline">
+      <div className="feature-section-stack">
         <FeatureHeader title={translate(language, config.titleKey)} description={translate(language, config.descriptionKey)} />
         <div className="feature-metrics five">
           <StatTile icon={<ShieldAlert />} tone="red" label={copy(language, "Critical", "严重")} value={counts.critical} detail={copy(language, "Immediate review", "立即复核")} />
@@ -174,7 +174,7 @@ export function FindingsPageView({
           <StatTile icon={<ShieldQuestion />} tone="green" label={copy(language, "Low", "低危")} value={counts.low} detail={copy(language, "Watch list", "观察列表")} />
           <StatTile icon={<Bell />} tone="blue" label={copy(language, "Active Findings", "活跃告警")} value={activeRows.length} detail={copy(language, "False positives excluded", "已排除误报")} />
         </div>
-      </section>
+      </div>
       <Filters state={state} language={language} onChange={onStateChange} />
       <section className="feature-main-grid">
         <Card title={translate(language, config.labelKey)} className="feature-table-card">
@@ -204,6 +204,10 @@ export function FindingsPageView({
           </SideCard>
         </aside>
       </section>
+      <footer className="feature-page-footer">
+        <span>© 2026 VPS Sentinel</span>
+        <span>Version 0.3.0</span>
+      </footer>
     </div>
   );
 }
@@ -236,56 +240,56 @@ export function IncidentsPageView({
   return (
     <div className="page-stack feature-page incidents-design">
       <div className="incident-main">
-          <FeatureHeader title={translate(language, config.titleKey)} description={translate(language, config.descriptionKey)} />
-          <section className="feature-metrics six">
-            <StatTile icon={<GitBranch />} tone="red" label={copy(language, "Active Incidents", "活跃事件")} value={activeRows.length} detail={copy(language, "False positives excluded", "已排除误报")} />
-            <StatTile icon={<Clock3 />} tone="orange" label={copy(language, "Needs Review", "待复核")} value={reviewVerdictCount(rows, "needs_review")} detail={copy(language, "Require triage", "需要分流")} />
-            <StatTile icon={<CheckCircle2 />} tone="green" label={copy(language, "Confirmed", "已确认")} value={reviewVerdictCount(rows, "confirmed")} detail={copy(language, "Containment in progress", "处置中")} />
-            <StatTile icon={<ShieldAlert />} tone="red" label={copy(language, "High Severity", "高危事件")} value={severityCounts(activeRows).critical + severityCounts(activeRows).high} detail={copy(language, "Critical impact", "影响较高")} />
-            <StatTile icon={<Server />} tone="blue" label={copy(language, "Affected Nodes", "受影响节点")} value={topNodes(activeRows).length || 0} detail={topNodes(activeRows).slice(0, 2).map((row) => row.label).join(", ") || "-"} />
-            <StatTile icon={<Network />} tone="blue" label={copy(language, "Events Correlated", "关联信号")} value={number(correlatedSignals)} detail={copy(language, "From incident data", "来自事件数据")} />
-          </section>
-          <section className="incident-workbench">
-            <Card title={copy(language, "Attack Chain", "攻击链")} className="attack-chain-card">
-              <div className="attack-chain">
-                {chainStages.length ? (
-                  chainStages.map((stage) => (
-                    <div className="chain-stage" key={stage.label}>
-                      <span>{stage.icon}</span>
-                      <strong>{copy(language, stage.label, chainZh(stage.label))}</strong>
-                      <Badge value={translate(language, stage.severity)} tone={stage.severity} />
-                      <small>{stage.evidence}</small>
-                    </div>
-                  ))
-                ) : (
-                  <div className="chart-empty compact">{translate(language, "noData")}</div>
-                )}
-              </div>
-            </Card>
-            <Card title={copy(language, "Correlation Score", "关联评分")} className="correlation-card">
-              <div className="score-panel">
-                <div className={`posture-ring posture-${scoreTone}`} style={{ "--score": `${scorePercent}%` } as React.CSSProperties}>
-                  <strong>{selectedScore || 0}</strong>
-                  <span>{scoreLabel}</span>
-                </div>
-                {signalFacts.length ? (
-                  <ul>
-                    {signalFacts.map((fact) => <li key={fact}>{fact}</li>)}
-                  </ul>
-                ) : (
-                  <div className="chart-empty compact">{translate(language, "noData")}</div>
-                )}
-              </div>
-            </Card>
-          </section>
-          <Filters state={state} language={language} onChange={onStateChange} />
-          <Card title={translate(language, config.labelKey)} className="feature-table-card">
-            <div className="desktop-table-panel">
-              <DataTable rows={rows} columns={["last_seen", "severity", "score", "node_name", "title", "review_verdict"]} language={language} onDetails={onDetails} tableId="incidents" />
+        <FeatureHeader title={translate(language, config.titleKey)} description={translate(language, config.descriptionKey)} />
+        <section className="feature-metrics six">
+          <StatTile icon={<GitBranch />} tone="red" label={copy(language, "Active Incidents", "活跃事件")} value={activeRows.length} detail={copy(language, "False positives excluded", "已排除误报")} />
+          <StatTile icon={<Clock3 />} tone="orange" label={copy(language, "Needs Review", "待复核")} value={reviewVerdictCount(rows, "needs_review")} detail={copy(language, "Require triage", "需要分流")} />
+          <StatTile icon={<CheckCircle2 />} tone="green" label={copy(language, "Confirmed", "已确认")} value={reviewVerdictCount(rows, "confirmed")} detail={copy(language, "Containment in progress", "处置中")} />
+          <StatTile icon={<ShieldAlert />} tone="red" label={copy(language, "High Severity", "高危事件")} value={severityCounts(activeRows).critical + severityCounts(activeRows).high} detail={copy(language, "Critical impact", "影响较高")} />
+          <StatTile icon={<Server />} tone="blue" label={copy(language, "Affected Nodes", "受影响节点")} value={topNodes(activeRows).length || 0} detail={topNodes(activeRows).slice(0, 2).map((row) => row.label).join(", ") || "-"} />
+          <StatTile icon={<Network />} tone="blue" label={copy(language, "Events Correlated", "关联信号")} value={number(correlatedSignals)} detail={copy(language, "From incident data", "来自事件数据")} />
+        </section>
+        <section className="incident-workbench">
+          <Card title={copy(language, "Attack Chain", "攻击链")} className="attack-chain-card">
+            <div className="attack-chain">
+              {chainStages.length ? (
+                chainStages.map((stage) => (
+                  <div className="chain-stage" key={stage.label}>
+                    <span>{stage.icon}</span>
+                    <strong>{copy(language, stage.label, chainZh(stage.label))}</strong>
+                    <Badge value={translate(language, stage.severity)} tone={stage.severity} />
+                    <small>{stage.evidence}</small>
+                  </div>
+                ))
+              ) : (
+                <div className="chart-empty compact">{translate(language, "noData")}</div>
+              )}
             </div>
-            <MobileRiskList rows={rows} language={language} kind="incident" onDetails={onDetails} />
-            <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
           </Card>
+          <Card title={copy(language, "Correlation Score", "关联评分")} className="correlation-card">
+            <div className="score-panel">
+              <div className={`posture-ring posture-${scoreTone}`} style={{ "--score": `${scorePercent}%` } as React.CSSProperties}>
+                <strong>{selectedScore || 0}</strong>
+                <span>{scoreLabel}</span>
+              </div>
+              {signalFacts.length ? (
+                <ul>
+                  {signalFacts.map((fact) => <li key={fact}>{fact}</li>)}
+                </ul>
+              ) : (
+                <div className="chart-empty compact">{translate(language, "noData")}</div>
+              )}
+            </div>
+          </Card>
+        </section>
+        <Filters state={state} language={language} onChange={onStateChange} />
+        <Card title={translate(language, config.labelKey)} className="feature-table-card">
+          <div className="desktop-table-panel">
+            <DataTable rows={rows} columns={["last_seen", "severity", "score", "node_name", "title", "review_verdict"]} language={language} onDetails={onDetails} tableId="incidents" />
+          </div>
+          <MobileRiskList rows={rows} language={language} kind="incident" onDetails={onDetails} />
+          <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
+        </Card>
       </div>
     </div>
   );
@@ -408,8 +412,8 @@ export function BlocksPageView({
   const recentBlocks = rows.filter((row) => isWithinPastHours(row.blocked_at, 24)).length;
   const firewallSynced = rows.filter((row) => truthy(row.firewall_present)).length;
   const expiringSoon = rows.filter((row) => isFutureWithinHours(row.expires_at, 24)).length;
-  const columns = roleAllows(role, "private") && config.privateColumns
-    ? config.privateColumns
+  const columns = roleAllows(role, "private")
+    ? ["ip", "reason", "evidence", "asn", "country", "blocked_at", "expires_at"]
     : config.columns || ["blocked_at", "node_name", "rule_id", "reason", "expires_at"];
   const canRequestActions = roleAllows(role, "private") && Boolean(onActionRequest);
 
@@ -460,16 +464,14 @@ export function BlocksPageView({
   return (
     <div className="page-stack feature-page blocks-design">
       <FeatureHeader title={translate(language, config.titleKey)} description={translate(language, config.descriptionKey)} />
-      <section className="blocks-grid full-width">
-        <div className="blocks-main">
-          <section className="feature-metrics six">
+      <section className="feature-metrics four blocks-primary-metrics">
             <StatTile icon={<ShieldCheck />} tone="green" label={copy(language, "Currently Blocked", "当前封禁")} value={number(activeBlocks)} detail={copy(language, "Across all nodes", "全部节点")} />
-            <StatTile icon={<Ban />} tone="red" label={copy(language, "Evidence Confirmed", "证据确认")} value={rows.length} detail={copy(language, "Blocked by policy", "策略已生效")} />
-            <StatTile icon={<Clock3 />} tone="orange" label={copy(language, "New Blocks (24h)", "24 小时新增")} value={recentBlocks} detail={copy(language, "Recent response", "近期响应")} />
-            <StatTile icon={<ShieldPlus />} tone="blue" label={copy(language, "Firewall Synced", "防火墙同步")} value={firewallSynced} detail={copy(language, "Backend active", "后端已生效")} />
+            <StatTile icon={<Ban />} tone="red" label={copy(language, "High Risk", "高风险来源")} value={rows.length} detail={copy(language, "Evidence confirmed", "证据确认")} />
             <StatTile icon={<Clock3 />} tone="orange" label={copy(language, "Temporary Blocks", "临时封禁")} value={temporaryBlocks} detail={copy(language, "Auto-expire", "自动过期")} />
-            <StatTile icon={<Infinity />} tone="green" label={copy(language, "Permanent Blocks", "永久封禁")} value={permanentBlocks} detail={copy(language, "Expiring soon", "即将过期") + ` ${expiringSoon}`} />
-          </section>
+            <StatTile icon={<Infinity />} tone="green" label={copy(language, "Permanent Blocks", "永久封禁")} value={permanentBlocks} detail={copy(language, "Manual review", "人工复核")} />
+      </section>
+      <section className="blocks-grid">
+        <div className="blocks-main">
           <Filters state={state} language={language} onChange={onStateChange} />
           <Card title={translate(language, config.labelKey)} className="feature-table-card">
             {actionMessage && <p className={`review-message review-message-${actionMessage.type}`}>{actionMessage.text}</p>}
@@ -491,6 +493,13 @@ export function BlocksPageView({
             <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
           </Card>
         </div>
+        <BlocksSideRail
+          language={language}
+          recentBlocks={recentBlocks}
+          firewallSynced={firewallSynced}
+          expiringSoon={expiringSoon}
+          total={rows.length}
+        />
       </section>
     </div>
   );
@@ -525,7 +534,17 @@ export function SourcesPageView({
         <StatTile icon={<Network />} tone="green" label={copy(language, "Countries", "国家/地区")} value={uniqueCount(rows, "country")} detail={copy(language, "For attribution only", "仅供归属参考")} />
         <StatTile icon={<Database />} tone="orange" label={copy(language, "Organizations", "组织")} value={uniqueCount(rows, "organization")} detail={copy(language, "ASN context", "ASN 上下文")} />
       </section>
-      <Filters state={state} language={language} onChange={onStateChange} />
+      <section className="sources-toolbar">
+        <SearchField
+          className="sources-search"
+          value={state.query}
+          placeholder={translate(language, "searchPlaceholder")}
+          onChange={(query) => onStateChange({ query, offset: 0 })}
+        />
+        <button className="ghost-button" type="button" onClick={() => onStateChange({ query: "", offset: 0 })}>
+          {translate(language, "reset")}
+        </button>
+      </section>
       <section className="feature-main-grid full-width">
         <Card title={translate(language, config.labelKey)} className="feature-table-card">
           <div className="desktop-table-panel">
@@ -635,6 +654,9 @@ export function NodesPageView({
   const nodes = searchedNodes.filter((node) => statusFilter === "all" || String(node.status || "fresh").toLowerCase() === statusFilter);
   const statusCounts = nodeStatusCounts(searchedNodes);
   const resource = fleetResource(nodes);
+  const onlineCount = Number(statusCounts.fresh || statusCounts.online || 0);
+  const degradedCount = Number(statusCounts.stale || statusCounts.degraded || 0);
+  const offlineCount = Number(statusCounts.offline || statusCounts.retired || 0);
 
   return (
     <div className="page-stack nodes-page">
@@ -643,6 +665,12 @@ export function NodesPageView({
           <h1>{translate(language, "nodesTitle")}</h1>
           <p>{translate(language, "nodesDescription")}</p>
         </div>
+        <section className="node-mobile-status-grid" aria-label={translate(language, "nodeStatus")}>
+          <NodeMobileStatusCard icon={<Server size={14} />} tone="blue" label={copy(language, "Total Nodes", "总节点")} value={searchedNodes.length} detail={copy(language, "Fleet", "集群")} />
+          <NodeMobileStatusCard icon={<CheckCircle2 size={14} />} tone="green" label={translate(language, "online")} value={onlineCount} detail={percent(searchedNodes.length ? (onlineCount / searchedNodes.length) * 100 : 0, 0)} />
+          <NodeMobileStatusCard icon={<AlertTriangle size={14} />} tone="orange" label={translate(language, "degraded")} value={degradedCount} detail={percent(searchedNodes.length ? (degradedCount / searchedNodes.length) * 100 : 0, 0)} />
+          <NodeMobileStatusCard icon={<Ban size={14} />} tone="red" label={translate(language, "offline")} value={offlineCount} detail={percent(searchedNodes.length ? (offlineCount / searchedNodes.length) * 100 : 0, 0)} />
+        </section>
         <div className="nodes-actions">
           <SearchField
             className="nodes-search"
@@ -709,6 +737,29 @@ export function NodesPageView({
   );
 }
 
+function NodeMobileStatusCard({
+  icon,
+  tone,
+  label,
+  value,
+  detail,
+}: {
+  icon: React.ReactNode;
+  tone: "blue" | "green" | "orange" | "red";
+  label: string;
+  value: number;
+  detail: string;
+}) {
+  return (
+    <article className={`node-mobile-status-card tone-${tone}`}>
+      <span>{icon}</span>
+      <small>{label}</small>
+      <strong>{number(value)}</strong>
+      <em>{detail}</em>
+    </article>
+  );
+}
+
 function FeatureHeader({ title, description }: { title: string; description: string }) {
   return (
     <header className="feature-header">
@@ -754,6 +805,54 @@ function SideCard({ title, action, children }: { title: string; action?: string;
       </header>
       {children}
     </section>
+  );
+}
+
+function BlocksSideRail({
+  language,
+  recentBlocks,
+  firewallSynced,
+  expiringSoon,
+  total,
+}: {
+  language: Language;
+  recentBlocks: number;
+  firewallSynced: number;
+  expiringSoon: number;
+  total: number;
+}) {
+  return (
+    <aside className="blocks-side-stack">
+      <SideCard title={copy(language, "Response Queue", "响应队列")}>
+        <div className="queue-metrics">
+          <div><span>{copy(language, "New detections (24h)", "24 小时新检测")}</span><strong>{number(recentBlocks)}</strong></div>
+          <div><span>{copy(language, "Firewall synced", "防火墙已同步")}</span><strong>{number(firewallSynced)}</strong></div>
+          <div><span>{copy(language, "Expiring soon", "即将过期")}</span><strong>{number(expiringSoon)}</strong></div>
+          <div><span>{copy(language, "Manual review", "待人工复核")}</span><strong>{number(Math.max(0, total - firewallSynced))}</strong></div>
+        </div>
+      </SideCard>
+      <SideCard title={copy(language, "Blocking Policy", "封禁策略")}>
+        <div className="policy-card-body">
+          <p>{copy(language, "An IP is blocked when evidence reaches the threshold for any reason.", "任一来源证据达到阈值后会进入封禁。")}</p>
+          <div className="score-dots policy-dots" aria-hidden="true">
+            {[0, 1, 2, 3, 4].map((item) => <span className="active" key={item} />)}
+            <strong>5 / 5</strong>
+          </div>
+          <ul>
+            <li>{copy(language, "Each signal adds evidence.", "每个信号都会增加证据。")}</li>
+            <li>{copy(language, "Higher confidence triggers faster.", "置信度越高触发越快。")}</li>
+            <li>{copy(language, "Temporary blocks auto-expire.", "临时封禁会自动过期。")}</li>
+          </ul>
+        </div>
+      </SideCard>
+      <SideCard title={copy(language, "Legend", "图例")}>
+        <div className="block-legend">
+          <div><span className="legend-dot severity-critical" /><strong>{copy(language, "High Severity", "高严重性")}</strong><small>{copy(language, "Immediate threat", "需要立即关注")}</small></div>
+          <div><span className="legend-dot severity-medium" /><strong>{copy(language, "Medium Severity", "中严重性")}</strong><small>{copy(language, "Potential threat", "潜在威胁")}</small></div>
+          <div><span className="legend-dot severity-low" /><strong>{copy(language, "Low Severity", "低严重性")}</strong><small>{copy(language, "Suspicious activity", "可疑活动")}</small></div>
+        </div>
+      </SideCard>
+    </aside>
   );
 }
 
@@ -1215,6 +1314,11 @@ function severityCounts(rows: PanelRecord[]): Record<string, number> {
     acc[severity] = (acc[severity] || 0) + 1;
     return acc;
   }, { critical: 0, high: 0, medium: 0, low: 0 });
+}
+
+function normalizedSeveritySummary(rows: Array<{ severity?: unknown; count?: unknown }>): Array<{ severity: string; count: number }> {
+  const counts = new Map(rows.map((row) => [String(row.severity || "low").toLowerCase(), Number(row.count || 0)]));
+  return ["critical", "high", "medium", "low"].map((severity) => ({ severity, count: counts.get(severity) || 0 }));
 }
 
 function topNodes(rows: PanelRecord[]): Array<{ label: string; value: number }> {

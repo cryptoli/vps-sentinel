@@ -1,3 +1,5 @@
+"use client";
+
 import {
   Activity,
   Bell,
@@ -74,12 +76,20 @@ const ICONS: Record<PageId, React.ReactNode> = {
   nodes: <Database size={18} />,
 };
 
+const MOBILE_PRIMARY_PAGES: PageId[] = ["overview", "findings", "incidents", "baseline_drifts", "probe_sources", "nodes"];
+const NAV_GROUPS: Array<{ key: string; labels: Record<Language, string>; pages: PageId[] }> = [
+  { key: "monitor", labels: { zh: "监控", en: "Monitor" }, pages: ["overview", "findings", "incidents", "baseline_drifts"] },
+  { key: "response", labels: { zh: "响应", en: "Response" }, pages: ["active_blocks", "attack_fingerprints", "probe_sources"] },
+  { key: "assets", labels: { zh: "资产", en: "Assets" }, pages: ["nodes"] },
+  { key: "audit", labels: { zh: "审计", en: "Audit" }, pages: ["audit_logs"] },
+];
+
 export function PanelApp() {
   const [language, setLanguage] = useState<Language>("zh");
   const [theme, setTheme] = useState("default");
   const [role, setRole] = useState<PanelRole>("public");
   const [settings, setSettings] = useState<PanelSettings>({});
-  const [currentPage, setCurrentPage] = useState<PageId>(() => initialPageFromLocation());
+  const [currentPage, setCurrentPage] = useState<PageId>("overview");
   const [summary, setSummary] = useState<Summary>({});
   const [datasets, setDatasets] = useState<Record<string, DatasetPage>>({});
   const [trends, setTrends] = useState<TrendPoint[]>([]);
@@ -182,6 +192,11 @@ export function PanelApp() {
     setLanguage(selectedLanguage());
     const storedTheme = window.localStorage.getItem("vps-sentinel-theme") || "default";
     setTheme(storedTheme);
+  }, []);
+
+  useEffect(() => {
+    const pageFromLocation = initialPageFromLocation();
+    setCurrentPage((current) => (current === pageFromLocation ? current : pageFromLocation));
   }, []);
 
   useEffect(() => {
@@ -435,6 +450,29 @@ function Sidebar({
   language: Language;
   onNavigate: (id: PageId) => void;
 }) {
+  const mobilePageIds = useMemo(() => {
+    const visibleIds = new Set(pages.map((page) => page.id));
+    const primary = MOBILE_PRIMARY_PAGES.filter((id) => visibleIds.has(id));
+    const next = primary.includes(currentPage)
+      ? primary
+      : [...primary.slice(0, 5), currentPage].filter((id, index, list) => list.indexOf(id) === index);
+    return new Set(next.slice(0, 6));
+  }, [currentPage, pages]);
+  const groupedPages = useMemo(() => {
+    const pageMap = new Map(pages.map((page) => [page.id, page]));
+    const used = new Set<PageId>();
+    const groups = NAV_GROUPS.map((group) => {
+      const items = group.pages.map((id) => pageMap.get(id)).filter(Boolean) as PageConfig[];
+      items.forEach((item) => used.add(item.id));
+      return { ...group, items };
+    }).filter((group) => group.items.length > 0);
+    const leftovers = pages.filter((page) => !used.has(page.id));
+    if (leftovers.length) {
+      groups.push({ key: "more", labels: { zh: "更多", en: "More" }, pages: leftovers.map((page) => page.id), items: leftovers });
+    }
+    return groups;
+  }, [pages]);
+
   return (
     <aside className="sidebar-shell">
       <div className="brand-lockup">
@@ -445,11 +483,21 @@ function Sidebar({
         </div>
       </div>
       <nav className="main-nav">
-        {pages.map((page) => (
-          <button className={page.id === currentPage ? "active" : ""} key={page.id} type="button" onClick={() => onNavigate(page.id)}>
-            {ICONS[page.id]}
-            <span>{translate(language, page.labelKey)}</span>
-          </button>
+        {groupedPages.map((group) => (
+          <div className="nav-group" key={group.key}>
+            <span className="nav-group-label">{group.labels[language]}</span>
+            {group.items.map((page) => (
+              <button
+                className={`${page.id === currentPage ? "active" : ""} ${mobilePageIds.has(page.id) ? "mobile-primary" : "mobile-secondary"}`}
+                key={page.id}
+                type="button"
+                onClick={() => onNavigate(page.id)}
+              >
+                {ICONS[page.id]}
+                <span>{translate(language, page.labelKey)}</span>
+              </button>
+            ))}
+          </div>
         ))}
       </nav>
       <div className="sidebar-status">

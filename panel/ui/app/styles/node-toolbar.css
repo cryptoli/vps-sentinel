@@ -2,13 +2,21 @@
   align-items: center;
 }
 
+.node-mobile-status-grid {
+  display: none;
+}
+
+.node-mobile-status-card {
+  min-width: 0;
+}
+
 .nodes-header > div:first-child {
   min-width: 0;
 }
 
 .nodes-actions {
   display: flex;
-  flex: 0 1 340px;
+  flex: 0 1 420px;
   gap: 12px;
   align-items: center;
   justify-content: flex-end;
@@ -16,7 +24,7 @@
 }
 
 .nodes-actions .nodes-search {
-  flex: 1 1 220px;
+  flex: 1 1 280px;
   min-width: 0;
 }
 

@@ -22,8 +22,7 @@
   .feature-main-grid,
   .blocks-grid,
   .incident-workbench,
-  .baseline-grid,
-  .feature-topline {
+  .baseline-grid {
     grid-template-columns: 1fr;
   }
 

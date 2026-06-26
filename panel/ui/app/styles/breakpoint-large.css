@@ -34,13 +34,13 @@
 
 .node-card {
   align-items: center;
-  min-height: 86px;
-  padding: 10px 14px;
+  min-height: 104px;
+  padding: 14px 16px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.995), rgba(250, 253, 255, 0.995));
   border: 1px solid #e1eaf5;
   border-radius: 8px;
   box-shadow:
-    0 7px 16px rgba(19, 41, 68, 0.038),
+    0 12px 24px rgba(19, 41, 68, 0.052),
     0 1px 0 rgba(255, 255, 255, 0.94) inset;
 }
 
@@ -53,8 +53,8 @@
 
 .node-icon {
   display: grid;
-  width: 40px;
-  height: 40px;
+  width: 46px;
+  height: 46px;
   place-items: center;
   color: #126df2;
   background: linear-gradient(180deg, #eef6ff, #e8f3ff);
@@ -68,7 +68,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13.5px;
+  font-size: 15px;
   font-weight: 780;
   line-height: 1.15;
 }
@@ -79,7 +79,7 @@
   gap: 8px;
   min-width: 0;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 12px;
   line-height: 1.1;
 }
 
@@ -148,7 +148,7 @@
 
 .metric-mini i {
   display: block;
-  height: 5px;
+  height: 6px;
   overflow: hidden;
   background: #dfe8f3;
   border-radius: 999px;
@@ -216,8 +216,8 @@
 .load-cell .mini-bars,
 .agent-rss-cell .mini-bars {
   align-items: end;
-  gap: 2px;
-  height: 18px;
+  gap: 3px;
+  height: 22px;
   margin: 2px 0 0;
 }
 
@@ -236,7 +236,7 @@
 }
 
 .agent-rss-cell .mini-bars {
-  height: 16px;
+  height: 20px;
 }
 
 .agent-rss-cell .mini-bars span {
@@ -261,8 +261,8 @@
   --score: 80%;
   position: relative;
   display: grid;
-  width: 44px;
-  height: 44px;
+  width: 56px;
+  height: 56px;
   place-items: center;
   background: conic-gradient(var(--green) var(--score), #e5edf6 0);
   border-radius: 50%;
@@ -279,7 +279,7 @@
 .posture-ring::before {
   content: "";
   position: absolute;
-  inset: 5px;
+  inset: 7px;
   background: #fff;
   border-radius: 50%;
 }
@@ -289,7 +289,7 @@
   z-index: 1;
   align-self: center;
   color: #112037;
-  font-size: 14px;
+  font-size: 16px;
   font-weight: 760;
 }
 
