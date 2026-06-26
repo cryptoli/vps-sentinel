@@ -125,7 +125,7 @@ export default {
       if (request.method === "GET" && url.pathname === "/api/v1/stream-ticket") {
         return withCors(json({ error: "stream_unavailable", detail: "stream_unavailable" }, 501), request, env);
       }
-      if (request.method === "GET" && env.ASSETS) {
+      if ((request.method === "GET" || request.method === "HEAD") && env.ASSETS) {
         return withCors(await env.ASSETS.fetch(request), request, env);
       }
       return withCors(json({ error: "not_found" }, 404), request, env);

@@ -368,7 +368,7 @@ const config = {
     directory: "./web",
     binding: "ASSETS",
     not_found_handling: "single-page-application",
-    run_worker_first: ["/api/*"],
+    run_worker_first: ["/*"],
   },
   d1_databases: [
     {
