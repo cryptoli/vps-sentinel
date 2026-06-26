@@ -5,6 +5,27 @@ on:
   pull_request:
 
 jobs:
+  panel-ui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: panel/ui/package-lock.json
+      - name: Install panel UI dependencies
+        working-directory: panel/ui
+        run: npm ci
+      - name: Panel contract generated files
+        run: node scripts/generate-panel-contract.mjs --check
+      - name: Panel UI typecheck
+        working-directory: panel/ui
+        run: npm run typecheck
+      - name: Panel UI build
+        working-directory: panel/ui
+        run: npm run build
+
   rust:
     runs-on: ubuntu-latest
     steps:

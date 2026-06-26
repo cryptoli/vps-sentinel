@@ -8,6 +8,7 @@ import {
   DEFAULT_PUBLIC_PAGES,
   DEFAULT_THEMES,
   MAX_PAGE_LIMIT,
+  PANEL_DICTIONARIES,
   PANEL_TRANSPORT_ENCODING,
   PUBLIC_PROBE_SOURCE_HIDDEN_KEYS,
   ROLE_LEVELS,
@@ -18,8 +19,21 @@ const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
 };
+const SUMMARY_CACHE_TTL_MS = 5000;
+const MAX_SEARCH_QUERY_CHARS = 96;
+const DEFAULT_PANEL_WRITE_BODY_BYTES = 65536;
+const ACTION_REQUEST_SEARCH_COLUMNS = Object.freeze([
+  "action",
+  "target_type",
+  "target_id",
+  "node_name",
+  "status",
+  "requested_by",
+  "payload_json",
+]);
 
 let compatSchemaPromise = null;
+const summaryCache = new Map();
 
 export default {
   async fetch(request, env) {
@@ -53,8 +67,14 @@ export default {
           freshness_threshold_minutes: DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
           offline_threshold_minutes: DEFAULT_OFFLINE_THRESHOLD_MINUTES,
           node_retired_threshold_minutes: DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
+          dictionaries: PANEL_DICTIONARIES,
           server_time: new Date().toISOString(),
         }), request, env);
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/dictionaries") {
+        const auth = panelAuth(request, env, "public");
+        if (auth.error) return withCors(auth.error, request, env);
+        return withCors(json(PANEL_DICTIONARIES), request, env);
       }
       if (request.method === "GET" && url.pathname === "/api/v1/summary") {
         const auth = panelAuth(request, env, "public");
@@ -92,11 +112,21 @@ export default {
         if (authError) return withCors(authError, request, env);
         return withCors(json(await panelReview(request, env)), request, env);
       }
+      if (request.method === "POST" && url.pathname === "/api/v1/action-request") {
+        const authError = privateWriteAuthError(request, env);
+        if (authError) return withCors(authError, request, env);
+        return withCors(json(await actionRequest(request, env)), request, env);
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/action-requests") {
+        const authError = privateAuthError(request, env);
+        if (authError) return withCors(authError, request, env);
+        return withCors(json(await actionRequests(env, url)), request, env);
+      }
       if (request.method === "GET" && url.pathname === "/api/v1/stream-ticket") {
         return withCors(json({ error: "stream_unavailable", detail: "stream_unavailable" }, 501), request, env);
       }
       if (request.method === "GET" && env.ASSETS) {
-        return env.ASSETS.fetch(request);
+        return withCors(await env.ASSETS.fetch(request), request, env);
       }
       return withCors(json({ error: "not_found" }, 404), request, env);
     } catch (error) {
@@ -116,6 +146,7 @@ async function ensureCompatSchema(env) {
         ["nodes", "metrics_json", "TEXT NOT NULL DEFAULT '{}'"],
         ["findings", "review_signature", "TEXT NOT NULL DEFAULT ''"],
         ["incidents", "review_signature", "TEXT NOT NULL DEFAULT ''"],
+        ["baseline_drifts", "category", "TEXT NOT NULL DEFAULT 'system'"],
         ["baseline_drifts", "review_signature", "TEXT NOT NULL DEFAULT ''"],
         ["panel_reviews", "review_signature", "TEXT NOT NULL DEFAULT ''"],
       ];
@@ -124,11 +155,50 @@ async function ensureCompatSchema(env) {
           env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run(),
         );
       }
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS panel_action_requests (
+          id TEXT PRIMARY KEY,
+          action TEXT NOT NULL,
+          target_type TEXT NOT NULL,
+          target_id TEXT NOT NULL,
+          node_name TEXT NOT NULL DEFAULT '',
+          payload_json TEXT NOT NULL,
+          status TEXT NOT NULL,
+          requested_by TEXT NOT NULL,
+          requested_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `).run();
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS attack_fingerprints (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          title TEXT NOT NULL,
+          first_seen_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          seen_count INTEGER NOT NULL,
+          node_count INTEGER NOT NULL,
+          source_count INTEGER NOT NULL,
+          nodes_json TEXT NOT NULL,
+          source_ips_json TEXT NOT NULL,
+          rule_ids_json TEXT NOT NULL,
+          categories_json TEXT NOT NULL,
+          score INTEGER NOT NULL,
+          confidence INTEGER NOT NULL,
+          verdict TEXT NOT NULL DEFAULT 'unknown',
+          summary TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL
+        )
+      `).run();
       const indexes = [
         "CREATE INDEX IF NOT EXISTS idx_findings_review_signature ON findings(review_signature)",
         "CREATE INDEX IF NOT EXISTS idx_incidents_review_signature ON incidents(review_signature)",
         "CREATE INDEX IF NOT EXISTS idx_baseline_review_signature ON baseline_drifts(review_signature)",
         "CREATE INDEX IF NOT EXISTS idx_panel_reviews_signature ON panel_reviews(target_type, review_signature, verdict, reviewed_at)",
+        "CREATE INDEX IF NOT EXISTS idx_panel_action_requests_status ON panel_action_requests(status, requested_at)",
+        "CREATE INDEX IF NOT EXISTS idx_panel_action_requests_target ON panel_action_requests(target_type, target_id)",
+        "CREATE INDEX IF NOT EXISTS idx_attack_fingerprints_seen ON attack_fingerprints(last_seen_at)",
+        "CREATE INDEX IF NOT EXISTS idx_attack_fingerprints_score ON attack_fingerprints(score, last_seen_at)",
       ];
       for (const statement of indexes) {
         await env.DB.prepare(statement).run();
@@ -195,6 +265,7 @@ async function ingest(request, env) {
   }
   applyRequestLocation(payload, request);
   await persistPayload(env, payload, nodeName);
+  invalidateSummaryCache();
   return json({ ok: true, message_id: payload.message_id });
 }
 
@@ -337,6 +408,8 @@ async function persistPayload(env, payload, signedNodeName) {
       JSON.stringify(recommendations),
       receivedAt,
     ));
+    const fingerprintStatement = await attackFingerprintStatement(env, nodeName, finding, title, receivedAt);
+    if (fingerprintStatement) statements.push(fingerprintStatement);
   }
 
   for (const incident of payload.incidents || []) {
@@ -370,13 +443,14 @@ async function persistPayload(env, payload, signedNodeName) {
     const id = `${nodeName}:${drift.finding_id || drift.rule_id}:${subject}:${drift.timestamp}`;
     statements.push(env.DB.prepare(`
       INSERT OR REPLACE INTO baseline_drifts
-        (id, node_id, finding_id, rule_id, severity, subject, review_signature, timestamp, tier, score, review_action, reasons_json, received_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, node_id, finding_id, rule_id, category, severity, subject, review_signature, timestamp, tier, score, review_action, reasons_json, received_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       id,
       nodeName,
       drift.finding_id || "",
       drift.rule_id,
+      category,
       drift.severity,
       subject,
       reviewSignature,
@@ -493,6 +567,117 @@ function panelNodeStatement(env, nodeName, node, sentAt, receivedAt, includeMetr
   );
 }
 
+function evidenceValue(evidence, key) {
+  const item = (evidence || []).find((entry) => String(entry?.key || "") === key);
+  return item ? String(item.value || "").trim() : "";
+}
+
+function firstEvidenceValue(evidence, keys) {
+  for (const key of keys) {
+    const value = evidenceValue(evidence, key);
+    if (value) return value;
+  }
+  return "";
+}
+
+function mergeJsonSet(existingJson, incoming) {
+  const values = parseJsonField(existingJson, []);
+  const value = String(incoming || "").trim();
+  if (value && value.toLowerCase() !== "unknown") values.push(value);
+  return [...new Set(values.map((item) => String(item || "").trim()).filter(Boolean))].sort();
+}
+
+function minTimeText(existing, incoming) {
+  if (!existing) return incoming;
+  return String(existing) <= String(incoming) ? String(existing) : String(incoming);
+}
+
+function maxTimeText(existing, incoming) {
+  if (!existing) return incoming;
+  return String(existing) >= String(incoming) ? String(existing) : String(incoming);
+}
+
+function strongestFingerprintVerdict(existing, candidate) {
+  return fingerprintVerdictRank(candidate) >= fingerprintVerdictRank(existing)
+    ? String(candidate || "unknown").trim().toLowerCase()
+    : String(existing || "unknown").trim().toLowerCase();
+}
+
+function fingerprintVerdictRank(value) {
+  const verdict = String(value || "").trim().toLowerCase();
+  if (verdict === "malicious") return 3;
+  if (verdict === "benign") return 2;
+  if (verdict === "unknown" || !verdict) return 1;
+  return 0;
+}
+
+async function attackFingerprintStatement(env, nodeName, finding, title, receivedAt) {
+  const evidence = finding.evidence || [];
+  const id = evidenceValue(evidence, "attack_fingerprint_id");
+  if (!id || id.toLowerCase() === "unknown") return null;
+  const sourceIp = firstEvidenceValue(evidence, ["source_ip", "ip", "remote_ip", "remote_addr", "active_response_ip"]);
+  const existing = await env.DB.prepare(`
+    SELECT first_seen_at, last_seen_at, seen_count, nodes_json, source_ips_json, rule_ids_json, categories_json, score, confidence, verdict, source_count
+    FROM attack_fingerprints
+    WHERE id = ?
+  `).bind(id).first();
+  const nodes = mergeJsonSet(existing?.nodes_json, nodeName);
+  const sourceIps = mergeJsonSet(existing?.source_ips_json, redactIpText(sourceIp || ""));
+  const ruleIds = mergeJsonSet(existing?.rule_ids_json, finding.rule_id || "");
+  const categories = mergeJsonSet(existing?.categories_json, finding.category || "");
+  const observedAt = String(finding.timestamp || receivedAt);
+  const firstSeen = minTimeText(existing?.first_seen_at, observedAt);
+  const lastSeen = maxTimeText(existing?.last_seen_at, observedAt);
+  const reportedSeen = Math.max(1, Number(evidenceValue(evidence, "attack_fingerprint_seen_count") || 1) || 1);
+  const seenCount = Math.max(Number(existing?.seen_count || 0) + 1, reportedSeen);
+  const reportedSourceCount = Math.max(0, Number(evidenceValue(evidence, "attack_fingerprint_source_ip_count") || (sourceIp ? 1 : 0)) || 0);
+  const sourceCount = Math.max(Number(existing?.source_count || 0), sourceIps.length, reportedSourceCount);
+  const score = Math.max(Number(existing?.score || 0), Number(evidenceValue(evidence, "attack_fingerprint_score") || 0) || 0);
+  const confidence = Math.max(Number(existing?.confidence || 0), Number(evidenceValue(evidence, "attack_fingerprint_confidence") || 0) || 0);
+  const verdict = strongestFingerprintVerdict(existing?.verdict || "unknown", evidenceValue(evidence, "attack_fingerprint_verdict") || "unknown");
+  return env.DB.prepare(`
+    INSERT INTO attack_fingerprints
+      (id, kind, title, first_seen_at, last_seen_at, seen_count, node_count, source_count,
+       nodes_json, source_ips_json, rule_ids_json, categories_json, score, confidence, verdict, summary, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      kind = excluded.kind,
+      title = excluded.title,
+      first_seen_at = excluded.first_seen_at,
+      last_seen_at = excluded.last_seen_at,
+      seen_count = excluded.seen_count,
+      node_count = excluded.node_count,
+      source_count = excluded.source_count,
+      nodes_json = excluded.nodes_json,
+      source_ips_json = excluded.source_ips_json,
+      rule_ids_json = excluded.rule_ids_json,
+      categories_json = excluded.categories_json,
+      score = excluded.score,
+      confidence = excluded.confidence,
+      verdict = excluded.verdict,
+      summary = excluded.summary,
+      updated_at = excluded.updated_at
+  `).bind(
+    String(id).slice(0, 191),
+    String(evidenceValue(evidence, "attack_fingerprint_kind") || "unknown").slice(0, 64),
+    String(title || finding.title || "").slice(0, 191),
+    firstSeen,
+    lastSeen,
+    seenCount,
+    nodes.length,
+    sourceCount,
+    JSON.stringify(nodes),
+    JSON.stringify(sourceIps),
+    JSON.stringify(ruleIds),
+    JSON.stringify(categories),
+    score,
+    confidence,
+    verdict,
+    String(title || finding.title || "").slice(0, 512),
+    receivedAt,
+  );
+}
+
 function probeSourceStatement(env, nodeName, source, receivedAt) {
   const sourceIp = String(source?.source_ip || "").trim();
   if (!sourceIp) return null;
@@ -570,15 +755,31 @@ function probeSourceStatement(env, nodeName, source, receivedAt) {
 }
 
 async function summary(env, role = "public") {
+  const now = Date.now();
+  const cached = summaryCache.get(role);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+  const value = await buildSummary(env, role);
+  summaryCache.set(role, { value, expiresAt: now + SUMMARY_CACHE_TTL_MS });
+  return value;
+}
+
+function invalidateSummaryCache() {
+  summaryCache.clear();
+}
+
+async function buildSummary(env, role = "public") {
   const activeFindingsFilter = reviewNotFalsePositiveFilter("findings", "finding");
   const activeIncidentsFilter = reviewNotFalsePositiveFilter("incidents", "incident");
   const activeDriftsFilter = reviewNotFalsePositiveFilter("baseline_drifts", "baseline_drift");
-  const [nodes, findings, incidents, drifts, blocks, probeSources, bySeverity, byCategory, byBlockStatus, nodeRows] = await Promise.all([
+  const [nodes, findings, incidents, drifts, blocks, attackFingerprints, probeSources, bySeverity, byCategory, byBlockStatus, nodeRows] = await Promise.all([
     countDistinct(env, "nodes", "node_name"),
     countWhere(env, "findings", activeFindingsFilter),
     countWhere(env, "incidents", activeIncidentsFilter),
     countWhere(env, "baseline_drifts", activeDriftsFilter),
     countWhere(env, "active_blocks", "expired = 0"),
+    countOptional(env, "attack_fingerprints"),
     countDistinctWhereOptional(env, "probe_sources", "source_ip", blockedProbeSourceFilter()),
     queryAll(env, `SELECT severity, COUNT(*) AS count FROM findings WHERE ${activeFindingsFilter} GROUP BY severity`),
     queryAll(env, `SELECT category, COUNT(*) AS count FROM findings WHERE ${activeFindingsFilter} GROUP BY category`),
@@ -591,6 +792,7 @@ async function summary(env, role = "public") {
     incidents,
     baseline_drifts: drifts,
     active_blocks: blocks,
+    attack_fingerprints: attackFingerprints,
     probe_sources: probeSources,
     by_severity: bySeverity,
     by_category: byCategory,
@@ -663,6 +865,7 @@ async function queryPage(env, dataset, url, role = "private") {
     values.push(page.to);
     parts.push(`${dataset.filterColumn || dataset.orderColumn} <= ?`);
   }
+  pushSearchClause(parts, values, datasetSearchColumns(dataset, role), page.query);
   const whereSql = parts.length ? ` WHERE ${parts.join(" AND ")}` : "";
   try {
     const countRow = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${dataset.table}${whereSql}`)
@@ -699,6 +902,7 @@ async function queryProbeSourcesPage(env, dataset, url, role = "private") {
     values.push(page.to);
     parts.push("last_seen <= ?");
   }
+  pushSearchClause(parts, values, datasetSearchColumns(dataset, role), page.query);
   const whereSql = ` WHERE ${parts.join(" AND ")}`;
   try {
     const countRow = await env.DB.prepare(
@@ -863,7 +1067,7 @@ async function panelReviewValue(env, targetType, targetId, reviewSignature = "")
 }
 
 async function findingReview(request, env) {
-  const payload = await request.json();
+  const payload = await readPanelJson(request, env);
   const review = normalizeFindingReview(payload);
   const exists = await env.DB.prepare("SELECT id FROM findings WHERE id = ?").bind(review.finding_id).first();
   if (!exists) throwHttp(404, "finding_not_found");
@@ -890,6 +1094,7 @@ async function findingReview(request, env) {
     JSON.stringify({ verdict: review.verdict, note_present: Boolean(review.note) }),
     review.reviewed_at,
   ).run();
+  invalidateSummaryCache();
   return {
     ok: true,
     finding_id: review.finding_id,
@@ -906,7 +1111,7 @@ async function findingReview(request, env) {
 }
 
 async function panelReview(request, env) {
-  const payload = await request.json();
+  const payload = await readPanelJson(request, env);
   const review = normalizePanelReview(payload);
   const target = panelReviewTarget(review.target_type);
   const exists = await env.DB.prepare(`SELECT ${target.idColumn} FROM ${target.table} WHERE ${target.idColumn} = ?`)
@@ -937,7 +1142,150 @@ async function panelReview(request, env) {
     JSON.stringify({ verdict: review.verdict, note_present: Boolean(review.note) }),
     review.reviewed_at,
   ).run();
+  invalidateSummaryCache();
   return { ok: true, target_type: review.target_type, target_id: review.target_id, review: panelReviewResponse(scopedReview) };
+}
+
+async function actionRequest(request, env) {
+  const payload = await readPanelJson(request, env);
+  const action = normalizePanelActionRequest(payload);
+  await env.DB.prepare(`
+    INSERT INTO panel_action_requests
+      (id, action, target_type, target_id, node_name, payload_json, status, requested_by, requested_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    action.id,
+    action.action,
+    action.target_type,
+    action.target_id,
+    action.node_name,
+    JSON.stringify(action.payload),
+    action.status,
+    action.requested_by,
+    action.requested_at,
+    action.updated_at,
+  ).run();
+  await env.DB.prepare(`
+    INSERT INTO panel_audit_logs (id, action, actor, target_type, target_id, detail_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    `action_request:${action.target_type}:${action.target_id}:${crypto.randomUUID()}`,
+    "action_request",
+    action.requested_by || "panel",
+    action.target_type,
+    action.target_id,
+    JSON.stringify({
+      action_id: action.id,
+      action: action.action,
+      status: action.status,
+      node_name: action.node_name,
+      payload_present: action.payload !== null && action.payload !== undefined,
+    }),
+    action.requested_at,
+  ).run();
+  invalidateSummaryCache();
+  return { ok: true, action_request: action };
+}
+
+async function actionRequests(env, url) {
+  const page = pageRequest(url);
+  const values = [];
+  const parts = [];
+  pushSearchClause(parts, values, ACTION_REQUEST_SEARCH_COLUMNS, page.query);
+  const whereSql = parts.length ? ` WHERE ${parts.join(" AND ")}` : "";
+  const countRow = await env.DB.prepare(`SELECT COUNT(*) AS count FROM panel_action_requests${whereSql}`)
+    .bind(...values)
+    .first();
+  const result = await env.DB.prepare(`
+    SELECT id, action, target_type, target_id, node_name, payload_json, status, requested_by, requested_at, updated_at
+    FROM panel_action_requests${whereSql}
+    ORDER BY requested_at DESC
+    LIMIT ? OFFSET ?
+  `).bind(...values, page.limit, page.offset).all();
+  return {
+    items: (result.results || []).map((row) => ({
+      ...row,
+      payload: parseJsonField(row.payload_json, null),
+      payload_json: undefined,
+    })).map(({ payload_json, ...row }) => row),
+    total: Number(countRow?.count || 0),
+    limit: page.limit,
+    offset: page.offset,
+  };
+}
+
+function normalizePanelActionRequest(payload) {
+  const action = normalizePanelAction(payload?.action);
+  const targetType = normalizeActionTargetType(payload?.target_type);
+  if (!panelActionTargetAllowed(action, targetType)) throwHttp(400, "invalid_action_target");
+  const targetId = String(payload?.target_id || "").trim();
+  if (!targetId || targetId.length > 191) throwHttp(400, "invalid_action_target_id");
+  const now = new Date().toISOString();
+  return {
+    id: crypto.randomUUID(),
+    action,
+    target_type: targetType,
+    target_id: targetId,
+    node_name: String(payload?.node_name || "").trim().slice(0, 191),
+    payload: normalizeActionPayload(payload?.payload),
+    status: "queued",
+    requested_by: String(payload?.requester || "").trim().slice(0, 128),
+    requested_at: now,
+    updated_at: now,
+  };
+}
+
+async function readPanelJson(request, env) {
+  const body = new Uint8Array(await request.arrayBuffer());
+  if (body.byteLength > panelWriteMaxBodyBytes(env)) {
+    throwHttp(413, "body_too_large");
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    throwHttp(400, "invalid_json");
+  }
+}
+
+function panelWriteMaxBodyBytes(env) {
+  const configured = Number(env.PANEL_WRITE_MAX_BODY_BYTES || DEFAULT_PANEL_WRITE_BODY_BYTES);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.min(Math.trunc(configured), Number(env.PANEL_MAX_BODY_BYTES || 1048576))
+    : DEFAULT_PANEL_WRITE_BODY_BYTES;
+}
+
+function normalizeActionPayload(value) {
+  if (value === null || value === undefined) return {};
+  if (typeof value === "object" && !Array.isArray(value)) return value;
+  throwHttp(400, "invalid_action_payload");
+}
+
+function normalizePanelAction(value) {
+  const action = String(value || "").trim().toLowerCase().replaceAll("-", "_");
+  if (["unblock", "refresh_baseline", "allowlist"].includes(action)) return action;
+  throwHttp(400, "invalid_panel_action");
+}
+
+function normalizeActionTargetType(value) {
+  const targetType = String(value || "").trim().toLowerCase().replaceAll("-", "_");
+  if (["active_block", "active_blocks", "block", "blocks"].includes(targetType)) return "active_block";
+  if (["baseline_drift", "baseline_drifts", "baseline", "drift"].includes(targetType)) return "baseline_drift";
+  if (["probe_source", "probe_sources", "source", "sources"].includes(targetType)) return "probe_source";
+  if (["finding", "findings"].includes(targetType)) return "finding";
+  if (["incident", "incidents"].includes(targetType)) return "incident";
+  throwHttp(400, "invalid_action_target_type");
+}
+
+function panelActionTargetAllowed(action, targetType) {
+  return [
+    ["unblock", "active_block"],
+    ["unblock", "probe_source"],
+    ["refresh_baseline", "baseline_drift"],
+    ["allowlist", "active_block"],
+    ["allowlist", "probe_source"],
+    ["allowlist", "finding"],
+    ["allowlist", "baseline_drift"],
+  ].some(([allowedAction, allowedTarget]) => allowedAction === action && allowedTarget === targetType);
 }
 
 function panelReviewResponse(review) {
@@ -1007,7 +1355,7 @@ async function targetReviewSignature(env, targetType, targetId) {
     ? "node_id, rule_id, category, subject, title, review_signature"
     : targetType === "incident"
       ? "node_id, severity, title, summary, review_signature"
-      : "node_id, rule_id, subject, tier, review_signature";
+      : "node_id, rule_id, category, subject, tier, review_signature";
   const row = await env.DB.prepare(`SELECT ${columns} FROM ${target.table} WHERE ${target.idColumn} = ?`)
     .bind(targetId)
     .first();
@@ -1030,7 +1378,7 @@ async function reviewSignatureFromRow(targetType, row) {
   return driftReviewSignature(
     row.node_id,
     row.rule_id,
-    baselineCategoryFromRule(row.rule_id),
+    row.category || baselineCategoryFromRule(row.rule_id),
     row.subject,
     row.tier,
   );
@@ -1159,10 +1507,11 @@ function panelBlockStorageId(nodeId, block) {
 }
 
 function expandDatasetJsonColumns(table, rows) {
-  if (!["probe_sources", "nodes"].includes(table)) return rows;
+  if (!["probe_sources", "attack_fingerprints", "nodes"].includes(table)) return rows;
+  const now = table === "nodes" ? new Date() : null;
   return rows.map((row) => {
     const expanded = { ...row };
-    if (table === "probe_sources") {
+    if (table === "probe_sources" || table === "attack_fingerprints") {
       expanded.categories = parseJsonField(expanded.categories_json, []);
       expanded.rule_ids = parseJsonField(expanded.rule_ids_json, []);
       delete expanded.categories_json;
@@ -1171,6 +1520,7 @@ function expandDatasetJsonColumns(table, rows) {
     if (table === "nodes") {
       expanded.metrics = parseJsonField(expanded.metrics_json, {});
       delete expanded.metrics_json;
+      expanded.status = panelNodeStatus(expanded.last_seen_at, now, expanded);
     }
     return expanded;
   });
@@ -1316,9 +1666,36 @@ function pageRequest(url) {
   return {
     from,
     to,
+    query: normalizeSearchQuery(url.searchParams.get("q") || url.searchParams.get("query")),
     limit: clamp(Number(url.searchParams.get("limit") || DEFAULT_PAGE_LIMIT), 1, MAX_PAGE_LIMIT),
     offset: Math.max(0, Number(url.searchParams.get("offset") || 0) || 0),
   };
+}
+
+function normalizeSearchQuery(value) {
+  const normalized = String(value || "").trim().replace(/\s+/g, " ");
+  return normalized ? [...normalized].slice(0, MAX_SEARCH_QUERY_CHARS).join("") : "";
+}
+
+function datasetSearchColumns(dataset, role) {
+  if (role === "public" && Array.isArray(dataset.publicSearchColumns)) {
+    return dataset.publicSearchColumns;
+  }
+  return Array.isArray(dataset.searchColumns) ? dataset.searchColumns : [];
+}
+
+function pushSearchClause(parts, values, columns, query) {
+  if (!query || !columns.length) return;
+  const pattern = `%${escapeSqlLike(query.toLowerCase())}%`;
+  const predicates = columns.map((column) => {
+    values.push(pattern);
+    return `LOWER(COALESCE(${column}, '')) LIKE ? ESCAPE '\\'`;
+  });
+  parts.push(`(${predicates.join(" OR ")})`);
+}
+
+function escapeSqlLike(value) {
+  return String(value || "").replace(/[\\%_]/g, (match) => `\\${match}`);
 }
 
 function parsePanelTime(value) {

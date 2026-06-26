@@ -59,6 +59,7 @@ export async function fetchDataset<T extends PanelRecord>(
   params.set("offset", String(state.offset));
   if (state.from) params.set("from", toApiTime(state.from));
   if (state.to) params.set("to", toApiTime(state.to));
+  if (state.query.trim()) params.set("q", state.query.trim());
   const payload = await fetchJson<DatasetPage<T> | T[]>(`${endpoint}?${params.toString()}`, role);
   return Array.isArray(payload)
     ? { items: payload, total: payload.length, limit: state.limit, offset: state.offset }

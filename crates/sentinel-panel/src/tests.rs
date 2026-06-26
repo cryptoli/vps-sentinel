@@ -3,8 +3,9 @@ use super::{
     redact_ip_text, redact_panel_value, request_path_matches_admin, resolve_panel_role,
     scope_panel_value, scope_probe_source_rows, settings, verify_private_auth,
     verify_private_write_auth, AppState, DbValue, FindingReview, FindingReviewRequest, PageQuery,
-    PageRequest, PanelDataset, PanelReview, PanelReviewRequest, PanelRole, PanelStreamEvent,
-    Repository, RepositoryDriver, ReviewTargetType, SecretResolver, SettingsQuery,
+    PageRequest, PanelActionRequest, PanelActionRequestBody, PanelDataset, PanelReview,
+    PanelReviewRequest, PanelRole, PanelStreamEvent, Repository, RepositoryDriver,
+    ReviewTargetType, SecretResolver, SettingsQuery,
     DEFAULT_ADMIN_PATH, DEFAULT_THEMES, MAX_PAGE_LIMIT,
 };
 use crate::geoip::PanelGeoIpResolver;
@@ -21,6 +22,7 @@ fn page_request_clamps_limit_and_parses_dates() {
     let request = PageRequest::try_from(PageQuery {
         from: Some("2026-06-01".to_string()),
         to: Some("2026-06-20T10:00:00Z".to_string()),
+        q: None,
         limit: Some(MAX_PAGE_LIMIT + 50),
         offset: Some(40),
     })
@@ -37,12 +39,118 @@ fn page_request_rejects_inverted_time_range() {
     let err = PageRequest::try_from(PageQuery {
         from: Some("2026-06-20T10:00:00Z".to_string()),
         to: Some("2026-06-01T10:00:00Z".to_string()),
+        q: None,
         limit: None,
         offset: None,
     })
     .expect_err("inverted time range should fail");
 
     assert_eq!(err.code, "invalid_time_range");
+}
+
+#[test]
+fn page_request_normalizes_search_query() {
+    let request = PageRequest::try_from(PageQuery {
+        from: None,
+        to: None,
+        q: Some("  ssh\nroot\t%_\\  ".to_string()),
+        limit: None,
+        offset: None,
+    })
+    .expect("valid search query");
+
+    assert_eq!(request.query.as_deref(), Some("ssh root %_\\"));
+}
+
+#[test]
+fn repository_search_clause_binds_and_escapes_like_pattern() {
+    let repo = test_repo();
+    let request = PageRequest {
+        from: None,
+        to: None,
+        query: Some("%' OR 1=1 --".to_string()),
+        limit: 25,
+        offset: 0,
+    };
+    let dataset = PanelDataset {
+        table: "findings",
+        order_column: "timestamp",
+        active_filter: None,
+        search_columns: &["title", "subject"],
+        columns: &["id"],
+    };
+
+    let (where_sql, values) = repo.page_where_clause(dataset, &request);
+
+    assert!(where_sql.contains("LIKE ? ESCAPE '\\'"));
+    assert!(!where_sql.contains("OR 1=1"));
+    assert_eq!(values.len(), 2);
+    for value in values {
+        match value {
+            DbValue::Text(pattern) => assert_eq!(pattern, "%\\%' or 1=1 --%"),
+            _ => panic!("search values should be text"),
+        }
+    }
+}
+
+#[test]
+fn baseline_drift_review_signature_uses_stored_category() {
+    let row = serde_json::json!({
+        "node_id": "node-a",
+        "rule_id": "NET-001",
+        "category": "custom_network",
+        "subject": "listener 198.51.100.10:443",
+        "tier": "suspicious"
+    });
+    let signature = super::review_signature_from_row(ReviewTargetType::BaselineDrift, &row);
+
+    assert_eq!(
+        signature,
+        super::drift_review_signature(
+            "node-a",
+            "NET-001",
+            "custom_network",
+            "listener 198.51.100.10:443",
+            "suspicious"
+        )
+    );
+    assert_ne!(
+        signature,
+        super::drift_review_signature(
+            "node-a",
+            "NET-001",
+            super::baseline_category_from_rule("NET-001"),
+            "listener 198.51.100.10:443",
+            "suspicious"
+        )
+    );
+}
+
+#[test]
+fn panel_action_request_requires_object_payload() {
+    let valid = PanelActionRequest::try_from(PanelActionRequestBody {
+        action: "unblock".to_string(),
+        target_type: "active_block".to_string(),
+        target_id: "block-1".to_string(),
+        node_name: "node-a".to_string(),
+        payload: serde_json::json!({"reason": "operator review"}),
+        requester: "panel".to_string(),
+    })
+    .expect("object payload should be valid");
+
+    assert_eq!(valid.payload["reason"], "operator review");
+
+    let invalid = PanelActionRequest::try_from(PanelActionRequestBody {
+        action: "unblock".to_string(),
+        target_type: "active_block".to_string(),
+        target_id: "block-1".to_string(),
+        node_name: "node-a".to_string(),
+        payload: serde_json::json!("not-an-object"),
+        requester: "panel".to_string(),
+    })
+    .expect_err("scalar payload should fail");
+
+    assert_eq!(invalid.code, "invalid_action_payload");
 }
 
 #[test]
@@ -146,6 +254,7 @@ async fn repository_read_paths_redact_legacy_raw_ip_rows() {
                 table: "findings",
                 order_column: "timestamp",
                 active_filter: None,
+                search_columns: &["title", "subject"],
                 columns: &[
                     "id",
                     "timestamp",
@@ -160,6 +269,7 @@ async fn repository_read_paths_redact_legacy_raw_ip_rows() {
             &PageRequest {
                 from: None,
                 to: None,
+                query: None,
                 limit: 10,
                 offset: 0,
             },
@@ -220,6 +330,7 @@ async fn probe_source_page_preserves_public_block_source_ip() {
         table: "probe_sources",
         order_column: "last_seen",
         active_filter: None,
+        search_columns: &[],
         columns: &[
             "last_seen",
             "node_id AS node_name",
@@ -232,6 +343,7 @@ async fn probe_source_page_preserves_public_block_source_ip() {
     let request = PageRequest {
         from: None,
         to: None,
+        query: None,
         limit: 10,
         offset: 0,
     };
@@ -413,6 +525,7 @@ async fn node_page_expands_probe_metrics_without_sensitive_identity() {
     let request = PageRequest {
         from: None,
         to: None,
+        query: None,
         limit: 10,
         offset: 0,
     };
@@ -602,6 +715,7 @@ fn test_state(panel_token: Option<&str>) -> AppState {
         geoip: Arc::new(PanelGeoIpResolver::default()),
         events: broadcast::channel::<PanelStreamEvent>(8).0,
         stream_tickets: Arc::new(Mutex::new(BTreeMap::new())),
+        summary_cache: Arc::new(Mutex::new(None)),
         csp_header: HeaderValue::from_static(
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'",
         ),

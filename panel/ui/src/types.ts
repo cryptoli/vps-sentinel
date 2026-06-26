@@ -7,13 +7,36 @@ export type PageId =
   | "incidents"
   | "baseline_drifts"
   | "active_blocks"
+  | "attack_fingerprints"
   | "probe_sources"
   | "audit_logs"
   | "nodes";
 
 export type Primitive = string | number | boolean | null;
-export type JsonValue = Primitive | JsonValue[] | { [key: string]: JsonValue };
+export type JsonObject = { [key: string]: JsonValue };
+export type JsonValue = Primitive | JsonValue[] | JsonObject;
 export type PanelRecord = Record<string, unknown>;
+export type PanelActionKind = "unblock" | "refresh_baseline" | "allowlist";
+export type PanelActionTargetType = "active_block" | "baseline_drift" | "probe_source" | "finding" | "incident";
+
+export interface PanelActionRequestInput {
+  action: PanelActionKind;
+  target_type: PanelActionTargetType;
+  target_id: string;
+  node_name?: string;
+  payload?: JsonObject;
+  requester?: string;
+}
+
+export interface PanelDictionaryItem {
+  value: string;
+  labelKey?: string;
+  labels?: Partial<Record<Language, string>>;
+  tone?: string;
+  rank?: number;
+}
+
+export type PanelDictionaries = Record<string, PanelDictionaryItem[]>;
 
 export interface PanelSettings {
   admin_path?: string | null;
@@ -29,6 +52,7 @@ export interface PanelSettings {
   freshness_threshold_minutes?: number;
   offline_threshold_minutes?: number;
   node_retired_threshold_minutes?: number;
+  dictionaries?: PanelDictionaries;
   server_time?: string;
 }
 
@@ -59,6 +83,7 @@ export interface Summary {
   incidents?: number;
   baseline_drifts?: number;
   active_blocks?: number;
+  attack_fingerprints?: number;
   probe_sources?: number;
   by_severity?: Array<{ severity: string; count: number }>;
   by_category?: Array<{ category: string; count: number }>;

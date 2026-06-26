@@ -67,6 +67,39 @@ CREATE TABLE IF NOT EXISTS panel_audit_logs (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS panel_action_requests (
+  id TEXT PRIMARY KEY,
+  action TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL,
+  node_name TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  requested_by TEXT NOT NULL,
+  requested_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS attack_fingerprints (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  seen_count INTEGER NOT NULL,
+  node_count INTEGER NOT NULL,
+  source_count INTEGER NOT NULL,
+  nodes_json TEXT NOT NULL,
+  source_ips_json TEXT NOT NULL,
+  rule_ids_json TEXT NOT NULL,
+  categories_json TEXT NOT NULL,
+  score INTEGER NOT NULL,
+  confidence INTEGER NOT NULL,
+  verdict TEXT NOT NULL DEFAULT 'unknown',
+  summary TEXT NOT NULL DEFAULT '',
+  updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS incidents (
   id TEXT PRIMARY KEY,
   node_id TEXT NOT NULL,
@@ -146,6 +179,10 @@ CREATE INDEX IF NOT EXISTS idx_finding_reviews_verdict ON finding_reviews(verdic
 CREATE INDEX IF NOT EXISTS idx_panel_reviews_verdict ON panel_reviews(target_type, verdict, reviewed_at);
 CREATE INDEX IF NOT EXISTS idx_panel_reviews_signature ON panel_reviews(target_type, review_signature, verdict, reviewed_at);
 CREATE INDEX IF NOT EXISTS idx_panel_audit_logs_created ON panel_audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_panel_action_requests_status ON panel_action_requests(status, requested_at);
+CREATE INDEX IF NOT EXISTS idx_panel_action_requests_target ON panel_action_requests(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_attack_fingerprints_seen ON attack_fingerprints(last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_attack_fingerprints_score ON attack_fingerprints(score, last_seen_at);
 CREATE INDEX IF NOT EXISTS idx_incidents_node_time ON incidents(node_id, last_seen);
 CREATE INDEX IF NOT EXISTS idx_incidents_review_signature ON incidents(review_signature);
 CREATE INDEX IF NOT EXISTS idx_baseline_node_time ON baseline_drifts(node_id, timestamp);

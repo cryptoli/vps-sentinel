@@ -26,6 +26,7 @@ pub(super) async fn ingest(
     state.repo.insert_nonce(&headers, &node_name).await?;
     apply_node_location(&state, &headers, remote_addr.ip(), &mut payload);
     state.repo.persist_payload(&payload, &node_name).await?;
+    invalidate_summary_cache(&state);
     let _ = state.events.send(PanelStreamEvent::refresh_datasets(
         PanelRole::Public,
         vec![
@@ -36,6 +37,7 @@ pub(super) async fn ingest(
             "incidents",
             "baseline_drifts",
             "active_blocks",
+            "attack_fingerprints",
             "probe_sources",
         ],
     ));

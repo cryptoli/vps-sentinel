@@ -2,7 +2,7 @@ use anyhow::{anyhow, Context, Result};
 use axum::body::Body;
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, Query, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -54,6 +54,8 @@ const DEFAULT_WEB_DIR: &str = "panel/web";
 const STREAM_TICKET_TTL_SECONDS: i64 = 60;
 const STREAM_HEARTBEAT_SECONDS: u64 = 30;
 const STREAM_RETRY_SECONDS: u64 = 5;
+const SUMMARY_CACHE_TTL_SECONDS: i64 = 5;
+const MAX_SEARCH_QUERY_CHARS: usize = 96;
 
 #[derive(Debug, Parser)]
 #[command(name = "vps-sentinel-panel", version)]
@@ -125,6 +127,7 @@ struct AppState {
     geoip: Arc<PanelGeoIpResolver>,
     events: broadcast::Sender<PanelStreamEvent>,
     stream_tickets: Arc<Mutex<BTreeMap<String, StreamTicket>>>,
+    summary_cache: Arc<Mutex<Option<CachedSummary>>>,
     csp_header: HeaderValue,
 }
 
@@ -138,6 +141,12 @@ enum PanelRole {
 #[derive(Debug, Clone)]
 struct StreamTicket {
     role: PanelRole,
+    expires_at: i64,
+}
+
+#[derive(Debug, Clone)]
+struct CachedSummary {
+    value: Value,
     expires_at: i64,
 }
 
@@ -208,6 +217,7 @@ struct PanelDataset {
     table: &'static str,
     order_column: &'static str,
     active_filter: Option<&'static str>,
+    search_columns: &'static [&'static str],
     columns: &'static [&'static str],
 }
 
@@ -220,6 +230,7 @@ struct SettingsQuery {
 struct PageQuery {
     from: Option<String>,
     to: Option<String>,
+    q: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
 }
@@ -250,10 +261,24 @@ struct PanelReviewRequest {
     reviewer: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct PanelActionRequestBody {
+    action: String,
+    target_type: String,
+    target_id: String,
+    #[serde(default)]
+    node_name: String,
+    #[serde(default)]
+    payload: Value,
+    #[serde(default)]
+    requester: String,
+}
+
 #[derive(Debug)]
 struct PageRequest {
     from: Option<DateTime<Utc>>,
     to: Option<DateTime<Utc>>,
+    query: Option<String>,
     limit: usize,
     offset: usize,
 }
@@ -387,6 +412,25 @@ struct PanelProbeSource {
 }
 
 #[derive(Debug, Clone)]
+struct PanelAttackFingerprintUpdate {
+    id: String,
+    kind: String,
+    title: String,
+    first_seen_at: DateTime<Utc>,
+    last_seen_at: DateTime<Utc>,
+    seen_count: i64,
+    node_name: String,
+    source_ip: String,
+    source_count: i64,
+    rule_id: String,
+    category: String,
+    score: i64,
+    confidence: i64,
+    verdict: String,
+    summary: String,
+}
+
+#[derive(Debug, Clone)]
 struct FindingReview {
     finding_id: String,
     verdict: String,
@@ -423,6 +467,37 @@ impl PanelReview {
             "note": &self.note,
             "reviewer": &self.reviewer,
             "reviewed_at": self.reviewed_at.to_rfc3339(),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PanelActionRequest {
+    id: String,
+    action: String,
+    target_type: String,
+    target_id: String,
+    node_name: String,
+    payload: Value,
+    status: String,
+    requested_by: String,
+    requested_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+}
+
+impl PanelActionRequest {
+    fn response_value(&self) -> Value {
+        json!({
+            "id": &self.id,
+            "action": &self.action,
+            "target_type": &self.target_type,
+            "target_id": &self.target_id,
+            "node_name": &self.node_name,
+            "payload": &self.payload,
+            "status": &self.status,
+            "requested_by": &self.requested_by,
+            "requested_at": self.requested_at.to_rfc3339(),
+            "updated_at": self.updated_at.to_rfc3339(),
         })
     }
 }
@@ -476,6 +551,41 @@ impl TryFrom<PanelReviewRequest> for PanelReview {
             note: value.note.trim().chars().take(1000).collect(),
             reviewer: value.reviewer.trim().chars().take(128).collect::<String>(),
             reviewed_at: Utc::now(),
+        })
+    }
+}
+
+impl TryFrom<PanelActionRequestBody> for PanelActionRequest {
+    type Error = PanelApiError;
+
+    fn try_from(value: PanelActionRequestBody) -> Result<Self, Self::Error> {
+        let action = normalize_panel_action(&value.action)?;
+        let target_type = normalize_action_target_type(&value.target_type)?;
+        if !panel_action_target_allowed(&action, &target_type) {
+            return Err(PanelApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_action_target",
+            ));
+        }
+        let target_id = value.target_id.trim();
+        if target_id.is_empty() || target_id.len() > 191 {
+            return Err(PanelApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_action_target_id",
+            ));
+        }
+        let now = Utc::now();
+        Ok(Self {
+            id: Uuid::new_v4().to_string(),
+            action,
+            target_type,
+            target_id: target_id.to_string(),
+            node_name: value.node_name.trim().chars().take(191).collect(),
+            payload: normalize_action_payload(value.payload)?,
+            status: "queued".to_string(),
+            requested_by: value.requester.trim().chars().take(128).collect::<String>(),
+            requested_at: now,
+            updated_at: now,
         })
     }
 }
@@ -535,6 +645,63 @@ fn normalize_review_verdict(value: &str) -> Result<String, PanelApiError> {
         ));
     }
     Ok(verdict.to_string())
+}
+
+fn normalize_panel_action(value: &str) -> Result<String, PanelApiError> {
+    let action = value.trim().to_ascii_lowercase().replace('-', "_");
+    if matches!(
+        action.as_str(),
+        "unblock" | "refresh_baseline" | "allowlist"
+    ) {
+        Ok(action)
+    } else {
+        Err(PanelApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_panel_action",
+        ))
+    }
+}
+
+fn normalize_action_target_type(value: &str) -> Result<String, PanelApiError> {
+    let target_type = value.trim().to_ascii_lowercase().replace('-', "_");
+    let normalized = match target_type.as_str() {
+        "active_block" | "active_blocks" | "block" | "blocks" => "active_block",
+        "baseline_drift" | "baseline_drifts" | "baseline" | "drift" => "baseline_drift",
+        "probe_source" | "probe_sources" | "source" | "sources" => "probe_source",
+        "finding" | "findings" => "finding",
+        "incident" | "incidents" => "incident",
+        _ => {
+            return Err(PanelApiError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_action_target_type",
+            ))
+        }
+    };
+    Ok(normalized.to_string())
+}
+
+fn panel_action_target_allowed(action: &str, target_type: &str) -> bool {
+    matches!(
+        (action, target_type),
+        ("unblock", "active_block")
+            | ("unblock", "probe_source")
+            | ("refresh_baseline", "baseline_drift")
+            | ("allowlist", "active_block")
+            | ("allowlist", "probe_source")
+            | ("allowlist", "finding")
+            | ("allowlist", "baseline_drift")
+    )
+}
+
+fn normalize_action_payload(value: Value) -> Result<Value, PanelApiError> {
+    match value {
+        Value::Null => Ok(json!({})),
+        Value::Object(_) => Ok(value),
+        _ => Err(PanelApiError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid_action_payload",
+        )),
+    }
 }
 
 #[tokio::main]
@@ -597,11 +764,13 @@ async fn main() -> Result<()> {
         geoip: Arc::new(geoip),
         events,
         stream_tickets: Arc::new(Mutex::new(BTreeMap::new())),
+        summary_cache: Arc::new(Mutex::new(None)),
         csp_header,
     };
     let index_file = web_dir.join("index.html");
     let app = Router::new()
         .route("/api/v1/settings", get(settings))
+        .route("/api/v1/dictionaries", get(dictionaries))
         .route("/api/v1/stream-ticket", get(stream_ticket))
         .route("/api/v1/stream", get(stream))
         .route("/api/v1/summary", get(summary))
@@ -611,14 +780,18 @@ async fn main() -> Result<()> {
         .route("/api/v1/finding", get(finding_detail))
         .route("/api/v1/finding-review", post(finding_review))
         .route("/api/v1/review", post(panel_review))
+        .route("/api/v1/action-request", post(action_request))
+        .route("/api/v1/action-requests", get(action_requests))
         .route("/api/v1/incidents", get(incidents))
         .route("/api/v1/incident", get(incident_detail))
         .route("/api/v1/baseline-drifts", get(baseline_drifts))
         .route("/api/v1/active-blocks", get(active_blocks))
+        .route("/api/v1/attack-fingerprints", get(attack_fingerprints))
         .route("/api/v1/probe-sources", get(probe_sources))
         .route("/api/v1/audit-logs", get(audit_logs))
         .route("/api/v1/ingest", post(ingest))
         .fallback_service(ServeDir::new(&web_dir).fallback(ServeFile::new(index_file)))
+        .layer(DefaultBodyLimit::max(args.max_body_bytes))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             security_headers,
@@ -662,8 +835,17 @@ async fn settings(
         "freshness_threshold_minutes": DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
         "offline_threshold_minutes": DEFAULT_OFFLINE_THRESHOLD_MINUTES,
         "node_retired_threshold_minutes": DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
+        "dictionaries": panel_dictionaries(),
         "server_time": Utc::now().to_rfc3339()
     }))
+}
+
+async fn dictionaries(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, PanelApiError> {
+    verify_panel_role(&state, &headers, PanelRole::Public)?;
+    Ok(Json(panel_dictionaries()))
 }
 
 async fn summary(
@@ -671,6 +853,15 @@ async fn summary(
     headers: HeaderMap,
 ) -> Result<Json<Value>, PanelApiError> {
     verify_panel_role(&state, &headers, PanelRole::Public)?;
+    if let Some(value) = cached_summary(&state)? {
+        return Ok(Json(value));
+    }
+    let value = build_summary(&state).await?;
+    store_summary_cache(&state, &value)?;
+    Ok(Json(value))
+}
+
+async fn build_summary(state: &AppState) -> Result<Value, PanelApiError> {
     let active_findings_filter =
         review_not_false_positive_filter("findings", ReviewTargetType::Finding);
     let active_incidents_filter =
@@ -700,21 +891,62 @@ async fn summary(
         .await?;
     let nodes = state
         .repo
-        .latest_node_rows(&["node_name", "last_seen_at", "agent_version"], None)
+        .latest_node_rows(
+            &["node_name", "last_seen_at", "agent_version"],
+            None,
+            PanelRole::Public,
+        )
         .await?;
     let node_count = nodes.len();
-    Ok(Json(json!({
+    Ok(json!({
         "nodes": node_count,
         "findings": state.repo.count("findings", Some(&active_findings_filter)).await?,
         "incidents": state.repo.count("incidents", Some(&active_incidents_filter)).await?,
         "baseline_drifts": state.repo.count("baseline_drifts", Some(&active_drifts_filter)).await?,
         "active_blocks": state.repo.count("active_blocks", Some("expired = 0")).await?,
         "probe_sources": state.repo.count_distinct("probe_sources", "source_ip", Some(blocked_probe_source_filter())).await?,
+        "attack_fingerprints": state.repo.count("attack_fingerprints", None).await?,
         "by_severity": by_severity,
         "by_category": by_category,
         "by_block_status": by_block_status,
         "node_status": node_status_counts(&Value::Array(nodes))
-    })))
+    }))
+}
+
+fn cached_summary(state: &AppState) -> Result<Option<Value>, PanelApiError> {
+    let now = Utc::now().timestamp();
+    let mut cache = state
+        .summary_cache
+        .lock()
+        .map_err(summary_cache_lock_error)?;
+    if let Some(cached) = cache.as_ref() {
+        if cached.expires_at > now {
+            return Ok(Some(cached.value.clone()));
+        }
+    }
+    if cache.is_some() {
+        *cache = None;
+    }
+    Ok(None)
+}
+
+fn store_summary_cache(state: &AppState, value: &Value) -> Result<(), PanelApiError> {
+    let mut cache = state
+        .summary_cache
+        .lock()
+        .map_err(summary_cache_lock_error)?;
+    *cache = Some(CachedSummary {
+        value: value.clone(),
+        expires_at: Utc::now().timestamp() + SUMMARY_CACHE_TTL_SECONDS,
+    });
+    Ok(())
+}
+
+fn invalidate_summary_cache(state: &AppState) {
+    match state.summary_cache.lock() {
+        Ok(mut cache) => *cache = None,
+        Err(err) => warn!(error = %err, "failed to invalidate panel summary cache"),
+    }
 }
 
 async fn trends(
@@ -858,6 +1090,7 @@ async fn finding_review(
     verify_private_write_auth(&state, &headers)?;
     let review = FindingReview::try_from(request)?;
     let panel_review = state.repo.upsert_finding_review(&review).await?;
+    invalidate_summary_cache(&state);
     let _ = state.events.send(PanelStreamEvent::refresh_datasets(
         PanelRole::Public,
         vec!["summary", "trends", "findings", "audit_logs"],
@@ -877,6 +1110,7 @@ async fn panel_review(
     verify_private_write_auth(&state, &headers)?;
     let review = PanelReview::try_from(request)?;
     let review = state.repo.upsert_panel_review(&review).await?;
+    invalidate_summary_cache(&state);
     let datasets = match review.target_type {
         ReviewTargetType::Finding => vec!["summary", "trends", "findings", "audit_logs"],
         ReviewTargetType::Incident => vec!["summary", "trends", "incidents", "audit_logs"],
@@ -893,6 +1127,42 @@ async fn panel_review(
         "target_type": review.target_type.as_str(),
         "target_id": &review.target_id,
         "review": review.response_review(),
+    })))
+}
+
+async fn action_request(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<PanelActionRequestBody>,
+) -> Result<Json<Value>, PanelApiError> {
+    verify_private_write_auth(&state, &headers)?;
+    let action = PanelActionRequest::try_from(request)?;
+    let action = state.repo.insert_action_request(&action).await?;
+    invalidate_summary_cache(&state);
+    let _ = state.events.send(PanelStreamEvent::refresh_datasets(
+        PanelRole::Private,
+        vec!["action_requests", "audit_logs"],
+    ));
+    Ok(Json(json!({
+        "ok": true,
+        "action_request": action.response_value(),
+    })))
+}
+
+async fn action_requests(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Value>, PanelApiError> {
+    verify_panel_role(&state, &headers, PanelRole::Private)?;
+    let request = PageRequest::try_from(query)?;
+    let (mut items, total) = state.repo.action_requests_page(&request).await?;
+    scope_panel_value(&mut items, PanelRole::Private);
+    Ok(Json(json!({
+        "items": items,
+        "total": total,
+        "limit": request.limit,
+        "offset": request.offset
     })))
 }
 
@@ -931,6 +1201,15 @@ async fn active_blocks(
 ) -> Result<Json<Value>, PanelApiError> {
     let role = verify_panel_page_role(&state, &headers, "active_blocks", PanelRole::Private)?;
     paginated_dataset(&state, query, role, active_blocks_dataset(role)).await
+}
+
+async fn attack_fingerprints(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<PageQuery>,
+) -> Result<Json<Value>, PanelApiError> {
+    let role = verify_panel_page_role(&state, &headers, "attack_fingerprints", PanelRole::Private)?;
+    paginated_dataset(&state, query, role, attack_fingerprints_dataset()).await
 }
 
 async fn probe_sources(
@@ -1027,6 +1306,7 @@ impl TryFrom<PageQuery> for PageRequest {
         Ok(Self {
             from,
             to,
+            query: normalize_search_query(value.q),
             limit: value
                 .limit
                 .unwrap_or(DEFAULT_PAGE_LIMIT)
@@ -1034,6 +1314,35 @@ impl TryFrom<PageQuery> for PageRequest {
             offset: value.offset.unwrap_or(0),
         })
     }
+}
+
+fn normalize_search_query(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| {
+            value
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(MAX_SEARCH_QUERY_CHARS)
+                .collect::<String>()
+        })
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn escape_sql_like(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '\\' | '%' | '_' => {
+                escaped.push('\\');
+                escaped.push(character);
+            }
+            _ => escaped.push(character),
+        }
+    }
+    escaped
 }
 
 fn parse_panel_time(value: &str) -> Result<DateTime<Utc>, PanelApiError> {
@@ -1279,6 +1588,82 @@ fn panel_probe_source_id(node_id: &str, source_ip: &str) -> String {
     format!("{node_id}:{}", source_ip.trim())
 }
 
+fn panel_attack_fingerprint_update(
+    node_name: &str,
+    finding: &PanelFinding,
+) -> Option<PanelAttackFingerprintUpdate> {
+    let id = panel_evidence_value(&finding.evidence, "attack_fingerprint_id")?;
+    let id = id.trim();
+    if id.is_empty() || id.eq_ignore_ascii_case("unknown") {
+        return None;
+    }
+    let source_ip = panel_first_evidence_value(
+        &finding.evidence,
+        &[
+            "source_ip",
+            "ip",
+            "remote_ip",
+            "remote_addr",
+            "active_response_ip",
+        ],
+    )
+    .unwrap_or_default();
+    Some(PanelAttackFingerprintUpdate {
+        id: id.chars().take(191).collect(),
+        kind: panel_evidence_value(&finding.evidence, "attack_fingerprint_kind")
+            .unwrap_or_else(|| "unknown".to_string())
+            .chars()
+            .take(64)
+            .collect(),
+        title: finding.title.chars().take(191).collect(),
+        first_seen_at: finding.timestamp,
+        last_seen_at: finding.timestamp,
+        seen_count: panel_evidence_i64(&finding.evidence, "attack_fingerprint_seen_count")
+            .unwrap_or(1)
+            .max(1),
+        node_name: node_name.to_string(),
+        source_ip: redact_ip_text(&source_ip),
+        source_count: panel_evidence_i64(&finding.evidence, "attack_fingerprint_source_ip_count")
+            .unwrap_or_else(|| if source_ip.trim().is_empty() { 0 } else { 1 })
+            .max(0),
+        rule_id: finding.rule_id.clone(),
+        category: finding.category.clone(),
+        score: panel_evidence_i64(&finding.evidence, "attack_fingerprint_score").unwrap_or(0),
+        confidence: panel_evidence_i64(&finding.evidence, "attack_fingerprint_confidence")
+            .unwrap_or(0),
+        verdict: panel_evidence_value(&finding.evidence, "attack_fingerprint_verdict")
+            .unwrap_or_else(|| "unknown".to_string())
+            .chars()
+            .take(32)
+            .collect(),
+        summary: finding.title.chars().take(512).collect(),
+    })
+}
+
+fn panel_evidence_value(evidence: &[Value], key: &str) -> Option<String> {
+    evidence.iter().find_map(|item| {
+        let object = item.as_object()?;
+        let item_key = object.get("key")?.as_str()?;
+        if item_key != key {
+            return None;
+        }
+        object
+            .get("value")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
+}
+
+fn panel_first_evidence_value(evidence: &[Value], keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| panel_evidence_value(evidence, key))
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn panel_evidence_i64(evidence: &[Value], key: &str) -> Option<i64> {
+    panel_evidence_value(evidence, key).and_then(|value| value.trim().parse::<i64>().ok())
+}
+
 fn blocked_probe_source_filter() -> &'static str {
     "(LOWER(COALESCE(block_status, '')) LIKE '%block%' OR LOWER(COALESCE(block_status, '')) IN ('temporary', 'permanent', 'blocked'))"
 }
@@ -1372,6 +1757,20 @@ fn merge_string_sets(existing_json: Option<&Value>, incoming: &[String]) -> Vec<
     values
 }
 
+fn merge_json_set(existing_json: Option<&Value>, incoming: &str) -> Vec<String> {
+    let mut values = existing_json
+        .and_then(Value::as_str)
+        .and_then(|text| serde_json::from_str::<Vec<String>>(text).ok())
+        .unwrap_or_default();
+    let incoming = incoming.trim();
+    if !incoming.is_empty() && !incoming.eq_ignore_ascii_case("unknown") {
+        values.push(incoming.to_string());
+    }
+    values.sort();
+    values.dedup();
+    values
+}
+
 fn sorted_unique(values: &[String]) -> Vec<String> {
     let mut values = values
         .iter()
@@ -1381,6 +1780,25 @@ fn sorted_unique(values: &[String]) -> Vec<String> {
     values.sort();
     values.dedup();
     values
+}
+
+fn strongest_fingerprint_verdict(existing: &str, candidate: &str) -> String {
+    let existing_rank = fingerprint_verdict_rank(existing);
+    let candidate_rank = fingerprint_verdict_rank(candidate);
+    if candidate_rank >= existing_rank {
+        candidate.trim().to_ascii_lowercase()
+    } else {
+        existing.trim().to_ascii_lowercase()
+    }
+}
+
+fn fingerprint_verdict_rank(value: &str) -> u8 {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "malicious" => 3,
+        "benign" => 2,
+        "unknown" | "" => 1,
+        _ => 0,
+    }
 }
 
 fn panel_redacted_ip_value() -> String {
@@ -1700,9 +2118,16 @@ fn expand_dataset_json_columns(table: &str, rows: &mut Value) {
             expand_json_column(row, "categories_json", "categories");
             expand_json_column(row, "rule_ids_json", "rule_ids");
         }
+        if table == "attack_fingerprints" {
+            expand_json_column(row, "categories_json", "categories");
+            expand_json_column(row, "rule_ids_json", "rule_ids");
+        }
         if table == "nodes" {
             expand_json_column(row, "storage_json", "storage");
             expand_json_column(row, "metrics_json", "metrics");
+        }
+        if table == "panel_action_requests" {
+            expand_json_column(row, "payload_json", "payload");
         }
     }
 }
@@ -1727,7 +2152,12 @@ fn attach_node_statuses(rows: &mut Value) {
 }
 
 fn should_redact_dataset(table: &str, role: PanelRole) -> bool {
-    if role == PanelRole::Private && matches!(table, "active_blocks" | "probe_sources") {
+    if role == PanelRole::Private
+        && matches!(
+            table,
+            "active_blocks" | "probe_sources" | "panel_action_requests"
+        )
+    {
         return false;
     }
     if table == "probe_sources" {
@@ -1748,6 +2178,14 @@ fn sqlite_lock_error<T>(err: std::sync::PoisonError<T>) -> PanelApiError {
     PanelApiError::detail(
         StatusCode::INTERNAL_SERVER_ERROR,
         "database_lock_error",
+        err,
+    )
+}
+
+fn summary_cache_lock_error<T>(err: std::sync::PoisonError<T>) -> PanelApiError {
+    PanelApiError::detail(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "summary_cache_lock_error",
         err,
     )
 }

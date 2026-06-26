@@ -1,0 +1,97 @@
+:where(
+  a,
+  button,
+  input,
+  select,
+  textarea,
+  [role="button"],
+  [tabindex]:not([tabindex="-1"])
+):focus-visible {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 2px;
+  box-shadow: var(--focus-ring);
+}
+
+.select-trigger:focus-visible,
+.date-input-button:focus-visible,
+.user-menu:focus-visible,
+.mobile-icon-button:focus-visible {
+  outline: 2px solid var(--focus-outline);
+  outline-offset: 2px;
+  box-shadow: var(--focus-ring);
+}
+
+.muted-cell,
+.metric-copy span,
+.metric-copy small,
+.panel-card-head p,
+.stat-tile p,
+.stat-tile small,
+.side-card header span,
+.mobile-record-meta,
+.mobile-record-subline,
+.last-report {
+  color: #52637d;
+}
+
+.ghost-button,
+.icon-button,
+.chip,
+.chip-button,
+.select-trigger,
+.date-input-button {
+  min-height: var(--control-height-compact);
+}
+
+@media (pointer: coarse) {
+  button,
+  .select-trigger,
+  .date-input-button,
+  .icon-button,
+  .mobile-icon-button {
+    min-width: 40px;
+    min-height: 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    transition-delay: 0ms !important;
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    --focus-outline: Highlight;
+    --color-border: CanvasText;
+    --color-border-muted: CanvasText;
+  }
+
+  .panel-card,
+  .metric-card,
+  .filter-card,
+  .stat-tile,
+  .side-card,
+  .table-wrap,
+  .badge,
+  .ghost-button,
+  .icon-button,
+  .chip,
+  .chip-button {
+    border: 1px solid CanvasText;
+  }
+
+  .badge,
+  .cell-chip-list span,
+  .cell-chip-list em {
+    forced-color-adjust: none;
+    color: CanvasText;
+    background: Canvas;
+  }
+}

@@ -9,7 +9,9 @@ interface ChartSlice {
 }
 
 export function Sparkline({ values, tone = "blue" }: { values: number[]; tone?: string }) {
-  const points = normalizePoints(values, 120, 34, 4);
+  const series = normalizeSparklineValues(values);
+  if (series.length < 2) return null;
+  const points = normalizePoints(series, 120, 34, 4);
   const path = smoothPath(points);
   const area = `${path} L116,34 L4,34 Z`;
   return (
@@ -20,20 +22,30 @@ export function Sparkline({ values, tone = "blue" }: { values: number[]; tone?: 
   );
 }
 
+function normalizeSparklineValues(values: number[]): number[] {
+  const series = values.map(Number).filter(Number.isFinite);
+  return series.length === 1 ? [series[0], series[0]] : series;
+}
+
 type TrendVariant = "risk" | "drift";
 
 export function RiskTrend({ rows, language, variant = "risk" }: { rows: TrendPoint[]; language: Language; variant?: TrendVariant }) {
   const windowRows = rows.slice(-7);
-  const base = windowRows.length
-    ? windowRows.map((row) => Number(row.total ?? sumRisk(row) ?? 0))
-    : [28, 31, 35, 33, 39, 36, 34];
+  if (!windowRows.length) {
+    return (
+      <div className={`chart-surface risk-trend trend-variant-${variant}`}>
+        <div className="chart-empty">{translate(language, "noTrendData")}</div>
+      </div>
+    );
+  }
+  const base = windowRows.map((row) => Number(row.total ?? sumRisk(row) ?? 0));
   const series = variant === "drift"
-    ? driftSeries(language)
+    ? driftSeries(windowRows, language)
     : [
-        trendSeries("critical", windowRows, base, 0.08, language),
-        trendSeries("high", windowRows, base, 0.52, language),
-        trendSeries("medium", windowRows, base, 0.3, language),
-        trendSeries("low", windowRows, base, 0.14, language),
+        trendSeries("critical", windowRows, language),
+        trendSeries("high", windowRows, language),
+        trendSeries("medium", windowRows, language),
+        trendSeries("low", windowRows, language),
         { key: "total", label: translate(language, "total"), values: base },
       ];
   const max = niceMax(Math.max(1, ...series.flatMap((item) => item.values)));
@@ -172,35 +184,31 @@ function normalizePoints(values: number[], width: number, height: number, paddin
   }));
 }
 
-function trendSeries(key: "critical" | "high" | "medium" | "low", rows: TrendPoint[], base: number[], fallbackRatio: number, language: Language) {
-  const rawValues = rows.map((row) => trendValue(row, key));
-  const values = rows.length
-    ? rawValues
-    : base.map((value, index) => Math.max(1, Math.round(value * fallbackRatio + (index % 2))));
-  return { key, label: translate(language, key), values };
+function trendSeries(key: "critical" | "high" | "medium" | "low", rows: TrendPoint[], language: Language) {
+  return { key, label: translate(language, key), values: rows.map((row) => trendValue(row, key)) };
 }
 
-function driftSeries(language: Language) {
+function driftSeries(rows: TrendPoint[], language: Language) {
   return [
     {
       key: "smart",
       label: language === "zh" ? "智能复核" : "Smart Review",
-      values: [8, 11, 15, 20, 20, 26, 26],
+      values: rows.map((row) => trendSeverityValue(row, ["smart", "smart_review"])),
     },
     {
       key: "expected",
       label: language === "zh" ? "预期变更" : "Expected",
-      values: [6, 8, 12, 14, 14, 20, 20],
+      values: rows.map((row) => trendSeverityValue(row, ["expected", "expected_change", "confirmed"])),
     },
     {
       key: "suspicious",
       label: language === "zh" ? "可疑" : "Suspicious",
-      values: [2, 4, 5, 6, 7, 10, 10],
+      values: rows.map((row) => trendSeverityValue(row, ["suspicious", "high"])),
     },
     {
       key: "needs-confirmation",
       label: language === "zh" ? "需确认" : "Needs Conf.",
-      values: [1, 2, 3, 3, 4, 6, 7],
+      values: rows.map((row) => trendSeverityValue(row, ["needs_confirmation", "needs-confirmation", "needs_review"])),
     },
   ];
 }
@@ -212,9 +220,12 @@ function sumRisk(row: TrendPoint): number {
 function trendValue(row: TrendPoint, key: "critical" | "high" | "medium" | "low"): number {
   const direct = Number(row[key]);
   if (Number.isFinite(direct)) return direct;
+  return trendSeverityValue(row, [key, titleCase(key), key.toUpperCase()]);
+}
+
+function trendSeverityValue(row: TrendPoint, keys: string[]): number {
   const severity = row.severity || {};
-  const variants = [key, titleCase(key), key.toUpperCase()];
-  for (const variant of variants) {
+  for (const variant of keys) {
     const value = Number(severity[variant]);
     if (Number.isFinite(value)) return value;
   }
@@ -248,10 +259,7 @@ function xLabels(rows: TrendPoint[], language: Language, count: number): string[
     }
     return labels;
   }
-  const fallback = language === "zh"
-    ? ["5/17", "5/18", "5/19", "5/20", "5/21", "5/22", "5/23"]
-    : ["May 17", "May 18", "May 19", "May 20", "May 21", "May 22", "May 23"];
-  return fallback.slice(0, count);
+  return Array.from({ length: count }, (_, index) => String(index + 1));
 }
 
 function shortBucketLabel(value: unknown, language: Language, includeTime: boolean): string {

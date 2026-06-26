@@ -71,6 +71,8 @@ export function DataTable({
   language,
   onDetails,
   detailLabelKey = "details",
+  rowAction,
+  actionLabelKey = "actions",
   tableId,
 }: {
   rows: PanelRecord[];
@@ -78,10 +80,12 @@ export function DataTable({
   language: Language;
   onDetails?: (row: PanelRecord) => void;
   detailLabelKey?: string;
+  rowAction?: (row: PanelRecord) => React.ReactNode;
+  actionLabelKey?: string;
   tableId?: string;
 }) {
   if (!rows.length) return <div className="empty-state">{translate(language, "noData")}</div>;
-  const layout = tableLayout(tableId, columns, Boolean(onDetails));
+  const layout = tableLayout(tableId, columns, Boolean(onDetails || rowAction));
   return (
     <div className="table-wrap">
       <table
@@ -93,6 +97,7 @@ export function DataTable({
             <col key={column} style={{ width: layout.widths[column] || layout.defaultWidth }} />
           ))}
           {onDetails && <col style={{ width: layout.detailsWidth }} />}
+          {rowAction && <col style={{ width: layout.detailsWidth }} />}
         </colgroup>
         <thead>
           <tr>
@@ -100,6 +105,7 @@ export function DataTable({
               <th className={`col-${columnClass(column)}`} key={column}>{translate(language, column)}</th>
             ))}
             {onDetails && <th className="col-details">{translate(language, detailLabelKey)}</th>}
+            {rowAction && <th className="col-actions">{translate(language, actionLabelKey)}</th>}
           </tr>
         </thead>
         <tbody>
@@ -117,6 +123,7 @@ export function DataTable({
                   </button>
                 </td>
               )}
+              {rowAction && <td className="col-actions">{rowAction(row)}</td>}
             </tr>
           ))}
         </tbody>

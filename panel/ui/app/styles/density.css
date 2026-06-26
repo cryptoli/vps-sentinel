@@ -1,0 +1,131 @@
+.app-shell {
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+}
+
+.sidebar-shell {
+  background: linear-gradient(180deg, #071322 0%, #08182a 100%);
+}
+
+.brand-mark,
+.user-avatar {
+  background: var(--color-accent);
+  box-shadow: none;
+}
+
+.topbar {
+  min-height: 60px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 1px 0 var(--color-border);
+}
+
+.content-shell,
+.app-shell:not(.page-overview) .content-shell {
+  padding: 18px 18px 24px;
+  background: var(--color-canvas-muted);
+  box-shadow: none;
+}
+
+.page-stack,
+.feature-page,
+.feature-main-grid,
+.feature-side-stack,
+.overview-grid,
+.overview-triad,
+.overview-table-row {
+  gap: 14px;
+}
+
+.feature-header {
+  gap: 10px;
+  padding-bottom: 2px;
+}
+
+.feature-header h1,
+.topbar h1 {
+  font-size: 24px;
+  line-height: 1.16;
+}
+
+.feature-header p,
+.topbar > div:first-child span {
+  max-width: 760px;
+}
+
+.panel-card,
+.metric-card,
+.filter-card,
+.access-card,
+.stat-tile,
+.side-card,
+.feature-table-card,
+.attack-chain-card,
+.correlation-card,
+.baseline-timeline-card,
+.node-card,
+.detail-drawer,
+.review-card {
+  background: var(--color-surface);
+  border-color: var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-soft);
+}
+
+.metric-grid,
+.feature-metrics,
+.feature-metrics.five,
+.feature-metrics.six,
+.feature-metrics.four,
+.node-summary-grid,
+.baseline-summary-grid {
+  gap: 10px;
+}
+
+.metric-card {
+  min-height: 106px;
+  padding: 12px;
+}
+
+.node-summary-grid .metric-card {
+  min-height: 118px;
+  padding: 14px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.stat-tile,
+.side-card {
+  min-height: auto;
+  padding: 12px;
+  background: var(--color-surface);
+}
+
+.stat-tile strong,
+.metric-copy strong {
+  font-size: 24px;
+}
+
+.stat-tile p,
+.stat-tile small,
+.metric-copy span,
+.metric-copy small,
+.side-card header span {
+  line-height: 1.35;
+}
+
+.primary-button {
+  background: var(--color-accent);
+  box-shadow: none;
+}
+
+.ghost-button,
+.icon-button,
+.link-button,
+.chip-button {
+  box-shadow: none;
+}
+
+.mobile-overview-live,
+.live-pill,
+.timeframe-badge {
+  box-shadow: none;
+}

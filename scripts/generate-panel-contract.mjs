@@ -66,6 +66,7 @@ function renderRust(value) {
     rustDatasetFn("incidents_dataset", datasets["/api/v1/incidents"]),
     rustDatasetFn("baseline_drifts_dataset", datasets["/api/v1/baseline-drifts"]),
     rustDatasetFn("active_blocks_private_dataset", datasets["/api/v1/active-blocks"]),
+    rustDatasetFn("attack_fingerprints_dataset", datasets["/api/v1/attack-fingerprints"]),
     rustDatasetFn("audit_logs_dataset", datasets["/api/v1/audit-logs"]),
   ].join("\n\n");
   return `${generatedHeader("//")}
@@ -86,15 +87,28 @@ const STREAM_REFRESH_DATASETS: &[&str] = &${rustArray(constants.streamRefreshDat
 pub(crate) const PUBLIC_PROBE_SOURCE_HIDDEN_KEYS: &[&str] = &${rustArray(constants.publicProbeSourceHiddenKeys)};
 const NODES_PUBLIC_COLUMNS: &[&str] = &${rustArray(rustColumns.nodesPublic)};
 const NODES_PRIVATE_COLUMNS: &[&str] = &${rustArray(rustColumns.nodesPrivate)};
+const NODES_PUBLIC_SEARCH_COLUMNS: &[&str] = &${rustArray(datasets["/api/v1/nodes"].publicSearchColumns || datasets["/api/v1/nodes"].searchColumns || [])};
+const NODES_PRIVATE_SEARCH_COLUMNS: &[&str] = &${rustArray(datasets["/api/v1/nodes"].searchColumns || [])};
 
 pub(crate) fn stream_refresh_datasets() -> Vec<&'static str> {
     STREAM_REFRESH_DATASETS.to_vec()
+}
+
+pub(crate) fn panel_dictionaries() -> serde_json::Value {
+    serde_json::json!(${jsonExpression(constants.dictionaries || {})})
 }
 
 pub(crate) fn node_columns(role: PanelRole) -> &'static [&'static str] {
     match role {
         PanelRole::Public => NODES_PUBLIC_COLUMNS,
         PanelRole::Private => NODES_PRIVATE_COLUMNS,
+    }
+}
+
+pub(crate) fn node_search_columns(role: PanelRole) -> &'static [&'static str] {
+    match role {
+        PanelRole::Public => NODES_PUBLIC_SEARCH_COLUMNS,
+        PanelRole::Private => NODES_PRIVATE_SEARCH_COLUMNS,
     }
 }
 
@@ -106,6 +120,7 @@ pub(crate) fn active_blocks_dataset(role: PanelRole) -> PanelDataset {
             table: ${rustString(datasets["/api/v1/active-blocks"].table)},
             order_column: ${rustString(datasets["/api/v1/active-blocks"].orderColumn)},
             active_filter: ${rustOption(datasets["/api/v1/active-blocks"].activeFilter)},
+            search_columns: &${rustArray(datasets["/api/v1/active-blocks"].publicSearchColumns || datasets["/api/v1/active-blocks"].searchColumns || [])},
             columns: &${rustArray(datasets["/api/v1/active-blocks"].publicColumns)},
         },
         PanelRole::Private => active_blocks_private_dataset(),
@@ -131,6 +146,7 @@ function rustDatasetFn(name, dataset) {
         table: ${rustString(dataset.table)},
         order_column: ${rustString(dataset.orderColumn)},
         active_filter: ${rustOption(dataset.activeFilter)},
+        search_columns: &${rustArray(dataset.searchColumns || [])},
         columns: &${rustArray(dataset.columns)},
     }
 }`;
@@ -150,6 +166,7 @@ export const PANEL_TRANSPORT_ENCODING = ${jsonInline(constants.panelTransportEnc
 export const DEFAULT_PUBLIC_PAGES = ${jsonInline(constants.defaultPublicPages.join(","))};
 export const DEFAULT_ADMIN_PATH = ${jsonInline(constants.defaultAdminPath)};
 export const DEFAULT_THEMES = ${jsonInline(constants.defaultThemes)};
+export const PANEL_DICTIONARIES = deepFreeze(${json(constants.dictionaries || {})});
 export const PUBLIC_PROBE_SOURCE_HIDDEN_KEYS = Object.freeze(${json(constants.publicProbeSourceHiddenKeys)});
 export const DATASETS = deepFreeze(${json(value.datasets)});
 
@@ -177,6 +194,7 @@ export const ROLE_LEVELS = {
 export const DEFAULT_FRESHNESS_THRESHOLD_MINUTES = ${constants.defaultFreshnessThresholdMinutes};
 export const DEFAULT_OFFLINE_THRESHOLD_MINUTES = ${constants.defaultOfflineThresholdMinutes};
 export const DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES = ${constants.defaultNodeRetiredThresholdMinutes};
+export const PANEL_DICTIONARIES = ${jsonExpression(constants.dictionaries || {})} as const;
 export const PAGES = ${jsonExpression(value.pages)} satisfies PageConfig[];
 `;
 }

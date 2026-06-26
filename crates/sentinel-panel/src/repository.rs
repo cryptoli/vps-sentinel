@@ -443,12 +443,49 @@ impl Repository {
         Ok((items, total))
     }
 
+    pub(super) async fn action_requests_page(
+        &self,
+        request: &PageRequest,
+    ) -> Result<(Value, i64), PanelApiError> {
+        self.query_page(
+            PanelDataset {
+                table: "panel_action_requests",
+                order_column: "requested_at",
+                active_filter: None,
+                search_columns: &[
+                    "action",
+                    "target_type",
+                    "target_id",
+                    "node_name",
+                    "status",
+                    "requested_by",
+                    "payload_json",
+                ],
+                columns: &[
+                    "id",
+                    "action",
+                    "target_type",
+                    "target_id",
+                    "node_name",
+                    "payload_json",
+                    "status",
+                    "requested_by",
+                    "requested_at",
+                    "updated_at",
+                ],
+            },
+            request,
+            PanelRole::Private,
+        )
+        .await
+    }
+
     pub(super) async fn probe_sources_page(
         &self,
         request: &PageRequest,
         role: PanelRole,
     ) -> Result<(Value, i64), PanelApiError> {
-        let (where_sql, mut values) = self.probe_sources_where_clause(request);
+        let (where_sql, mut values) = self.probe_sources_where_clause(request, role);
         let count_sql = format!(
             "SELECT COUNT(*) AS count FROM (SELECT source_ip FROM probe_sources{where_sql} GROUP BY source_ip) grouped_sources"
         );
@@ -498,7 +535,7 @@ impl Repository {
         request: &PageRequest,
         role: PanelRole,
     ) -> Result<(Value, i64), PanelApiError> {
-        let rows = self.latest_node_rows(columns, Some(request)).await?;
+        let rows = self.latest_node_rows(columns, Some(request), role).await?;
         let total = rows.len() as i64;
         let start = request.offset.min(rows.len());
         let end = (start + request.limit).min(rows.len());
@@ -515,6 +552,7 @@ impl Repository {
         &self,
         columns: &'static [&'static str],
         request: Option<&PageRequest>,
+        role: PanelRole,
     ) -> Result<Vec<Value>, PanelApiError> {
         let (where_sql, values) = request
             .map(|request| {
@@ -523,6 +561,7 @@ impl Repository {
                         table: "nodes",
                         order_column: "last_seen_at",
                         active_filter: None,
+                        search_columns: node_search_columns(role),
                         columns,
                     },
                     request,
@@ -1142,6 +1181,61 @@ impl Repository {
         .await
     }
 
+    pub(super) async fn insert_action_request(
+        &self,
+        request: &PanelActionRequest,
+    ) -> Result<PanelActionRequest, PanelApiError> {
+        let columns = [
+            "id",
+            "action",
+            "target_type",
+            "target_id",
+            "node_name",
+            "payload_json",
+            "status",
+            "requested_by",
+            "requested_at",
+            "updated_at",
+        ];
+        let sql = format!(
+            "INSERT INTO panel_action_requests ({}) VALUES ({})",
+            columns.join(", "),
+            self.placeholders(columns.len())
+        );
+        self.execute_write(
+            &sql,
+            &[
+                DbValue::Text(request.id.clone()),
+                DbValue::Text(request.action.clone()),
+                DbValue::Text(request.target_type.clone()),
+                DbValue::Text(request.target_id.clone()),
+                DbValue::Text(request.node_name.clone()),
+                DbValue::Text(json_string(&request.payload)?),
+                DbValue::Text(request.status.clone()),
+                DbValue::Text(request.requested_by.clone()),
+                DbValue::Text(request.requested_at.to_rfc3339()),
+                DbValue::Text(request.updated_at.to_rfc3339()),
+            ],
+        )
+        .await?;
+        self.insert_audit_log(
+            "action_request",
+            &request.requested_by,
+            &request.target_type,
+            &request.target_id,
+            json!({
+                "action_id": &request.id,
+                "action": &request.action,
+                "status": &request.status,
+                "node_name": &request.node_name,
+                "payload_present": !request.payload.is_null(),
+            }),
+            request.requested_at,
+        )
+        .await?;
+        Ok(request.clone())
+    }
+
     pub(super) fn page_where_clause(
         &self,
         dataset: PanelDataset,
@@ -1168,6 +1262,7 @@ impl Repository {
                 self.placeholder(values.len())
             ));
         }
+        self.push_search_clause(&mut parts, &mut values, dataset.search_columns, request);
         if parts.is_empty() {
             (String::new(), values)
         } else {
@@ -1178,6 +1273,7 @@ impl Repository {
     pub(super) fn probe_sources_where_clause(
         &self,
         request: &PageRequest,
+        role: PanelRole,
     ) -> (String, Vec<DbValue>) {
         let mut parts = vec![blocked_probe_source_filter().to_string()];
         let mut values = Vec::new();
@@ -1189,7 +1285,59 @@ impl Repository {
             values.push(DbValue::Text(to.to_rfc3339()));
             parts.push(format!("last_seen <= {}", self.placeholder(values.len())));
         }
+        let search_columns = match role {
+            PanelRole::Public => &[
+                "source_ip",
+                "block_status",
+                "country",
+                "asn",
+                "organization",
+                "categories_json",
+                "rule_ids_json",
+            ][..],
+            PanelRole::Private => &[
+                "node_id",
+                "source_ip",
+                "network_prefix",
+                "block_status",
+                "country",
+                "asn",
+                "organization",
+                "categories_json",
+                "rule_ids_json",
+                "latest_reason",
+                "block_reason",
+            ][..],
+        };
+        self.push_search_clause(&mut parts, &mut values, search_columns, request);
         (format!(" WHERE {}", parts.join(" AND ")), values)
+    }
+
+    fn push_search_clause(
+        &self,
+        parts: &mut Vec<String>,
+        values: &mut Vec<DbValue>,
+        columns: &[&str],
+        request: &PageRequest,
+    ) {
+        let Some(query) = request.query.as_deref() else {
+            return;
+        };
+        if columns.is_empty() {
+            return;
+        }
+        let pattern = format!("%{}%", escape_sql_like(query.to_lowercase().as_str()));
+        let predicates = columns
+            .iter()
+            .map(|column| {
+                values.push(DbValue::Text(pattern.clone()));
+                format!(
+                    "LOWER(COALESCE({column}, '')) LIKE {} ESCAPE '\\'",
+                    self.placeholder(values.len())
+                )
+            })
+            .collect::<Vec<_>>();
+        parts.push(format!("({})", predicates.join(" OR ")));
     }
 
     pub(super) async fn count(
@@ -1558,7 +1706,148 @@ impl Repository {
             ],
         )
         .await?;
+        if let Some(update) = panel_attack_fingerprint_update(node_id, finding) {
+            self.upsert_attack_fingerprint(&update).await?;
+        }
         Ok(())
+    }
+
+    pub(super) async fn upsert_attack_fingerprint(
+        &self,
+        update: &PanelAttackFingerprintUpdate,
+    ) -> Result<(), PanelApiError> {
+        let existing = self
+            .query_one_with_values(
+                &format!(
+                    "SELECT first_seen_at, last_seen_at, seen_count, nodes_json, source_ips_json, rule_ids_json, categories_json, score, confidence, verdict, source_count FROM attack_fingerprints WHERE id = {}",
+                    self.placeholder(1)
+                ),
+                &[DbValue::Text(update.id.clone())],
+            )
+            .await?;
+        let nodes = merge_json_set(
+            existing.as_ref().and_then(|row| row.get("nodes_json")),
+            &update.node_name,
+        );
+        let source_ips = merge_json_set(
+            existing.as_ref().and_then(|row| row.get("source_ips_json")),
+            &update.source_ip,
+        );
+        let rule_ids = merge_json_set(
+            existing.as_ref().and_then(|row| row.get("rule_ids_json")),
+            &update.rule_id,
+        );
+        let categories = merge_json_set(
+            existing.as_ref().and_then(|row| row.get("categories_json")),
+            &update.category,
+        );
+        let first_seen_at = existing
+            .as_ref()
+            .map(|row| min_time_string(row.get("first_seen_at"), update.first_seen_at))
+            .unwrap_or_else(|| update.first_seen_at.to_rfc3339());
+        let last_seen_at = existing
+            .as_ref()
+            .map(|row| max_time_string(row.get("last_seen_at"), update.last_seen_at))
+            .unwrap_or_else(|| update.last_seen_at.to_rfc3339());
+        let existing_seen = existing
+            .as_ref()
+            .and_then(|row| row.get("seen_count"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let seen_count = existing_seen.saturating_add(1).max(update.seen_count);
+        let score = existing
+            .as_ref()
+            .and_then(|row| row.get("score"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .max(update.score);
+        let confidence = existing
+            .as_ref()
+            .and_then(|row| row.get("confidence"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .max(update.confidence);
+        let verdict = strongest_fingerprint_verdict(
+            existing
+                .as_ref()
+                .and_then(|row| row.get("verdict"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            &update.verdict,
+        );
+        let existing_source_count = existing
+            .as_ref()
+            .and_then(|row| row.get("source_count"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let source_count = existing_source_count
+            .max(update.source_count)
+            .max(source_ips.len() as i64);
+        let columns = [
+            "id",
+            "kind",
+            "title",
+            "first_seen_at",
+            "last_seen_at",
+            "seen_count",
+            "node_count",
+            "source_count",
+            "nodes_json",
+            "source_ips_json",
+            "rule_ids_json",
+            "categories_json",
+            "score",
+            "confidence",
+            "verdict",
+            "summary",
+            "updated_at",
+        ];
+        let sql = self.upsert_sql(
+            "attack_fingerprints",
+            &columns,
+            &["id"],
+            &[
+                "kind",
+                "title",
+                "first_seen_at",
+                "last_seen_at",
+                "seen_count",
+                "node_count",
+                "source_count",
+                "nodes_json",
+                "source_ips_json",
+                "rule_ids_json",
+                "categories_json",
+                "score",
+                "confidence",
+                "verdict",
+                "summary",
+                "updated_at",
+            ],
+        );
+        self.execute_write(
+            &sql,
+            &[
+                DbValue::Text(update.id.clone()),
+                DbValue::Text(update.kind.clone()),
+                DbValue::Text(update.title.clone()),
+                DbValue::Text(first_seen_at),
+                DbValue::Text(last_seen_at),
+                DbValue::Integer(seen_count),
+                DbValue::Integer(nodes.len() as i64),
+                DbValue::Integer(source_count),
+                DbValue::Text(json_string(&nodes)?),
+                DbValue::Text(json_string(&source_ips)?),
+                DbValue::Text(json_string(&rule_ids)?),
+                DbValue::Text(json_string(&categories)?),
+                DbValue::Integer(score),
+                DbValue::Integer(confidence),
+                DbValue::Text(verdict),
+                DbValue::Text(update.summary.clone()),
+                DbValue::Text(Utc::now().to_rfc3339()),
+            ],
+        )
+        .await
     }
 
     pub(super) async fn upsert_incident(

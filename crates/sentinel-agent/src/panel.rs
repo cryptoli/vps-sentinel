@@ -74,6 +74,7 @@ pub struct PanelScanSummary {
     pub active_response_applied: usize,
     pub active_response_failed: usize,
     pub collector_errors: usize,
+    pub stage_durations_ms: BTreeMap<String, u64>,
     pub event_count_by_source: BTreeMap<String, usize>,
 }
 
@@ -319,6 +320,7 @@ fn build_scan_payload(
         active_response_applied: report.active_response_applied_count,
         active_response_failed: report.active_response_failed_count,
         collector_errors: report.collector_errors.len(),
+        stage_durations_ms: report.stage_durations_ms.clone(),
         event_count_by_source: report.event_count_by_source.clone(),
     };
     limited_payload(
@@ -371,6 +373,7 @@ fn build_snapshot_payload(
         active_response_applied: 0,
         active_response_failed: 0,
         collector_errors: 0,
+        stage_durations_ms: BTreeMap::new(),
         event_count_by_source: BTreeMap::new(),
     };
     limited_payload(
@@ -1781,6 +1784,7 @@ mod tests {
                     active_response_applied: 0,
                     active_response_failed: 0,
                     collector_errors: 0,
+                    stage_durations_ms: BTreeMap::new(),
                     event_count_by_source: BTreeMap::new(),
                 },
                 findings: vec![PanelFinding {
@@ -1839,6 +1843,7 @@ mod tests {
             active_response_applied: 0,
             active_response_failed: 0,
             collector_errors: 0,
+            stage_durations_ms: BTreeMap::new(),
             event_count_by_source: BTreeMap::new(),
         };
         let payload = panel_envelope(
@@ -1912,6 +1917,7 @@ mod tests {
             active_response_applied: 0,
             active_response_failed: 0,
             collector_errors: 0,
+            stage_durations_ms: BTreeMap::new(),
             event_count_by_source: BTreeMap::new(),
         };
 
@@ -1965,6 +1971,7 @@ mod tests {
                     active_response_applied: 0,
                     active_response_failed: 0,
                     collector_errors: 0,
+                    stage_durations_ms: BTreeMap::new(),
                     event_count_by_source: BTreeMap::new(),
                 },
                 findings: Vec::new(),
@@ -2025,6 +2032,7 @@ mod tests {
             active_response_applied: 0,
             active_response_failed: 0,
             collector_errors: 0,
+            stage_durations_ms: BTreeMap::new(),
             event_count_by_source: BTreeMap::new(),
         };
         let mut payload = panel_envelope(

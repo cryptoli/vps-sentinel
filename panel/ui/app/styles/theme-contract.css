@@ -1,0 +1,56 @@
+:root {
+  --theme-contract-version: "1";
+  --theme-bg: #f8fbff;
+  --theme-bg-soft: #f4f8fd;
+  --theme-surface: #ffffff;
+  --theme-surface-strong: #ffffff;
+  --theme-text: #0e1b2f;
+  --theme-muted: #64748b;
+  --theme-border: #e8f0f8;
+  --theme-border-soft: #f2f6fb;
+  --theme-accent: #126df2;
+  --theme-info: #08a9c8;
+  --theme-success: #0aa779;
+  --theme-warning: #d69a00;
+  --theme-danger: #e52e2e;
+  --theme-discovery: #7567f8;
+  --theme-sidebar-bg: linear-gradient(180deg, #071322 0%, #08182a 100%);
+  --theme-sidebar-text: #e7eef8;
+}
+
+:root[data-theme] {
+  --bg: var(--theme-bg);
+  --bg-soft: var(--theme-bg-soft);
+  --panel: var(--theme-surface);
+  --panel-strong: var(--theme-surface-strong);
+  --text: var(--theme-text);
+  --muted: var(--theme-muted);
+  --line: var(--theme-border);
+  --line-soft: var(--theme-border-soft);
+  --blue: var(--theme-accent);
+  --cyan: var(--theme-info);
+  --green: var(--theme-success);
+  --amber: var(--theme-warning);
+  --red: var(--theme-danger);
+  --violet: var(--theme-discovery);
+  --color-canvas: var(--theme-bg);
+  --color-canvas-muted: var(--theme-bg-soft);
+  --color-surface: var(--theme-surface);
+  --color-surface-raised: var(--theme-surface-strong);
+  --color-text: var(--theme-text);
+  --color-text-muted: var(--theme-muted);
+  --color-border: var(--theme-border);
+  --color-border-muted: var(--theme-border-soft);
+  --color-accent: var(--theme-accent);
+}
+
+.sidebar-shell {
+  color: var(--theme-sidebar-text);
+  background: var(--theme-sidebar-bg);
+}
+
+.primary-button,
+.brand-mark,
+.user-avatar {
+  background: var(--theme-accent);
+}

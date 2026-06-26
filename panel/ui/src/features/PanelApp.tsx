@@ -6,6 +6,7 @@ import {
   ClipboardList,
   Database,
   FileClock,
+  Fingerprint,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -19,7 +20,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DetailDrawer } from "@/components/DetailDrawer";
 import { SelectMenu, TextField } from "@/components/Controls";
-import { PanelApiError, clearPanelToken, fetchDataset, fetchJson, fetchSettings, fetchTrends, panelToken, setPanelToken } from "@/lib/api";
+import { PanelApiError, clearPanelToken, fetchDataset, fetchJson, fetchSettings, fetchTrends, panelToken, postJson, setPanelToken } from "@/lib/api";
 import {
   API_BASE,
   DATASET_BY_ID,
@@ -50,6 +51,8 @@ import type {
   NodeRecord,
   PageConfig,
   PageId,
+  PanelActionRequestInput,
+  PanelDictionaries,
   PanelRecord,
   PanelRole,
   PanelSettings,
@@ -65,6 +68,7 @@ const ICONS: Record<PageId, React.ReactNode> = {
   incidents: <ShieldAlert size={18} />,
   baseline_drifts: <FileClock size={18} />,
   active_blocks: <Blocks size={18} />,
+  attack_fingerprints: <Fingerprint size={18} />,
   probe_sources: <Shield size={18} />,
   audit_logs: <ClipboardList size={18} />,
   nodes: <Database size={18} />,
@@ -168,6 +172,11 @@ export function PanelApp() {
       setLoading(false);
     }
   }, [language, settings.public_pages]);
+
+  const requestPanelAction = useCallback(async (request: PanelActionRequestInput) => {
+    await postJson("/action-request", role, { ...request, requester: request.requester || "panel" });
+    await loadVisibleData(currentPage, role);
+  }, [currentPage, loadVisibleData, role]);
 
   useEffect(() => {
     setLanguage(selectedLanguage());
@@ -369,10 +378,12 @@ export function PanelApp() {
               summary={summary}
               datasets={datasets}
               trends={trends}
+              dictionaries={settings.dictionaries || {}}
               datasetState={datasetState}
               updateDatasetState={updateDatasetState}
               onNavigate={(id) => navigatePage(id as PageId)}
               onDetails={(dataset, row) => setDrawer({ dataset, row })}
+              onActionRequest={requestPanelAction}
             />
           )}
         </section>
@@ -646,10 +657,12 @@ function Content({
   summary,
   datasets,
   trends,
+  dictionaries,
   datasetState,
   updateDatasetState,
   onNavigate,
   onDetails,
+  onActionRequest,
 }: {
   page: PageConfig;
   loading: boolean;
@@ -658,10 +671,12 @@ function Content({
   summary: Summary;
   datasets: Record<string, DatasetPage>;
   trends: TrendPoint[];
+  dictionaries: PanelDictionaries;
   datasetState: (id: string) => DatasetState;
   updateDatasetState: (id: string, patch: Partial<DatasetState>) => void;
   onNavigate: (id: string) => void;
   onDetails: (dataset: string, row: PanelRecord) => void;
+  onActionRequest: (request: PanelActionRequestInput) => Promise<void>;
 }) {
   if (loading && !Object.keys(datasets).length) {
     return <div className="loading-card">{translate(language, "loading")}</div>;
@@ -675,6 +690,7 @@ function Content({
         page={(datasets.nodes || emptyPage()) as DatasetPage<NodeRecord>}
         state={datasetState("nodes")}
         language={language}
+        dictionaries={dictionaries}
         onStateChange={(patch) => updateDatasetState("nodes", patch)}
       />
     );
@@ -710,6 +726,7 @@ function Content({
         page={datasets.baseline_drifts || emptyPage()}
         state={datasetState("baseline_drifts")}
         language={language}
+        dictionaries={dictionaries}
         onStateChange={(patch) => updateDatasetState("baseline_drifts", patch)}
         onDetails={(row) => onDetails("baseline_drifts", row)}
       />
@@ -724,6 +741,7 @@ function Content({
         language={language}
         role={role}
         onStateChange={(patch) => updateDatasetState("active_blocks", patch)}
+        onActionRequest={onActionRequest}
       />
     );
   }

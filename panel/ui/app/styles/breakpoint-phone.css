@@ -1,0 +1,159 @@
+@media (max-width: 520px) {
+  .overview-page {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .overview-page .mobile-overview-live,
+  .overview-page .metric-grid,
+  .overview-page .overview-grid > .wide-card,
+  .overview-page .response-activity-card,
+  .overview-page .node-freshness-card,
+  .overview-page .overview-table-row {
+    grid-column: 1 / -1;
+  }
+
+  .overview-page .overview-grid,
+  .overview-page .overview-triad {
+    display: contents;
+  }
+
+  .overview-page .overview-severity-card,
+  .overview-page .node-status-card {
+    grid-column: span 1;
+  }
+
+  .overview-page .metric-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .overview-page .metric-card {
+    min-height: 88px;
+    padding: 8px;
+  }
+
+  .overview-page .metric-copy span,
+  .overview-page .metric-copy small {
+    font-size: 10.5px;
+  }
+
+  .overview-page .metric-copy strong {
+    font-size: 19px;
+  }
+
+  .overview-page .panel-card-head {
+    min-height: 39px;
+    padding: 9px 10px;
+  }
+
+  .overview-page .panel-card-head h3 {
+    font-size: 13px;
+  }
+
+  .overview-page .overview-grid .panel-card:not(.wide-card) .donut-card,
+  .overview-severity-card .donut-card,
+  .node-status-card .donut-card,
+  .baseline-summary-grid .donut-card {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 138px;
+    gap: 6px;
+    justify-items: center;
+    padding: 9px;
+  }
+
+  .overview-severity-card .donut,
+  .node-status-card .donut,
+  .baseline-summary-grid .donut {
+    width: 78px;
+    height: 78px;
+  }
+
+  .overview-severity-card .donut-center,
+  .node-status-card .donut-center,
+  .baseline-summary-grid .donut-center {
+    width: 40px;
+    height: 40px;
+  }
+
+  .overview-severity-card .donut-center strong,
+  .node-status-card .donut-center strong,
+  .baseline-summary-grid .donut-center strong {
+    font-size: 16px;
+  }
+
+  .overview-severity-card .donut-center span,
+  .node-status-card .donut-center span,
+  .baseline-summary-grid .donut-center span {
+    font-size: 9.5px;
+  }
+
+  .overview-severity-card .legend,
+  .node-status-card .legend,
+  .baseline-summary-grid .legend {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+
+  .overview-severity-card .legend-row,
+  .node-status-card .legend-row,
+  .baseline-summary-grid .legend-row {
+    min-height: 18px;
+    font-size: 9.8px;
+  }
+
+  .donut-track,
+  .donut-slice {
+    stroke-width: 6.4;
+  }
+
+  .response-activity-card .response-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .response-row {
+    min-height: 66px;
+    padding: 8px;
+  }
+
+  .filter-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .feature-page .filter-fields .date-field,
+  .feature-page .filter-fields .page-size-field {
+    display: none;
+  }
+
+  .feature-page .quick-ranges {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .feature-page .quick-ranges .chip-button {
+    justify-content: center;
+    min-width: 0;
+    padding-inline: 8px;
+  }
+
+  .correlation-card .score-panel {
+    grid-template-columns: 96px minmax(0, 1fr);
+    min-height: 124px;
+    padding: 10px;
+  }
+
+  .score-panel .posture-ring {
+    width: 90px;
+    height: 90px;
+  }
+
+  .score-panel .posture-ring::before {
+    inset: 14px;
+  }
+
+  .score-panel .posture-ring strong {
+    font-size: 24px;
+  }
+}

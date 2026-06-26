@@ -22,8 +22,10 @@ const STREAM_REFRESH_DATASETS: &[&str] = &[
     "incidents",
     "baseline_drifts",
     "active_blocks",
+    "attack_fingerprints",
     "probe_sources",
     "audit_logs",
+    "action_requests",
 ];
 pub(crate) const PUBLIC_PROBE_SOURCE_HIDDEN_KEYS: &[&str] = &[
     "node_name",
@@ -43,9 +45,176 @@ const NODES_PRIVATE_COLUMNS: &[&str] = &[
     "storage_json",
     "metrics_json",
 ];
+const NODES_PUBLIC_SEARCH_COLUMNS: &[&str] = &["node_name", "agent_version"];
+const NODES_PRIVATE_SEARCH_COLUMNS: &[&str] =
+    &["node_name", "hostname", "agent_version", "privacy_mode"];
 
 pub(crate) fn stream_refresh_datasets() -> Vec<&'static str> {
     STREAM_REFRESH_DATASETS.to_vec()
+}
+
+pub(crate) fn panel_dictionaries() -> serde_json::Value {
+    serde_json::json!({
+      "severities": [
+        {
+          "value": "critical",
+          "labelKey": "critical",
+          "tone": "red",
+          "rank": 100
+        },
+        {
+          "value": "high",
+          "labelKey": "high",
+          "tone": "orange",
+          "rank": 80
+        },
+        {
+          "value": "medium",
+          "labelKey": "medium",
+          "tone": "amber",
+          "rank": 50
+        },
+        {
+          "value": "low",
+          "labelKey": "low",
+          "tone": "green",
+          "rank": 20
+        }
+      ],
+      "reviewVerdicts": [
+        {
+          "value": "needs_review",
+          "labelKey": "needs_review",
+          "tone": "orange",
+          "rank": 10
+        },
+        {
+          "value": "confirmed",
+          "labelKey": "confirmed",
+          "tone": "green",
+          "rank": 20
+        },
+        {
+          "value": "false_positive",
+          "labelKey": "false_positive",
+          "tone": "blue",
+          "rank": 30
+        }
+      ],
+      "nodeStatusFilters": [
+        {
+          "value": "all",
+          "labelKey": "allNodes",
+          "tone": "neutral",
+          "rank": 0
+        },
+        {
+          "value": "fresh",
+          "labelKey": "online",
+          "tone": "green",
+          "rank": 10
+        },
+        {
+          "value": "stale",
+          "labelKey": "stale",
+          "tone": "amber",
+          "rank": 20
+        },
+        {
+          "value": "offline",
+          "labelKey": "offline",
+          "tone": "orange",
+          "rank": 30
+        },
+        {
+          "value": "retired",
+          "labelKey": "retired",
+          "tone": "gray",
+          "rank": 40
+        }
+      ],
+      "baselineReviewFilters": [
+        {
+          "value": "",
+          "labels": {
+            "zh": "全部",
+            "en": "All"
+          },
+          "tone": "neutral",
+          "rank": 0
+        },
+        {
+          "value": "suspicious",
+          "labelKey": "suspicious",
+          "tone": "orange",
+          "rank": 10
+        },
+        {
+          "value": "needs_confirmation",
+          "labelKey": "needs_confirmation",
+          "tone": "blue",
+          "rank": 20
+        },
+        {
+          "value": "expected",
+          "labelKey": "expected",
+          "tone": "green",
+          "rank": 30
+        }
+      ],
+      "actionKinds": [
+        {
+          "value": "unblock",
+          "labelKey": "unblock",
+          "tone": "green",
+          "rank": 10
+        },
+        {
+          "value": "refresh_baseline",
+          "labelKey": "refresh_baseline",
+          "tone": "blue",
+          "rank": 20
+        },
+        {
+          "value": "allowlist",
+          "labelKey": "allowlist",
+          "tone": "orange",
+          "rank": 30
+        }
+      ],
+      "actionTargetTypes": [
+        {
+          "value": "active_block",
+          "labelKey": "blocks",
+          "tone": "blue",
+          "rank": 10
+        },
+        {
+          "value": "probe_source",
+          "labelKey": "blacklist",
+          "tone": "orange",
+          "rank": 20
+        },
+        {
+          "value": "baseline_drift",
+          "labelKey": "drifts",
+          "tone": "green",
+          "rank": 30
+        },
+        {
+          "value": "finding",
+          "labelKey": "findings",
+          "tone": "red",
+          "rank": 40
+        },
+        {
+          "value": "incident",
+          "labelKey": "incidents",
+          "tone": "red",
+          "rank": 50
+        }
+      ]
+    })
 }
 
 pub(crate) fn node_columns(role: PanelRole) -> &'static [&'static str] {
@@ -55,11 +224,27 @@ pub(crate) fn node_columns(role: PanelRole) -> &'static [&'static str] {
     }
 }
 
+pub(crate) fn node_search_columns(role: PanelRole) -> &'static [&'static str] {
+    match role {
+        PanelRole::Public => NODES_PUBLIC_SEARCH_COLUMNS,
+        PanelRole::Private => NODES_PRIVATE_SEARCH_COLUMNS,
+    }
+}
+
 pub(crate) fn findings_dataset() -> PanelDataset {
     PanelDataset {
         table: "findings",
         order_column: "timestamp",
         active_filter: None,
+        search_columns: &[
+            "node_id",
+            "severity",
+            "rule_id",
+            "category",
+            "confidence",
+            "subject",
+            "title",
+        ],
         columns: &[
             "id",
             "timestamp",
@@ -79,6 +264,7 @@ pub(crate) fn incidents_dataset() -> PanelDataset {
         table: "incidents",
         order_column: "last_seen",
         active_filter: None,
+        search_columns: &["node_id", "severity", "title", "summary"],
         columns: &[
             "id",
             "last_seen",
@@ -97,6 +283,15 @@ pub(crate) fn baseline_drifts_dataset() -> PanelDataset {
         table: "baseline_drifts",
         order_column: "timestamp",
         active_filter: None,
+        search_columns: &[
+            "node_id",
+            "severity",
+            "rule_id",
+            "category",
+            "tier",
+            "subject",
+            "review_action",
+        ],
         columns: &[
             "id",
             "finding_id",
@@ -118,7 +313,43 @@ pub(crate) fn active_blocks_private_dataset() -> PanelDataset {
         table: "active_blocks",
         order_column: "blocked_at",
         active_filter: Some("expired = 0"),
-        columns: &["blocked_at", "node_id AS node_name", "ip", "(SELECT network_prefix FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND network_prefix IS NOT NULL AND network_prefix <> '' AND LOWER(network_prefix) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS network_prefix", "(SELECT country FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND country IS NOT NULL AND country <> '' AND LOWER(country) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS country", "(SELECT asn FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND asn IS NOT NULL AND asn <> '' AND LOWER(asn) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS asn", "(SELECT organization FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND organization IS NOT NULL AND organization <> '' AND LOWER(organization) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS organization", "rule_id", "backend", "reason", "expires_at"],
+        search_columns: &["node_id", "ip", "rule_id", "backend", "reason"],
+        columns: &["id", "blocked_at", "node_id AS node_name", "ip", "(SELECT network_prefix FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND network_prefix IS NOT NULL AND network_prefix <> '' AND LOWER(network_prefix) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS network_prefix", "(SELECT country FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND country IS NOT NULL AND country <> '' AND LOWER(country) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS country", "(SELECT asn FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND asn IS NOT NULL AND asn <> '' AND LOWER(asn) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS asn", "(SELECT organization FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND organization IS NOT NULL AND organization <> '' AND LOWER(organization) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS organization", "rule_id", "backend", "reason", "expires_at"],
+    }
+}
+
+pub(crate) fn attack_fingerprints_dataset() -> PanelDataset {
+    PanelDataset {
+        table: "attack_fingerprints",
+        order_column: "last_seen_at",
+        active_filter: None,
+        search_columns: &[
+            "id",
+            "kind",
+            "title",
+            "verdict",
+            "summary",
+            "nodes_json",
+            "source_ips_json",
+            "rule_ids_json",
+            "categories_json",
+        ],
+        columns: &[
+            "id",
+            "last_seen_at",
+            "first_seen_at",
+            "kind",
+            "title",
+            "seen_count",
+            "node_count",
+            "source_count",
+            "rule_ids_json",
+            "categories_json",
+            "score",
+            "confidence",
+            "verdict",
+            "summary",
+        ],
     }
 }
 
@@ -127,6 +358,7 @@ pub(crate) fn audit_logs_dataset() -> PanelDataset {
         table: "panel_audit_logs",
         order_column: "created_at",
         active_filter: None,
+        search_columns: &["action", "actor", "target_type", "target_id", "detail_json"],
         columns: &["created_at", "action", "actor", "target_type", "target_id"],
     }
 }
@@ -137,6 +369,7 @@ pub(crate) fn active_blocks_dataset(role: PanelRole) -> PanelDataset {
             table: "active_blocks",
             order_column: "blocked_at",
             active_filter: Some("expired = 0"),
+            search_columns: &["node_id", "rule_id"],
             columns: &["blocked_at", "node_id AS node_name"],
         },
         PanelRole::Private => active_blocks_private_dataset(),
