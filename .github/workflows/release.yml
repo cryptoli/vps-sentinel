@@ -20,6 +20,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - name: Panel contract generated files
+        run: node scripts/generate-panel-contract.mjs --check
       - name: Format
         run: cargo fmt --check
       - name: Clippy
@@ -53,18 +55,23 @@ jobs:
           package_dir="dist/package-${target}"
           mkdir -p "${package_dir}/packaging/systemd"
           cp "target/${target}/release/vps-sentinel" "${package_dir}/vps-sentinel"
+          cp "target/${target}/release/vps-sentinel-panel" "${package_dir}/vps-sentinel-panel"
           ln -s vps-sentinel "${package_dir}/vs"
           cp config/config.example.toml "${package_dir}/config.example.toml"
+          cp -R panel "${package_dir}/panel"
           cp install.sh update.sh stop.sh "${package_dir}/"
           cp rust-toolchain.toml "${package_dir}/"
           cp README.md README.zh-CN.md LICENSE CHANGELOG.md SECURITY.md "${package_dir}/"
           cp packaging/systemd/vps-sentinel.service "${package_dir}/packaging/systemd/"
-          chmod 0755 "${package_dir}/vps-sentinel" "${package_dir}"/*.sh
+          chmod 0755 "${package_dir}/vps-sentinel" "${package_dir}/vps-sentinel-panel" "${package_dir}"/*.sh
           tar -czf "dist/vps-sentinel-${target}.tar.gz" -C "${package_dir}" .
           tar -tzf "dist/vps-sentinel-${target}.tar.gz" | sed 's#^\./##' > "dist/vps-sentinel-${target}.manifest"
           grep -qx "vps-sentinel" "dist/vps-sentinel-${target}.manifest"
+          grep -qx "vps-sentinel-panel" "dist/vps-sentinel-${target}.manifest"
           grep -qx "vs" "dist/vps-sentinel-${target}.manifest"
           grep -qx "config.example.toml" "dist/vps-sentinel-${target}.manifest"
+          grep -qx "panel/web/index.html" "dist/vps-sentinel-${target}.manifest"
+          grep -qx "panel/self-host/schema.sqlite.sql" "dist/vps-sentinel-${target}.manifest"
           grep -qx "install.sh" "dist/vps-sentinel-${target}.manifest"
           grep -qx "update.sh" "dist/vps-sentinel-${target}.manifest"
           grep -qx "stop.sh" "dist/vps-sentinel-${target}.manifest"
@@ -103,10 +110,12 @@ jobs:
           root="dist/pkgroot"
           work="dist/package-root"
           rm -rf "${root}" "${work}"
-          mkdir -p "${work}" "${root}/usr/local/bin" "${root}/etc/vps-sentinel" "${root}/usr/lib/systemd/system"
+          mkdir -p "${work}" "${root}/usr/local/bin" "${root}/usr/local/share/vps-sentinel" "${root}/etc/vps-sentinel" "${root}/usr/lib/systemd/system"
           tar -xzf dist/vps-sentinel-x86_64-unknown-linux-gnu.tar.gz -C "${work}"
           install -m 0755 "${work}/vps-sentinel" "${root}/usr/local/bin/vps-sentinel"
+          install -m 0755 "${work}/vps-sentinel-panel" "${root}/usr/local/bin/vps-sentinel-panel"
           ln -s vps-sentinel "${root}/usr/local/bin/vs"
+          cp -R "${work}/panel" "${root}/usr/local/share/vps-sentinel/panel"
           install -m 0755 "${work}/stop.sh" "${root}/usr/local/bin/vps-sentinel-stop"
           install -m 0755 "${work}/update.sh" "${root}/usr/local/bin/vps-sentinel-update"
           install -m 0755 "${work}/install.sh" "${root}/usr/local/bin/vps-sentinel-install"

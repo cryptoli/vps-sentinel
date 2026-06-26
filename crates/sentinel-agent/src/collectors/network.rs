@@ -1,5 +1,7 @@
 use crate::collectors::{CollectContext, Collector};
+use crate::utils::fs::{hash_file_limited, path_string};
 use crate::utils::ip::is_public_remote_addr;
+use crate::utils::procfs::{container_metadata_from_cgroup, systemd_unit_from_cgroup};
 use async_trait::async_trait;
 use sentinel_core::{RawEvent, SentinelResult};
 use std::collections::{BTreeMap, BTreeSet};
@@ -116,9 +118,33 @@ fn enrich_socket_owners(events: &mut [RawEvent], scan_root: &Path) {
         event
             .fields
             .insert("cmdline".to_string(), owner.cmdline.clone());
-        event
-            .fields
-            .insert("argv_json".to_string(), owner.argv_json.clone());
+        if !owner.systemd_unit.is_empty() {
+            event
+                .fields
+                .insert("systemd_unit".to_string(), owner.systemd_unit.clone());
+        }
+        if !owner.container_context.is_empty() {
+            event.fields.insert(
+                "container_context".to_string(),
+                owner.container_context.clone(),
+            );
+        }
+        if !owner.container_id.is_empty() {
+            event
+                .fields
+                .insert("container_id".to_string(), owner.container_id.clone());
+        }
+        if !owner.container_cgroup.is_empty() {
+            event.fields.insert(
+                "container_cgroup".to_string(),
+                owner.container_cgroup.clone(),
+            );
+        }
+        if !owner.exe_hash_blake3.is_empty() {
+            event
+                .fields
+                .insert("exe_hash_blake3".to_string(), owner.exe_hash_blake3.clone());
+        }
     }
 }
 
@@ -175,20 +201,45 @@ struct ProcessOwner {
     name: String,
     executable: String,
     cmdline: String,
-    argv_json: String,
+    systemd_unit: String,
+    container_context: String,
+    container_id: String,
+    container_cgroup: String,
+    exe_hash_blake3: String,
 }
 
 impl ProcessOwner {
     fn from_pid_path(pid: &str, pid_path: &Path) -> Self {
         let argv = read_argv(pid_path.join("cmdline"));
+        let executable = fs::read_link(pid_path.join("exe"))
+            .map(|path| path_string(&path))
+            .unwrap_or_default();
+        let cgroup = fs::read_to_string(pid_path.join("cgroup")).unwrap_or_default();
+        let container = container_metadata_from_cgroup(&cgroup);
+        let exe_hash_blake3 = if executable.starts_with('/') {
+            hash_file_limited(Path::new(&executable), 25 * 1024 * 1024)
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
         Self {
             pid: pid.to_string(),
             name: read_trimmed(pid_path.join("comm")),
-            executable: fs::read_link(pid_path.join("exe"))
-                .map(|path| path.to_string_lossy().to_string())
-                .unwrap_or_default(),
+            executable,
             cmdline: argv.join(" "),
-            argv_json: serde_json::to_string(&argv).unwrap_or_else(|_| "[]".to_string()),
+            systemd_unit: systemd_unit_from_cgroup(&cgroup).unwrap_or_default(),
+            container_context: container
+                .as_ref()
+                .map(|value| value.runtime.clone())
+                .unwrap_or_default(),
+            container_id: container
+                .as_ref()
+                .and_then(|value| value.id.clone())
+                .unwrap_or_default(),
+            container_cgroup: container.and_then(|value| value.scope).unwrap_or_default(),
+            exe_hash_blake3,
         }
     }
 }

@@ -39,6 +39,8 @@ pub fn run_storage(config: SentinelConfig, command: StorageCommand) -> Result<()
             println!("raw_events={}", stats.raw_events);
             println!("findings={}", stats.findings);
             println!("notification_logs={}", stats.notification_logs);
+            println!("attack_fingerprints={}", stats.attack_fingerprints);
+            println!("attack_observations={}", stats.attack_observations);
             println!("finding_dedup_states={}", stats.finding_dedup_states);
             println!("scan_runs={}", stats.scan_runs);
             println!("baseline_snapshots={}", stats.baseline_snapshots);
@@ -51,6 +53,9 @@ pub fn run_storage(config: SentinelConfig, command: StorageCommand) -> Result<()
             let retention_days = retention_days.unwrap_or(config.storage.retention_days);
             let deleted = store.prune_older_than(retention_days)?;
             println!("retention_deleted_rows={deleted}");
+            let fingerprint_deleted =
+                store.prune_attack_fingerprints(config.attack_fingerprints.retention_days)?;
+            println!("attack_fingerprint_deleted_rows={fingerprint_deleted}");
             if !skip_size_limit {
                 match store.enforce_size_limit(config.storage.max_database_size_mb)? {
                     Some(report) => {

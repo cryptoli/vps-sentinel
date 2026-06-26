@@ -1,0 +1,181 @@
+{
+  "constants": {
+    "signatureWindowSeconds": 300,
+    "defaultPageLimit": 50,
+    "maxPageLimit": 200,
+    "defaultFreshnessThresholdMinutes": 30,
+    "defaultOfflineThresholdMinutes": 90,
+    "defaultNodeRetiredThresholdMinutes": 720,
+    "panelTransportEncoding": "json-base64",
+    "defaultPublicPages": ["overview", "probe_sources", "nodes"],
+    "defaultAdminPath": "/panel-admin",
+    "defaultThemes": "default:Default",
+    "streamRefreshDatasets": [
+      "summary",
+      "trends",
+      "nodes",
+      "findings",
+      "incidents",
+      "baseline_drifts",
+      "active_blocks",
+      "probe_sources",
+      "audit_logs"
+    ],
+    "publicProbeSourceHiddenKeys": [
+      "node_name",
+      "network_prefix",
+      "latest_reason",
+      "block_reason",
+      "first_seen"
+    ]
+  },
+  "pages": [
+    {
+      "id": "overview",
+      "labelKey": "overview",
+      "titleKey": "overviewTitle",
+      "descriptionKey": "overviewDescription",
+      "minRole": "public"
+    },
+    {
+      "id": "findings",
+      "labelKey": "findings",
+      "titleKey": "findingsTitle",
+      "descriptionKey": "findingsDescription",
+      "minRole": "private",
+      "endpoint": "/findings",
+      "columns": ["timestamp", "node_name", "severity", "rule_id", "category", "review_verdict", "subject", "title"]
+    },
+    {
+      "id": "incidents",
+      "labelKey": "incidents",
+      "titleKey": "incidentsTitle",
+      "descriptionKey": "incidentsDescription",
+      "minRole": "private",
+      "endpoint": "/incidents",
+      "columns": ["last_seen", "node_name", "severity", "score", "review_verdict", "title", "summary"]
+    },
+    {
+      "id": "baseline_drifts",
+      "labelKey": "drifts",
+      "titleKey": "driftsTitle",
+      "descriptionKey": "driftsDescription",
+      "minRole": "private",
+      "endpoint": "/baseline-drifts",
+      "columns": ["timestamp", "node_name", "severity", "rule_id", "tier", "review_verdict", "subject", "review_action"]
+    },
+    {
+      "id": "active_blocks",
+      "labelKey": "blocks",
+      "titleKey": "blocksTitle",
+      "descriptionKey": "blocksDescription",
+      "minRole": "private",
+      "endpoint": "/active-blocks",
+      "columns": ["blocked_at", "node_name", "rule_id", "reason", "expires_at"],
+      "privateColumns": ["blocked_at", "node_name", "ip", "country", "asn", "organization", "reason", "rule_id", "backend", "expires_at"]
+    },
+    {
+      "id": "probe_sources",
+      "labelKey": "blacklist",
+      "titleKey": "blacklistTitle",
+      "descriptionKey": "blacklistDescription",
+      "minRole": "private",
+      "endpoint": "/probe-sources",
+      "columns": ["last_seen", "source_ip", "seen_count", "block_status", "country", "asn", "organization", "categories", "rule_ids"],
+      "privateColumns": ["last_seen", "node_name", "source_ip", "seen_count", "block_status", "country", "asn", "organization", "categories", "rule_ids", "latest_reason", "block_reason"]
+    },
+    {
+      "id": "audit_logs",
+      "labelKey": "auditLogs",
+      "titleKey": "auditLogsTitle",
+      "descriptionKey": "auditLogsDescription",
+      "minRole": "private",
+      "endpoint": "/audit-logs",
+      "columns": ["created_at", "action", "actor", "target_type", "target_id"]
+    },
+    {
+      "id": "nodes",
+      "labelKey": "nodes",
+      "titleKey": "nodesTitle",
+      "descriptionKey": "nodesDescription",
+      "minRole": "public",
+      "endpoint": "/nodes",
+      "columns": ["last_seen_at", "node_name", "agent_version"],
+      "privateColumns": ["last_seen_at", "node_name", "hostname", "agent_version", "privacy_mode"]
+    }
+  ],
+  "datasets": {
+    "/api/v1/nodes": {
+      "pageId": "nodes",
+      "minRole": "public",
+      "table": "nodes",
+      "orderColumn": "node_name",
+      "orderDirection": "ASC",
+      "filterColumn": "last_seen_at",
+      "columns": ["last_seen_at", "node_name", "agent_version", "privacy_mode", "metrics_json"]
+    },
+    "/api/v1/findings": {
+      "pageId": "findings",
+      "minRole": "private",
+      "table": "findings",
+      "orderColumn": "timestamp",
+      "columns": ["id", "timestamp", "node_id AS node_name", "severity", "rule_id", "category", "subject", "review_signature", "title"]
+    },
+    "/api/v1/incidents": {
+      "pageId": "incidents",
+      "minRole": "private",
+      "table": "incidents",
+      "orderColumn": "last_seen",
+      "columns": ["id", "last_seen", "node_id AS node_name", "severity", "score", "title", "summary", "review_signature"]
+    },
+    "/api/v1/baseline-drifts": {
+      "pageId": "baseline_drifts",
+      "minRole": "private",
+      "table": "baseline_drifts",
+      "orderColumn": "timestamp",
+      "columns": ["id", "finding_id", "timestamp", "node_id AS node_name", "severity", "rule_id", "category", "tier", "subject", "review_signature", "review_action"]
+    },
+    "/api/v1/active-blocks": {
+      "pageId": "active_blocks",
+      "minRole": "private",
+      "sensitive": true,
+      "table": "active_blocks",
+      "orderColumn": "blocked_at",
+      "activeFilter": "expired = 0",
+      "publicColumns": ["blocked_at", "node_id AS node_name"],
+      "columns": [
+        "blocked_at",
+        "node_id AS node_name",
+        "ip",
+        "(SELECT network_prefix FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND network_prefix IS NOT NULL AND network_prefix <> '' AND LOWER(network_prefix) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS network_prefix",
+        "(SELECT country FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND country IS NOT NULL AND country <> '' AND LOWER(country) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS country",
+        "(SELECT asn FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND asn IS NOT NULL AND asn <> '' AND LOWER(asn) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS asn",
+        "(SELECT organization FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND organization IS NOT NULL AND organization <> '' AND LOWER(organization) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS organization",
+        "rule_id",
+        "backend",
+        "reason",
+        "expires_at"
+      ]
+    },
+    "/api/v1/probe-sources": {
+      "pageId": "probe_sources",
+      "minRole": "private",
+      "sensitive": true,
+      "optional": true,
+      "table": "probe_sources",
+      "orderColumn": "last_seen",
+      "columns": ["last_seen", "node_id AS node_name", "source_ip", "ip_version", "network_prefix", "seen_count", "block_status", "country", "asn", "organization", "categories_json", "rule_ids_json", "latest_reason", "block_reason"]
+    },
+    "/api/v1/audit-logs": {
+      "pageId": "audit_logs",
+      "minRole": "private",
+      "table": "panel_audit_logs",
+      "orderColumn": "created_at",
+      "columns": ["created_at", "action", "actor", "target_type", "target_id"]
+    }
+  },
+  "rustColumnSets": {
+    "nodesPublic": ["last_seen_at", "node_name", "agent_version", "metrics_json"],
+    "nodesPrivate": ["last_seen_at", "node_name", "hostname", "agent_version", "privacy_mode", "storage_json", "metrics_json"]
+  }
+}

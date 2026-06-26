@@ -1,3 +1,6 @@
+use crate::attack_fingerprint::{
+    ACTION_HINT_KEY, FINGERPRINT_ID_KEY, VERDICT_BENIGN, VERDICT_MALICIOUS,
+};
 use crate::detectors::field_is_allowlisted;
 use crate::detectors::web_rules::{probe_family_blocks_on_single_attempt, probe_family_is_exploit};
 use crate::risk_score::{confidence_percent, unified_score};
@@ -64,7 +67,7 @@ impl BlockActionStatus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockEntry {
     pub ip: String,
     pub rule_id: String,
@@ -83,6 +86,8 @@ pub struct BlockMaintenanceReport {
     pub stale_blocks: usize,
     pub failed_expirations: usize,
     pub failed_state_checks: usize,
+    pub legacy_port_guards_removed: usize,
+    pub failed_legacy_port_guard_cleanups: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -95,6 +100,7 @@ pub struct UnblockReport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BlockCandidate {
+    kind: BlockCandidateKind,
     ip: IpAddr,
     rule_id: String,
     finding_id: String,
@@ -102,6 +108,15 @@ struct BlockCandidate {
     action: ResponseAction,
     ttl_seconds: Option<u64>,
     permanent_after: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockCandidateKind {
+    WebProbe,
+    WebError,
+    WebAggregate,
+    SshBruteforce,
+    AttackFingerprint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -580,6 +595,11 @@ fn synchronize_block_state(
     now: DateTime<Utc>,
 ) -> BlockMaintenanceReport {
     let mut report = BlockMaintenanceReport::default();
+    if config.active_response.cleanup_legacy_port_guards {
+        let legacy = cleanup_legacy_port_guards(config);
+        report.legacy_port_guards_removed = legacy.removed;
+        report.failed_legacy_port_guard_cleanups = legacy.failed;
+    }
     let expired = state
         .blocks
         .iter()
@@ -641,6 +661,157 @@ fn synchronize_block_state(
     report
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct LegacyPortGuardCleanupReport {
+    removed: usize,
+    failed: usize,
+}
+
+fn cleanup_legacy_port_guards(config: &SentinelConfig) -> LegacyPortGuardCleanupReport {
+    let timeout = Duration::from_secs(config.active_response.command_timeout_seconds);
+    let mut report = LegacyPortGuardCleanupReport::default();
+    let nft = cleanup_legacy_nft_port_guard(timeout);
+    report.removed += nft.removed;
+    report.failed += nft.failed;
+    for program in ["iptables", "ip6tables"] {
+        let cleaned = cleanup_legacy_iptables_port_guards(program, timeout);
+        report.removed += cleaned.removed;
+        report.failed += cleaned.failed;
+    }
+    report
+}
+
+fn cleanup_legacy_nft_port_guard(timeout: Duration) -> LegacyPortGuardCleanupReport {
+    let mut report = LegacyPortGuardCleanupReport::default();
+    if !command_available("nft", timeout) {
+        return report;
+    }
+    let Some(output) = command_output(
+        "nft",
+        &["list", "table", "inet", "vps_sentinel_exposure_guard"],
+        timeout,
+    ) else {
+        report.failed += 1;
+        return report;
+    };
+    if !output.status_success {
+        return report;
+    }
+    match run_command_status_owned(
+        "nft",
+        &[
+            "delete".to_string(),
+            "table".to_string(),
+            "inet".to_string(),
+            "vps_sentinel_exposure_guard".to_string(),
+        ],
+        timeout,
+    ) {
+        Ok(true) => {
+            report.removed += 1;
+            warn!("removed legacy vps-sentinel port guard nftables table");
+        }
+        Ok(false) => report.failed += 1,
+        Err(err) => {
+            report.failed += 1;
+            warn!(error = %err, "failed to remove legacy vps-sentinel port guard nftables table");
+        }
+    }
+    report
+}
+
+fn cleanup_legacy_iptables_port_guards(
+    program: &str,
+    timeout: Duration,
+) -> LegacyPortGuardCleanupReport {
+    let mut report = LegacyPortGuardCleanupReport::default();
+    if !command_available(program, timeout) {
+        return report;
+    }
+    let Some(output) = command_output(program, &["-S"], timeout) else {
+        report.failed += 1;
+        return report;
+    };
+    if !output.status_success {
+        return report;
+    }
+    for line in output
+        .stdout
+        .lines()
+        .filter(|line| is_legacy_port_guard_rule(line) && line.trim_start().starts_with("-A "))
+    {
+        let mut args = split_iptables_rule(line);
+        if args.first().map(String::as_str) != Some("-A") || args.len() < 3 {
+            continue;
+        }
+        args[0] = "-D".to_string();
+        match run_command_status_owned(program, &args, timeout) {
+            Ok(true) => {
+                report.removed += 1;
+                warn!(
+                    backend = program,
+                    "removed legacy vps-sentinel port guard iptables rule"
+                );
+            }
+            Ok(false) => report.failed += 1,
+            Err(err) => {
+                report.failed += 1;
+                warn!(backend = program, error = %err, "failed to remove legacy vps-sentinel port guard iptables rule");
+            }
+        }
+    }
+    report
+}
+
+fn is_legacy_port_guard_rule(line: &str) -> bool {
+    let lowered = line.to_ascii_lowercase();
+    lowered.contains("vps-sentinel exposure guard")
+        && lowered.contains(" -p tcp ")
+        && (lowered.contains(" --dport ") || lowered.contains(" --dports "))
+        && (lowered.contains(" -j drop") || lowered.contains(" -j reject"))
+}
+
+fn split_iptables_rule(line: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for ch in line.chars() {
+        if escaped {
+            current.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if let Some(quote_ch) = quote {
+            if ch == quote_ch {
+                quote = None;
+            } else {
+                current.push(ch);
+            }
+            continue;
+        }
+        if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+            continue;
+        }
+        if ch.is_whitespace() {
+            if !current.is_empty() {
+                args.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        args.push(current);
+    }
+    args
+}
+
 fn block_candidates(findings: &[Finding], config: &SentinelConfig) -> Vec<BlockCandidate> {
     let mut candidates = BTreeMap::<IpAddr, BlockCandidate>::new();
     for finding in findings {
@@ -656,14 +827,19 @@ fn block_candidates(findings: &[Finding], config: &SentinelConfig) -> Vec<BlockC
 }
 
 fn block_candidate(finding: &Finding, config: &SentinelConfig) -> Option<BlockCandidate> {
+    if evidence_value(finding, "attack_fingerprint_verdict") == Some(VERDICT_BENIGN) {
+        return None;
+    }
     let candidate = match finding.rule_id.as_str() {
         "WEB-001" if config.active_response.web_enabled => web_probe_candidate(finding, config),
         "WEB-002" if config.active_response.web_enabled => web_error_candidate(finding, config),
-        "SSH-003" if config.active_response.ssh_enabled => {
+        "SSH-003" | "SSH-007" if config.active_response.ssh_enabled => {
             ssh_bruteforce_candidate(finding, config)
         }
         _ => None,
-    }?;
+    }
+    .or_else(|| attack_fingerprint_candidate(finding, config))?;
+    let candidate = apply_response_layer(candidate, finding, config);
     let candidate = apply_response_policy(candidate, finding, config)?;
     filter_block_candidate(candidate, config)
 }
@@ -682,6 +858,9 @@ fn filter_block_candidate(
 }
 
 fn web_probe_candidate(finding: &Finding, config: &SentinelConfig) -> Option<BlockCandidate> {
+    if proxy_source_unresolved(finding) {
+        return None;
+    }
     let ip = evidence_ip(finding, "ip")?;
     let family = evidence_value(finding, "probe_family")?;
     let response = evidence_value(finding, "response_profile")?;
@@ -691,6 +870,7 @@ fn web_probe_candidate(finding: &Finding, config: &SentinelConfig) -> Option<Blo
         return None;
     }
     Some(BlockCandidate {
+        kind: BlockCandidateKind::WebProbe,
         ip,
         rule_id: finding.rule_id.clone(),
         finding_id: finding.id.clone(),
@@ -704,6 +884,9 @@ fn web_probe_candidate(finding: &Finding, config: &SentinelConfig) -> Option<Blo
 }
 
 fn web_error_candidate(finding: &Finding, config: &SentinelConfig) -> Option<BlockCandidate> {
+    if proxy_source_unresolved(finding) {
+        return None;
+    }
     let ip = evidence_ip(finding, "ip")?;
     let error_count = evidence_usize(finding, "error_count")?;
     let threshold = match active_response_strategy(config) {
@@ -719,6 +902,7 @@ fn web_error_candidate(finding: &Finding, config: &SentinelConfig) -> Option<Blo
         return None;
     }
     Some(BlockCandidate {
+        kind: BlockCandidateKind::WebError,
         ip,
         rule_id: finding.rule_id.clone(),
         finding_id: finding.id.clone(),
@@ -768,16 +952,38 @@ fn aggregate_web_probe_candidates(
             responses: BTreeSet::new(),
         });
         group.total_requests = group.total_requests.saturating_add(request_count);
-        group.families.insert(family.to_string());
-        group.responses.insert(response.to_string());
+        for family in
+            split_evidence_list(evidence_value(finding, "probe_families").unwrap_or(family))
+        {
+            group.families.insert(family);
+        }
+        for response in
+            split_evidence_list(evidence_value(finding, "response_profiles").unwrap_or(response))
+        {
+            group.responses.insert(response);
+        }
     }
     groups
         .into_iter()
         .filter_map(|(ip, group)| {
             let candidate = aggregate_web_candidate(ip, &group, config)?;
+            let candidate = apply_response_layer(candidate, group.finding, config);
             let candidate = apply_response_policy(candidate, group.finding, config)?;
             filter_block_candidate(candidate, config)
         })
+        .collect()
+}
+
+fn proxy_source_unresolved(finding: &Finding) -> bool {
+    evidence_value(finding, "proxy_source_unresolved") == Some("true")
+}
+
+fn split_evidence_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+        .map(str::to_string)
         .collect()
 }
 
@@ -799,6 +1005,7 @@ fn aggregate_web_candidate(
         return None;
     }
     Some(BlockCandidate {
+        kind: BlockCandidateKind::WebAggregate,
         ip,
         rule_id: "WEB-001".to_string(),
         finding_id: group.finding.id.clone(),
@@ -851,6 +1058,7 @@ fn ssh_bruteforce_candidate(finding: &Finding, config: &SentinelConfig) -> Optio
         return None;
     }
     Some(BlockCandidate {
+        kind: BlockCandidateKind::SshBruteforce,
         ip,
         rule_id: finding.rule_id.clone(),
         finding_id: finding.id.clone(),
@@ -859,6 +1067,173 @@ fn ssh_bruteforce_candidate(finding: &Finding, config: &SentinelConfig) -> Optio
         ttl_seconds: None,
         permanent_after: None,
     })
+}
+
+fn attack_fingerprint_candidate(
+    finding: &Finding,
+    config: &SentinelConfig,
+) -> Option<BlockCandidate> {
+    if !config.attack_fingerprints.active_response_enabled {
+        return None;
+    }
+    if evidence_value(finding, ACTION_HINT_KEY) != Some("block") || proxy_source_unresolved(finding)
+    {
+        return None;
+    }
+    let ip = evidence_any_ip(finding, &["source_ip", "ip", "remote_ip", "remote_addr"])?;
+    let fingerprint_id = evidence_value(finding, FINGERPRINT_ID_KEY).unwrap_or("unknown");
+    let fingerprint_kind = evidence_value(finding, "attack_fingerprint_kind").unwrap_or("unknown");
+    let score = evidence_value(finding, "attack_fingerprint_score").unwrap_or("unknown");
+    Some(BlockCandidate {
+        kind: BlockCandidateKind::AttackFingerprint,
+        ip,
+        rule_id: finding.rule_id.clone(),
+        finding_id: finding.id.clone(),
+        reason: format!(
+            "attack fingerprint id={fingerprint_id} kind={fingerprint_kind} score={score}"
+        ),
+        action: ResponseAction::Block,
+        ttl_seconds: None,
+        permanent_after: None,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResponseLayer {
+    name: &'static str,
+    ttl_multiplier: u64,
+    permanent_after: Option<usize>,
+    action: Option<ResponseAction>,
+}
+
+fn apply_response_layer(
+    mut candidate: BlockCandidate,
+    finding: &Finding,
+    config: &SentinelConfig,
+) -> BlockCandidate {
+    let Some(layer) = response_layer(&candidate, finding, config) else {
+        return candidate;
+    };
+    candidate.reason = format!("{} layer={}", candidate.reason, layer.name);
+    if candidate.ttl_seconds.is_none() && layer.ttl_multiplier > 1 {
+        candidate.ttl_seconds = Some(layered_ttl_seconds(config, layer.ttl_multiplier));
+    }
+    if candidate.permanent_after.is_none() {
+        candidate.permanent_after = layer.permanent_after;
+    }
+    if let Some(action) = layer.action {
+        candidate.action = action;
+    }
+    candidate
+}
+
+fn response_layer(
+    candidate: &BlockCandidate,
+    finding: &Finding,
+    config: &SentinelConfig,
+) -> Option<ResponseLayer> {
+    if evidence_value(finding, "attack_fingerprint_verdict") == Some(VERDICT_MALICIOUS) {
+        return Some(ResponseLayer {
+            name: "confirmed_malicious_fingerprint",
+            ttl_multiplier: 4,
+            permanent_after: Some(layered_permanent_after(config, 1)),
+            action: Some(ResponseAction::PermanentBlock),
+        });
+    }
+    if evidence_value(finding, ACTION_HINT_KEY) == Some("block") {
+        return Some(ResponseLayer {
+            name: "repeated_attack_fingerprint",
+            ttl_multiplier: 2,
+            permanent_after: Some(layered_permanent_after(config, 2)),
+            action: None,
+        });
+    }
+    match finding.rule_id.as_str() {
+        "SSH-007" => Some(ResponseLayer {
+            name: "ssh_success_after_bruteforce",
+            ttl_multiplier: 4,
+            permanent_after: Some(layered_permanent_after(config, 2)),
+            action: None,
+        }),
+        "SSH-003" if high_volume_ssh_bruteforce(finding, config) => Some(ResponseLayer {
+            name: "high_volume_ssh_bruteforce",
+            ttl_multiplier: 2,
+            permanent_after: Some(layered_permanent_after(config, 2)),
+            action: None,
+        }),
+        "WEB-001" if candidate.kind == BlockCandidateKind::WebAggregate => Some(ResponseLayer {
+            name: "multi_family_web_scan",
+            ttl_multiplier: 2,
+            permanent_after: Some(layered_permanent_after(config, 2)),
+            action: None,
+        }),
+        "WEB-001" => web_probe_response_layer(finding, config),
+        "WEB-002" => Some(ResponseLayer {
+            name: "web_error_burst",
+            ttl_multiplier: 2,
+            permanent_after: Some(layered_permanent_after(config, 3)),
+            action: None,
+        }),
+        _ => None,
+    }
+}
+
+fn web_probe_response_layer(finding: &Finding, config: &SentinelConfig) -> Option<ResponseLayer> {
+    let family = evidence_value(finding, "probe_family")?;
+    let response = evidence_value(finding, "response_profile")?;
+    if response == "successful_response" {
+        return Some(ResponseLayer {
+            name: "confirmed_web_exposure",
+            ttl_multiplier: 4,
+            permanent_after: Some(layered_permanent_after(config, 2)),
+            action: None,
+        });
+    }
+    if probe_family_blocks_on_single_attempt(family) {
+        return Some(ResponseLayer {
+            name: "high_confidence_web_exploit",
+            ttl_multiplier: 3,
+            permanent_after: Some(layered_permanent_after(config, 2)),
+            action: None,
+        });
+    }
+    if probe_family_is_exploit(family) {
+        return Some(ResponseLayer {
+            name: "repeated_web_exploit",
+            ttl_multiplier: 2,
+            permanent_after: Some(layered_permanent_after(config, 2)),
+            action: None,
+        });
+    }
+    None
+}
+
+fn high_volume_ssh_bruteforce(finding: &Finding, config: &SentinelConfig) -> bool {
+    let Some(failure_count) = evidence_usize(finding, "failure_count") else {
+        return false;
+    };
+    failure_count
+        >= config
+            .active_response
+            .ssh_failed_login_block_threshold
+            .saturating_mul(2)
+}
+
+fn layered_ttl_seconds(config: &SentinelConfig, multiplier: u64) -> u64 {
+    const MAX_LAYERED_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
+    config
+        .active_response
+        .block_ttl_seconds
+        .saturating_mul(multiplier)
+        .min(MAX_LAYERED_TTL_SECONDS)
+}
+
+fn layered_permanent_after(config: &SentinelConfig, target: usize) -> usize {
+    config
+        .active_response
+        .permanent_block_threshold
+        .max(1)
+        .min(target.max(1))
 }
 
 fn apply_response_policy(
@@ -893,8 +1268,12 @@ fn apply_response_policy(
         "permanent_block" => ResponseAction::PermanentBlock,
         _ => ResponseAction::Block,
     };
-    candidate.ttl_seconds = policy.ttl_seconds;
-    candidate.permanent_after = policy.permanent_after;
+    if let Some(ttl_seconds) = policy.ttl_seconds {
+        candidate.ttl_seconds = Some(ttl_seconds);
+    }
+    if let Some(permanent_after) = policy.permanent_after {
+        candidate.permanent_after = Some(permanent_after);
+    }
     candidate.reason = format!("{} policy={name}", candidate.reason);
     Some(candidate)
 }
@@ -944,16 +1323,16 @@ fn evidence_ip(finding: &Finding, key: &str) -> Option<IpAddr> {
     evidence_value(finding, key)?.parse().ok()
 }
 
+fn evidence_any_ip(finding: &Finding, keys: &[&str]) -> Option<IpAddr> {
+    keys.iter().find_map(|key| evidence_ip(finding, key))
+}
+
 fn evidence_usize(finding: &Finding, key: &str) -> Option<usize> {
     evidence_value(finding, key)?.parse().ok()
 }
 
 fn evidence_value<'a>(finding: &'a Finding, key: &str) -> Option<&'a str> {
-    finding
-        .evidence
-        .iter()
-        .find(|item| item.key == key)
-        .map(|item| item.value.as_str())
+    sentinel_core::evidence_value(&finding.evidence, key)
 }
 
 fn record_firewall_present(config: &SentinelConfig, record: &BlockRecord) -> Option<bool> {
@@ -1374,6 +1753,7 @@ mod tests {
         BlockActionStatus, BlockRecord, BlockState, IpBlocker, ResponseAction, SentinelResult,
         STATE_RULE_ID,
     };
+    use crate::attack_fingerprint::{VERDICT_BENIGN, VERDICT_MALICIOUS};
     use crate::storage::SqliteStore;
     use chrono::{Duration as ChronoDuration, Utc};
     use sentinel_core::{Category, Evidence, Finding, SentinelConfig, Severity};
@@ -1433,6 +1813,44 @@ mod tests {
     }
 
     #[test]
+    fn grouped_web_probe_family_list_can_trigger_aggregate_block() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.web_probe_block_threshold = 25;
+        let mut finding = web_finding("54.197.205.160", "env_file", "missing_or_rejected", 20);
+        finding.evidence.push(Evidence::new(
+            "probe_families",
+            "actuator, env_file, git_exposure",
+        ));
+        finding
+            .evidence
+            .push(Evidence::new("response_profiles", "missing_or_rejected"));
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].ip.to_string(), "54.197.205.160");
+        assert!(candidates[0].reason.contains("web aggregate"));
+    }
+
+    #[test]
+    fn unresolved_trusted_proxy_web_findings_are_not_block_candidates() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        let mut finding = web_finding("172.70.12.9", "env_file", "successful_response", 1);
+        finding
+            .evidence
+            .push(Evidence::new("source_is_trusted_proxy", "true"));
+        finding
+            .evidence
+            .push(Evidence::new("proxy_source_unresolved", "true"));
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
     fn multi_family_web_probe_aggregate_honors_policy_and_ip_safety() {
         let mut config = SentinelConfig::default();
         config.active_response.enabled = true;
@@ -1476,6 +1894,84 @@ mod tests {
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].ip.to_string(), "1.1.1.1");
+    }
+
+    #[test]
+    fn ssh_success_after_bruteforce_uses_same_response_policy() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.ssh_failed_login_block_threshold = 6;
+        let mut finding = ssh_finding("8.8.4.4", 6);
+        finding.rule_id = "SSH-007".to_string();
+        finding.title = "SSH brute force followed by success".to_string();
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].ip.to_string(), "8.8.4.4");
+        assert_eq!(candidates[0].rule_id, "SSH-007");
+        assert!(candidates[0].reason.contains("policy=ssh_bruteforce"));
+    }
+
+    #[test]
+    fn fingerprint_action_hint_can_block_below_rule_threshold() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.web_probe_block_threshold = 25;
+        let mut finding = web_finding("8.8.8.8", "env_file", "missing_or_rejected", 1);
+        finding.evidence.push(Evidence::new(
+            crate::attack_fingerprint::FINGERPRINT_ID_KEY,
+            "WEB-FP-test",
+        ));
+        finding.evidence.push(Evidence::new(
+            crate::attack_fingerprint::ACTION_HINT_KEY,
+            "block",
+        ));
+        finding
+            .evidence
+            .push(Evidence::new("attack_fingerprint_kind", "web_probe"));
+        finding
+            .evidence
+            .push(Evidence::new("attack_fingerprint_score", "90"));
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].ip.to_string(), "8.8.8.8");
+        assert!(candidates[0].reason.contains("WEB-FP-test"));
+    }
+
+    #[test]
+    fn benign_fingerprint_feedback_suppresses_active_response() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.web_probe_block_threshold = 1;
+        let mut finding = web_finding("8.8.8.8", "env_file", "successful_response", 10);
+        finding
+            .evidence
+            .push(Evidence::new("attack_fingerprint_verdict", VERDICT_BENIGN));
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn fingerprint_action_hint_does_not_block_unresolved_proxy_source() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        let mut finding = web_finding("172.70.12.9", "env_file", "missing_or_rejected", 1);
+        finding.evidence.push(Evidence::new(
+            crate::attack_fingerprint::ACTION_HINT_KEY,
+            "block",
+        ));
+        finding
+            .evidence
+            .push(Evidence::new("proxy_source_unresolved", "true"));
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert!(candidates.is_empty());
     }
 
     #[test]
@@ -1564,6 +2060,78 @@ mod tests {
         assert!(candidates
             .iter()
             .any(|item| item.ip.to_string() == "4.4.4.6"));
+    }
+
+    #[test]
+    fn strong_web_signal_uses_layered_ttl_and_permanent_threshold() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.block_ttl_seconds = 60;
+        config.active_response.permanent_block_threshold = 5;
+        let finding = web_finding("9.9.9.9", "env_file", "successful_response", 1);
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].ttl_seconds, Some(240));
+        assert_eq!(candidates[0].permanent_after, Some(2));
+        assert!(candidates[0]
+            .reason
+            .contains("layer=confirmed_web_exposure"));
+    }
+
+    #[test]
+    fn response_policy_explicit_ttl_and_permanent_threshold_override_layer() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.block_ttl_seconds = 60;
+        let policy = config
+            .response_policy
+            .policies
+            .get_mut("web_attack")
+            .expect("web policy");
+        policy.ttl_seconds = Some(30);
+        policy.permanent_after = Some(4);
+        let finding = web_finding("9.9.9.9", "env_file", "successful_response", 1);
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].ttl_seconds, Some(30));
+        assert_eq!(candidates[0].permanent_after, Some(4));
+        assert!(candidates[0].reason.contains("policy=web_attack"));
+    }
+
+    #[test]
+    fn malicious_fingerprint_verdict_uses_permanent_response_layer() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.web_probe_block_threshold = 25;
+        let mut finding = web_finding("8.8.8.8", "env_file", "missing_or_rejected", 1);
+        finding.evidence.push(Evidence::new(
+            crate::attack_fingerprint::FINGERPRINT_ID_KEY,
+            "WEB-FP-test",
+        ));
+        finding.evidence.push(Evidence::new(
+            crate::attack_fingerprint::ACTION_HINT_KEY,
+            "block",
+        ));
+        finding.evidence.push(Evidence::new(
+            "attack_fingerprint_verdict",
+            VERDICT_MALICIOUS,
+        ));
+        finding
+            .evidence
+            .push(Evidence::new("attack_fingerprint_score", "95"));
+
+        let candidates = block_candidates(&[finding], &config);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].action, ResponseAction::Block);
+        assert_eq!(candidates[0].permanent_after, Some(1));
+        assert!(candidates[0]
+            .reason
+            .contains("layer=confirmed_malicious_fingerprint"));
     }
 
     #[test]
@@ -1774,6 +2342,31 @@ mod tests {
         assert_eq!(entries[0].firewall_present, None);
         assert!(!entries[0].expired);
         Ok(())
+    }
+
+    #[test]
+    fn legacy_port_guard_rule_detection_is_narrow() {
+        assert!(super::is_legacy_port_guard_rule(
+            r#"-A INPUT -p tcp -m multiport --dports 3306,6379 -m comment --comment "vps-sentinel exposure guard" -j DROP"#
+        ));
+        assert!(!super::is_legacy_port_guard_rule(
+            "-A INPUT -s 8.8.8.8/32 -m comment --comment vps-sentinel -j DROP"
+        ));
+        assert!(!super::is_legacy_port_guard_rule(
+            r#"-A INPUT -p tcp --dport 6379 -m comment --comment "custom exposure guard" -j DROP"#
+        ));
+    }
+
+    #[test]
+    fn split_iptables_rule_preserves_quoted_comment() {
+        let args = super::split_iptables_rule(
+            r#"-A INPUT -p tcp --dport 6379 -m comment --comment "vps-sentinel exposure guard" -j DROP"#,
+        );
+
+        assert_eq!(args[0], "-A");
+        assert_eq!(args[1], "INPUT");
+        assert!(args.contains(&"6379".to_string()));
+        assert!(args.contains(&"vps-sentinel exposure guard".to_string()));
     }
 
     fn web_finding(

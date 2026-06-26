@@ -224,6 +224,30 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
                 "如果确认未授权，请先保留进程和网络证据，再终止相关任务。",
             ],
         },
+        "SERVICE-001" => RuleMessage {
+            title: "发现新的监听服务画像",
+            description: "当前监听服务相对上一轮服务画像出现新增项。系统会结合协议、端口、公网暴露和进程身份判断是否需要关注。",
+            impact: &[
+                "新的公网监听面可能扩大主机暴露范围；如果只是同一服务的 UDP 动态端口迁移，通常属于低风险运行态变化。",
+            ],
+            recommendations: &[
+                "核对进程名、可执行文件、软件包归属和防火墙暴露情况。",
+                "如果确认是计划内服务或合法动态端口变化，再刷新服务画像基线。",
+                "如果服务身份未知、路径异常或伴随其他进程/文件风险信号，请先调查再处理。",
+            ],
+        },
+        "SERVICE-002" => RuleMessage {
+            title: "监听服务进程身份发生变化",
+            description: "一个已知监听服务现在由不同的进程名或可执行文件持有。",
+            impact: &[
+                "服务 owner 变化可能来自正常升级，也可能表示端口被劫持、服务替换或后门伪装。",
+            ],
+            recommendations: &[
+                "对比当前可执行文件、上一轮可执行文件、软件包归属和 systemd ExecStart。",
+                "如果变化来自计划内升级，确认后刷新服务画像基线。",
+                "如果路径、属主或启动链不符合预期，请保留进程和 socket 证据后再处置。",
+            ],
+        },
         "NET-001" => RuleMessage {
             title: "检测到新增公网监听端口",
             description: "一个公网监听端口相对已保存基线新增。",
@@ -305,6 +329,15 @@ fn zh_rule(finding: &Finding) -> Option<LocalizedFinding> {
             recommendations: &[
                 "确认 Web 服务是否能执行该文件。",
                 "尽量将上传目录放在不可执行路径。",
+            ],
+        },
+        "FILE-004" => RuleMessage {
+            title: "检测到敏感文件活动",
+            description: "短生命周期采集器观察到敏感路径上的写入、删除、重命名、权限或属主变更活动。",
+            impact: &["敏感文件活动可能表示持久化、凭据变更、权限变更或 Web payload 落地。"],
+            recommendations: &[
+                "结合软件包更新、部署记录、SSH 会话和进程父链确认来源。",
+                "如果不是授权操作，先保留文件、进程和 audit/eBPF 证据再清理。",
             ],
         },
         "PERSIST-001" => RuleMessage {

@@ -1,9 +1,12 @@
 use crate::collectors::{CollectContext, Collector};
 use crate::utils::fs::{path_string, read_tail};
+use crate::utils::ip::ip_matches_patterns;
 use async_trait::async_trait;
+use chrono::{DateTime, Duration, Local, NaiveDateTime, TimeZone, Utc};
 use glob::glob;
-use sentinel_core::{RawEvent, SentinelResult};
+use sentinel_core::{config::WebConfig, RawEvent, SentinelResult};
 use serde_json::Value;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
 pub struct WebLogCollector;
@@ -25,13 +28,32 @@ impl Collector for WebLogCollector {
                 continue;
             }
             let content = read_tail(&path, ctx.config.web.max_log_tail_bytes)?;
-            events.extend(
-                content
-                    .lines()
-                    .filter_map(|line| parse_web_log_line(line, &source)),
-            );
+            for line in content.lines() {
+                if !log_line_within_lookback(line, ctx.config.web.log_lookback_seconds) {
+                    continue;
+                }
+                let Some(mut event) =
+                    parse_web_log_line_with_config(line, &source, &ctx.config.web)
+                else {
+                    continue;
+                };
+                strip_raw_log_line_if_disabled(
+                    &mut event,
+                    ctx.config.performance.store_raw_log_lines,
+                );
+                events.push(event);
+                if events.len() >= ctx.config.web.max_events_per_scan {
+                    return Ok(events);
+                }
+            }
         }
         Ok(events)
+    }
+}
+
+fn strip_raw_log_line_if_disabled(event: &mut RawEvent, keep_raw: bool) {
+    if !keep_raw {
+        event.fields.remove("raw");
     }
 }
 
@@ -67,6 +89,19 @@ pub fn parse_web_log_line(line: &str, source: &str) -> Option<RawEvent> {
         .or_else(|| parse_error_log_line(line, source))
 }
 
+fn parse_web_log_line_with_config(
+    line: &str,
+    source: &str,
+    config: &WebConfig,
+) -> Option<RawEvent> {
+    let mut event =
+        parse_json_access_log_line_with_fields(line, source, &config.real_client_ip_fields)
+            .or_else(|| parse_access_log_line(line, source))
+            .or_else(|| parse_error_log_line(line, source))?;
+    normalize_web_client_ip(&mut event, config);
+    Some(event)
+}
+
 /// Parse a common Nginx/Apache access log line.
 pub fn parse_access_log_line(line: &str, source: &str) -> Option<RawEvent> {
     let ip = line.split_whitespace().next()?;
@@ -96,6 +131,14 @@ pub fn parse_access_log_line(line: &str, source: &str) -> Option<RawEvent> {
 }
 
 pub fn parse_json_access_log_line(line: &str, source: &str) -> Option<RawEvent> {
+    parse_json_access_log_line_with_fields(line, source, &[])
+}
+
+fn parse_json_access_log_line_with_fields(
+    line: &str,
+    source: &str,
+    real_client_fields: &[String],
+) -> Option<RawEvent> {
     let value: Value = serde_json::from_str(line).ok()?;
     let ip = json_string(&value, &["remote_addr"])
         .or_else(|| json_string(&value, &["remote_ip"]))
@@ -117,15 +160,17 @@ pub fn parse_json_access_log_line(line: &str, source: &str) -> Option<RawEvent> 
         .or_else(|| json_string(&value, &["status_code"]))
         .unwrap_or_else(|| "000".to_string());
 
-    Some(
-        RawEvent::new("web", "web_access")
-            .with_field("ip", ip)
-            .with_field("method", method)
-            .with_field("path", path)
-            .with_field("status", status)
-            .with_field("log_source", source)
-            .with_field("raw", line),
-    )
+    let mut event = RawEvent::new("web", "web_access")
+        .with_field("ip", ip)
+        .with_field("method", method)
+        .with_field("path", path)
+        .with_field("status", status)
+        .with_field("log_source", source)
+        .with_field("raw", line);
+    if let Some(real_client_ip) = real_client_ip_from_json(&value, real_client_fields) {
+        event = event.with_field("real_client_ip", real_client_ip);
+    }
+    Some(event)
 }
 
 pub fn parse_error_log_line(line: &str, source: &str) -> Option<RawEvent> {
@@ -155,6 +200,122 @@ fn json_string(value: &Value, path: &[&str]) -> Option<String> {
     }
 }
 
+fn real_client_ip_from_json(value: &Value, fields: &[String]) -> Option<String> {
+    fields
+        .iter()
+        .filter_map(|field| json_string_by_dotted_path(value, field))
+        .filter_map(|value| first_ip_from_header(&value))
+        .find(|ip| ip.parse::<IpAddr>().is_ok())
+}
+
+fn json_string_by_dotted_path(value: &Value, path: &str) -> Option<String> {
+    let parts = path
+        .split('.')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.is_empty() {
+        return None;
+    }
+    json_string(value, &parts)
+}
+
+fn first_ip_from_header(value: &str) -> Option<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .find(|candidate| candidate.parse::<IpAddr>().is_ok())
+        .map(str::to_string)
+}
+
+fn normalize_web_client_ip(event: &mut RawEvent, config: &WebConfig) {
+    let Some(original_ip) = event.field("ip").map(str::to_string) else {
+        return;
+    };
+    if !ip_matches_patterns(&original_ip, &config.trusted_proxy_cidrs) {
+        return;
+    }
+
+    event
+        .fields
+        .insert("source_is_trusted_proxy".to_string(), "true".to_string());
+    event
+        .fields
+        .insert("proxy_ip".to_string(), original_ip.clone());
+
+    let real_ip = event
+        .field("real_client_ip")
+        .and_then(first_ip_from_header)
+        .filter(|ip| ip != &original_ip);
+    if let Some(real_ip) = real_ip {
+        event.fields.insert("ip".to_string(), real_ip);
+        return;
+    }
+
+    if config.suppress_unresolved_trusted_proxy {
+        event
+            .fields
+            .insert("proxy_source_unresolved".to_string(), "true".to_string());
+    }
+}
+
+fn log_line_within_lookback(line: &str, lookback_seconds: u64) -> bool {
+    log_line_within_lookback_at(line, lookback_seconds, Utc::now())
+}
+
+fn log_line_within_lookback_at(line: &str, lookback_seconds: u64, now: DateTime<Utc>) -> bool {
+    let Some(timestamp) = parse_log_timestamp(line) else {
+        return true;
+    };
+    let max_future_skew = Duration::minutes(5);
+    timestamp >= now - Duration::seconds(lookback_seconds as i64)
+        && timestamp <= now + max_future_skew
+}
+
+fn parse_log_timestamp(line: &str) -> Option<DateTime<Utc>> {
+    parse_common_log_timestamp(line)
+        .or_else(|| parse_nginx_error_timestamp(line))
+        .or_else(|| parse_json_timestamp(line))
+}
+
+fn parse_common_log_timestamp(line: &str) -> Option<DateTime<Utc>> {
+    let start = line.find('[')?;
+    let rest = &line[start + 1..];
+    let end = rest.find(']')?;
+    DateTime::parse_from_str(&rest[..end], "%d/%b/%Y:%H:%M:%S %z")
+        .ok()
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+}
+
+fn parse_nginx_error_timestamp(line: &str) -> Option<DateTime<Utc>> {
+    let value = line.get(..19)?;
+    let timestamp = NaiveDateTime::parse_from_str(value, "%Y/%m/%d %H:%M:%S").ok()?;
+    Local
+        .from_local_datetime(&timestamp)
+        .single()
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+}
+
+fn parse_json_timestamp(line: &str) -> Option<DateTime<Utc>> {
+    let value: Value = serde_json::from_str(line).ok()?;
+    for path in [
+        &["time"][..],
+        &["timestamp"][..],
+        &["@timestamp"][..],
+        &["datetime"][..],
+        &["ts"][..],
+        &["request", "time"][..],
+    ] {
+        let Some(value) = json_string(&value, path) else {
+            continue;
+        };
+        if let Ok(timestamp) = DateTime::parse_from_rfc3339(&value) {
+            return Some(timestamp.with_timezone(&Utc));
+        }
+    }
+    None
+}
+
 fn parse_request_target(request: &str) -> Option<(String, String)> {
     let mut parts = request.split_whitespace();
     let method = parts.next()?.to_string();
@@ -170,7 +331,12 @@ fn value_after_marker(line: &str, marker: &str, terminator: char) -> Option<Stri
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_access_log_line, parse_error_log_line, parse_json_access_log_line};
+    use super::{
+        log_line_within_lookback_at, parse_access_log_line, parse_error_log_line,
+        parse_json_access_log_line, parse_web_log_line_with_config, strip_raw_log_line_if_disabled,
+    };
+    use chrono::{TimeZone, Utc};
+    use sentinel_core::config::WebConfig;
 
     #[test]
     fn parses_common_access_log_line() -> Result<(), Box<dyn std::error::Error>> {
@@ -195,6 +361,35 @@ mod tests {
     }
 
     #[test]
+    fn resolves_real_client_ip_from_trusted_proxy_json_logs(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let config = WebConfig::default();
+        let line = r#"{"remote_ip":"172.70.12.9","request":{"method":"GET","uri":"/.env"},"status":404,"cf_connecting_ip":"198.51.100.8"}"#;
+        let event = parse_web_log_line_with_config(line, "/var/log/caddy/access.log", &config)
+            .ok_or("event")?;
+
+        assert_eq!(event.field("ip"), Some("198.51.100.8"));
+        assert_eq!(event.field("proxy_ip"), Some("172.70.12.9"));
+        assert_eq!(event.field("source_is_trusted_proxy"), Some("true"));
+        assert_eq!(event.field("proxy_source_unresolved"), None);
+        Ok(())
+    }
+
+    #[test]
+    fn marks_unresolved_trusted_proxy_common_log_source() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let config = WebConfig::default();
+        let line = r#"172.70.12.9 - - [16/Jun/2026:10:00:00 +0000] "GET /.env HTTP/1.1" 404 123 "-" "curl/8""#;
+        let event = parse_web_log_line_with_config(line, "/var/log/nginx/access.log", &config)
+            .ok_or("event")?;
+
+        assert_eq!(event.field("ip"), Some("172.70.12.9"));
+        assert_eq!(event.field("proxy_ip"), Some("172.70.12.9"));
+        assert_eq!(event.field("proxy_source_unresolved"), Some("true"));
+        Ok(())
+    }
+
+    #[test]
     fn parses_nginx_error_log_request_context() -> Result<(), Box<dyn std::error::Error>> {
         let line = r#"2026/06/18 10:00:00 [error] 1#1: *1 open() "/var/www/.env" failed (2: No such file or directory), client: 203.0.113.7, server: _, request: "GET /.env HTTP/1.1", host: "example.com""#;
         let event = parse_error_log_line(line, "/var/log/nginx/error.log").ok_or("event")?;
@@ -204,5 +399,28 @@ mod tests {
         assert_eq!(event.field("path"), Some("/.env"));
         assert_eq!(event.field("status"), Some("000"));
         Ok(())
+    }
+
+    #[test]
+    fn strips_raw_log_line_when_disabled() -> Result<(), Box<dyn std::error::Error>> {
+        let line = r#"203.0.113.9 - - [16/Jun/2026:10:00:00 +0000] "GET /.env HTTP/1.1" 404 123 "-" "curl/8""#;
+        let mut event = parse_access_log_line(line, "/var/log/nginx/access.log").ok_or("event")?;
+        assert!(event.field("raw").is_some());
+
+        strip_raw_log_line_if_disabled(&mut event, false);
+
+        assert!(event.field("raw").is_none());
+        assert_eq!(event.field("path"), Some("/.env"));
+        Ok(())
+    }
+
+    #[test]
+    fn filters_rotated_log_lines_outside_lookback() {
+        let now = Utc.with_ymd_and_hms(2026, 6, 19, 0, 10, 0).unwrap();
+        let old = r#"203.0.113.9 - - [18/Jun/2026:23:00:00 +0000] "GET /.env HTTP/1.1" 404 123 "-" "curl/8""#;
+        let recent = r#"203.0.113.9 - - [19/Jun/2026:00:05:00 +0000] "GET /.env HTTP/1.1" 404 123 "-" "curl/8""#;
+
+        assert!(!log_line_within_lookback_at(old, 900, now));
+        assert!(log_line_within_lookback_at(recent, 900, now));
     }
 }

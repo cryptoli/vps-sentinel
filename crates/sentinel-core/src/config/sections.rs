@@ -70,6 +70,48 @@ impl Default for StorageConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct PerformanceConfig {
+    pub collect_memory_metrics: bool,
+    pub store_raw_log_lines: bool,
+    pub store_all_web_access_events: bool,
+    pub max_stored_field_bytes: usize,
+}
+
+impl Default for PerformanceConfig {
+    fn default() -> Self {
+        Self {
+            collect_memory_metrics: true,
+            store_raw_log_lines: false,
+            store_all_web_access_events: false,
+            max_stored_field_bytes: 4096,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResourceBudgetConfig {
+    pub enabled: bool,
+    pub max_raw_events_per_scan: usize,
+    pub max_findings_per_scan: usize,
+    pub max_evidence_items_per_finding: usize,
+    pub max_evidence_value_bytes: usize,
+}
+
+impl Default for ResourceBudgetConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_raw_events_per_scan: 20_000,
+            max_findings_per_scan: 500,
+            max_evidence_items_per_finding: 64,
+            max_evidence_value_bytes: 2048,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SshConfig {
     pub enabled: bool,
     pub auth_log_paths: Vec<PathBuf>,
@@ -80,6 +122,9 @@ pub struct SshConfig {
     pub auth_log_lookback_seconds: u64,
     pub failed_login_threshold: usize,
     pub failed_login_window_seconds: u64,
+    pub max_events_per_scan: usize,
+    pub trusted_admin_ips: Vec<String>,
+    pub alert_on_trusted_admin_login: bool,
 }
 
 impl Default for SshConfig {
@@ -97,6 +142,9 @@ impl Default for SshConfig {
             auth_log_lookback_seconds: 300,
             failed_login_threshold: DEFAULT_SSH_FAILED_LOGIN_THRESHOLD,
             failed_login_window_seconds: 300,
+            max_events_per_scan: 2000,
+            trusted_admin_ips: Vec::new(),
+            alert_on_trusted_admin_login: false,
         }
     }
 }
@@ -108,6 +156,7 @@ pub struct FileIntegrityConfig {
     pub max_file_size_mb: u64,
     pub max_depth: usize,
     pub webshell_min_score: u16,
+    pub incremental: bool,
     pub paths: Vec<PathBuf>,
 }
 
@@ -118,6 +167,7 @@ impl Default for FileIntegrityConfig {
             max_file_size_mb: 5,
             max_depth: 8,
             webshell_min_score: 70,
+            incremental: true,
             paths: default_file_integrity_paths(),
         }
     }
@@ -158,8 +208,13 @@ pub struct WebConfig {
     pub web_roots: Vec<PathBuf>,
     pub log_paths: Vec<PathBuf>,
     pub max_log_tail_bytes: u64,
+    pub max_events_per_scan: usize,
     pub include_rotated: bool,
+    pub log_lookback_seconds: u64,
     pub error_burst_threshold: usize,
+    pub trusted_proxy_cidrs: Vec<String>,
+    pub real_client_ip_fields: Vec<String>,
+    pub suppress_unresolved_trusted_proxy: bool,
 }
 
 impl Default for WebConfig {
@@ -179,10 +234,65 @@ impl Default for WebConfig {
                 PathBuf::from("/var/log/apache2/access.log"),
             ],
             max_log_tail_bytes: 1024 * 1024,
+            max_events_per_scan: 5000,
             include_rotated: true,
+            log_lookback_seconds: 900,
             error_burst_threshold: 20,
+            trusted_proxy_cidrs: default_trusted_proxy_cidrs(),
+            real_client_ip_fields: default_real_client_ip_fields(),
+            suppress_unresolved_trusted_proxy: true,
         }
     }
+}
+
+fn default_trusted_proxy_cidrs() -> Vec<String> {
+    [
+        "173.245.48.0/20",
+        "103.21.244.0/22",
+        "103.22.200.0/22",
+        "103.31.4.0/22",
+        "141.101.64.0/18",
+        "108.162.192.0/18",
+        "190.93.240.0/20",
+        "188.114.96.0/20",
+        "197.234.240.0/22",
+        "198.41.128.0/17",
+        "162.158.0.0/15",
+        "104.16.0.0/13",
+        "104.24.0.0/14",
+        "172.64.0.0/13",
+        "131.0.72.0/22",
+        "2400:cb00::/32",
+        "2606:4700::/32",
+        "2803:f800::/32",
+        "2405:b500::/32",
+        "2405:8100::/32",
+        "2a06:98c0::/29",
+        "2c0f:f248::/32",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn default_real_client_ip_fields() -> Vec<String> {
+    [
+        "cf_connecting_ip",
+        "http_cf_connecting_ip",
+        "x_forwarded_for",
+        "http_x_forwarded_for",
+        "x_real_ip",
+        "http_x_real_ip",
+        "request.headers.cf-connecting-ip",
+        "request.headers.x-forwarded-for",
+        "request.headers.x-real-ip",
+        "headers.cf-connecting-ip",
+        "headers.x-forwarded-for",
+        "headers.x-real-ip",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -194,6 +304,8 @@ pub struct ProcessConfig {
     pub deleted_executable_min_score: u16,
     pub behavior_min_score: u16,
     pub suspicious_socket_fd_threshold: usize,
+    pub public_outbound_fanout_threshold: usize,
+    pub outbound_remote_addr_sample_size: usize,
     pub suspicious_dirs: Vec<PathBuf>,
     #[serde(default = "default_known_bad_tool_names")]
     pub known_bad_tool_names: Vec<String>,
@@ -208,6 +320,8 @@ impl Default for ProcessConfig {
             deleted_executable_min_score: 70,
             behavior_min_score: 70,
             suspicious_socket_fd_threshold: 20,
+            public_outbound_fanout_threshold: 12,
+            outbound_remote_addr_sample_size: 16,
             suspicious_dirs: ["/tmp", "/var/tmp", "/dev/shm", "/run"]
                 .into_iter()
                 .map(PathBuf::from)
@@ -253,6 +367,8 @@ pub struct GpuConfig {
     pub rocm_smi_path: String,
     pub command_timeout_seconds: u64,
     pub min_memory_mb: u64,
+    pub high_utilization_percent: u8,
+    pub high_power_watts: f32,
     pub mining_min_score: u16,
     pub mining_pool_ports: Vec<u16>,
 }
@@ -265,6 +381,8 @@ impl Default for GpuConfig {
             rocm_smi_path: "rocm-smi".to_string(),
             command_timeout_seconds: 2,
             min_memory_mb: 256,
+            high_utilization_percent: 85,
+            high_power_watts: 120.0,
             mining_min_score: 80,
             mining_pool_ports: vec![
                 3333, 3334, 3335, 4444, 5555, 7777, 8888, 9999, 14444, 16000, 18081, 18082,
@@ -414,6 +532,7 @@ pub struct ActiveResponseConfig {
     pub enabled: bool,
     pub strategy: String,
     pub firewall_backend: String,
+    pub cleanup_legacy_port_guards: bool,
     pub block_ttl_seconds: u64,
     pub command_timeout_seconds: u64,
     pub max_blocks_per_scan: usize,
@@ -434,6 +553,7 @@ impl Default for ActiveResponseConfig {
             enabled: true,
             strategy: "balanced".to_string(),
             firewall_backend: "auto".to_string(),
+            cleanup_legacy_port_guards: true,
             block_ttl_seconds: 3600,
             command_timeout_seconds: 3,
             max_blocks_per_scan: 20,
@@ -452,6 +572,40 @@ impl Default for ActiveResponseConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct AttackFingerprintConfig {
+    pub enabled: bool,
+    pub similarity_enabled: bool,
+    pub similarity_hamming_distance: u32,
+    pub max_match_candidates: usize,
+    pub max_features_per_fingerprint: usize,
+    pub max_observations_per_fingerprint: usize,
+    pub retention_days: u32,
+    pub active_response_enabled: bool,
+    pub active_response_min_score: u16,
+    pub active_response_min_observations: usize,
+    pub active_response_min_distinct_ips: usize,
+}
+
+impl Default for AttackFingerprintConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            similarity_enabled: true,
+            similarity_hamming_distance: 6,
+            max_match_candidates: 1000,
+            max_features_per_fingerprint: 40,
+            max_observations_per_fingerprint: 200,
+            retention_days: 30,
+            active_response_enabled: true,
+            active_response_min_score: 75,
+            active_response_min_observations: 2,
+            active_response_min_distinct_ips: 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ResponsePolicyConfig {
     pub enabled: bool,
     pub policies: BTreeMap<String, ResponsePolicyRule>,
@@ -464,7 +618,7 @@ impl Default for ResponsePolicyConfig {
             "ssh_bruteforce".to_string(),
             ResponsePolicyRule {
                 enabled: true,
-                rule_ids: vec!["SSH-003".to_string()],
+                rule_ids: vec!["SSH-003".to_string(), "SSH-007".to_string()],
                 categories: Vec::new(),
                 action: "block".to_string(),
                 min_severity: Severity::High,
@@ -551,7 +705,13 @@ pub struct ServiceProfileConfig {
     pub baseline_refresh_after_package_activity: bool,
     pub dynamic_udp_enabled: bool,
     pub dynamic_udp_min_port: u16,
+    pub dynamic_udp_max_port_samples: usize,
+    pub unknown_owner_grace_observations: u32,
+    pub ignored_dynamic_udp_process_names: Vec<String>,
+    pub ignore_loopback_ssh_forwarding: bool,
 }
+
+pub const DEFAULT_DYNAMIC_UDP_MIN_PORT: u16 = 1024;
 
 impl Default for ServiceProfileConfig {
     fn default() -> Self {
@@ -560,7 +720,46 @@ impl Default for ServiceProfileConfig {
             drift_requires_public_exposure: false,
             baseline_refresh_after_package_activity: false,
             dynamic_udp_enabled: true,
-            dynamic_udp_min_port: 32768,
+            dynamic_udp_min_port: DEFAULT_DYNAMIC_UDP_MIN_PORT,
+            dynamic_udp_max_port_samples: 32,
+            unknown_owner_grace_observations: 3,
+            ignored_dynamic_udp_process_names: default_ignored_dynamic_udp_process_names(),
+            ignore_loopback_ssh_forwarding: true,
+        }
+    }
+}
+
+fn default_ignored_dynamic_udp_process_names() -> Vec<String> {
+    ["systemd-timesyncd", "chronyd", "ntpd"]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BehaviorProfileConfig {
+    pub enabled: bool,
+    pub min_observations_before_drift: u32,
+    pub max_process_identities: usize,
+    pub max_remote_ports_per_identity: usize,
+    pub max_executable_samples_per_identity: usize,
+    pub max_age_days: u32,
+    pub public_fanout_multiplier: usize,
+    pub public_fanout_min_delta: usize,
+}
+
+impl Default for BehaviorProfileConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min_observations_before_drift: 3,
+            max_process_identities: 512,
+            max_remote_ports_per_identity: 32,
+            max_executable_samples_per_identity: 8,
+            max_age_days: 30,
+            public_fanout_multiplier: 3,
+            public_fanout_min_delta: 8,
         }
     }
 }
@@ -571,7 +770,6 @@ pub struct ReportsConfig {
     pub scheduled_enabled: bool,
     pub scheduled_hour: u8,
     pub scheduled_period: String,
-    pub min_interval_seconds: u64,
 }
 
 impl Default for ReportsConfig {
@@ -580,7 +778,6 @@ impl Default for ReportsConfig {
             scheduled_enabled: true,
             scheduled_hour: 8,
             scheduled_period: "today".to_string(),
-            min_interval_seconds: 82_800,
         }
     }
 }
@@ -594,6 +791,10 @@ pub struct AdvancedCollectorsConfig {
     pub ebpf_bridge_enabled: bool,
     pub ebpf_event_paths: Vec<PathBuf>,
     pub ebpf_command: Vec<String>,
+    pub ebpf_runtime_probe_enabled: bool,
+    pub ebpf_runtime_probe_output_path: PathBuf,
+    pub ebpf_runtime_probe_command: String,
+    pub ebpf_runtime_probe_capture_files: bool,
     pub command_timeout_seconds: u64,
 }
 
@@ -604,8 +805,14 @@ impl Default for AdvancedCollectorsConfig {
             audit_log_paths: vec![PathBuf::from("/var/log/audit/audit.log")],
             audit_max_tail_bytes: 1024 * 1024,
             ebpf_bridge_enabled: true,
-            ebpf_event_paths: Vec::new(),
+            ebpf_event_paths: vec![PathBuf::from("/var/lib/vps-sentinel/ebpf-runtime.jsonl")],
             ebpf_command: Vec::new(),
+            ebpf_runtime_probe_enabled: false,
+            ebpf_runtime_probe_output_path: PathBuf::from(
+                "/var/lib/vps-sentinel/ebpf-runtime.jsonl",
+            ),
+            ebpf_runtime_probe_command: "bpftrace".to_string(),
+            ebpf_runtime_probe_capture_files: false,
             command_timeout_seconds: 3,
         }
     }
@@ -683,9 +890,68 @@ impl Default for FleetConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct PanelConfig {
+    pub enabled: bool,
+    pub url: String,
+    pub node_id: String,
+    pub node_name: String,
+    pub secret: String,
+    pub min_severity: Severity,
+    pub batch_size: usize,
+    pub push_interval_seconds: u64,
+    pub request_timeout_seconds: u64,
+    pub outbox_max_items: usize,
+    pub max_payload_bytes: usize,
+    pub privacy_mode: String,
+    pub upload_hostname: bool,
+    pub node_location_enabled: bool,
+    pub node_location_url: String,
+    pub node_location_refresh_seconds: u64,
+    pub node_location_timeout_ms: u64,
+    pub ip_intel_paths: Vec<PathBuf>,
+    pub ip_intel_max_entries: usize,
+    pub ip_intel_remote_enabled: bool,
+    pub ip_intel_remote_endpoint: String,
+    pub ip_intel_remote_timeout_ms: u64,
+    pub ip_intel_remote_max_lookups: usize,
+}
+
+impl Default for PanelConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            url: String::new(),
+            node_id: String::new(),
+            node_name: String::new(),
+            secret: String::new(),
+            min_severity: Severity::Medium,
+            batch_size: 100,
+            push_interval_seconds: 60,
+            request_timeout_seconds: 60,
+            outbox_max_items: 128,
+            max_payload_bytes: 512 * 1024,
+            privacy_mode: "strict".to_string(),
+            upload_hostname: true,
+            node_location_enabled: true,
+            node_location_url: "https://ipapi.co/json/".to_string(),
+            node_location_refresh_seconds: 86_400,
+            node_location_timeout_ms: 1500,
+            ip_intel_paths: Vec::new(),
+            ip_intel_max_entries: 20_000,
+            ip_intel_remote_enabled: true,
+            ip_intel_remote_endpoint: "whois.cymru.com:43".to_string(),
+            ip_intel_remote_timeout_ms: 1200,
+            ip_intel_remote_max_lookups: 64,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MaintenanceConfig {
     pub enabled: bool,
     pub suppress_baseline_drift: bool,
+    pub suppress_interactive_logins: bool,
     pub max_duration_seconds: u64,
 }
 
@@ -694,6 +960,7 @@ impl Default for MaintenanceConfig {
         Self {
             enabled: false,
             suppress_baseline_drift: true,
+            suppress_interactive_logins: true,
             max_duration_seconds: 7200,
         }
     }

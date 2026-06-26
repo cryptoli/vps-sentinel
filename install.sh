@@ -5,6 +5,7 @@ REPO_URL="${REPO_URL:-https://github.com/cryptoli/vps-sentinel.git}"
 BRANCH="${BRANCH:-main}"
 WORK_DIR="${WORK_DIR:-/opt/vps-sentinel-src}"
 PREFIX="${PREFIX:-/usr/local}"
+SHARE_DIR="${SHARE_DIR:-$PREFIX/share/vps-sentinel}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/vps-sentinel}"
 DATA_DIR="${DATA_DIR:-/var/lib/vps-sentinel}"
 LOG_DIR="${LOG_DIR:-/var/log/vps-sentinel}"
@@ -16,6 +17,7 @@ INSTALL_METHOD="${INSTALL_METHOD:-auto}"
 RELEASE_VERSION="${RELEASE_VERSION:-latest}"
 RELEASE_ARTIFACT_URL="${RELEASE_ARTIFACT_URL:-}"
 TARGET_TRIPLE="${TARGET_TRIPLE:-}"
+CLEAN_SOURCE_TARGET="${CLEAN_SOURCE_TARGET:-yes}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-auto}"
 ENABLE_SERVICE="${ENABLE_SERVICE:-yes}"
 RUN_DOCTOR="${RUN_DOCTOR:-yes}"
@@ -39,6 +41,15 @@ ACTIVE_RESPONSE_PERMANENT_BLOCK_WINDOW_SECONDS="${ACTIVE_RESPONSE_PERMANENT_BLOC
 ACTIVE_RESPONSE_WEB_PROBE_BLOCK_THRESHOLD="${ACTIVE_RESPONSE_WEB_PROBE_BLOCK_THRESHOLD:-}"
 ACTIVE_RESPONSE_WEB_EXPLOIT_BLOCK_THRESHOLD="${ACTIVE_RESPONSE_WEB_EXPLOIT_BLOCK_THRESHOLD:-}"
 ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD="${ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD:-}"
+PANEL_ENABLED="${PANEL_ENABLED:-}"
+PANEL_URL="${PANEL_URL:-}"
+PANEL_SHARED_SECRET="${PANEL_SHARED_SECRET:-${PANEL_SECRET:-}}"
+PANEL_NODE_NAME="${PANEL_NODE_NAME:-}"
+PANEL_MIN_SEVERITY="${PANEL_MIN_SEVERITY:-}"
+PANEL_PRIVACY_MODE="${PANEL_PRIVACY_MODE:-}"
+PANEL_UPLOAD_HOSTNAME="${PANEL_UPLOAD_HOSTNAME:-}"
+PANEL_NODE_LOCATION_ENABLED="${PANEL_NODE_LOCATION_ENABLED:-}"
+PANEL_NODE_LOCATION_URL="${PANEL_NODE_LOCATION_URL:-}"
 CONFIG_CREATED=0
 SYSTEMD_UNIT_INSTALLED=0
 
@@ -271,6 +282,60 @@ configure_active_response() {
   echo "configured active response in $config_path"
 }
 
+configure_panel_upload() {
+  if [ -z "$PANEL_ENABLED" ] \
+    && [ -z "$PANEL_URL" ] \
+    && [ -z "$PANEL_SHARED_SECRET" ] \
+    && [ -z "$PANEL_NODE_NAME" ] \
+    && [ -z "$PANEL_MIN_SEVERITY" ] \
+    && [ -z "$PANEL_PRIVACY_MODE" ] \
+    && [ -z "$PANEL_UPLOAD_HOSTNAME" ] \
+    && [ -z "$PANEL_NODE_LOCATION_ENABLED" ] \
+    && [ -z "$PANEL_NODE_LOCATION_URL" ]; then
+    return
+  fi
+  if [ -n "$PANEL_URL" ] || [ -n "$PANEL_SHARED_SECRET" ]; then
+    if [ -z "$PANEL_URL" ] || [ -z "$PANEL_SHARED_SECRET" ]; then
+      echo "PANEL_URL and PANEL_SHARED_SECRET must be provided together" >&2
+      exit 1
+    fi
+  fi
+  config_path="$CONFIG_DIR/config.toml"
+  if [ -n "$PANEL_ENABLED" ]; then
+    set_toml_value "$config_path" "panel" "enabled" "$(toml_bool "$PANEL_ENABLED")"
+  elif [ -n "$PANEL_URL" ]; then
+    set_toml_value "$config_path" "panel" "enabled" "true"
+  fi
+  if [ -n "$PANEL_URL" ]; then
+    set_toml_value "$config_path" "panel" "url" "$(toml_string "$PANEL_URL")"
+  fi
+  if [ -n "$PANEL_SHARED_SECRET" ]; then
+    set_toml_value "$config_path" "panel" "secret" "$(toml_string "$PANEL_SHARED_SECRET")"
+  fi
+  if [ -n "$PANEL_NODE_NAME" ]; then
+    set_toml_value "$config_path" "panel" "node_name" "$(toml_string "$PANEL_NODE_NAME")"
+  elif [ -n "$VPS_NAME" ]; then
+    set_toml_value "$config_path" "panel" "node_name" "$(toml_string "$VPS_NAME")"
+  fi
+  if [ -n "$PANEL_MIN_SEVERITY" ]; then
+    set_toml_value "$config_path" "panel" "min_severity" "$(toml_string "$PANEL_MIN_SEVERITY")"
+  fi
+  if [ -n "$PANEL_PRIVACY_MODE" ]; then
+    set_toml_value "$config_path" "panel" "privacy_mode" "$(toml_string "$PANEL_PRIVACY_MODE")"
+  fi
+  if [ -n "$PANEL_UPLOAD_HOSTNAME" ]; then
+    set_toml_value "$config_path" "panel" "upload_hostname" "$(toml_bool "$PANEL_UPLOAD_HOSTNAME")"
+  fi
+  if [ -n "$PANEL_NODE_LOCATION_ENABLED" ]; then
+    set_toml_value "$config_path" "panel" "node_location_enabled" "$(toml_bool "$PANEL_NODE_LOCATION_ENABLED")"
+  fi
+  if [ -n "$PANEL_NODE_LOCATION_URL" ]; then
+    set_toml_value "$config_path" "panel" "node_location_url" "$(toml_string "$PANEL_NODE_LOCATION_URL")"
+  fi
+  chmod 0600 "$config_path"
+  echo "configured panel upload in $config_path"
+}
+
 detect_hostname() {
   hostname -f 2>/dev/null || hostname 2>/dev/null || printf '%s\n' "local-host"
 }
@@ -374,13 +439,10 @@ release_url() {
 
 checkout_or_update() {
   if [ -d "$WORK_DIR/.git" ]; then
-    git -C "$WORK_DIR" fetch origin "$BRANCH:refs/remotes/origin/$BRANCH"
-    if git -C "$WORK_DIR" show-ref --verify --quiet "refs/heads/$BRANCH"; then
-      git -C "$WORK_DIR" checkout "$BRANCH"
-    else
-      git -C "$WORK_DIR" checkout -b "$BRANCH" "origin/$BRANCH"
-    fi
-    git -C "$WORK_DIR" pull --ff-only origin "$BRANCH"
+    git -C "$WORK_DIR" fetch --prune origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+    git -C "$WORK_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
+    git -C "$WORK_DIR" reset --hard "origin/$BRANCH"
+    git -C "$WORK_DIR" clean -fd
   else
     install -d "$(dirname "$WORK_DIR")"
     git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$WORK_DIR"
@@ -396,6 +458,51 @@ release_binary_works() {
   binary="$1"
   [ -x "$binary" ] || chmod 0755 "$binary" 2>/dev/null || return 1
   "$binary" --version >/dev/null 2>&1
+}
+
+install_optional_panel() {
+  source_dir="$1"
+  panel_bin=""
+  if [ -f "$source_dir/vps-sentinel-panel" ]; then
+    panel_bin="$source_dir/vps-sentinel-panel"
+  elif [ -f "$source_dir/target/release/vps-sentinel-panel" ]; then
+    panel_bin="$source_dir/target/release/vps-sentinel-panel"
+  fi
+  if [ -n "$panel_bin" ]; then
+    install -m 0755 "$panel_bin" "$PREFIX/bin/vps-sentinel-panel"
+    echo "installed optional Rust panel binary to $PREFIX/bin/vps-sentinel-panel"
+  fi
+  if [ -d "$source_dir/panel/web" ]; then
+    install -d "$SHARE_DIR"
+    rm -rf "$SHARE_DIR/panel"
+    install -d "$SHARE_DIR/panel"
+    cp -R "$source_dir/panel/web" "$SHARE_DIR/panel/web"
+    echo "installed optional panel web assets to $SHARE_DIR/panel/web"
+  fi
+}
+
+cleanup_source_target() {
+  case "$CLEAN_SOURCE_TARGET" in
+    yes|true|1) ;;
+    no|false|0) return ;;
+    *)
+      echo "invalid CLEAN_SOURCE_TARGET value: $CLEAN_SOURCE_TARGET" >&2
+      exit 1
+      ;;
+  esac
+  if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+    echo "skipped source target cleanup because CARGO_TARGET_DIR is set"
+    return
+  fi
+  target_dir="$WORK_DIR/target"
+  if [ "$target_dir" = "/target" ] || [ "$target_dir" = "target" ] || [ "$target_dir" = "/" ]; then
+    echo "refusing unsafe source target cleanup path: $target_dir" >&2
+    exit 1
+  fi
+  if [ -d "$target_dir" ]; then
+    rm -rf "$target_dir"
+    echo "removed source build artifacts from $target_dir"
+  fi
 }
 
 install_from_release() {
@@ -415,6 +522,7 @@ install_from_release() {
   fi
   install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
   install -m 0755 "$tmp_dir/vps-sentinel" "$PREFIX/bin/vps-sentinel"
+  install_optional_panel "$tmp_dir"
   install_binary_aliases
   for script in stop update install; do
     if [ -f "$tmp_dir/${script}.sh" ]; then
@@ -435,6 +543,7 @@ install_from_release() {
   configure_storage_limits
   configure_telegram
   configure_active_response
+  configure_panel_upload
   install_systemd_unit_file
   post_install_setup
   activate_systemd_service
@@ -446,6 +555,7 @@ build_and_install() {
   cargo build --release --locked
   install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
   install -m 0755 target/release/vps-sentinel "$PREFIX/bin/vps-sentinel"
+  install_optional_panel "$WORK_DIR"
   install_binary_aliases
   for script in stop update install; do
     if [ -f "${script}.sh" ]; then
@@ -465,9 +575,11 @@ build_and_install() {
   configure_storage_limits
   configure_telegram
   configure_active_response
+  configure_panel_upload
   install_systemd_unit_file
   post_install_setup
   activate_systemd_service
+  cleanup_source_target
 }
 
 yes_enabled() {
@@ -495,11 +607,18 @@ maybe_sync_config_defaults() {
   fi
 }
 
+cleanup_active_response_state() {
+  config_path="$CONFIG_DIR/config.toml"
+  "$PREFIX/bin/vps-sentinel" --config "$config_path" blocks cleanup || \
+    echo "active-response cleanup failed; continuing install" >&2
+}
+
 post_install_setup() {
   config_path="$CONFIG_DIR/config.toml"
   maybe_migrate_config
   maybe_sync_config_defaults
   "$PREFIX/bin/vps-sentinel" --config "$config_path" config validate
+  cleanup_active_response_state
   if yes_enabled "$RUN_DOCTOR"; then
     "$PREFIX/bin/vps-sentinel" --config "$config_path" doctor
   fi

@@ -4,8 +4,7 @@ mod sections;
 use crate::error::{SentinelError, SentinelResult};
 use crate::MinuteWindow;
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::Path;
+use std::{env, fs, path::Path, process::Command, sync::OnceLock};
 
 pub use notifications::{
     BarkConfig, DingTalkConfig, EmailConfig, EmailTlsMode, FeishuConfig, GotifyConfig,
@@ -13,13 +12,17 @@ pub use notifications::{
     TelegramConfig, WebhookConfig,
 };
 pub use sections::{
-    ActiveResponseConfig, AdvancedCollectorsConfig, AgentConfig, AllowlistConfig, DockerConfig,
-    ExternalRulesConfig, FileIntegrityConfig, FleetConfig, GpuConfig, IncidentConfig,
-    LogIntegrityConfig, MaintenanceConfig, NetworkConfig, NoiseControlConfig, PackageManagerConfig,
-    PersistenceConfig, PrivacyConfig, ProcessConfig, ReportsConfig, ResponsePolicyConfig,
-    ResponsePolicyRule, SentinelPaths, ServiceProfileConfig, SshConfig, StorageConfig,
-    ThreatIntelConfig, WebConfig,
+    ActiveResponseConfig, AdvancedCollectorsConfig, AgentConfig, AllowlistConfig,
+    AttackFingerprintConfig, BehaviorProfileConfig, DockerConfig, ExternalRulesConfig,
+    FileIntegrityConfig, FleetConfig, GpuConfig, IncidentConfig, LogIntegrityConfig,
+    MaintenanceConfig, NetworkConfig, NoiseControlConfig, PackageManagerConfig, PanelConfig,
+    PerformanceConfig, PersistenceConfig, PrivacyConfig, ProcessConfig, ReportsConfig,
+    ResourceBudgetConfig, ResponsePolicyConfig, ResponsePolicyRule, SentinelPaths,
+    ServiceProfileConfig, SshConfig, StorageConfig, ThreatIntelConfig, WebConfig,
+    DEFAULT_DYNAMIC_UDP_MIN_PORT,
 };
+
+const MIN_RESOURCE_EVIDENCE_ITEMS_PER_FINDING: usize = 16;
 
 /// Top-level TOML configuration for the agent and CLI.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -27,6 +30,8 @@ pub use sections::{
 pub struct SentinelConfig {
     pub agent: AgentConfig,
     pub privacy: PrivacyConfig,
+    pub performance: PerformanceConfig,
+    pub resource_budget: ResourceBudgetConfig,
     pub storage: StorageConfig,
     pub ssh: SshConfig,
     pub file_integrity: FileIntegrityConfig,
@@ -41,14 +46,17 @@ pub struct SentinelConfig {
     pub notifications: NotificationsConfig,
     pub noise_control: NoiseControlConfig,
     pub active_response: ActiveResponseConfig,
+    pub attack_fingerprints: AttackFingerprintConfig,
     pub response_policy: ResponsePolicyConfig,
     pub incidents: IncidentConfig,
     pub service_profile: ServiceProfileConfig,
+    pub behavior_profile: BehaviorProfileConfig,
     pub reports: ReportsConfig,
     pub advanced_collectors: AdvancedCollectorsConfig,
     pub external_rules: ExternalRulesConfig,
     pub threat_intel: ThreatIntelConfig,
     pub fleet: FleetConfig,
+    pub panel: PanelConfig,
     pub maintenance: MaintenanceConfig,
     pub allowlist: AllowlistConfig,
 }
@@ -92,6 +100,13 @@ impl SentinelConfig {
                 "storage.max_database_size_mb must be at least 16".to_string(),
             ));
         }
+        if self.performance.max_stored_field_bytes == 0 {
+            return Err(SentinelError::Config(
+                "performance.max_stored_field_bytes must be greater than 0".to_string(),
+            ));
+        }
+        validate_resource_budget(&self.resource_budget)?;
+        validate_ip_patterns("ssh.trusted_admin_ips", &self.ssh.trusted_admin_ips)?;
         if self.ssh.failed_login_threshold == 0 {
             return Err(SentinelError::Config(
                 "ssh.failed_login_threshold must be greater than 0".to_string(),
@@ -105,6 +120,11 @@ impl SentinelConfig {
         if self.ssh.failed_login_window_seconds == 0 {
             return Err(SentinelError::Config(
                 "ssh.failed_login_window_seconds must be greater than 0".to_string(),
+            ));
+        }
+        if self.ssh.max_events_per_scan == 0 {
+            return Err(SentinelError::Config(
+                "ssh.max_events_per_scan must be greater than 0".to_string(),
             ));
         }
         if self.file_integrity.max_file_size_mb == 0 {
@@ -149,6 +169,17 @@ impl SentinelConfig {
                 "web.max_log_tail_bytes must be greater than 0".to_string(),
             ));
         }
+        if self.web.max_events_per_scan == 0 {
+            return Err(SentinelError::Config(
+                "web.max_events_per_scan must be greater than 0".to_string(),
+            ));
+        }
+        if self.web.log_lookback_seconds == 0 {
+            return Err(SentinelError::Config(
+                "web.log_lookback_seconds must be greater than 0".to_string(),
+            ));
+        }
+        validate_ip_patterns("web.trusted_proxy_cidrs", &self.web.trusted_proxy_cidrs)?;
         if self.process.behavior_min_score == 0 {
             return Err(SentinelError::Config(
                 "process.behavior_min_score must be greater than 0".to_string(),
@@ -169,6 +200,16 @@ impl SentinelConfig {
         if self.process.suspicious_socket_fd_threshold == 0 {
             return Err(SentinelError::Config(
                 "process.suspicious_socket_fd_threshold must be greater than 0".to_string(),
+            ));
+        }
+        if self.process.public_outbound_fanout_threshold == 0 {
+            return Err(SentinelError::Config(
+                "process.public_outbound_fanout_threshold must be greater than 0".to_string(),
+            ));
+        }
+        if self.process.outbound_remote_addr_sample_size == 0 {
+            return Err(SentinelError::Config(
+                "process.outbound_remote_addr_sample_size must be greater than 0".to_string(),
             ));
         }
         for dir in &self.process.suspicious_dirs {
@@ -204,6 +245,16 @@ impl SentinelConfig {
                 "gpu.min_memory_mb must be greater than 0".to_string(),
             ));
         }
+        if self.gpu.high_utilization_percent == 0 || self.gpu.high_utilization_percent > 100 {
+            return Err(SentinelError::Config(
+                "gpu.high_utilization_percent must be between 1 and 100".to_string(),
+            ));
+        }
+        if !self.gpu.high_power_watts.is_finite() || self.gpu.high_power_watts <= 0.0 {
+            return Err(SentinelError::Config(
+                "gpu.high_power_watts must be a positive finite number".to_string(),
+            ));
+        }
         if self.gpu.mining_min_score == 0 {
             return Err(SentinelError::Config(
                 "gpu.mining_min_score must be greater than 0".to_string(),
@@ -230,14 +281,17 @@ impl SentinelConfig {
             ));
         }
         validate_active_response(&self.active_response, &self.ssh)?;
+        validate_attack_fingerprints(&self.attack_fingerprints)?;
         validate_response_policy(&self.response_policy)?;
         validate_incidents(&self.incidents)?;
         validate_service_profile(&self.service_profile)?;
+        validate_behavior_profile(&self.behavior_profile)?;
         validate_reports(&self.reports)?;
         validate_advanced_collectors(&self.advanced_collectors)?;
         validate_external_rules(&self.external_rules)?;
         validate_threat_intel(&self.threat_intel)?;
         validate_fleet(&self.fleet)?;
+        validate_panel(&self.panel)?;
         validate_maintenance(&self.maintenance)?;
         for quiet_hour in &self.noise_control.quiet_hours {
             quiet_hour.parse::<MinuteWindow>().map_err(|err| {
@@ -258,7 +312,7 @@ impl SentinelConfig {
         if !self.agent.hostname.trim().is_empty() {
             return self.agent.hostname.trim().to_string();
         }
-        "local-host".to_string()
+        runtime_hostname().unwrap_or_else(|| "local-host".to_string())
     }
 
     /// Resolve the human-readable VPS name shown in alerts.
@@ -270,6 +324,48 @@ impl SentinelConfig {
             return self.agent.hostname.trim().to_string();
         }
         self.host_id()
+    }
+}
+
+fn runtime_hostname() -> Option<String> {
+    static HOSTNAME: OnceLock<Option<String>> = OnceLock::new();
+    HOSTNAME
+        .get_or_init(|| {
+            hostname_from_env()
+                .or_else(hostname_from_system_files)
+                .or_else(hostname_from_command)
+        })
+        .clone()
+}
+
+fn hostname_from_env() -> Option<String> {
+    env::var("HOSTNAME")
+        .ok()
+        .or_else(|| env::var("COMPUTERNAME").ok())
+        .and_then(sanitize_hostname)
+}
+
+fn hostname_from_system_files() -> Option<String> {
+    ["/proc/sys/kernel/hostname", "/etc/hostname"]
+        .into_iter()
+        .find_map(|path| fs::read_to_string(path).ok().and_then(sanitize_hostname))
+}
+
+fn hostname_from_command() -> Option<String> {
+    Command::new("hostname")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(sanitize_hostname)
+}
+
+fn sanitize_hostname(value: String) -> Option<String> {
+    let value = value.trim().trim_end_matches('.').to_string();
+    if value.is_empty() || value.eq_ignore_ascii_case("localhost") {
+        None
+    } else {
+        Some(value)
     }
 }
 
@@ -313,6 +409,39 @@ fn validate_response_policy(config: &ResponsePolicyConfig) -> SentinelResult<()>
     Ok(())
 }
 
+fn validate_ip_patterns(name: &str, patterns: &[String]) -> SentinelResult<()> {
+    for pattern in patterns {
+        let value = pattern.trim();
+        if value.is_empty() {
+            return Err(SentinelError::Config(format!(
+                "{name} entries must not be empty"
+            )));
+        }
+        if let Some((ip, prefix)) = value.split_once('/') {
+            let parsed_ip = ip.parse::<std::net::IpAddr>().map_err(|_| {
+                SentinelError::Config(format!("{name} entry '{value}' has an invalid IP address"))
+            })?;
+            let prefix = prefix.parse::<u8>().map_err(|_| {
+                SentinelError::Config(format!("{name} entry '{value}' has an invalid prefix"))
+            })?;
+            let max_prefix = match parsed_ip {
+                std::net::IpAddr::V4(_) => 32,
+                std::net::IpAddr::V6(_) => 128,
+            };
+            if prefix > max_prefix {
+                return Err(SentinelError::Config(format!(
+                    "{name} entry '{value}' has a prefix larger than {max_prefix}"
+                )));
+            }
+        } else if value.parse::<std::net::IpAddr>().is_err() {
+            return Err(SentinelError::Config(format!(
+                "{name} entry '{value}' must be an IP address or CIDR"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_incidents(config: &IncidentConfig) -> SentinelResult<()> {
     if config.correlation_window_seconds == 0 {
         return Err(SentinelError::Config(
@@ -327,10 +456,117 @@ fn validate_incidents(config: &IncidentConfig) -> SentinelResult<()> {
     Ok(())
 }
 
-fn validate_service_profile(config: &ServiceProfileConfig) -> SentinelResult<()> {
-    if config.dynamic_udp_enabled && config.dynamic_udp_min_port == 0 {
+fn validate_attack_fingerprints(config: &AttackFingerprintConfig) -> SentinelResult<()> {
+    if config.similarity_hamming_distance > 64 {
         return Err(SentinelError::Config(
-            "service_profile.dynamic_udp_min_port must be greater than 0".to_string(),
+            "attack_fingerprints.similarity_hamming_distance must be between 0 and 64".to_string(),
+        ));
+    }
+    if config.max_match_candidates == 0 {
+        return Err(SentinelError::Config(
+            "attack_fingerprints.max_match_candidates must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_features_per_fingerprint == 0 {
+        return Err(SentinelError::Config(
+            "attack_fingerprints.max_features_per_fingerprint must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_observations_per_fingerprint == 0 {
+        return Err(SentinelError::Config(
+            "attack_fingerprints.max_observations_per_fingerprint must be greater than 0"
+                .to_string(),
+        ));
+    }
+    if config.retention_days == 0 {
+        return Err(SentinelError::Config(
+            "attack_fingerprints.retention_days must be greater than 0".to_string(),
+        ));
+    }
+    if config.active_response_min_score > 100 {
+        return Err(SentinelError::Config(
+            "attack_fingerprints.active_response_min_score must be between 0 and 100".to_string(),
+        ));
+    }
+    if config.active_response_min_observations == 0 {
+        return Err(SentinelError::Config(
+            "attack_fingerprints.active_response_min_observations must be greater than 0"
+                .to_string(),
+        ));
+    }
+    if config.active_response_min_distinct_ips == 0 {
+        return Err(SentinelError::Config(
+            "attack_fingerprints.active_response_min_distinct_ips must be greater than 0"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_service_profile(config: &ServiceProfileConfig) -> SentinelResult<()> {
+    if config.dynamic_udp_enabled && config.dynamic_udp_min_port < 1024 {
+        return Err(SentinelError::Config(
+            "service_profile.dynamic_udp_min_port must be at least 1024".to_string(),
+        ));
+    }
+    if config.dynamic_udp_max_port_samples == 0 {
+        return Err(SentinelError::Config(
+            "service_profile.dynamic_udp_max_port_samples must be greater than 0".to_string(),
+        ));
+    }
+    if config.unknown_owner_grace_observations == 0 {
+        return Err(SentinelError::Config(
+            "service_profile.unknown_owner_grace_observations must be greater than 0".to_string(),
+        ));
+    }
+    if config
+        .ignored_dynamic_udp_process_names
+        .iter()
+        .any(|name| name.trim().is_empty())
+    {
+        return Err(SentinelError::Config(
+            "service_profile.ignored_dynamic_udp_process_names entries must not be empty"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_behavior_profile(config: &BehaviorProfileConfig) -> SentinelResult<()> {
+    if config.min_observations_before_drift == 0 {
+        return Err(SentinelError::Config(
+            "behavior_profile.min_observations_before_drift must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_process_identities == 0 {
+        return Err(SentinelError::Config(
+            "behavior_profile.max_process_identities must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_remote_ports_per_identity == 0 {
+        return Err(SentinelError::Config(
+            "behavior_profile.max_remote_ports_per_identity must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_executable_samples_per_identity == 0 {
+        return Err(SentinelError::Config(
+            "behavior_profile.max_executable_samples_per_identity must be greater than 0"
+                .to_string(),
+        ));
+    }
+    if config.max_age_days == 0 {
+        return Err(SentinelError::Config(
+            "behavior_profile.max_age_days must be greater than 0".to_string(),
+        ));
+    }
+    if config.public_fanout_multiplier < 2 {
+        return Err(SentinelError::Config(
+            "behavior_profile.public_fanout_multiplier must be at least 2".to_string(),
+        ));
+    }
+    if config.public_fanout_min_delta == 0 {
+        return Err(SentinelError::Config(
+            "behavior_profile.public_fanout_min_delta must be greater than 0".to_string(),
         ));
     }
     Ok(())
@@ -350,9 +586,28 @@ fn validate_reports(config: &ReportsConfig) -> SentinelResult<()> {
             )));
         }
     }
-    if config.min_interval_seconds == 0 {
+    Ok(())
+}
+
+fn validate_resource_budget(config: &ResourceBudgetConfig) -> SentinelResult<()> {
+    if config.max_raw_events_per_scan < 100 {
         return Err(SentinelError::Config(
-            "reports.min_interval_seconds must be greater than 0".to_string(),
+            "resource_budget.max_raw_events_per_scan must be at least 100".to_string(),
+        ));
+    }
+    if config.max_findings_per_scan == 0 {
+        return Err(SentinelError::Config(
+            "resource_budget.max_findings_per_scan must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_evidence_items_per_finding < MIN_RESOURCE_EVIDENCE_ITEMS_PER_FINDING {
+        return Err(SentinelError::Config(format!(
+            "resource_budget.max_evidence_items_per_finding must be at least {MIN_RESOURCE_EVIDENCE_ITEMS_PER_FINDING} so response and notification evidence remains available"
+        )));
+    }
+    if config.max_evidence_value_bytes == 0 {
+        return Err(SentinelError::Config(
+            "resource_budget.max_evidence_value_bytes must be greater than 0".to_string(),
         ));
     }
     Ok(())
@@ -368,6 +623,18 @@ fn validate_advanced_collectors(config: &AdvancedCollectorsConfig) -> SentinelRe
         return Err(SentinelError::Config(
             "advanced_collectors.command_timeout_seconds must be greater than 0".to_string(),
         ));
+    }
+    if config.ebpf_runtime_probe_enabled {
+        if config.ebpf_runtime_probe_command.trim().is_empty() {
+            return Err(SentinelError::Config(
+                "advanced_collectors.ebpf_runtime_probe_command is required when ebpf_runtime_probe_enabled is true".to_string(),
+            ));
+        }
+        if config.ebpf_runtime_probe_output_path.as_os_str().is_empty() {
+            return Err(SentinelError::Config(
+                "advanced_collectors.ebpf_runtime_probe_output_path is required when ebpf_runtime_probe_enabled is true".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -410,6 +677,122 @@ fn validate_fleet(config: &FleetConfig) -> SentinelResult<()> {
         return Err(SentinelError::Config(
             "fleet.export_path is required when fleet.enabled is true".to_string(),
         ));
+    }
+    Ok(())
+}
+
+fn validate_panel(config: &PanelConfig) -> SentinelResult<()> {
+    if !config.enabled {
+        return Ok(());
+    }
+    let url = config.url.trim();
+    if url.is_empty() {
+        return Err(SentinelError::Config(
+            "panel.url is required when panel.enabled is true".to_string(),
+        ));
+    }
+    if !(url.starts_with("https://")
+        || url.starts_with("http://127.0.0.1")
+        || url.starts_with("http://localhost"))
+    {
+        return Err(SentinelError::Config(
+            "panel.url must use https://, except local self-host URLs may use http://localhost or http://127.0.0.1".to_string(),
+        ));
+    }
+    if !url.trim_end_matches('/').ends_with("/api/v1/ingest") {
+        return Err(SentinelError::Config(
+            "panel.url must point to /api/v1/ingest because this path is part of the request signature".to_string(),
+        ));
+    }
+    if config.secret.trim().len() < 16 {
+        return Err(SentinelError::Config(
+            "panel.secret must contain at least 16 characters when panel.enabled is true"
+                .to_string(),
+        ));
+    }
+    if config.batch_size == 0 {
+        return Err(SentinelError::Config(
+            "panel.batch_size must be greater than 0".to_string(),
+        ));
+    }
+    if config.push_interval_seconds == 0 {
+        return Err(SentinelError::Config(
+            "panel.push_interval_seconds must be greater than 0".to_string(),
+        ));
+    }
+    if config.request_timeout_seconds == 0 {
+        return Err(SentinelError::Config(
+            "panel.request_timeout_seconds must be greater than 0".to_string(),
+        ));
+    }
+    if config.outbox_max_items == 0 {
+        return Err(SentinelError::Config(
+            "panel.outbox_max_items must be greater than 0".to_string(),
+        ));
+    }
+    if config.max_payload_bytes < 16 * 1024 {
+        return Err(SentinelError::Config(
+            "panel.max_payload_bytes must be at least 16384".to_string(),
+        ));
+    }
+    if config.ip_intel_max_entries == 0 {
+        return Err(SentinelError::Config(
+            "panel.ip_intel_max_entries must be greater than 0".to_string(),
+        ));
+    }
+    if config.ip_intel_remote_enabled {
+        if config.ip_intel_remote_endpoint.trim().is_empty() {
+            return Err(SentinelError::Config(
+                "panel.ip_intel_remote_endpoint must not be empty when remote IP intelligence is enabled".to_string(),
+            ));
+        }
+        if config.ip_intel_remote_timeout_ms == 0 {
+            return Err(SentinelError::Config(
+                "panel.ip_intel_remote_timeout_ms must be greater than 0".to_string(),
+            ));
+        }
+        if config.ip_intel_remote_max_lookups == 0 {
+            return Err(SentinelError::Config(
+                "panel.ip_intel_remote_max_lookups must be greater than 0".to_string(),
+            ));
+        }
+    }
+    for path in &config.ip_intel_paths {
+        if path.as_os_str().is_empty() {
+            return Err(SentinelError::Config(
+                "panel.ip_intel_paths entries must not be empty".to_string(),
+            ));
+        }
+    }
+    match config.privacy_mode.as_str() {
+        "normal" | "strict" => Ok(()),
+        other => Err(SentinelError::Config(format!(
+            "panel.privacy_mode '{other}' is invalid; use normal or strict"
+        ))),
+    }?;
+    if config.node_location_enabled {
+        let location_url = config.node_location_url.trim();
+        if location_url.is_empty() {
+            return Err(SentinelError::Config(
+                "panel.node_location_url must not be empty when node location detection is enabled"
+                    .to_string(),
+            ));
+        }
+        if !location_url.starts_with("https://") {
+            return Err(SentinelError::Config(
+                "panel.node_location_url must use https://".to_string(),
+            ));
+        }
+        if config.node_location_refresh_seconds == 0 {
+            return Err(SentinelError::Config(
+                "panel.node_location_refresh_seconds must be greater than 0".to_string(),
+            ));
+        }
+        if config.node_location_timeout_ms == 0 {
+            return Err(SentinelError::Config(
+                "panel.node_location_timeout_ms must be greater than 0".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -614,9 +997,16 @@ mod tests {
         assert_eq!(decoded.ssh.failed_login_threshold, 6);
         assert!(decoded.active_response.enabled);
         assert_eq!(decoded.active_response.ssh_failed_login_block_threshold, 6);
+        assert!(decoded.attack_fingerprints.enabled);
+        assert!(decoded.attack_fingerprints.similarity_enabled);
+        assert!(decoded.resource_budget.enabled);
+        assert!(decoded.resource_budget.max_findings_per_scan > 0);
+        assert!(decoded.behavior_profile.enabled);
+        assert!(decoded.behavior_profile.max_process_identities > 0);
         assert!(decoded.reports.scheduled_enabled);
         assert!(decoded.advanced_collectors.auditd_enabled);
         assert!(decoded.advanced_collectors.ebpf_bridge_enabled);
+        assert!(!decoded.advanced_collectors.ebpf_runtime_probe_enabled);
         assert!(decoded.external_rules.enabled);
         assert!(decoded.external_rules.yara_enabled);
         assert!(decoded.threat_intel.enabled);
@@ -644,6 +1034,29 @@ mod tests {
     }
 
     #[test]
+    fn invalid_resource_budget_is_rejected() {
+        let mut config = SentinelConfig::default();
+        config.resource_budget.max_raw_events_per_scan = 99;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.resource_budget.max_findings_per_scan = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.resource_budget.max_evidence_items_per_finding = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.resource_budget.max_evidence_items_per_finding = 15;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.resource_budget.max_evidence_value_bytes = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
     fn invalid_notification_timeout_is_rejected() {
         let mut config = SentinelConfig::default();
         config.notifications.request_timeout_seconds = 0;
@@ -658,6 +1071,15 @@ mod tests {
         config.agent.display_name = "prod-web-1".to_string();
         assert_eq!(config.host_id(), "host-001");
         assert_eq!(config.display_name(), "prod-web-1");
+    }
+
+    #[test]
+    fn host_id_prefers_configured_hostname_before_runtime_fallback() {
+        let mut config = SentinelConfig::default();
+        config.agent.hostname = "configured-host".to_string();
+
+        assert_eq!(config.host_id(), "configured-host");
+        assert_eq!(config.display_name(), "configured-host");
     }
 
     #[test]
@@ -724,6 +1146,30 @@ mod tests {
         let mut config = SentinelConfig::default();
         config.process.suspicious_socket_fd_threshold = 0;
         assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.process.public_outbound_fanout_threshold = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.process.outbound_remote_addr_sample_size = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.gpu.high_utilization_percent = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.gpu.high_utilization_percent = 101;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.gpu.high_power_watts = 0.0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.gpu.high_power_watts = f32::NAN;
+        assert!(config.validate().is_err());
     }
 
     #[test]
@@ -749,6 +1195,21 @@ mod tests {
 
         let mut config = SentinelConfig::default();
         config.package_manager.max_log_tail_bytes = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_service_profile_settings_are_rejected() {
+        let mut config = SentinelConfig::default();
+        config.service_profile.dynamic_udp_min_port = 1023;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.service_profile.dynamic_udp_max_port_samples = 0;
+        assert!(config.validate().is_err());
+
+        let mut config = SentinelConfig::default();
+        config.service_profile.unknown_owner_grace_observations = 0;
         assert!(config.validate().is_err());
     }
 

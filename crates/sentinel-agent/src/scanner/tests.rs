@@ -1,14 +1,18 @@
 use super::{
     annotate_active_response, apply_active_response_notification_policy,
-    duplicate_suppression_window_seconds, enrich_log_integrity_state, enrich_process_start_drift,
-    prepare_notification_findings, quiet_hours_allowed_findings, redact_findings,
-    save_log_integrity_state, save_process_start_state, suppress_in_scan_duplicates,
-    suppress_recent_duplicates,
+    compact_raw_event_for_storage, duplicate_suppression_window_seconds,
+    enrich_log_integrity_state, enrich_process_start_drift, prepare_notification_findings,
+    prepare_raw_events_for_storage, quiet_hours_allowed_findings, redact_findings,
+    retain_incremental_file_events, save_log_integrity_state, save_process_start_state,
+    suppress_in_scan_duplicates, suppress_recent_duplicates, truncate_utf8,
 };
 use crate::active_response::{ActiveResponseReport, BlockAction, BlockActionStatus};
 use crate::storage::SqliteStore;
 use chrono::{Duration, Utc};
-use sentinel_core::{Category, Evidence, Finding, RawEvent, SentinelConfig, Severity};
+use sentinel_core::{
+    evidence_value as core_evidence_value, Category, Evidence, Finding, RawEvent, SentinelConfig,
+    Severity,
+};
 
 #[test]
 fn redacts_finding_subject_and_evidence() {
@@ -33,9 +37,165 @@ fn redacts_finding_subject_and_evidence() {
 
     let redacted = redact_findings(vec![finding], &config);
     assert_eq!(redacted[0].subject, "root@203.0.x.x");
-    assert_eq!(redacted[0].evidence[0].value, "203.0.x.x");
-    assert_eq!(redacted[0].evidence[1].value, "/bin/bash [args masked]");
-    assert_eq!(redacted[0].evidence[2].value, "[masked by privacy config]");
+    assert_eq!(
+        core_evidence_value(&redacted[0].evidence, "source_ip"),
+        Some("203.0.x.x")
+    );
+    assert_eq!(
+        core_evidence_value(&redacted[0].evidence, "cmdline"),
+        Some("/bin/bash [args masked]")
+    );
+    assert_eq!(
+        core_evidence_value(&redacted[0].evidence, "raw"),
+        Some("[masked by privacy config]")
+    );
+}
+
+#[test]
+fn storage_compaction_removes_duplicate_process_argv_and_raw_log_lines() {
+    let mut config = SentinelConfig::default();
+    config.performance.store_raw_log_lines = false;
+    config.performance.max_stored_field_bytes = 16;
+    let event = RawEvent::new("process", "process_snapshot")
+        .with_field("cmdline", "/usr/bin/python app.py")
+        .with_field("argv_json", r#"["/usr/bin/python","app.py"]"#)
+        .with_field("raw", "raw log line")
+        .with_field("long", "abcdefghijklmnopqrstuvwxyz");
+
+    let compact = compact_raw_event_for_storage(&event, &config);
+
+    assert!(compact.field("argv_json").is_none());
+    assert!(compact.field("raw").is_none());
+    assert!(compact
+        .field("long")
+        .is_some_and(|value| value.len() <= 16 && value.contains("truncated")));
+}
+
+#[test]
+fn storage_preparation_keeps_only_relevant_web_events_by_default() {
+    let config = SentinelConfig::default();
+    let benign = RawEvent::new("web", "web_access")
+        .with_field("ip", "8.8.8.8")
+        .with_field("method", "GET")
+        .with_field("path", "/assets/app.css")
+        .with_field("status", "404");
+    let probe = RawEvent::new("web", "web_access")
+        .with_field("ip", "8.8.4.4")
+        .with_field("method", "GET")
+        .with_field("path", "/.env")
+        .with_field("status", "404");
+    let process = RawEvent::new("process", "process_snapshot")
+        .with_field("name", "nginx")
+        .with_field("exe_path", "/usr/sbin/nginx");
+
+    let stored = prepare_raw_events_for_storage(&[benign, probe, process], &config);
+
+    assert_eq!(stored.len(), 2);
+    assert!(stored
+        .iter()
+        .any(|event| event.kind == "web_access" && event.field("path") == Some("/.env")));
+    assert!(stored.iter().any(|event| event.kind == "process_snapshot"));
+}
+
+#[test]
+fn storage_preparation_can_keep_all_web_events_when_configured() {
+    let mut config = SentinelConfig::default();
+    config.performance.store_all_web_access_events = true;
+    let benign = RawEvent::new("web", "web_access")
+        .with_field("ip", "8.8.8.8")
+        .with_field("method", "GET")
+        .with_field("path", "/assets/app.css")
+        .with_field("status", "404");
+
+    let stored = prepare_raw_events_for_storage(&[benign], &config);
+
+    assert_eq!(stored.len(), 1);
+}
+
+#[test]
+fn incremental_file_filter_retains_only_detection_relevant_snapshots() {
+    let events = vec![
+        RawEvent::new("file_integrity", "file_snapshot")
+            .with_field("path", "/etc/passwd")
+            .with_field("hash", "stable"),
+        RawEvent::new("file_integrity", "file_snapshot")
+            .with_field("path", "/root/.ssh/authorized_keys")
+            .with_field("mode_octal", "0666"),
+        RawEvent::new("file_integrity", "file_snapshot")
+            .with_field("path", "/var/www/html/shell.php")
+            .with_field("is_web_path", "true"),
+        RawEvent::new("baseline", "file_modified")
+            .with_field("path", "/etc/ssh/sshd_config")
+            .with_field("change", "modified"),
+        RawEvent::new("file_integrity", "file_snapshot")
+            .with_field("path", "/etc/ssh/sshd_config")
+            .with_field("hash", "changed"),
+    ];
+    let changed = super::changed_file_paths(&events);
+
+    let retained = retain_incremental_file_events(events, &changed);
+
+    assert!(retained
+        .iter()
+        .any(|event| event.field("path") == Some("/root/.ssh/authorized_keys")));
+    assert!(retained
+        .iter()
+        .any(|event| event.field("path") == Some("/var/www/html/shell.php")));
+    assert!(retained
+        .iter()
+        .any(|event| event.field("path") == Some("/etc/ssh/sshd_config")));
+    assert!(!retained
+        .iter()
+        .any(|event| event.field("path") == Some("/etc/passwd")));
+}
+
+#[test]
+fn incremental_file_filter_reduces_high_volume_stable_snapshots() {
+    let mut events = (0..10_000)
+        .map(|index| {
+            RawEvent::new("file_integrity", "file_snapshot")
+                .with_field("path", format!("/opt/app/cache/file-{index}.txt"))
+                .with_field("hash", "stable")
+        })
+        .collect::<Vec<_>>();
+    events.push(
+        RawEvent::new("file_integrity", "file_snapshot")
+            .with_field("path", "/var/www/html/upload.php")
+            .with_field("is_web_path", "true"),
+    );
+    events.push(
+        RawEvent::new("baseline", "file_modified")
+            .with_field("path", "/etc/passwd")
+            .with_field("change", "modified"),
+    );
+    events.push(
+        RawEvent::new("file_integrity", "file_snapshot")
+            .with_field("path", "/etc/passwd")
+            .with_field("hash", "changed"),
+    );
+    let changed = super::changed_file_paths(&events);
+
+    let retained = retain_incremental_file_events(events, &changed);
+
+    assert_eq!(retained.len(), 3);
+    assert!(retained
+        .iter()
+        .any(|event| event.field("path") == Some("/var/www/html/upload.php")));
+    assert!(retained
+        .iter()
+        .any(|event| event.field("path") == Some("/etc/passwd")));
+}
+
+#[test]
+fn truncation_preserves_utf8_boundaries() {
+    let truncated = truncate_utf8("安全安全安全安全安全", 24);
+    assert!(truncated.starts_with("安全"));
+    assert!(truncated.contains("truncated"));
+    assert!(truncated.len() <= 24);
+
+    let tiny = truncate_utf8("安全安全", 5);
+    assert_eq!(tiny, "安");
+    assert!(tiny.len() <= 5);
 }
 
 #[test]
@@ -429,6 +589,31 @@ fn state_duplicates_are_suppressed_after_event_window() -> Result<(), Box<dyn st
 }
 
 #[test]
+fn ssh_login_duplicate_suppression_ignores_volatile_port_after_enrichment(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let store = SqliteStore::open(temp.path().join("sentinel.db"))?;
+    let mut config = SentinelConfig::default();
+    config.noise_control.dedup_window_seconds = 3600;
+
+    let mut previous = root_ssh_login_finding("42100");
+    crate::risk_score::enrich_findings(std::slice::from_mut(&mut previous));
+    previous.normalize_evidence();
+    store.save_findings(std::slice::from_ref(&previous))?;
+
+    let mut next = root_ssh_login_finding("58812");
+    crate::risk_score::enrich_findings(std::slice::from_mut(&mut next));
+    next.normalize_evidence();
+
+    assert_eq!(previous.dedup_key, next.dedup_key);
+    let (retained, suppressed) = suppress_recent_duplicates(&store, vec![next], &config)?;
+
+    assert!(retained.is_empty());
+    assert_eq!(suppressed, 1);
+    Ok(())
+}
+
+#[test]
 fn state_duplicate_suppression_uses_identity_when_dedup_key_changes(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let temp = tempfile::tempdir()?;
@@ -731,6 +916,27 @@ fn ssh_bruteforce_finding(source_ip: &str, failure_count: &str) -> Finding {
             Evidence::new("failure_count", failure_count),
         ],
         &["source_ip"],
+    )
+}
+
+fn root_ssh_login_finding(port: &str) -> Finding {
+    Finding::new(
+        "host",
+        "Root SSH login detected",
+        "Root logged in through SSH.",
+        Severity::High,
+        Category::Ssh,
+        "SSH-001",
+        "root@203.0.113.10",
+    )
+    .with_evidence_deduped_by(
+        vec![
+            Evidence::new("user", "root"),
+            Evidence::new("source_ip", "203.0.113.10"),
+            Evidence::new("port", port),
+            Evidence::new("method", "publickey"),
+        ],
+        &["user", "source_ip", "method"],
     )
 }
 

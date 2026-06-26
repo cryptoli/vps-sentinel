@@ -1,0 +1,6 @@
+{
+  "name": "default",
+  "description": "Default VPS Sentinel React panel theme.",
+  "styles": ["theme.css"],
+  "available_themes": ["default"]
+}

@@ -168,7 +168,7 @@ pub async fn send_report_finding(
                 ("failed".to_string(), err.to_string())
             }
         };
-        store.record_notification_log(&finding.id, &channel, &status, &error)?;
+        store.record_notification_log(finding, &channel, &status, &error)?;
         summary.outcomes.push(ReportDeliveryOutcome {
             channel,
             status,
@@ -577,6 +577,8 @@ mod tests {
                 raw_events: 0,
                 findings: 2,
                 notification_logs: 3,
+                attack_fingerprints: 0,
+                attack_observations: 0,
                 finding_dedup_states: 0,
                 scan_runs: 2,
                 baseline_snapshots: 1,
@@ -627,6 +629,8 @@ mod tests {
                 raw_events: 0,
                 findings: 1,
                 notification_logs: 0,
+                attack_fingerprints: 0,
+                attack_observations: 0,
                 finding_dedup_states: 0,
                 scan_runs: 1,
                 baseline_snapshots: 1,

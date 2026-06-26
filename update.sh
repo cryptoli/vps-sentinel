@@ -5,6 +5,7 @@ REPO_URL="${REPO_URL:-https://github.com/cryptoli/vps-sentinel.git}"
 BRANCH="${BRANCH:-main}"
 WORK_DIR="${WORK_DIR:-/opt/vps-sentinel-src}"
 PREFIX="${PREFIX:-/usr/local}"
+SHARE_DIR="${SHARE_DIR:-$PREFIX/share/vps-sentinel}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/vps-sentinel}"
 DATA_DIR="${DATA_DIR:-/var/lib/vps-sentinel}"
 LOG_DIR="${LOG_DIR:-/var/log/vps-sentinel}"
@@ -16,6 +17,7 @@ INSTALL_METHOD="${INSTALL_METHOD:-auto}"
 RELEASE_VERSION="${RELEASE_VERSION:-latest}"
 RELEASE_ARTIFACT_URL="${RELEASE_ARTIFACT_URL:-}"
 TARGET_TRIPLE="${TARGET_TRIPLE:-}"
+CLEAN_SOURCE_TARGET="${CLEAN_SOURCE_TARGET:-yes}"
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-auto}"
 RESTART_SERVICE="${RESTART_SERVICE:-auto}"
 VALIDATE_CONFIG="${VALIDATE_CONFIG:-yes}"
@@ -23,8 +25,21 @@ MIGRATE_CONFIG="${MIGRATE_CONFIG:-yes}"
 SYNC_CONFIG_DEFAULTS="${SYNC_CONFIG_DEFAULTS:-yes}"
 REFRESH_BASELINE="${REFRESH_BASELINE:-no}"
 POST_UPDATE_SCAN="${POST_UPDATE_SCAN:-yes}"
+UPDATE_MAINTENANCE_SECONDS="${UPDATE_MAINTENANCE_SECONDS:-600}"
 SYSTEMD_UNIT_INSTALLED=0
 SERVICE_WAS_ACTIVE=0
+SERVICE_STOPPED_FOR_UPDATE=0
+
+cleanup_on_exit() {
+  status=$?
+  if [ "$status" -ne 0 ] && [ "$SERVICE_STOPPED_FOR_UPDATE" -eq 1 ] && systemd_available; then
+    echo "update failed; attempting to restart existing $SERVICE_NAME service" >&2
+    systemctl start "$SERVICE_NAME" >/dev/null 2>&1 || true
+  fi
+}
+
+trap cleanup_on_exit EXIT
+trap 'exit 130' HUP INT TERM
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "please run as root, for example: sudo sh update.sh" >&2
@@ -247,6 +262,7 @@ stop_service_before_update() {
   if systemctl is-active "$SERVICE_NAME" >/dev/null 2>&1; then
     SERVICE_WAS_ACTIVE=1
     systemctl stop "$SERVICE_NAME"
+    SERVICE_STOPPED_FOR_UPDATE=1
   fi
 }
 
@@ -259,6 +275,7 @@ restart_updated_service() {
     auto)
       if [ "$SERVICE_WAS_ACTIVE" -eq 1 ] || systemctl is-enabled "$SERVICE_NAME" >/dev/null 2>&1; then
         systemctl start "$SERVICE_NAME"
+        SERVICE_STOPPED_FOR_UPDATE=0
       else
         echo "updated systemd unit; service is not active or enabled"
       fi
@@ -266,6 +283,7 @@ restart_updated_service() {
     yes|true|1)
       systemctl enable "$SERVICE_NAME"
       systemctl restart "$SERVICE_NAME"
+      SERVICE_STOPPED_FOR_UPDATE=0
       ;;
     no|false|0)
       echo "updated systemd unit; skipped service restart"
@@ -275,6 +293,28 @@ restart_updated_service() {
       exit 1
       ;;
   esac
+}
+
+start_update_maintenance() {
+  case "$UPDATE_MAINTENANCE_SECONDS" in
+    ''|*[!0-9]*)
+      echo "invalid UPDATE_MAINTENANCE_SECONDS value: $UPDATE_MAINTENANCE_SECONDS" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$UPDATE_MAINTENANCE_SECONDS" -eq 0 ]; then
+    return
+  fi
+  if [ ! -x "$PREFIX/bin/vps-sentinel" ] || [ ! -f "$CONFIG_DIR/config.toml" ]; then
+    return
+  fi
+  if "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" maintenance start \
+    --duration-seconds "$UPDATE_MAINTENANCE_SECONDS" \
+    --reason "vps-sentinel update" >/dev/null 2>&1; then
+    echo "started update maintenance window for ${UPDATE_MAINTENANCE_SECONDS}s"
+  else
+    echo "could not start update maintenance window; continuing update" >&2
+  fi
 }
 
 post_update_scan() {
@@ -338,6 +378,11 @@ sync_config_defaults() {
   if yes_enabled "$SYNC_CONFIG_DEFAULTS"; then
     "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" config sync-defaults
   fi
+}
+
+cleanup_active_response_state() {
+  "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" blocks cleanup || \
+    echo "active-response cleanup failed; continuing update" >&2
 }
 
 install_binary_aliases() {
@@ -405,6 +450,27 @@ release_binary_works() {
   "$binary" --version >/dev/null 2>&1
 }
 
+install_optional_panel() {
+  source_dir="$1"
+  panel_bin=""
+  if [ -f "$source_dir/vps-sentinel-panel" ]; then
+    panel_bin="$source_dir/vps-sentinel-panel"
+  elif [ -f "$source_dir/target/release/vps-sentinel-panel" ]; then
+    panel_bin="$source_dir/target/release/vps-sentinel-panel"
+  fi
+  if [ -n "$panel_bin" ]; then
+    install -m 0755 "$panel_bin" "$PREFIX/bin/vps-sentinel-panel"
+    echo "installed optional Rust panel binary to $PREFIX/bin/vps-sentinel-panel"
+  fi
+  if [ -d "$source_dir/panel/web" ]; then
+    install -d "$SHARE_DIR"
+    rm -rf "$SHARE_DIR/panel"
+    install -d "$SHARE_DIR/panel"
+    cp -R "$source_dir/panel/web" "$SHARE_DIR/panel/web"
+    echo "installed optional panel web assets to $SHARE_DIR/panel/web"
+  fi
+}
+
 install_helper_scripts() {
   source_dir="$1"
   for script in stop update install; do
@@ -412,6 +478,30 @@ install_helper_scripts() {
       install -m 0755 "$source_dir/${script}.sh" "$PREFIX/bin/vps-sentinel-${script}"
     fi
   done
+}
+
+cleanup_source_target() {
+  case "$CLEAN_SOURCE_TARGET" in
+    yes|true|1) ;;
+    no|false|0) return ;;
+    *)
+      echo "invalid CLEAN_SOURCE_TARGET value: $CLEAN_SOURCE_TARGET" >&2
+      exit 1
+      ;;
+  esac
+  if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+    echo "skipped source target cleanup because CARGO_TARGET_DIR is set"
+    return
+  fi
+  target_dir="$WORK_DIR/target"
+  if [ "$target_dir" = "/target" ] || [ "$target_dir" = "target" ] || [ "$target_dir" = "/" ]; then
+    echo "refusing unsafe source target cleanup path: $target_dir" >&2
+    exit 1
+  fi
+  if [ -d "$target_dir" ]; then
+    rm -rf "$target_dir"
+    echo "removed source build artifacts from $target_dir"
+  fi
 }
 
 ensure_config_exists() {
@@ -439,6 +529,7 @@ post_update() {
       ;;
   esac
 
+  cleanup_active_response_state
   install_systemd_unit_file
   refresh_baseline
   post_update_scan
@@ -447,13 +538,10 @@ post_update() {
 
 checkout_or_update() {
   if [ -d "$WORK_DIR/.git" ]; then
-    git -C "$WORK_DIR" fetch origin "$BRANCH:refs/remotes/origin/$BRANCH"
-    if git -C "$WORK_DIR" show-ref --verify --quiet "refs/heads/$BRANCH"; then
-      git -C "$WORK_DIR" checkout "$BRANCH"
-    else
-      git -C "$WORK_DIR" checkout -b "$BRANCH" "origin/$BRANCH"
-    fi
-    git -C "$WORK_DIR" pull --ff-only origin "$BRANCH"
+    git -C "$WORK_DIR" fetch --prune origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+    git -C "$WORK_DIR" checkout -B "$BRANCH" "origin/$BRANCH"
+    git -C "$WORK_DIR" reset --hard "origin/$BRANCH"
+    git -C "$WORK_DIR" clean -fd
   else
     install -d "$(dirname "$WORK_DIR")"
     git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$WORK_DIR"
@@ -481,8 +569,10 @@ install_from_release() {
   fi
 
   install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+  start_update_maintenance
   stop_service_before_update
   install -m 0755 "$tmp_dir/vps-sentinel" "$PREFIX/bin/vps-sentinel"
+  install_optional_panel "$tmp_dir"
   install_binary_aliases
   install_helper_scripts "$tmp_dir"
   ensure_config_exists "$tmp_dir/config.example.toml"
@@ -500,16 +590,19 @@ build_and_install_from_source() {
   install_deps source
   ensure_source_tools
   checkout_or_update
+  install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
+  start_update_maintenance
   cd "$WORK_DIR"
   cargo build --release --locked
-  install -d "$PREFIX/bin" "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
   stop_service_before_update
   install -m 0755 target/release/vps-sentinel "$PREFIX/bin/vps-sentinel"
+  install_optional_panel "$WORK_DIR"
   install_binary_aliases
   install_helper_scripts "$WORK_DIR"
   ensure_config_exists "$WORK_DIR/config/config.example.toml"
   SYSTEMD_TEMPLATE="$WORK_DIR/packaging/systemd/vps-sentinel.service"
   post_update
+  cleanup_source_target
   echo "vps-sentinel updated from $REPO_URL ($BRANCH)"
 }
 

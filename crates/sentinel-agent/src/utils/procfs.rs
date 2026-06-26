@@ -4,6 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const EXE_HASH_LIMIT_BYTES: u64 = 25 * 1024 * 1024;
+const PARENT_CHAIN_LIMIT: usize = 4;
 
 /// Root used for procfs reads. Tests can point this at a fixture tree.
 #[derive(Debug, Clone)]
@@ -71,6 +72,7 @@ pub fn collect_processes(root: &ProcfsRoot) -> SentinelResult<Vec<RawEvent>> {
         let uid = parse_status_first_value(&status, "Uid").unwrap_or_default();
         let euid = parse_status_indexed_value(&status, "Uid", 1).unwrap_or_default();
         let parent_name = read_trimmed(root.path().join(&ppid).join("comm"));
+        let process_ancestry = process_ancestry(root.path(), &ppid);
         let cgroup = fs::read_to_string(process_dir.join("cgroup")).unwrap_or_default();
         let container_context = container_metadata_from_cgroup(&cgroup);
         let systemd_unit = systemd_unit_from_cgroup(&cgroup).unwrap_or_default();
@@ -94,6 +96,9 @@ pub fn collect_processes(root: &ProcfsRoot) -> SentinelResult<Vec<RawEvent>> {
             .with_field("exe_path", exe_path)
             .with_field("cwd", cwd)
             .with_field("socket_fd_count", socket_fd_count.to_string());
+        if !process_ancestry.is_empty() {
+            event = event.with_field("process_ancestry", process_ancestry);
+        }
         if let Some(container) = container_context {
             event = event.with_field("container_context", container.runtime);
             if let Some(id) = container.id {
@@ -147,6 +152,28 @@ fn read_argv(process_dir: &Path) -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
+}
+
+fn process_ancestry(proc_root: &Path, first_ppid: &str) -> String {
+    let mut current = first_ppid.trim().to_string();
+    let mut chain = Vec::new();
+    for _ in 0..PARENT_CHAIN_LIMIT {
+        if current.is_empty() || current == "0" {
+            break;
+        }
+        let status =
+            fs::read_to_string(proc_root.join(&current).join("status")).unwrap_or_default();
+        let name = parse_status_value(&status, "Name")
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                let value = read_trimmed(proc_root.join(&current).join("comm"));
+                (!value.is_empty()).then_some(value)
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        chain.push(format!("{name}({current})"));
+        current = parse_status_value(&status, "PPid").unwrap_or_default();
+    }
+    chain.join(" <- ")
 }
 
 #[derive(Debug, Clone)]
@@ -221,13 +248,13 @@ fn metadata_gid(metadata: &fs::Metadata) -> String {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ContainerMetadata {
-    runtime: String,
-    id: Option<String>,
-    scope: Option<String>,
+pub(crate) struct ContainerMetadata {
+    pub(crate) runtime: String,
+    pub(crate) id: Option<String>,
+    pub(crate) scope: Option<String>,
 }
 
-fn container_metadata_from_cgroup(cgroup: &str) -> Option<ContainerMetadata> {
+pub(crate) fn container_metadata_from_cgroup(cgroup: &str) -> Option<ContainerMetadata> {
     let lowered = cgroup.to_ascii_lowercase();
     let runtime = if lowered.contains("kubepods") {
         "kubernetes"
@@ -260,7 +287,7 @@ fn extract_container_id(cgroup: &str) -> Option<String> {
     None
 }
 
-fn systemd_unit_from_cgroup(cgroup: &str) -> Option<String> {
+pub(crate) fn systemd_unit_from_cgroup(cgroup: &str) -> Option<String> {
     cgroup
         .lines()
         .flat_map(|line| line.split('/'))
@@ -414,6 +441,10 @@ mod tests {
         fs::create_dir_all(&parent_dir)?;
         fs::write(parent_dir.join("comm"), "systemd\n")?;
         fs::write(
+            parent_dir.join("status"),
+            "Name:\tsystemd\nPPid:\t0\nUid:\t0\t0\t0\t0\n",
+        )?;
+        fs::write(
             pid_dir.join("cmdline"),
             b"/usr/local/bin/kworker\0--daemon\0",
         )?;
@@ -435,12 +466,15 @@ mod tests {
 
         let events = collect_processes(&ProcfsRoot::new(proc_dir))?;
 
-        assert_eq!(events.len(), 1);
-        let event = &events[0];
+        let event = events
+            .iter()
+            .find(|event| event.field("pid") == Some("1234"))
+            .expect("target process");
         assert_eq!(event.field("pid"), Some("1234"));
         assert_eq!(event.field("name"), Some("kworker"));
         assert_eq!(event.field("ppid"), Some("1"));
         assert_eq!(event.field("parent_name"), Some("systemd"));
+        assert_eq!(event.field("process_ancestry"), Some("systemd(1)"));
         assert_eq!(event.field("uid"), Some("0"));
         assert_eq!(event.field("euid"), Some("0"));
         assert_eq!(

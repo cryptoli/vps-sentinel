@@ -1,18 +1,26 @@
 use crate::active_response::{apply_active_response, ActiveResponseReport, BlockActionStatus};
-use crate::baseline::{diff_snapshots, BaselineSnapshot};
+use crate::attack_fingerprint::enrich_and_persist_findings;
+use crate::baseline::{diff_snapshots, enrich_baseline_drift_findings, BaselineSnapshot};
 use crate::collectors::{default_collectors, CollectContext};
-use crate::detectors::{default_detectors, DetectContext};
+use crate::detectors::{default_detectors, DetectContext, EventIndex};
+use crate::evidence_score;
 use crate::findings::coalesce_related_findings;
 use crate::incident::{correlate_findings, prune_incidents, save_incidents};
+use crate::local_behavior::enrich_local_behavior;
 use crate::maintenance::apply_maintenance_policy;
 use crate::notify::{NotificationManager, NotifyContext};
+use crate::panel;
+use crate::resource_budget::apply_resource_budget;
 use crate::risk_score;
 use crate::rules::system::ACTIVE_RESPONSE_SUMMARY_RULE_ID;
 use crate::service_profile::evaluate_service_profile;
 use crate::storage::SqliteStore;
 use crate::threat_intel;
+use crate::timeline;
 use crate::utils::fs::path_string;
+use crate::utils::memory::current_rss_kb;
 use crate::utils::redact::{mask_command_args, mask_ip, mask_ips_in_text};
+pub(crate) use crate::utils::text::truncate_utf8;
 use chrono::{Duration, Local, Timelike, Utc};
 use sentinel_core::{
     Category, Evidence, Finding, MinuteWindow, NotificationTimeZone, RawEvent, SentinelConfig,
@@ -25,6 +33,8 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, warn};
+
+mod event_budget;
 
 const PROCESS_START_STATE_RULE_ID: &str = "process_start_times";
 const LOG_INTEGRITY_STATE_RULE_ID: &str = "log_integrity_state";
@@ -54,6 +64,11 @@ impl Default for ScanOptions {
 pub struct ScanReport {
     pub raw_event_count: usize,
     pub diff_event_count: usize,
+    pub event_count_by_source: BTreeMap<String, usize>,
+    pub event_count_by_kind: BTreeMap<String, usize>,
+    pub memory_rss_before_kb: Option<u64>,
+    pub memory_rss_after_kb: Option<u64>,
+    pub memory_rss_delta_kb: Option<i64>,
     pub finding_count: usize,
     pub suppressed_duplicate_count: usize,
     pub quiet_suppressed_count: usize,
@@ -66,6 +81,12 @@ pub struct ScanReport {
     pub active_response_applied_count: usize,
     pub active_response_failed_count: usize,
     pub active_response_expired_count: usize,
+    pub attack_fingerprint_observation_count: usize,
+    pub attack_fingerprint_action_hint_count: usize,
+    pub resource_budget_dropped_raw_events: usize,
+    pub resource_budget_dropped_findings: usize,
+    pub resource_budget_truncated_evidence_items: usize,
+    pub resource_budget_truncated_evidence_values: usize,
     pub incident_count: usize,
     pub findings: Vec<Finding>,
     pub collector_errors: Vec<String>,
@@ -81,6 +102,11 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         "scan started"
     );
     let config = Arc::new(config);
+    let memory_rss_before_kb = config
+        .performance
+        .collect_memory_metrics
+        .then(current_rss_kb)
+        .flatten();
     let store = if options.persist {
         Some(SqliteStore::open(config.storage.path.clone())?)
     } else {
@@ -109,6 +135,16 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         }
     }
 
+    let raw_event_budget_report =
+        event_budget::apply_raw_event_budget(&mut raw_events, config.as_ref());
+    if raw_event_budget_report.dropped_events > 0 {
+        warn!(
+            dropped_raw_events = raw_event_budget_report.dropped_events,
+            retained_raw_events = raw_events.len(),
+            "resource budget applied to raw events"
+        );
+    }
+
     let current_snapshot = BaselineSnapshot::from_events(&raw_events);
     let diff_events = match &store {
         Some(store) => match store.latest_baseline_snapshot()? {
@@ -117,21 +153,31 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         },
         None => Vec::new(),
     };
+    let changed_file_paths = changed_file_paths(&diff_events);
     let diff_event_count = diff_events.len();
     let raw_event_count = raw_events.len();
     let mut detection_events = raw_events;
     detection_events.extend(diff_events);
+    if config.file_integrity.incremental {
+        detection_events = retain_incremental_file_events(detection_events, &changed_file_paths);
+    }
+    let event_count_by_source = count_events_by(&detection_events, |event| event.source.as_str());
+    let event_count_by_kind = count_events_by(&detection_events, |event| event.kind.as_str());
     if options.persist {
         if let Some(store) = &store {
             enrich_process_start_drift(&mut detection_events, store)?;
             enrich_log_integrity_state(&mut detection_events, store, config.as_ref())?;
+            if let Err(err) = enrich_local_behavior(&mut detection_events, config.as_ref(), store) {
+                warn!(error = %err, "local behavior profile enrichment failed");
+            }
         }
     }
 
     let detect_context = DetectContext::new(Arc::clone(&config));
+    let event_index = EventIndex::new(&detection_events);
     let mut findings = Vec::new();
     for detector in default_detectors() {
-        findings.extend(detector.detect(&detection_events, &detect_context));
+        findings.extend(detector.detect_indexed(&detection_events, &event_index, &detect_context));
     }
     if options.persist {
         if let Some(store) = &store {
@@ -141,9 +187,13 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             }
         }
     }
+    normalize_finding_evidence(&mut findings);
     findings = coalesce_related_findings(findings);
+    enrich_baseline_drift_findings(&mut findings);
+    normalize_finding_evidence(&mut findings);
     let intel = threat_intel::load_threat_intel(&config).await;
     threat_intel::enrich_findings(&mut findings, &intel);
+    evidence_score::enrich_findings(&mut findings);
     risk_score::enrich_findings(&mut findings);
     let mut maintenance_suppressed_count = 0;
     if options.persist {
@@ -153,7 +203,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         if decision.suppressed_count > 0 {
             warn!(
                 suppressed_findings = decision.suppressed_count,
-                "maintenance mode suppressed baseline drift findings"
+                "maintenance mode suppressed configured findings"
             );
         }
     }
@@ -162,6 +212,40 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     let suppression = suppress_in_scan_duplicates(findings);
     findings = suppression.0;
     suppressed_duplicate_count += suppression.1;
+    let mut budget_report = apply_resource_budget(&mut findings, &config);
+    if budget_report.dropped_findings > 0
+        || budget_report.truncated_evidence_items > 0
+        || budget_report.truncated_evidence_values > 0
+    {
+        warn!(
+            dropped_findings = budget_report.dropped_findings,
+            truncated_evidence_items = budget_report.truncated_evidence_items,
+            truncated_evidence_values = budget_report.truncated_evidence_values,
+            "resource budget applied before response processing"
+        );
+    }
+
+    let mut attack_fingerprint_observation_count = 0;
+    let mut attack_fingerprint_action_hint_count = 0;
+    if config.attack_fingerprints.enabled && options.persist {
+        if let Some(store) = &store {
+            match enrich_and_persist_findings(&mut findings, &config, store) {
+                Ok(report) => {
+                    attack_fingerprint_observation_count = report.observations;
+                    attack_fingerprint_action_hint_count = report.action_hints;
+                    debug!(
+                        observations = report.observations,
+                        created = report.created,
+                        matched_exact = report.matched_exact,
+                        matched_similar = report.matched_similar,
+                        action_hints = report.action_hints,
+                        "attack fingerprint enrichment completed"
+                    );
+                }
+                Err(err) => warn!(error = %err, "attack fingerprint enrichment failed"),
+            }
+        }
+    }
 
     // Active response must evaluate current evidence before persisted duplicate
     // suppression can hide an escalated failure/probe count. Block state prevents
@@ -192,6 +276,13 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
                         &report,
                         config.as_ref(),
                     );
+                    normalize_finding_evidence(&mut findings);
+                    let active_response_budget = apply_resource_budget(&mut findings, &config);
+                    budget_report.dropped_findings += active_response_budget.dropped_findings;
+                    budget_report.truncated_evidence_items +=
+                        active_response_budget.truncated_evidence_items;
+                    budget_report.truncated_evidence_values +=
+                        active_response_budget.truncated_evidence_values;
                     active_response_report = report;
                 }
                 Err(err) => {
@@ -205,6 +296,14 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             active_response = options.active_response,
             "active response skipped because side effects are disabled for this scan"
         );
+    }
+
+    let mut timeline_findings = timeline::correlate_timelines(&findings, &config);
+    if !timeline_findings.is_empty() {
+        evidence_score::enrich_findings(&mut timeline_findings);
+        risk_score::enrich_findings(&mut timeline_findings);
+        findings.append(&mut timeline_findings);
+        normalize_finding_evidence(&mut findings);
     }
 
     if options.persist {
@@ -230,11 +329,12 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
 
     if options.persist {
         if let Some(store) = &store {
+            let storage_events = prepare_raw_events_for_storage(&detection_events, &config);
             if privacy_redaction_enabled(&config) {
-                let redacted_events = redact_raw_events(&detection_events, &config);
+                let redacted_events = redact_raw_events(&storage_events, &config);
                 store.save_raw_events(&redacted_events)?;
             } else {
-                store.save_raw_events(&detection_events)?;
+                store.save_raw_events(&storage_events)?;
             }
             save_process_start_state(&detection_events, store)?;
             save_log_integrity_state(&detection_events, store)?;
@@ -301,6 +401,10 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             )
             .await;
         notification_attempt_count = notification_results.len();
+        let notification_findings_by_id = notification_findings
+            .iter()
+            .map(|finding| (finding.id.as_str(), finding))
+            .collect::<BTreeMap<_, _>>();
         for (finding_id, channel, result) in notification_results {
             match &result {
                 Ok(()) => {
@@ -324,9 +428,15 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
                     Ok(()) => ("ok", String::new()),
                     Err(err) => ("failed", err.to_string()),
                 };
-                if let Err(err) =
-                    store.record_notification_log(&finding_id, &channel, status, &error)
-                {
+                let Some(finding) = notification_findings_by_id.get(finding_id.as_str()) else {
+                    warn!(
+                        finding_id = finding_id,
+                        channel = channel,
+                        "notification finding snapshot missing"
+                    );
+                    continue;
+                };
+                if let Err(err) = store.record_notification_log(finding, &channel, status, &error) {
                     warn!(channel = channel, error = %err, "failed to record notification log");
                 }
             }
@@ -342,6 +452,14 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             let pruned_incidents = prune_incidents(store, config.storage.retention_days)?;
             if pruned_incidents > 0 {
                 debug!(deleted_incidents = pruned_incidents, "old incidents pruned");
+            }
+            let pruned_fingerprints =
+                store.prune_attack_fingerprints(config.attack_fingerprints.retention_days)?;
+            if pruned_fingerprints > 0 {
+                debug!(
+                    deleted_rows = pruned_fingerprints,
+                    "old attack fingerprint rows pruned"
+                );
             }
             if let Some(report) = store.enforce_size_limit(config.storage.max_database_size_mb)? {
                 if report.size_after_bytes
@@ -371,9 +489,21 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         }
     }
 
+    let memory_rss_after_kb = config
+        .performance
+        .collect_memory_metrics
+        .then(current_rss_kb)
+        .flatten();
+    let memory_rss_delta_kb = memory_rss_before_kb
+        .zip(memory_rss_after_kb)
+        .map(|(before, after)| after as i64 - before as i64);
+
     debug!(
         raw_events = raw_event_count,
         diff_events = diff_event_count,
+        memory_rss_before_kb,
+        memory_rss_after_kb,
+        memory_rss_delta_kb,
         detected_findings = detected_finding_count,
         findings = findings.len(),
         suppressed_duplicates = suppressed_duplicate_count,
@@ -387,13 +517,24 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         active_response_applied = active_response_report.applied_blocks,
         active_response_failed = active_response_report.failed_blocks,
         active_response_expired = active_response_report.expired_blocks,
+        attack_fingerprint_observations = attack_fingerprint_observation_count,
+        attack_fingerprint_action_hints = attack_fingerprint_action_hint_count,
+        resource_budget_dropped_raw_events = raw_event_budget_report.dropped_events,
+        resource_budget_dropped_findings = budget_report.dropped_findings,
+        resource_budget_truncated_evidence_items = budget_report.truncated_evidence_items,
+        resource_budget_truncated_evidence_values = budget_report.truncated_evidence_values,
         incidents = incident_count,
         collector_errors = collector_errors.len(),
         "scan completed"
     );
-    Ok(ScanReport {
+    let report = ScanReport {
         raw_event_count,
         diff_event_count,
+        event_count_by_source,
+        event_count_by_kind,
+        memory_rss_before_kb,
+        memory_rss_after_kb,
+        memory_rss_delta_kb,
         finding_count: findings.len(),
         suppressed_duplicate_count,
         quiet_suppressed_count,
@@ -406,10 +547,136 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         active_response_applied_count: active_response_report.applied_blocks,
         active_response_failed_count: active_response_report.failed_blocks,
         active_response_expired_count: active_response_report.expired_blocks,
+        attack_fingerprint_observation_count,
+        attack_fingerprint_action_hint_count,
+        resource_budget_dropped_raw_events: raw_event_budget_report.dropped_events,
+        resource_budget_dropped_findings: budget_report.dropped_findings,
+        resource_budget_truncated_evidence_items: budget_report.truncated_evidence_items,
+        resource_budget_truncated_evidence_values: budget_report.truncated_evidence_values,
         incident_count,
         findings,
         collector_errors,
-    })
+    };
+    if options.persist {
+        if let Some(store) = &store {
+            match panel::publish_scan(config.as_ref(), store, &report, &incidents).await {
+                Ok(summary) if summary.pending > 0 => {
+                    warn!(
+                        pending = summary.pending,
+                        "panel outbox has pending payloads"
+                    );
+                }
+                Ok(_) => {}
+                Err(err) => warn!(error = %err, "panel publish failed"),
+            }
+        }
+    }
+    Ok(report)
+}
+
+fn count_events_by<'a>(
+    events: &'a [RawEvent],
+    key_fn: impl Fn(&'a RawEvent) -> &'a str,
+) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for event in events {
+        *counts.entry(key_fn(event).to_string()).or_default() += 1;
+    }
+    counts
+}
+
+fn normalize_finding_evidence(findings: &mut [Finding]) {
+    for finding in findings {
+        finding.normalize_evidence();
+    }
+}
+
+fn changed_file_paths(events: &[RawEvent]) -> BTreeSet<String> {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind.as_str(),
+                "file_created" | "file_modified" | "file_deleted"
+            )
+        })
+        .filter_map(|event| event.field("path").map(str::to_string))
+        .collect()
+}
+
+fn retain_incremental_file_events(
+    events: Vec<RawEvent>,
+    changed_file_paths: &BTreeSet<String>,
+) -> Vec<RawEvent> {
+    events
+        .into_iter()
+        .filter(|event| {
+            event.kind != "file_snapshot"
+                || file_snapshot_needed_for_detection(event, changed_file_paths)
+        })
+        .collect()
+}
+
+fn file_snapshot_needed_for_detection(
+    event: &RawEvent,
+    changed_file_paths: &BTreeSet<String>,
+) -> bool {
+    let path = event.field("path").unwrap_or_default();
+    if path.is_empty() {
+        return false;
+    }
+    changed_file_paths.contains(path)
+        || is_authorized_keys_path(path)
+        || event.field("content_markers").is_some()
+        || (event.field("is_web_path") == Some("true")
+            && (event.field("executable") == Some("true") || is_web_script_path(path)))
+}
+
+fn is_authorized_keys_path(path: &str) -> bool {
+    path.ends_with("/authorized_keys")
+        || path.ends_with("/authorized_keys2")
+        || path.ends_with("\\authorized_keys")
+        || path.ends_with("\\authorized_keys2")
+}
+
+fn is_web_script_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    [
+        ".php", ".phtml", ".jsp", ".jspx", ".asp", ".aspx", ".cgi", ".pl", ".py", ".sh",
+    ]
+    .iter()
+    .any(|suffix| lower.ends_with(suffix))
+}
+
+fn prepare_raw_events_for_storage(events: &[RawEvent], config: &SentinelConfig) -> Vec<RawEvent> {
+    events
+        .iter()
+        .filter(|event| raw_event_storage_enabled(event, config))
+        .map(|event| compact_raw_event_for_storage(event, config))
+        .collect()
+}
+
+fn raw_event_storage_enabled(event: &RawEvent, config: &SentinelConfig) -> bool {
+    event.kind != "web_access"
+        || config.performance.store_all_web_access_events
+        || crate::detectors::web_rules::storage_relevant_web_event(event)
+}
+
+fn compact_raw_event_for_storage(event: &RawEvent, config: &SentinelConfig) -> RawEvent {
+    let mut compact = event.clone();
+    if !config.performance.store_raw_log_lines {
+        compact.fields.remove("raw");
+    }
+    if compact.kind == "process_snapshot" && compact.fields.contains_key("cmdline") {
+        compact.fields.remove("argv_json");
+    }
+    let max_bytes = config.performance.max_stored_field_bytes;
+    for value in compact.fields.values_mut() {
+        if value.len() > max_bytes {
+            *value = truncate_utf8(value, max_bytes);
+        }
+    }
+    compact
 }
 
 fn apply_active_response_notification_policy(

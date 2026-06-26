@@ -22,6 +22,8 @@ pub fn find_rule(rule_id: &str) -> Option<RuleMetadata> {
 #[cfg(test)]
 mod tests {
     use super::{builtin_rules, find_rule};
+    use crate::rules::model::RuleResponseScope;
+    use sentinel_core::canonical_key;
     use std::collections::BTreeSet;
 
     #[test]
@@ -60,6 +62,36 @@ mod tests {
             find_rule("REPORT-001").map(|rule| rule.id),
             Some("REPORT-001")
         );
+    }
+
+    #[test]
+    fn builtin_rules_have_owner_matrix_contracts() {
+        for rule in builtin_rules() {
+            assert!(
+                rule.owner.compatible_category(&rule.category),
+                "{} owner {} is incompatible with category {}",
+                rule.id,
+                rule.owner,
+                rule.category
+            );
+            for key in rule.evidence_keys {
+                assert_eq!(
+                    canonical_key(key).as_ref(),
+                    *key,
+                    "{} evidence key should be canonical: {}",
+                    rule.id,
+                    key
+                );
+            }
+            if matches!(rule.id, "WEB-001" | "WEB-002" | "SSH-003" | "SSH-007") {
+                assert_eq!(
+                    rule.response_scope,
+                    RuleResponseScope::ActiveResponseCandidate,
+                    "{} should declare active-response scope",
+                    rule.id
+                );
+            }
+        }
     }
 
     fn is_normalized_rule_id(rule_id: &str) -> bool {

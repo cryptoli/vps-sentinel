@@ -1,0 +1,26 @@
+name = "vps-sentinel-panel"
+main = "worker.js"
+compatibility_date = "2026-06-22"
+
+[assets]
+directory = "../web"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "vps-sentinel-panel-db"
+database_id = "replace-with-d1-database-id"
+
+# Set secrets with:
+# wrangler secret put PANEL_SHARED_SECRET
+# wrangler secret put PANEL_NODE_SECRETS
+# wrangler secret put PANEL_TOKEN
+[vars]
+PANEL_MAX_BODY_BYTES = "1048576"
+PANEL_PUBLIC_ENABLED = "false"
+# Prefer scripts/deploy-cloudflare-panel.sh, which generates and persists a random path.
+PANEL_ADMIN_PATH = "/replace-with-random-management-path"
+PANEL_THEME = "default"
+PANEL_THEMES = "default:Default"

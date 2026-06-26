@@ -3,17 +3,24 @@
 pub mod config;
 pub mod error;
 pub mod event;
+pub mod evidence_schema;
 pub mod finding;
+pub mod panel_auth;
 pub mod severity;
 pub mod time_window;
 
 pub use config::{
-    ActiveResponseConfig, BarkConfig, DingTalkConfig, EmailConfig, EmailTlsMode, FeishuConfig,
-    GotifyConfig, NotificationLanguage, NotificationTimeZone, NtfyConfig, SentinelConfig,
-    ServerChanConfig, TelegramConfig, WebhookConfig,
+    ActiveResponseConfig, BarkConfig, EmailConfig, EmailTlsMode, GotifyConfig,
+    NotificationLanguage, NotificationTimeZone, NtfyConfig, SentinelConfig, ServerChanConfig,
+    TelegramConfig, WebhookConfig, DEFAULT_DYNAMIC_UDP_MIN_PORT,
 };
 pub use error::{SentinelError, SentinelResult};
 pub use event::RawEvent;
+pub use evidence_schema::{
+    canonical_key, evidence_value, evidence_values, normalize_evidence_items,
+    normalize_evidence_value, stable_evidence_keys, upsert_evidence, EvidenceField,
+    EvidenceValueKind,
+};
 pub use finding::{Category, Confidence, Evidence, Finding};
 pub use severity::Severity;
 pub use time_window::{minute_of_day, MinuteWindow};

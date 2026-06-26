@@ -43,14 +43,26 @@ pub async fn run_service_profile(
                     .unwrap_or_else(|| "unknown".to_string())
             );
             for service in profile.services.values() {
+                let ports = if service.observed_ports.is_empty() {
+                    service.local_port.to_string()
+                } else {
+                    service
+                        .observed_ports
+                        .iter()
+                        .map(u16::to_string)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                };
                 println!(
-                    "{} {}:{} process={} executable={} public={}",
+                    "{} {}:{} process={} executable={} public={} dynamic={} observations={}",
                     service.protocol,
                     service.local_addr,
-                    service.local_port,
+                    ports,
                     service.process_name,
                     service.executable,
-                    service.public_exposure
+                    service.public_exposure,
+                    service.dynamic_family,
+                    service.observation_count
                 );
             }
         }

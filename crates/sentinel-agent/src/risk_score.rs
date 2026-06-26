@@ -1,3 +1,4 @@
+use crate::evidence_score;
 use sentinel_core::{Category, Confidence, Evidence, Finding, Severity};
 use std::collections::BTreeSet;
 
@@ -48,6 +49,14 @@ pub fn score_finding(finding: &Finding) -> UnifiedRisk {
     if let Some(detector_score) = evidence_score(finding, "behavior_score") {
         score = score.max(detector_score);
         features.insert("behavior_score".to_string());
+    }
+    if let Some(drift_score) = evidence_score(finding, "baseline_drift_score") {
+        score = score.max(drift_score);
+        features.insert("baseline_drift_score".to_string());
+    }
+    if let Some(assessment_score) = evidence_score::evidence_score(finding) {
+        score = score.max(assessment_score);
+        features.insert("evidence_score".to_string());
     }
     if evidence_value(finding, "threat_intel_match").as_deref() == Some("true") {
         score = score.saturating_add(15).min(100);
@@ -202,5 +211,44 @@ mod tests {
         .with_evidence(vec![Evidence::new("unified_risk_score", "91")]);
 
         assert_eq!(unified_score(&finding), 91);
+    }
+
+    #[test]
+    fn uses_evidence_score_when_it_is_stronger_than_severity() {
+        let finding = Finding::new(
+            "host",
+            "test",
+            "test",
+            Severity::Low,
+            Category::Process,
+            "P",
+            "p",
+        )
+        .with_evidence(vec![Evidence::new("evidence_score", "88")]);
+
+        let risk = score_finding(&finding);
+
+        assert_eq!(risk.score, 88);
+        assert!(risk.features.contains(&"evidence_score".to_string()));
+    }
+
+    #[test]
+    fn uses_baseline_drift_score_when_it_is_stronger_than_severity() {
+        let finding = Finding::new(
+            "host",
+            "test",
+            "test",
+            Severity::Medium,
+            Category::Network,
+            "NET-002",
+            "tcp:0.0.0.0:443",
+        )
+        .with_evidence(vec![Evidence::new("baseline_drift_score", "82")])
+        .with_confidence(Confidence::Medium);
+
+        let risk = score_finding(&finding);
+
+        assert_eq!(risk.score, 82);
+        assert!(risk.features.contains(&"baseline_drift_score".to_string()));
     }
 }

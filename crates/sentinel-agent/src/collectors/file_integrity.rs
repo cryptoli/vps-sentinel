@@ -1,3 +1,4 @@
+use crate::baseline::semantic;
 use crate::collectors::{CollectContext, Collector};
 use crate::utils::fs::{hash_file_limited, is_executable, is_hidden, path_string, read_small_text};
 use crate::utils::ssh_config::discover_authorized_key_patterns;
@@ -160,7 +161,23 @@ fn file_event(ctx: &CollectContext, path: &Path) -> Option<RawEvent> {
     if !markers.is_empty() {
         event = event.with_field("content_markers", markers.join(","));
     }
+    if let Some(profile) = semantic_profile(path, event.field("path").unwrap_or_default()) {
+        event = event
+            .with_field("semantic_kind", profile.kind)
+            .with_field("semantic_hash", profile.hash)
+            .with_field("semantic_summary", profile.summary);
+        if !profile.features.is_empty() {
+            event = event.with_field("semantic_features", profile.features.join(", "));
+        }
+    }
     Some(event)
+}
+
+fn semantic_profile(path: &Path, path_text: &str) -> Option<semantic::SemanticProfile> {
+    let text = read_small_text(path, MAX_CONTENT_SCAN_BYTES)
+        .ok()
+        .flatten()?;
+    semantic::profile_for_path(path_text, &text)
 }
 
 fn file_type_label(symlink_metadata: &fs::Metadata, metadata: &fs::Metadata) -> &'static str {

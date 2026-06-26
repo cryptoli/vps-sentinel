@@ -1,8 +1,9 @@
 use crate::baseline::diff_snapshots;
+use crate::baseline::drift::{assess_event_with_policy, DriftPolicy};
 use crate::baseline::snapshot::{listener_key, BaselineSnapshot};
 use blake3::Hasher;
 use chrono::{DateTime, Utc};
-use sentinel_core::RawEvent;
+use sentinel_core::{RawEvent, SentinelConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
@@ -16,6 +17,14 @@ pub struct BaselineApprovalItem {
     pub subject: String,
     pub action: String,
     pub risk_hint: String,
+    #[serde(default)]
+    pub risk_score: u16,
+    #[serde(default)]
+    pub risk_tier: String,
+    #[serde(default)]
+    pub review_action: String,
+    #[serde(default)]
+    pub reasons: Vec<String>,
     pub fields: BTreeMap<String, String>,
 }
 
@@ -44,9 +53,25 @@ pub fn approval_items(
     previous: &BaselineSnapshot,
     current: &BaselineSnapshot,
 ) -> Vec<BaselineApprovalItem> {
+    approval_items_with_policy(previous, current, &DriftPolicy::default())
+}
+
+pub fn approval_items_with_config(
+    previous: &BaselineSnapshot,
+    current: &BaselineSnapshot,
+    config: &SentinelConfig,
+) -> Vec<BaselineApprovalItem> {
+    approval_items_with_policy(previous, current, &DriftPolicy::from(config))
+}
+
+fn approval_items_with_policy(
+    previous: &BaselineSnapshot,
+    current: &BaselineSnapshot,
+    policy: &DriftPolicy,
+) -> Vec<BaselineApprovalItem> {
     diff_snapshots(previous, current)
         .into_iter()
-        .map(|event| approval_item_from_event(&event))
+        .map(|event| approval_item_from_event_with_policy(&event, policy))
         .collect()
 }
 
@@ -119,13 +144,37 @@ pub fn apply_approved_changes(
 }
 
 fn approval_item_from_event(event: &RawEvent) -> BaselineApprovalItem {
+    approval_item_from_event_with_policy(event, &DriftPolicy::default())
+}
+
+fn approval_item_from_event_with_policy(
+    event: &RawEvent,
+    policy: &DriftPolicy,
+) -> BaselineApprovalItem {
     let subject = event_subject(event);
+    let assessment = assess_event_with_policy(event, policy);
     BaselineApprovalItem {
         key: approval_key(event, &subject),
         kind: event.kind.clone(),
         subject: subject.clone(),
         action: event_action(event.kind.as_str()).to_string(),
         risk_hint: risk_hint(event, &subject).to_string(),
+        risk_score: assessment
+            .as_ref()
+            .map(|item| item.score)
+            .unwrap_or_default(),
+        risk_tier: assessment
+            .as_ref()
+            .map(|item| item.tier.to_string())
+            .unwrap_or_else(|| "review".to_string()),
+        review_action: assessment
+            .as_ref()
+            .map(|item| item.review_action.to_string())
+            .unwrap_or_else(|| "review_change_before_refresh".to_string()),
+        reasons: assessment
+            .as_ref()
+            .map(|item| item.reasons.clone())
+            .unwrap_or_default(),
         fields: event.fields.clone(),
     }
 }
@@ -246,9 +295,12 @@ fn apply_event_to_snapshot(
 
 #[cfg(test)]
 mod tests {
-    use super::{apply_approved_changes, approval_items, approve_keys, BaselineApprovalState};
+    use super::{
+        apply_approved_changes, approval_items, approval_items_with_config, approve_keys,
+        BaselineApprovalState,
+    };
     use crate::baseline::snapshot::BaselineSnapshot;
-    use sentinel_core::RawEvent;
+    use sentinel_core::{RawEvent, SentinelConfig};
 
     #[test]
     fn approval_key_is_stable_for_same_diff() {
@@ -261,6 +313,8 @@ mod tests {
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].key, right[0].key);
         assert_eq!(left[0].action, "update_file_baseline");
+        assert!(left[0].risk_score > 0);
+        assert!(!left[0].risk_tier.is_empty());
     }
 
     #[test]
@@ -313,10 +367,37 @@ mod tests {
         assert!(state.approvals.is_empty());
     }
 
+    #[test]
+    fn approval_items_score_dynamic_udp_drift_with_current_config() {
+        let old = BaselineSnapshot::from_events(&[]);
+        let new = BaselineSnapshot::from_events(&[udp_listener(51659)]);
+        let mut config = SentinelConfig::default();
+
+        let routine = approval_items_with_config(&old, &new, &config);
+
+        assert_eq!(routine.len(), 1);
+        assert_eq!(routine[0].risk_tier, "routine");
+        config.service_profile.dynamic_udp_enabled = false;
+
+        let review = approval_items_with_config(&old, &new, &config);
+
+        assert_eq!(review.len(), 1);
+        assert_eq!(review[0].risk_tier, "review");
+    }
+
     fn file(path: &str, hash: &str) -> RawEvent {
         RawEvent::new("file", "file_snapshot")
             .with_field("path", path)
             .with_field("hash", hash)
             .with_field("size", "1")
+    }
+
+    fn udp_listener(port: u16) -> RawEvent {
+        RawEvent::new("network", "listening_socket")
+            .with_field("protocol", "udp")
+            .with_field("local_addr", "0.0.0.0")
+            .with_field("local_port", port.to_string())
+            .with_field("process_name", "v2ray")
+            .with_field("executable", "/usr/bin/v2ray/v2ray")
     }
 }

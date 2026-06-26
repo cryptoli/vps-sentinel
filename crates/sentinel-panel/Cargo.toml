@@ -1,0 +1,32 @@
+[package]
+name = "sentinel-panel"
+version = "0.3.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Self-hosted web panel for vps-sentinel fleet telemetry."
+
+[[bin]]
+name = "vps-sentinel-panel"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+base64.workspace = true
+chrono.workspace = true
+clap.workspace = true
+maxminddb.workspace = true
+sentinel-core = { path = "../sentinel-core" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+rusqlite.workspace = true
+sqlx-core.workspace = true
+sqlx-mysql.workspace = true
+sqlx-postgres.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true

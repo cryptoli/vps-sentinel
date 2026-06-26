@@ -1,91 +1,257 @@
-# Deployment
+# Agent Deployment
 
-## Build
+This guide covers installing and operating the `vps-sentinel` agent on Linux VPS hosts. For fleet panel deployment, see [panel-deployment.md](panel-deployment.md).
+
+## Requirements
+
+- Linux VPS with root or sudo access.
+- systemd is recommended. Non-systemd hosts can still run `vps-sentinel scan` manually.
+- `curl` and CA certificates are required for one-command installs.
+- Rust is only required when the installer cannot use a compatible release binary and falls back to source builds.
+- Optional tools improve visibility: `journalctl`, `ss`, `nft`, `iptables`, `dpkg`/`rpm`/`apk`/`pacman`, `nvidia-smi`, `rocm-smi`, `auditd`, and `bpftrace`.
+
+## Recommended One-Command Install
+
+For a real node, install with the notification channel, panel upload, active response, storage limit, and node-location detection configured in the first command:
 
 ```bash
-cargo build --release
+sudo VPS_NAME="prod-web-1" \
+  TELEGRAM_BOT_TOKEN="<your-bot-token>" \
+  TELEGRAM_CHAT_ID="<your-chat-id>" \
+  TELEGRAM_MIN_SEVERITY="Medium" \
+  PANEL_URL="https://your-panel.example.com/api/v1/ingest" \
+  PANEL_SHARED_SECRET="<same-secret-as-panel>" \
+  PANEL_NODE_NAME="prod-web-1" \
+  PANEL_MIN_SEVERITY="Low" \
+  PANEL_PRIVACY_MODE="strict" \
+  PANEL_UPLOAD_HOSTNAME="yes" \
+  PANEL_NODE_LOCATION_ENABLED="yes" \
+  ACTIVE_RESPONSE_ENABLED="yes" \
+  ACTIVE_RESPONSE_PERMANENT_BLOCK_ENABLED="yes" \
+  STORAGE_MAX_DATABASE_SIZE_MB="256" \
+  sh -c 'curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/install.sh | sh'
 ```
 
-## Install
+This command keeps all advanced local protections enabled, sends Telegram alerts, and pushes privacy-redacted telemetry to the panel. If you omit `TELEGRAM_*`, no Telegram messages are sent. If you omit both `PANEL_URL` and `PANEL_SHARED_SECRET`, no panel upload is configured.
+
+## Local-Only Install
 
 ```bash
-sudo sh packaging/install.sh
-sudo systemctl enable --now vps-sentinel
+curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/install.sh | sudo sh
 ```
 
-The package-time installer copies the binary, creates data/log/config directories, installs the systemd unit when available, and keeps an existing config file untouched.
-It writes the systemd unit before baseline bootstrap, validates the config, creates the first baseline when missing, runs a no-notify warm-up scan, creates the `vs` shorthand symlink, and installs `vps-sentinel-stop` when the helper script is present.
+This shorter command is useful for quick local testing only. It installs the daemon and local detection, but it does not configure Telegram, email/webhook notifications, or panel upload.
 
-Useful variables:
+The installer will:
 
-| Variable | Default | Meaning |
+- install `vps-sentinel` and the shorter `vs` command;
+- install compatible dependencies for Debian/Ubuntu, RHEL-family, Fedora, Alpine, and Arch-family hosts;
+- use a release artifact when it can run on the current host, otherwise build from source;
+- create `/etc/vps-sentinel/config.toml` only if it does not already exist;
+- validate config, migrate compatible old config keys, sync new default keys, bootstrap the first baseline, and run a no-notification warm-up scan;
+- install and start the systemd service when systemd is available;
+- preserve existing config, SQLite state, baselines, notification credentials, panel secrets, and block history on reinstall.
+
+## Install With Telegram Enabled Only
+
+Use this form when you want Telegram ready immediately:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/install.sh -o /tmp/vps-sentinel-install.sh
+sudo VPS_NAME="prod-web-1" \
+  TELEGRAM_BOT_TOKEN="<your-bot-token>" \
+  TELEGRAM_CHAT_ID="<your-chat-id>" \
+  TELEGRAM_MIN_SEVERITY="Medium" \
+  sh /tmp/vps-sentinel-install.sh
+```
+
+Equivalent one-liner:
+
+```bash
+sudo VPS_NAME="prod-web-1" \
+  TELEGRAM_BOT_TOKEN="<your-bot-token>" \
+  TELEGRAM_CHAT_ID="<your-chat-id>" \
+  TELEGRAM_MIN_SEVERITY="Medium" \
+  sh -c 'curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/install.sh | sh'
+```
+
+Variable meanings:
+
+| Variable | Meaning | Required |
 | --- | --- | --- |
-| `BIN_PATH` | `target/release/vps-sentinel` | Binary to install. |
-| `PREFIX` | `/usr/local` | Binary installation prefix. |
-| `CONFIG_DIR` | `/etc/vps-sentinel` | Directory for `config.toml`. |
-| `DATA_DIR` | `/var/lib/vps-sentinel` | SQLite data directory. |
-| `LOG_DIR` | `/var/log/vps-sentinel` | Log directory. |
-| `INSTALL_SYSTEMD` | `auto` | `auto`, `yes`, or `no` for systemd unit installation. |
-| `ENABLE_SERVICE` | `no` | Set to `yes` to enable and start the service. |
-| `RUN_DOCTOR` | `yes` | Run runtime checks during install. |
-| `BOOTSTRAP_BASELINE` | `yes` | Create the initial baseline if none exists. |
-| `RUN_FIRST_SCAN` | `yes` | Run one no-notify scan and write full output to `<LOG_DIR>/first-scan.log`. |
-| `VPS_NAME` | empty | Optional human-readable VPS name written to `agent.display_name` by the root `install.sh`. |
-| `STORAGE_MAX_DATABASE_SIZE_MB` | empty | Optional override for `[storage].max_database_size_mb`. |
-| `ACTIVE_RESPONSE_ENABLED` | empty | Set to `yes` to enable optional TTL-based firewall blocking. |
-| `ACTIVE_RESPONSE_FIREWALL_BACKEND` | empty | Optional `auto`, `nftables`, or `iptables` backend override. |
-| `ACTIVE_RESPONSE_BLOCK_TTL_SECONDS` | empty | Optional temporary block TTL override. |
-| `ACTIVE_RESPONSE_MAX_BLOCKS_PER_SCAN` | empty | Optional cap for new firewall blocks in one scan. |
-| `ACTIVE_RESPONSE_WEB_PROBE_BLOCK_THRESHOLD` | empty | Optional high-volume Web probe block threshold. |
-| `ACTIVE_RESPONSE_WEB_EXPLOIT_BLOCK_THRESHOLD` | empty | Optional repeated exploit-family Web probe block threshold. |
-| `ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD` | empty | Optional SSH brute-force block threshold. |
+| `VPS_NAME` | Display name used in alerts, reports, and panel nodes. Do not use an IP address or sensitive hostname. | Recommended |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather. | Required if Telegram is enabled |
+| `TELEGRAM_CHAT_ID` | Telegram target chat ID. | Required if Telegram is enabled |
+| `TELEGRAM_MIN_SEVERITY` | Minimum severity sent to Telegram: `Low`, `Medium`, `High`, or `Critical`. | Optional, default `Medium` |
 
-For one-command source installs, use the repository root `install.sh`; for rebuilding an existing install, use `update.sh`.
+If only one of `TELEGRAM_BOT_TOKEN` or `TELEGRAM_CHAT_ID` is set, the installer stops instead of writing a broken notification config.
 
-## Reload Config
+Panel-related variables:
+
+| Variable | Meaning | Required |
+| --- | --- | --- |
+| `PANEL_URL` | Panel ingest endpoint, usually `https://<panel-domain>/api/v1/ingest`. | Required for panel upload |
+| `PANEL_SHARED_SECRET` | Shared HMAC secret generated by the panel deployment script. | Required for panel upload |
+| `PANEL_NODE_NAME` | Display name shown in the panel. Defaults to `VPS_NAME` when omitted. Do not use a public IP. | Recommended |
+| `PANEL_MIN_SEVERITY` | Minimum severity uploaded to the panel. Default `Low`. | Optional |
+| `PANEL_PRIVACY_MODE` | Keep `strict` for normal use. It removes public server IPs, node IDs, paths, command lines, and raw evidence before upload. | Optional |
+| `PANEL_UPLOAD_HOSTNAME` | `yes` uploads a sanitized hostname when it is not an IP address or generated cloud instance ID. | Optional |
+| `PANEL_NODE_LOCATION_ENABLED` | `yes` lets the agent detect country/region/city and upload those non-sensitive display fields without uploading the public IP. | Optional |
+| `PANEL_NODE_LOCATION_URL` | Optional HTTPS JSON or Cloudflare trace endpoint used for node location. Default: `https://ipapi.co/json/`. | Optional |
+
+## Useful Install Options
 
 ```bash
-sudo vps-sentinel reload
+sudo BRANCH="main" \
+  INSTALL_METHOD="auto" \
+  INSTALL_DEPS="yes" \
+  ACTIVE_RESPONSE_ENABLED="yes" \
+  ACTIVE_RESPONSE_SSH_FAILED_LOGIN_BLOCK_THRESHOLD="4" \
+  ACTIVE_RESPONSE_WEB_PROBE_BLOCK_THRESHOLD="25" \
+  ACTIVE_RESPONSE_PERMANENT_BLOCK_ENABLED="yes" \
+  STORAGE_MAX_DATABASE_SIZE_MB="256" \
+  sh -c 'curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/install.sh | sh'
+```
+
+Common variables:
+
+| Variable | Meaning |
+| --- | --- |
+| `BRANCH` | Git branch used when source checkout is needed. Default: `main`. |
+| `REPO_URL` | Git repository URL. Default: official GitHub repository. |
+| `INSTALL_METHOD` | `auto`, `release`, or `source`. `auto` validates release binaries first and falls back to source. |
+| `INSTALL_DEPS` | `yes` or `no`. Installs dependencies through the host package manager when enabled. |
+| `INSTALL_SYSTEMD` | `auto`, `yes`, or `no`. Controls systemd service installation. |
+| `CLEAN_SOURCE_TARGET` | `yes` or `no`. Defaults to `yes`; removes `$WORK_DIR/target` after successful source install/update so Rust build artifacts do not consume several GiB. |
+| `ENABLE_SERVICE` | `yes` or `no`. Starts/enables the service after install. |
+| `RUN_DOCTOR` | `yes` or `no`. Runs `vs doctor` after installation. |
+| `RUN_FIRST_SCAN` | `yes` or `no`. Runs the warm-up scan without notifications. |
+| `RUN_NOTIFY_TEST` | `auto`, `yes`, or `no`. Sends a Telegram test only when Telegram values are provided and testing is enabled. |
+| `MIGRATE_CONFIG` | `yes` or `no`. Applies compatible config migrations. |
+| `SYNC_CONFIG_DEFAULTS` | `yes` or `no`. Adds new default config keys without overwriting custom values. |
+| `CONFIG_DIR` | Config directory. Default: `/etc/vps-sentinel`. |
+| `DATA_DIR` | Local state directory. Default: `/var/lib/vps-sentinel`. |
+| `LOG_DIR` | Log directory. Default: `/var/log/vps-sentinel`. |
+
+Active response variables map to `[active_response]` in `/etc/vps-sentinel/config.toml`. Use allowlists before enabling blocking on production jump hosts, monitoring systems, VPN egress, or office IPs.
+
+## Update
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.sh | sudo sh
+```
+
+The updater preserves existing config and state. It validates the target binary before replacing the current one. If the binary is not compatible with the host, it builds from source and ensures Rust has a default stable toolchain.
+Successful source updates remove `$WORK_DIR/target` by default. Set `CLEAN_SOURCE_TARGET=no` only when you intentionally want to keep Rust build artifacts for faster repeated local builds.
+
+Useful update variables:
+
+```bash
+sudo BRANCH="main" \
+  INSTALL_METHOD="auto" \
+  VALIDATE_CONFIG="yes" \
+  MIGRATE_CONFIG="yes" \
+  SYNC_CONFIG_DEFAULTS="yes" \
+  sh -c 'curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.sh | sh'
+```
+
+## Service Operations
+
+```bash
+sudo vs doctor
+sudo vs scan
+sudo vs reload
+sudo systemctl status vps-sentinel --no-pager
+sudo systemctl stop vps-sentinel
+sudo systemctl start vps-sentinel
+```
+
+`vs reload` validates config before reloading the daemon.
+
+## Notification Config
+
+Edit `/etc/vps-sentinel/config.toml`:
+
+```toml
+[notifications]
+language = "zh_cn" # zh_cn or en
+time_zone = "local"
+
+[notifications.telegram]
+enabled = true
+bot_token = "<bot-token>"
+chat_id = "<chat-id>"
+min_severity = "Medium"
+```
+
+Supported channels: Telegram, Email SMTP, webhook, ntfy, Gotify, Bark, and ServerChan.
+
+## Panel Upload
+
+After deploying a panel, configure each agent:
+
+```toml
+[panel]
+enabled = true
+url = "https://panel.example.com/api/v1/ingest"
+node_name = "prod-sg-1"
+secret = "same-long-secret-as-panel"
+privacy_mode = "strict"
+upload_hostname = true
+node_location_enabled = true
+node_location_url = "https://ipapi.co/json/"
+```
+
+Then verify:
+
+```bash
+sudo vs config validate
+sudo vs panel push
+sudo vs panel outbox
 sudo vs reload
 ```
 
-or:
+Use non-sensitive `node_name` values. Do not use public IPs, provider instance IDs, or secrets as node names. The agent may upload a sanitized hostname only when it does not contain an IP address or unsafe characters. Country, region, and city are considered display metadata; the public server IP used to derive them is not uploaded. Self-hosted panels can also enrich request locations with local MaxMind/DB-IP MMDB files, while Cloudflare panels use Cloudflare request geolocation when available.
 
-```bash
-sudo systemctl reload vps-sentinel
+## Active Response
+
+```toml
+[active_response]
+enabled = true
+strategy = "balanced" # observe, balanced, strict
+firewall_backend = "auto"
+ssh_failed_login_block_threshold = 4
+web_probe_block_threshold = 25
+permanent_block_enabled = true
+permanent_block_threshold = 3
 ```
 
-Both paths validate the config before sending SIGHUP to the daemon.
-
-## Stop Service
+Commands:
 
 ```bash
-sudo vps-sentinel-stop
+sudo vs blocks list
+sudo vs blocks unblock <ip>
+sudo vs blocks unblock-all --yes
+sudo vs blocks cleanup
 ```
 
-or:
+## Baseline Review
 
 ```bash
-sudo systemctl stop vps-sentinel
+sudo vs baseline create
+sudo vs baseline diff
+sudo vs baseline approve <approval-key>
 ```
 
-Stopping the service does not remove `/etc/vps-sentinel`, `/var/lib/vps-sentinel`, logs, or binaries.
+Package upgrades and planned maintenance can create legitimate drift. Review evidence before refreshing a baseline.
 
-## First Run
+## Troubleshooting
 
 ```bash
-sudo vps-sentinel doctor --config /etc/vps-sentinel/config.toml
-sudo vps-sentinel baseline create --config /etc/vps-sentinel/config.toml
-sudo vps-sentinel scan --config /etc/vps-sentinel/config.toml
+sudo vs doctor
+sudo journalctl -u vps-sentinel -n 100 --no-pager
+sudo vs config validate
+sudo vs storage stats
 ```
 
-## Release Build Notes
-
-Release artifacts should include:
-
-- `vps-sentinel` binary.
-- `config/config.example.toml`.
-- `packaging/systemd/vps-sentinel.service`.
-- `packaging/install.sh`.
-- `install.sh`, `update.sh`, and `stop.sh`.
-- README and docs.
+If the daemon runs without enough privileges, some collectors degrade. `vs doctor` explains which modules lose visibility.

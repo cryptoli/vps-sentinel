@@ -1,8 +1,8 @@
 use crate::detectors::command_profile::assess_network_execution_command;
 use crate::detectors::risk::RiskAssessment;
 use crate::detectors::{
-    evidence, package_activity_context, string_field, DetectContext, Detector,
-    PackageActivityContext, RESOURCE_DRIFT_DEDUP_KEYS,
+    evidence, package_activity_context, push_event_evidence_if_present, string_field,
+    DetectContext, Detector, PackageActivityContext, RESOURCE_DRIFT_DEDUP_KEYS,
 };
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
@@ -266,13 +266,23 @@ fn ld_preload_changed(
 }
 
 fn diff_evidence(event: &RawEvent) -> Vec<sentinel_core::Evidence> {
-    vec![
+    let mut items = vec![
         evidence("change", event.kind.clone()),
         evidence("type", string_field(event, "type")),
         evidence("path", string_field(event, "path")),
         evidence("previous_hash", string_field(event, "previous_hash")),
         evidence("current_hash", string_field(event, "current_hash")),
-    ]
+    ];
+    for key in [
+        "semantic_kind",
+        "semantic_delta",
+        "previous_semantic_summary",
+        "current_semantic_summary",
+        "current_semantic_features",
+    ] {
+        push_event_evidence_if_present(&mut items, event, key);
+    }
+    items
 }
 
 #[cfg(test)]
@@ -364,5 +374,26 @@ mod tests {
             .evidence
             .iter()
             .any(|item| item.key == "package_activity_recent" && item.value == "true"));
+    }
+
+    #[test]
+    fn persistence_drift_includes_semantic_delta() {
+        let ctx = DetectContext::new(Arc::new(SentinelConfig::default()));
+        let event = RawEvent::new("baseline", "persistence_modified")
+            .with_field("path", "/etc/systemd/system/app.service")
+            .with_field("type", "systemd")
+            .with_field("previous_hash", "old")
+            .with_field("current_hash", "new")
+            .with_field("semantic_kind", "systemd_unit")
+            .with_field("semantic_delta", "systemd_unit: commands=1 -> commands=2")
+            .with_field("current_semantic_features", "network_or_shell_command");
+
+        let findings = PersistenceDetector.detect(&[event], &ctx);
+
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0]
+            .evidence
+            .iter()
+            .any(|item| item.key == "semantic_delta"));
     }
 }

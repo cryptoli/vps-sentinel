@@ -8,19 +8,24 @@ use commands::{
     blocks::{run_blocks, BlocksCommand},
     config::{run_config, ConfigCommand},
     doctor::run_doctor,
+    ebpf::{run_ebpf, EbpfCommand},
     events::{run_events, EventsCommand},
     findings::{run_findings, FindingsCommand},
+    fingerprints::{run_fingerprints, FingerprintsCommand},
     fleet::{run_fleet, FleetCommand},
     incidents::{run_incidents, IncidentsCommand},
     init::run_init,
     maintenance::{run_maintenance, MaintenanceCommand},
     notify::{run_notify, NotifyCommand},
+    panel::{run_panel, PanelCommand},
     reload::run_reload,
     report::{run_report, ReportCommand},
     rules::{run_rules, RulesCommand},
     scan::{run_check, run_scan_command},
     service_profile::{run_service_profile, ServiceProfileCommand},
+    status::run_status,
     storage::{run_storage, StorageCommand},
+    wizard::run_wizard,
 };
 use sentinel_core::SentinelConfig;
 use std::io;
@@ -88,6 +93,10 @@ enum Command {
         #[command(subcommand)]
         command: FindingsCommand,
     },
+    Fingerprints {
+        #[command(subcommand)]
+        command: FingerprintsCommand,
+    },
     Incidents {
         #[command(subcommand)]
         command: IncidentsCommand,
@@ -103,6 +112,10 @@ enum Command {
     Notify {
         #[command(subcommand)]
         command: NotifyCommand,
+    },
+    Panel {
+        #[command(subcommand)]
+        command: PanelCommand,
     },
     Report {
         #[command(subcommand)]
@@ -120,11 +133,23 @@ enum Command {
         #[command(subcommand)]
         command: StorageCommand,
     },
+    Ebpf {
+        #[command(subcommand)]
+        command: EbpfCommand,
+    },
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     Reload {
         #[arg(long, default_value = "vps-sentinel")]
         service_name: String,
     },
     Doctor,
+    Wizard {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[tokio::main]
@@ -153,6 +178,9 @@ async fn main() -> Result<()> {
         Command::Events { command } => run_events(load_config(cli.config.as_deref())?, command),
         Command::Fleet { command } => run_fleet(load_config(cli.config.as_deref())?, command),
         Command::Findings { command } => run_findings(load_config(cli.config.as_deref())?, command),
+        Command::Fingerprints { command } => {
+            run_fingerprints(load_config(cli.config.as_deref())?, command)
+        }
         Command::Incidents { command } => {
             run_incidents(load_config(cli.config.as_deref())?, command)
         }
@@ -163,6 +191,7 @@ async fn main() -> Result<()> {
         Command::Notify { command } => {
             run_notify(load_config(cli.config.as_deref())?, command).await
         }
+        Command::Panel { command } => run_panel(load_config(cli.config.as_deref())?, command).await,
         Command::Report { command } => {
             run_report(load_config(cli.config.as_deref())?, command).await
         }
@@ -171,11 +200,14 @@ async fn main() -> Result<()> {
         }
         Command::Config { command } => run_config(cli.config.as_deref(), command),
         Command::Storage { command } => run_storage(load_config(cli.config.as_deref())?, command),
+        Command::Ebpf { command } => run_ebpf(load_config(cli.config.as_deref())?, command),
+        Command::Status { json } => run_status(load_config(cli.config.as_deref())?, json),
         Command::Reload { service_name } => {
             let (_, path) = load_config_with_path(cli.config.as_deref())?;
             run_reload(path, &service_name)
         }
         Command::Doctor => run_doctor(load_config(cli.config.as_deref())?),
+        Command::Wizard { json } => run_wizard(load_config(cli.config.as_deref())?, json),
     }
 }
 

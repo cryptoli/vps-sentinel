@@ -119,6 +119,37 @@ fn localizes_web_probe_family_evidence_value() {
 }
 
 #[test]
+fn localizes_attack_fingerprint_evidence() {
+    let finding = Finding::new(
+        "host",
+        "Web vulnerability probing detected",
+        "Web requests match a known probing family.",
+        Severity::High,
+        Category::Web,
+        "WEB-001",
+        "203.0.113.40",
+    )
+    .with_evidence(vec![
+        Evidence::new("attack_fingerprint_id", "WEB-FP-123456"),
+        Evidence::new("attack_fingerprint_kind", "web_probe"),
+        Evidence::new("attack_fingerprint_action_hint", "block"),
+        Evidence::new("attack_fingerprint_verdict", "malicious"),
+    ]);
+
+    let chinese = render_finding_with_language(
+        &finding,
+        NotificationFormat::PlainText,
+        NotificationLanguage::ZhCn,
+    );
+
+    assert!(chinese.contains("攻击指纹: WEB-FP-123456"));
+    assert!(chinese.contains("攻击指纹类型: Web 探测模式"));
+    assert!(chinese.contains("攻击指纹动作: 封禁当前来源"));
+    assert!(chinese.contains("攻击指纹判定: 已确认恶意"));
+    assert!(!chinese.contains("web_probe"));
+}
+
+#[test]
 fn renders_html_without_raw_markup_in_values() {
     let finding = sample_finding().with_evidence(vec![Evidence::new("path", "<script>")]);
     let alert = render_alert(&finding);
@@ -155,6 +186,38 @@ fn renders_unknown_rule_in_chinese_without_raw_english_message() {
 }
 
 #[test]
+fn renders_service_profile_rule_in_chinese() {
+    let finding = Finding::new(
+        "host",
+        "New service profile entry detected",
+        "A listening service was not present in the previous service profile baseline.",
+        Severity::Low,
+        Category::Network,
+        "SERVICE-001",
+        "0.0.0.0:24409/udp",
+    )
+    .with_evidence(vec![
+        Evidence::new("protocol", "udp"),
+        Evidence::new("local_addr", "0.0.0.0"),
+        Evidence::new("local_port", "24409"),
+        Evidence::new("dynamic_udp_listener", "true"),
+        Evidence::new("dynamic_udp_reason", "new_dynamic_service_identity"),
+    ]);
+
+    let body = render_finding_with_language(
+        &finding,
+        NotificationFormat::PlainText,
+        NotificationLanguage::ZhCn,
+    );
+
+    assert!(body.contains("发现新的监听服务画像"));
+    assert!(body.contains("动态 UDP 监听: 是"));
+    assert!(body.contains("动态 UDP 判定原因: 出现新的动态服务身份"));
+    assert!(!body.contains("该规则尚未配置中文消息模板"));
+    assert!(!body.contains("new_dynamic_service_identity"));
+}
+
+#[test]
 fn localizes_common_evidence_keys_and_values() {
     let finding = Finding::new(
         "host",
@@ -169,10 +232,18 @@ fn localizes_common_evidence_keys_and_values() {
         Evidence::new("change", "file_modified"),
         Evidence::new("method", "password"),
         Evidence::new("exists", "true"),
-        Evidence::new("risk_features", "network_execution_bridge, temporary_path"),
+        Evidence::new("behavior_profile_new_remote_ports", "3333, 4444"),
+        Evidence::new(
+            "behavior_profile_public_fanout_drift",
+            "true",
+        ),
+        Evidence::new(
+            "risk_features",
+            "network_execution_bridge, temporary_path, local_behavior_new_remote_ports",
+        ),
         Evidence::new(
             "risk_reasons",
-            "network shell bridge; temporary executable path",
+            "network shell bridge; temporary executable path; local behavior profile observed remote ports not seen in the matured process profile",
         ),
         Evidence::new("content_markers", "system_call, base64_decode"),
     ]);
@@ -186,11 +257,16 @@ fn localizes_common_evidence_keys_and_values() {
     assert!(body.contains("变化类型: 文件修改"));
     assert!(body.contains("方式: 密码认证"));
     assert!(body.contains("是否存在: 是"));
-    assert!(body.contains("风险特征: 网络命令执行桥接，临时路径"));
-    assert!(body.contains("风险原因: 网络 Shell 桥接，临时目录可执行文件"));
+    assert!(body.contains("行为画像新增远端端口: 3333，4444"));
+    assert!(body.contains("公网出站 fanout 漂移: 是"));
+    assert!(body.contains("风险特征: 网络命令执行桥接，临时路径，本地行为画像新增远端端口"));
+    assert!(body.contains(
+        "风险原因: 网络 Shell 桥接，临时目录可执行文件，本地成熟行为画像中未见过这些远端端口"
+    ));
     assert!(body.contains("内容特征: system 调用，base64 解码"));
     assert!(!body.contains("file_modified"));
     assert!(!body.contains("network_execution_bridge"));
+    assert!(!body.contains("behavior_profile_new_remote_ports"));
 }
 
 #[test]

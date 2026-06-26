@@ -1,3 +1,4 @@
+use crate::evidence_schema::{canonical_key, normalize_evidence_items};
 use crate::severity::Severity;
 use blake3::Hasher;
 use chrono::{DateTime, Utc};
@@ -137,6 +138,7 @@ impl Finding {
 
     /// Attach evidence and refresh the deduplication key.
     pub fn with_evidence(mut self, evidence: Vec<Evidence>) -> Self {
+        let evidence = normalize_evidence_items(evidence);
         self.dedup_key = stable_dedup_key(&self.host_id, &self.rule_id, &self.subject, &evidence);
         self.evidence = evidence;
         self
@@ -148,15 +150,30 @@ impl Finding {
         evidence: Vec<Evidence>,
         dedup_evidence_keys: &[&str],
     ) -> Self {
+        let evidence = normalize_evidence_items(evidence);
+        let dedup_keys = dedup_evidence_keys
+            .iter()
+            .map(|key| canonical_key(key).into_owned())
+            .collect::<Vec<_>>();
         let dedup_evidence = evidence
             .iter()
-            .filter(|item| dedup_evidence_keys.contains(&item.key.as_str()))
+            .filter(|item| dedup_keys.iter().any(|key| key == &item.key))
             .cloned()
             .collect::<Vec<_>>();
         self.dedup_key =
             stable_dedup_key(&self.host_id, &self.rule_id, &self.subject, &dedup_evidence);
         self.evidence = evidence;
         self
+    }
+
+    /// Normalize evidence already attached through direct mutation.
+    ///
+    /// Deduplication identity is chosen by the detector when the finding is
+    /// created. Later pipeline stages append display-only evidence such as risk
+    /// scores, fingerprint context, active-response status, or volatile ports,
+    /// so normalization must not widen the deduplication key implicitly.
+    pub fn normalize_evidence(&mut self) {
+        self.evidence = normalize_evidence_items(std::mem::take(&mut self.evidence));
     }
 
     /// Attach likely impact statements.
@@ -195,7 +212,8 @@ pub fn stable_dedup_key(
 ) -> String {
     let mut ordered = BTreeMap::new();
     for item in evidence {
-        ordered.insert(item.key.as_str(), item.value.as_str());
+        let key = canonical_key(&item.key).into_owned();
+        ordered.insert(key, item.value.as_str());
     }
 
     let mut hasher = Hasher::new();
@@ -300,5 +318,40 @@ mod tests {
 
         assert_eq!(left.dedup_key, right.dedup_key);
         assert_ne!(left.evidence, right.evidence);
+    }
+
+    #[test]
+    fn normalize_evidence_preserves_detector_dedup_identity() {
+        let mut finding = Finding::new(
+            "host",
+            "Root SSH login detected",
+            "Root logged in through SSH.",
+            Severity::High,
+            Category::Ssh,
+            "SSH-001",
+            "root@203.0.113.10",
+        )
+        .with_evidence_deduped_by(
+            vec![
+                Evidence::new("user", "root"),
+                Evidence::new("source_ip", "203.0.113.10"),
+                Evidence::new("method", "publickey"),
+                Evidence::new("port", "42100"),
+            ],
+            &["user", "source_ip", "method"],
+        );
+        let before = finding.dedup_key.clone();
+
+        finding.evidence.push(Evidence::new("port", "58812"));
+        finding
+            .evidence
+            .push(Evidence::new("unified_risk_score", "80"));
+        finding.normalize_evidence();
+
+        assert_eq!(finding.dedup_key, before);
+        assert!(finding
+            .evidence
+            .iter()
+            .any(|item| item.key == "unified_risk_score"));
     }
 }

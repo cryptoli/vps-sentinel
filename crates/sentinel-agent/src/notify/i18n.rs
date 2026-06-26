@@ -85,6 +85,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
     }
     let text = match language {
         NotificationLanguage::En => match key {
+            "account_subjects" => "account subjects",
             "argv_json" => "argv JSON",
             "active_response_backend" => "active response backend",
             "active_response_block_count" => "active response block count",
@@ -99,6 +100,25 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "active_response_reason_summary" => "active response reason summary",
             "active_response_status" => "active response status",
             "active_response_window" => "active response window",
+            "attack_fingerprint_action_hint" => "attack fingerprint action",
+            "attack_fingerprint_id" => "attack fingerprint",
+            "attack_fingerprint_kind" => "attack fingerprint kind",
+            "attack_fingerprint_score" => "attack fingerprint score",
+            "attack_fingerprint_seen_count" => "attack fingerprint observations",
+            "attack_fingerprint_source_ip_count" => "attack fingerprint source IPs",
+            "attack_fingerprint_verdict" => "attack fingerprint verdict",
+            "behavior_profile_current_public_outbound" => "current public outbound count",
+            "behavior_profile_drift" => "local behavior drift",
+            "behavior_profile_first_seen" => "first seen in local behavior profile",
+            "behavior_profile_new_remote_ports" => "new remote ports in local behavior profile",
+            "behavior_profile_observations" => "local behavior observations",
+            "behavior_profile_previous_public_outbound_max" => "previous public outbound max",
+            "behavior_profile_public_fanout_drift" => "local public fanout drift",
+            "baseline_drift_downgrades" => "baseline drift downgrades",
+            "baseline_drift_reasons" => "baseline drift reasons",
+            "baseline_drift_score" => "baseline drift score",
+            "baseline_drift_tier" => "baseline drift tier",
+            "baseline_review_action" => "baseline review action",
             "change" => "change",
             "cmdline" => "command line",
             "command" => "command",
@@ -108,10 +128,16 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "cpu_total_seconds" => "CPU seconds",
             "current_hash" => "current hash",
             "current_process_start_ticks" => "current process start ticks",
+            "current_semantic_features" => "current semantic traits",
+            "current_semantic_summary" => "current semantic summary",
             "cwd" => "working directory",
+            "dynamic_udp_listener" => "dynamic UDP listener",
+            "dynamic_udp_reason" => "dynamic UDP reason",
             "entries" => "entries",
             "error_count" => "error count",
+            "ephemeral_event" => "short-lived event",
             "euid" => "effective UID",
+            "event_source_detail" => "event source detail",
             "executable" | "exe_path" => "executable",
             "executable_changed" => "executable changed",
             "exe_gid" => "executable GID",
@@ -126,6 +152,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "gid" => "GID",
             "hidden" => "hidden",
             "home" => "home directory",
+            "identity_files" => "identity files",
             "ip" | "source_ip" => "source IP",
             "is_web_path" => "web path",
             "key" => "key",
@@ -133,6 +160,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "local_port" => "local port",
             "log_source" => "log source",
             "log_sources" => "log sources",
+            "managed_service_listener" => "managed service listener",
             "match_source" => "match source",
             "matched_tool" => "matched tool",
             "matched_value" => "matched value",
@@ -142,6 +170,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "outbound_connection_count" => "outbound connections",
             "outbound_remote_ports" => "outbound remote ports",
             "outcome" => "outcome",
+            "operation" => "operation",
             "notification_grouped_findings" => "grouped findings",
             "notification_grouped_probe_families" => "grouped probe families",
             "notification_grouped_rule_ids" => "grouped rule IDs",
@@ -158,9 +187,11 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "previous_hash" => "previous hash",
             "previous_process_name" => "previous process",
             "previous_process_start_ticks" => "previous process start ticks",
+            "previous_semantic_summary" => "previous semantic summary",
             "previous_uid" => "previous UID",
             "probe_family" => "probe family",
             "process_age_seconds" => "process age seconds",
+            "process_ancestry" => "process ancestry",
             "process_name" => "process",
             "process_start_changed" => "process start changed",
             "process_start_drift" => "process start drift",
@@ -193,6 +224,10 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "sample_paths" => "sample paths",
             "service_profile" => "service profile",
             "service_profile_identity" => "service identity",
+            "semantic_delta" => "semantic change",
+            "semantic_features" => "semantic traits",
+            "semantic_kind" => "semantic type",
+            "semantic_summary" => "semantic summary",
             "shell" => "shell",
             "signals" => "signals",
             "size" => "size bytes",
@@ -210,6 +245,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             other => other,
         },
         NotificationLanguage::ZhCn => match key {
+            "account_subjects" => "账号对象",
             "argv_json" => "参数 JSON",
             "active_response_backend" => "主动响应后端",
             "active_response_block_count" => "封禁 IP 数量",
@@ -224,6 +260,25 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "active_response_reason_summary" => "封禁原因摘要",
             "active_response_status" => "主动响应状态",
             "active_response_window" => "主动响应窗口",
+            "attack_fingerprint_action_hint" => "攻击指纹动作",
+            "attack_fingerprint_id" => "攻击指纹",
+            "attack_fingerprint_kind" => "攻击指纹类型",
+            "attack_fingerprint_score" => "攻击指纹评分",
+            "attack_fingerprint_seen_count" => "攻击指纹观察次数",
+            "attack_fingerprint_source_ip_count" => "攻击指纹来源 IP 数",
+            "attack_fingerprint_verdict" => "攻击指纹判定",
+            "behavior_profile_current_public_outbound" => "当前公网出站连接数",
+            "behavior_profile_drift" => "本地行为画像漂移",
+            "behavior_profile_first_seen" => "首次出现在本地行为画像",
+            "behavior_profile_new_remote_ports" => "行为画像新增远端端口",
+            "behavior_profile_observations" => "本地行为观察次数",
+            "behavior_profile_previous_public_outbound_max" => "历史公网出站峰值",
+            "behavior_profile_public_fanout_drift" => "公网出站 fanout 漂移",
+            "baseline_drift_downgrades" => "基线漂移降噪因素",
+            "baseline_drift_reasons" => "基线漂移原因",
+            "baseline_drift_score" => "基线漂移评分",
+            "baseline_drift_tier" => "基线漂移层级",
+            "baseline_review_action" => "基线复核动作",
             "change" => "变化类型",
             "cmdline" => "命令行",
             "command" => "命令",
@@ -233,10 +288,16 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "cpu_total_seconds" => "累计 CPU 秒数",
             "current_hash" => "当前哈希",
             "current_process_start_ticks" => "当前启动计数",
+            "current_semantic_features" => "当前语义特征",
+            "current_semantic_summary" => "当前语义摘要",
             "cwd" => "工作目录",
+            "dynamic_udp_listener" => "动态 UDP 监听",
+            "dynamic_udp_reason" => "动态 UDP 判定原因",
             "entries" => "条目",
             "error_count" => "错误次数",
+            "ephemeral_event" => "短生命周期事件",
             "euid" => "有效 UID",
+            "event_source_detail" => "事件来源细节",
             "executable" | "exe_path" => "可执行文件",
             "executable_changed" => "可执行文件变化",
             "exe_gid" => "可执行文件 GID",
@@ -251,6 +312,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "gid" => "GID",
             "hidden" => "隐藏文件",
             "home" => "Home 目录",
+            "identity_files" => "身份文件",
             "ip" | "source_ip" => "来源 IP",
             "is_web_path" => "Web 路径",
             "key" => "键",
@@ -258,6 +320,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "local_port" => "监听端口",
             "log_source" => "日志来源",
             "log_sources" => "日志来源",
+            "managed_service_listener" => "受管理服务监听",
             "match_source" => "命中来源",
             "matched_tool" => "命中的工具",
             "matched_value" => "命中值",
@@ -267,6 +330,7 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "outbound_connection_count" => "出站连接数",
             "outbound_remote_ports" => "出站远端端口",
             "outcome" => "结果",
+            "operation" => "操作",
             "notification_grouped_findings" => "合并告警数",
             "notification_grouped_probe_families" => "合并探测类型",
             "notification_grouped_rule_ids" => "合并规则",
@@ -283,9 +347,11 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "previous_hash" => "原哈希",
             "previous_process_name" => "原进程",
             "previous_process_start_ticks" => "原启动计数",
+            "previous_semantic_summary" => "原语义摘要",
             "previous_uid" => "原 UID",
             "probe_family" => "探测类型",
             "process_age_seconds" => "进程运行秒数",
+            "process_ancestry" => "进程父链",
             "process_name" => "进程",
             "process_start_changed" => "进程启动是否变化",
             "process_start_drift" => "进程启动变化",
@@ -318,6 +384,10 @@ pub fn evidence_label(key: &str, language: NotificationLanguage) -> String {
             "sample_paths" => "样例路径",
             "service_profile" => "服务画像",
             "service_profile_identity" => "服务身份",
+            "semantic_delta" => "语义变化",
+            "semantic_features" => "语义特征",
+            "semantic_kind" => "语义类型",
+            "semantic_summary" => "语义摘要",
             "shell" => "Shell",
             "signals" => "关联信号",
             "size" => "字节数",
@@ -344,6 +414,8 @@ fn gpu_evidence_label(key: &str, language: NotificationLanguage) -> Option<&'sta
             "gpu_memory_mb" => Some("GPU memory MB"),
             "gpu_process_names" => Some("GPU process names"),
             "gpu_uuids" => Some("GPU UUIDs"),
+            "gpu_utilization_percent" => Some("GPU utilization"),
+            "gpu_power_watts" => Some("GPU power draw"),
             "mining_pool_remote_ports" => Some("mining-pool remote ports"),
             _ => None,
         },
@@ -351,6 +423,8 @@ fn gpu_evidence_label(key: &str, language: NotificationLanguage) -> Option<&'sta
             "gpu_memory_mb" => Some("GPU 显存 MB"),
             "gpu_process_names" => Some("GPU 进程名"),
             "gpu_uuids" => Some("GPU UUID"),
+            "gpu_utilization_percent" => Some("GPU 利用率"),
+            "gpu_power_watts" => Some("GPU 功耗"),
             "mining_pool_remote_ports" => Some("矿池远端端口"),
             _ => None,
         },
@@ -459,6 +533,122 @@ fn direct_value_label(
         ("active_response_status", "skipped_limit", NotificationLanguage::ZhCn) => {
             Some("达到单轮封禁上限，已跳过")
         }
+        ("attack_fingerprint_action_hint", "block", NotificationLanguage::En) => {
+            Some("block current source")
+        }
+        ("attack_fingerprint_action_hint", "block", NotificationLanguage::ZhCn) => {
+            Some("封禁当前来源")
+        }
+        ("attack_fingerprint_kind", "web_probe", NotificationLanguage::En) => {
+            Some("Web probing pattern")
+        }
+        ("attack_fingerprint_kind", "web_probe", NotificationLanguage::ZhCn) => {
+            Some("Web 探测模式")
+        }
+        ("attack_fingerprint_kind", "ssh_bruteforce", NotificationLanguage::En) => {
+            Some("SSH brute-force pattern")
+        }
+        ("attack_fingerprint_kind", "ssh_bruteforce", NotificationLanguage::ZhCn) => {
+            Some("SSH 爆破模式")
+        }
+        ("attack_fingerprint_kind", "host_process", NotificationLanguage::En) => {
+            Some("host process behavior")
+        }
+        ("attack_fingerprint_kind", "host_process", NotificationLanguage::ZhCn) => {
+            Some("主机进程行为")
+        }
+        ("attack_fingerprint_kind", "host_persistence", NotificationLanguage::En) => {
+            Some("host persistence behavior")
+        }
+        ("attack_fingerprint_kind", "host_persistence", NotificationLanguage::ZhCn) => {
+            Some("主机持久化行为")
+        }
+        ("attack_fingerprint_verdict", "unknown", NotificationLanguage::En) => Some("unknown"),
+        ("attack_fingerprint_verdict", "unknown", NotificationLanguage::ZhCn) => Some("未确认"),
+        ("attack_fingerprint_verdict", "benign", NotificationLanguage::En) => Some("benign"),
+        ("attack_fingerprint_verdict", "benign", NotificationLanguage::ZhCn) => {
+            Some("已标记为正常")
+        }
+        ("attack_fingerprint_verdict", "malicious", NotificationLanguage::En) => {
+            Some("confirmed malicious")
+        }
+        ("attack_fingerprint_verdict", "malicious", NotificationLanguage::ZhCn) => {
+            Some("已确认恶意")
+        }
+        (
+            "behavior_profile_drift"
+            | "behavior_profile_first_seen"
+            | "behavior_profile_public_fanout_drift",
+            "true",
+            NotificationLanguage::En,
+        )
+        | ("dynamic_udp_listener", "true", NotificationLanguage::En) => Some("yes"),
+        (
+            "behavior_profile_drift"
+            | "behavior_profile_first_seen"
+            | "behavior_profile_public_fanout_drift",
+            "true",
+            NotificationLanguage::ZhCn,
+        )
+        | ("dynamic_udp_listener", "true", NotificationLanguage::ZhCn) => Some("是"),
+        (
+            "behavior_profile_drift"
+            | "behavior_profile_first_seen"
+            | "behavior_profile_public_fanout_drift",
+            "false",
+            NotificationLanguage::En,
+        )
+        | ("dynamic_udp_listener", "false", NotificationLanguage::En) => Some("no"),
+        (
+            "behavior_profile_drift"
+            | "behavior_profile_first_seen"
+            | "behavior_profile_public_fanout_drift",
+            "false",
+            NotificationLanguage::ZhCn,
+        )
+        | ("dynamic_udp_listener", "false", NotificationLanguage::ZhCn) => Some("否"),
+        ("dynamic_udp_reason", "new_dynamic_service_identity", NotificationLanguage::En) => {
+            Some("new dynamic service identity")
+        }
+        ("dynamic_udp_reason", "new_dynamic_service_identity", NotificationLanguage::ZhCn) => {
+            Some("出现新的动态服务身份")
+        }
+        ("baseline_drift_tier", "routine", NotificationLanguage::En) => Some("routine"),
+        ("baseline_drift_tier", "routine", NotificationLanguage::ZhCn) => Some("常规变更"),
+        ("baseline_drift_tier", "review", NotificationLanguage::En) => Some("needs review"),
+        ("baseline_drift_tier", "review", NotificationLanguage::ZhCn) => Some("需要复核"),
+        ("baseline_drift_tier", "suspicious", NotificationLanguage::En) => Some("suspicious"),
+        ("baseline_drift_tier", "suspicious", NotificationLanguage::ZhCn) => Some("可疑"),
+        ("baseline_drift_tier", "critical", NotificationLanguage::En) => Some("critical"),
+        ("baseline_drift_tier", "critical", NotificationLanguage::ZhCn) => Some("严重"),
+        ("baseline_review_action", "confirm_context_then_refresh", NotificationLanguage::En) => {
+            Some("confirm context before refreshing baseline")
+        }
+        ("baseline_review_action", "confirm_context_then_refresh", NotificationLanguage::ZhCn) => {
+            Some("确认变更上下文后再刷新基线")
+        }
+        ("baseline_review_action", "review_change_before_refresh", NotificationLanguage::En) => {
+            Some("review change before refreshing baseline")
+        }
+        ("baseline_review_action", "review_change_before_refresh", NotificationLanguage::ZhCn) => {
+            Some("复核变更后再刷新基线")
+        }
+        ("baseline_review_action", "investigate_before_refresh", NotificationLanguage::En) => {
+            Some("investigate before refreshing baseline")
+        }
+        ("baseline_review_action", "investigate_before_refresh", NotificationLanguage::ZhCn) => {
+            Some("调查清楚后再刷新基线")
+        }
+        (
+            "baseline_review_action",
+            "treat_as_incident_before_refresh",
+            NotificationLanguage::En,
+        ) => Some("treat as incident before refreshing baseline"),
+        (
+            "baseline_review_action",
+            "treat_as_incident_before_refresh",
+            NotificationLanguage::ZhCn,
+        ) => Some("按安全事件处置后再考虑刷新基线"),
         ("probe_family", value, language) => probe_family_value_label(value, language),
         ("process_start_drift", "changed", NotificationLanguage::En) => {
             Some("changed since previous scan")
@@ -559,7 +749,13 @@ fn direct_value_label(
 fn is_localized_list_key(key: &str) -> bool {
     matches!(
         key,
-        "signals" | "risk_features" | "risk_reasons" | "content_markers"
+        "signals"
+            | "risk_features"
+            | "risk_reasons"
+            | "content_markers"
+            | "behavior_profile_new_remote_ports"
+            | "baseline_drift_reasons"
+            | "baseline_drift_downgrades"
     )
 }
 
@@ -844,13 +1040,49 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
     }
     match language {
         NotificationLanguage::En => match value {
+            "account file drift" => Some("account file drift"),
+            "baseline change detected" => Some("baseline change detected"),
+            "baseline drift finding" => Some("baseline drift finding"),
             "dev_tcp" => Some("/dev/tcp"),
+            "dynamic linker preload changed" => Some("dynamic linker preload changed"),
+            "dynamic UDP listener" => Some("dynamic UDP listener"),
+            "executable state changed" => Some("executable state changed"),
             "exec_bridge" => Some("exec bridge"),
+            "large file size delta" => Some("large file size delta"),
             "fd_bridge" | "fd_duplication" => Some("file descriptor bridge"),
             "inline_interpreter" => Some("inline interpreter"),
             "interactive_shell" => Some("interactive shell"),
+            "listener owner changed" => Some("listener owner changed"),
+            "local_behavior_first_seen" => Some("first seen local behavior identity"),
+            "local_behavior_new_remote_ports" => Some("new remote ports in local behavior profile"),
+            "local_behavior_public_fanout_drift" => {
+                Some("public outbound fanout drift in local behavior profile")
+            }
+            "local behavior profile observed remote ports not seen in the matured process profile" => {
+                Some("local behavior profile observed remote ports not seen in the matured process profile")
+            }
+            "local behavior profile observed a public outbound fanout above the matured process profile" => {
+                Some("local behavior profile observed a public outbound fanout above the matured process profile")
+            }
+            "process identity has not yet appeared in the local behavior profile" => {
+                Some("process identity has not yet appeared in the local behavior profile")
+            }
             "network_channel" => Some("network channel"),
             "network_execution_bridge" => Some("network execution bridge"),
+            "not publicly exposed" => Some("not publicly exposed"),
+            "local user account" => Some("local user account"),
+            "local firewall context is present" => Some("local firewall context is present"),
+            "managed service listener" => Some("managed service listener"),
+            "privileged account state changed" => Some("privileged account state changed"),
+            "privilege account change" => Some("privilege account change"),
+            "public listener exposure" => Some("public listener exposure"),
+            "recent package manager activity" => Some("recent package manager activity"),
+            "risk evidence attached" => Some("risk evidence attached"),
+            "risk-scored suspicious traits present" => {
+                Some("risk-scored suspicious traits present")
+            }
+            "security-sensitive drift" => Some("security-sensitive drift"),
+            "service owner changed" => Some("service owner changed"),
             "shell_target" => Some("shell target"),
             "socket_api" => Some("socket API"),
             "suspicious executable path" => Some("suspicious executable path"),
@@ -894,6 +1126,24 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
             _ => None,
         },
         NotificationLanguage::ZhCn => match value {
+            "account file drift" => Some("账号文件漂移"),
+            "baseline change detected" => Some("检测到基线变更"),
+            "baseline drift finding" => Some("基线漂移告警"),
+            "dynamic linker preload changed" => Some("动态链接器 preload 发生变化"),
+            "dynamic UDP listener" => Some("动态 UDP 监听端口"),
+            "executable state changed" => Some("可执行状态发生变化"),
+            "large file size delta" => Some("文件大小变化较大"),
+            "listener owner changed" => Some("监听端口所属进程发生变化"),
+            "local firewall context is present" => Some("存在本机防火墙上下文"),
+            "managed service listener" => Some("受管理服务监听"),
+            "not publicly exposed" => Some("未暴露到公网"),
+            "privileged account state changed" => Some("特权账号状态发生变化"),
+            "public listener exposure" => Some("存在公网监听暴露"),
+            "recent package manager activity" => Some("近期存在软件包管理器活动"),
+            "risk evidence attached" => Some("已附加风险证据"),
+            "risk-scored suspicious traits present" => Some("存在达到风险评分的可疑特征"),
+            "security-sensitive drift" => Some("安全敏感对象发生漂移"),
+            "service owner changed" => Some("服务所属进程发生变化"),
             "anonymous_deleted_executable" => Some("匿名或 memfd 删除态可执行文件"),
             "command_execution_marker" => Some("命令执行特征"),
             "configured miner/scanner identity matched" => Some("命中配置中的挖矿或扫描工具身份"),
@@ -916,6 +1166,8 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
             "encoded_payload_marker" => Some("编码载荷特征"),
             "encoded_shell_payload" => Some("编码 Shell 载荷"),
             "exec_bridge" => Some("exec 桥接"),
+            "local user account" => Some("本地用户账号"),
+            "privilege account change" => Some("权限账号变更"),
             "executable appears deleted while still running" => {
                 Some("可执行文件已删除但进程仍在运行")
             }
@@ -937,6 +1189,18 @@ fn technical_token_label(value: &str, language: NotificationLanguage) -> Option<
             "interactive_shell" => Some("交互式 Shell"),
             "kernel_thread_masquerade" => Some("伪装成内核线程名"),
             "known_bad_tool" => Some("已知高风险工具"),
+            "local_behavior_first_seen" => Some("本地行为画像首次出现"),
+            "local_behavior_new_remote_ports" => Some("本地行为画像新增远端端口"),
+            "local_behavior_public_fanout_drift" => Some("本地画像公网出站 fanout 漂移"),
+            "local behavior profile observed remote ports not seen in the matured process profile" => {
+                Some("本地成熟行为画像中未见过这些远端端口")
+            }
+            "local behavior profile observed a public outbound fanout above the matured process profile" => {
+                Some("当前公网出站 fanout 高于本地成熟行为画像")
+            }
+            "process identity has not yet appeared in the local behavior profile" => {
+                Some("该进程身份尚未出现在本地行为画像中")
+            }
             "large_encoded_web_script" => Some("Web 脚本中的大段编码内容"),
             "listener owner changed from baseline" => Some("监听进程相对基线发生变化"),
             "many_socket_fds" => Some("大量 Socket 文件描述符"),
@@ -1100,6 +1364,14 @@ fn gpu_technical_token_label(value: &str, language: NotificationLanguage) -> Opt
             "gpu_hidden_executable_name" => Some("hidden GPU executable"),
             "gpu_public_outbound_connections" => Some("GPU public outbound connections"),
             "gpu_sustained_high_cpu" => Some("GPU process sustained high CPU"),
+            "gpu_high_utilization" => Some("high GPU utilization"),
+            "gpu_high_power_draw" => Some("high GPU power draw"),
+            "gpu_high_utilization_mining_port_cluster" => {
+                Some("high GPU utilization with mining-pool ports")
+            }
+            "gpu_high_utilization_suspicious_identity_cluster" => {
+                Some("high GPU utilization with suspicious GPU identity")
+            }
             "hidden_gpu_process_with_public_outbound" => {
                 Some("hidden GPU process with public outbound activity")
             }
@@ -1129,6 +1401,10 @@ fn gpu_technical_token_label(value: &str, language: NotificationLanguage) -> Opt
             "gpu_hidden_executable_name" => Some("隐藏 GPU 可执行文件"),
             "gpu_public_outbound_connections" => Some("GPU 进程公网出站连接"),
             "gpu_sustained_high_cpu" => Some("GPU 进程持续高 CPU"),
+            "gpu_high_utilization" => Some("GPU 高利用率"),
+            "gpu_high_power_draw" => Some("GPU 高功耗"),
+            "gpu_high_utilization_mining_port_cluster" => Some("GPU 高利用率伴随矿池端口"),
+            "gpu_high_utilization_suspicious_identity_cluster" => Some("GPU 高利用率伴随可疑身份"),
             "hidden_gpu_process_with_public_outbound" => Some("隐藏 GPU 进程伴随公网出站连接"),
             "gpu mining indicator" => Some("GPU 挖矿指标"),
             _ => None,
