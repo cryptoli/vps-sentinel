@@ -756,6 +756,9 @@ fn panel_probe_sources(
             block_reason: String::new(),
         });
         source.rule_ids.insert(block.rule_id.clone());
+        if let Some(category) = probe_source_category_from_rule(&block.rule_id) {
+            source.categories.insert(category.to_string());
+        }
         if block.blocked_at < source.first_seen {
             source.first_seen = block.blocked_at;
         }
@@ -817,6 +820,25 @@ fn panel_probe_sources(
     });
     items.truncate(config.panel.batch_size);
     items
+}
+
+fn probe_source_category_from_rule(rule_id: &str) -> Option<&'static str> {
+    let prefix = rule_id.split('-').next()?.to_ascii_uppercase();
+    match prefix.as_str() {
+        "AUTH" | "SSH" => Some("ssh"),
+        "USER" => Some("user"),
+        "PRIV" => Some("privilege"),
+        "PERSIST" => Some("persistence"),
+        "PROC" => Some("process"),
+        "NET" | "SERVICE" => Some("network"),
+        "FILE" => Some("file_integrity"),
+        "WEB" => Some("web"),
+        "DOCKER" => Some("docker"),
+        "ROOTKIT" => Some("rootkit"),
+        "CONFIG" => Some("config_risk"),
+        "SYS" | "SYSTEM" => Some("system"),
+        _ => None,
+    }
 }
 
 fn probe_source_lookup_weight(source: &ProbeSourceAggregate) -> u8 {
@@ -2366,6 +2388,30 @@ mod tests {
         assert!(source.rule_ids.contains(&"SSH-003".to_string()));
         assert!(source.latest_reason.contains("ssh_bruteforce"));
         assert!(source.block_reason.contains("failure_count=8"));
+    }
+
+    #[test]
+    fn panel_probe_sources_derive_category_from_block_rule() {
+        let config = SentinelConfig::default();
+        let now = Utc::now();
+        let blocks = vec![BlockEntry {
+            ip: "47.242.23.112".to_string(),
+            rule_id: "WEB-001".to_string(),
+            finding_id: "finding-web".to_string(),
+            reason: "web attack threshold reached".to_string(),
+            backend: "nftables".to_string(),
+            blocked_at: now,
+            expires_at: Some(now + ChronoDuration::hours(1)),
+            expired: false,
+            firewall_present: Some(true),
+        }];
+
+        let sources = super::panel_probe_sources(&config, &[], &blocks);
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].source_ip, "47.242.23.112");
+        assert!(sources[0].categories.contains(&"web".to_string()));
+        assert!(sources[0].rule_ids.contains(&"WEB-001".to_string()));
     }
 
     #[test]

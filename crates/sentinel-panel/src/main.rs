@@ -2383,6 +2383,11 @@ fn expand_dataset_json_columns(table: &str, rows: &mut Value) {
         if table == "attack_fingerprints" {
             expand_json_column(row, "categories_json", "categories");
             expand_json_column(row, "rule_ids_json", "rule_ids");
+            add_attack_fingerprint_conclusion(row);
+        }
+        if table == "active_blocks" {
+            expand_json_column(row, "categories_json", "categories");
+            ensure_active_block_category(row);
         }
         if table == "incidents" {
             expand_json_column(row, "payload_json", "payload");
@@ -2395,6 +2400,92 @@ fn expand_dataset_json_columns(table: &str, rows: &mut Value) {
             expand_json_column(row, "payload_json", "payload");
         }
     }
+}
+
+fn ensure_active_block_category(row: &mut Value) {
+    let Some(object) = row.as_object_mut() else {
+        return;
+    };
+    let mut categories = object
+        .get("categories")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if categories.is_empty() {
+        let category = object
+            .get("rule_id")
+            .and_then(Value::as_str)
+            .map(baseline_category_from_rule)
+            .unwrap_or("system");
+        categories.push(category.to_string());
+        object.insert(
+            "categories".to_string(),
+            Value::Array(categories.iter().cloned().map(Value::String).collect()),
+        );
+    }
+    if object
+        .get("category")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .is_empty()
+    {
+        let category = categories
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "system".to_string());
+        object.insert("category".to_string(), Value::String(category));
+    }
+}
+
+fn add_attack_fingerprint_conclusion(row: &mut Value) {
+    let Some(object) = row.as_object_mut() else {
+        return;
+    };
+    let verdict = object
+        .get("verdict")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    let conclusion = if matches!(verdict.as_str(), "malicious" | "benign") {
+        verdict.as_str()
+    } else if verdict == "false_positive" {
+        "benign"
+    } else {
+        let score = object
+            .get("score")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let confidence = object
+            .get("confidence")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let source_count = object
+            .get("source_count")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        let seen_count = object
+            .get("seen_count")
+            .and_then(Value::as_i64)
+            .unwrap_or_default();
+        if score >= 75 || confidence >= 80 || source_count >= 2 || seen_count >= 3 {
+            "suspicious"
+        } else {
+            "needs_review"
+        }
+    };
+    object.insert(
+        "conclusion".to_string(),
+        Value::String(conclusion.to_string()),
+    );
 }
 
 fn attach_node_statuses(rows: &mut Value) {

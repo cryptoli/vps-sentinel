@@ -526,8 +526,8 @@ impl Repository {
             "COALESCE(NULLIF(MAX(CASE WHEN country IS NOT NULL AND country <> '' AND LOWER(country) <> 'unknown' THEN country ELSE '' END), ''), 'unknown') AS country",
             "COALESCE(NULLIF(MAX(CASE WHEN asn IS NOT NULL AND asn <> '' AND LOWER(asn) <> 'unknown' THEN asn ELSE '' END), ''), 'unknown') AS asn",
             "COALESCE(NULLIF(MAX(CASE WHEN organization IS NOT NULL AND organization <> '' AND LOWER(organization) <> 'unknown' THEN organization ELSE '' END), ''), 'unknown') AS organization",
-            "MAX(categories_json) AS categories_json",
-            "MAX(rule_ids_json) AS rule_ids_json",
+            "MAX(CASE WHEN categories_json IS NOT NULL AND categories_json <> '' AND categories_json <> '[]' THEN categories_json ELSE '' END) AS categories_json",
+            "MAX(CASE WHEN rule_ids_json IS NOT NULL AND rule_ids_json <> '' AND rule_ids_json <> '[]' THEN rule_ids_json ELSE '' END) AS rule_ids_json",
             "MAX(CASE WHEN latest_reason IS NOT NULL AND latest_reason <> '' THEN latest_reason ELSE '' END) AS latest_reason",
             "MAX(CASE WHEN block_reason IS NOT NULL AND block_reason <> '' THEN block_reason ELSE '' END) AS block_reason",
         ];

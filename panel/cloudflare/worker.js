@@ -685,6 +685,8 @@ function probeSourceStatement(env, nodeName, source, receivedAt) {
   const firstSeen = String(source.first_seen || receivedAt);
   const lastSeen = String(source.last_seen || firstSeen);
   const seenCount = Math.max(1, Number(source.seen_count || 1) || 1);
+  const ruleIds = (source.rule_ids || []).map((item) => String(item || "").trim()).filter(Boolean);
+  const categories = normalizedProbeCategories(source.categories || [], ruleIds);
   return env.DB.prepare(`
     INSERT INTO probe_sources
       (id, node_id, source_ip, ip_version, network_prefix, country, asn, organization,
@@ -721,8 +723,14 @@ function probeSourceStatement(env, nodeName, source, receivedAt) {
         ELSE excluded.last_seen
       END,
       seen_count = probe_sources.seen_count + excluded.seen_count,
-      categories_json = excluded.categories_json,
-      rule_ids_json = excluded.rule_ids_json,
+      categories_json = CASE
+        WHEN excluded.categories_json IS NOT NULL AND excluded.categories_json <> '' AND excluded.categories_json <> '[]' THEN excluded.categories_json
+        ELSE probe_sources.categories_json
+      END,
+      rule_ids_json = CASE
+        WHEN excluded.rule_ids_json IS NOT NULL AND excluded.rule_ids_json <> '' AND excluded.rule_ids_json <> '[]' THEN excluded.rule_ids_json
+        ELSE probe_sources.rule_ids_json
+      END,
       latest_reason = excluded.latest_reason,
       block_status = CASE
         WHEN LOWER(COALESCE(excluded.block_status, '')) LIKE '%permanent%' THEN excluded.block_status
@@ -745,13 +753,28 @@ function probeSourceStatement(env, nodeName, source, receivedAt) {
     firstSeen,
     lastSeen,
     seenCount,
-    JSON.stringify((source.categories || []).map((item) => String(item || "")).filter(Boolean)),
-    JSON.stringify((source.rule_ids || []).map((item) => String(item || "")).filter(Boolean)),
+    JSON.stringify(categories),
+    JSON.stringify(ruleIds),
     redactIpText(source.latest_reason || ""),
     String(source.block_status || "observed"),
     redactIpText(source.block_reason || ""),
     receivedAt,
   );
+}
+
+function normalizedProbeCategories(categories, ruleIds) {
+  const values = [];
+  for (const item of categories || []) {
+    const category = String(item || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+    if (category && category !== "unknown") values.push(category);
+  }
+  if (!values.length) {
+    for (const ruleId of ruleIds || []) {
+      const category = baselineCategoryFromRule(ruleId);
+      if (category && category !== "unknown") values.push(category);
+    }
+  }
+  return [...new Set(values)];
 }
 
 async function summary(env, role = "public") {
@@ -786,6 +809,10 @@ async function buildSummary(env, role = "public") {
     queryAllOptional(env, `SELECT block_status, COUNT(DISTINCT source_ip) AS count FROM probe_sources WHERE ${blockedProbeSourceFilter()} GROUP BY block_status`, "probe_sources"),
     queryAll(env, "SELECT node_name, agent_version, last_seen_at FROM nodes"),
   ]);
+  const [reviewFeedback, dataHealth] = await Promise.all([
+    reviewFeedbackSummary(env),
+    buildDataHealth(env, nodeRows),
+  ]);
   const result = {
     nodes,
     findings,
@@ -797,9 +824,74 @@ async function buildSummary(env, role = "public") {
     by_severity: bySeverity,
     by_category: byCategory,
     by_block_status: byBlockStatus,
+    review_feedback: reviewFeedback,
+    data_health: dataHealth,
     node_status: nodeStatusCounts(nodeRows),
   };
   return redactPanelValue(result);
+}
+
+async function buildDataHealth(env, nodeRows) {
+  const [heartbeats, queuedActions] = await Promise.all([
+    queryAll(env, "SELECT node_id, received_at, scan_json FROM heartbeats ORDER BY received_at DESC LIMIT 100"),
+    countWhere(env, "panel_action_requests", "status = 'queued'"),
+  ]);
+  let latestHeartbeatAt = "";
+  let collectorErrors = 0;
+  let slowestStage = "";
+  let slowestStageMs = 0;
+  for (const heartbeat of heartbeats || []) {
+    if (!latestHeartbeatAt) latestHeartbeatAt = String(heartbeat.received_at || "");
+    const scan = parseJsonField(heartbeat.scan_json, {});
+    collectorErrors += Number(scan.collector_errors || 0) || 0;
+    const durations = scan.stage_durations_ms && typeof scan.stage_durations_ms === "object"
+      ? scan.stage_durations_ms
+      : {};
+    for (const [stage, rawDuration] of Object.entries(durations)) {
+      const duration = Number(rawDuration || 0) || 0;
+      if (duration > slowestStageMs) {
+        slowestStageMs = duration;
+        slowestStage = String(stage);
+      }
+    }
+  }
+  const statuses = nodeStatusCounts(nodeRows);
+  const staleNodes = Number(statuses.stale || 0);
+  const offlineNodes = Number(statuses.offline || 0);
+  const retiredNodes = Number(statuses.retired || 0);
+  const status = collectorErrors > 0 || offlineNodes > 0 || retiredNodes > 0
+    ? "degraded"
+    : staleNodes > 0 || queuedActions > 0
+      ? "attention"
+      : "healthy";
+  return {
+    status,
+    latest_heartbeat_at: latestHeartbeatAt,
+    heartbeat_samples: heartbeats.length,
+    collector_errors: collectorErrors,
+    queued_actions: queuedActions,
+    stale_nodes: staleNodes,
+    offline_nodes: offlineNodes,
+    retired_nodes: retiredNodes,
+    slowest_stage: slowestStage,
+    slowest_stage_ms: slowestStageMs,
+  };
+}
+
+async function reviewFeedbackSummary(env) {
+  const panelRows = await queryAll(env, `
+    SELECT target_type, verdict, COUNT(*) AS count
+    FROM panel_reviews
+    GROUP BY target_type, verdict
+    ORDER BY count DESC, target_type ASC, verdict ASC
+  `);
+  if (panelRows.length) return panelRows;
+  return queryAll(env, `
+    SELECT 'finding' AS target_type, verdict, COUNT(*) AS count
+    FROM finding_reviews
+    GROUP BY verdict
+    ORDER BY count DESC, verdict ASC
+  `);
 }
 
 async function trendPoints(env, url) {
@@ -925,8 +1017,8 @@ async function queryProbeSourcesPage(env, dataset, url, role = "private") {
         COALESCE(NULLIF(MAX(CASE WHEN country IS NOT NULL AND country <> '' AND LOWER(country) <> 'unknown' THEN country ELSE '' END), ''), 'unknown') AS country,
         COALESCE(NULLIF(MAX(CASE WHEN asn IS NOT NULL AND asn <> '' AND LOWER(asn) <> 'unknown' THEN asn ELSE '' END), ''), 'unknown') AS asn,
         COALESCE(NULLIF(MAX(CASE WHEN organization IS NOT NULL AND organization <> '' AND LOWER(organization) <> 'unknown' THEN organization ELSE '' END), ''), 'unknown') AS organization,
-        MAX(categories_json) AS categories_json,
-        MAX(rule_ids_json) AS rule_ids_json,
+        MAX(CASE WHEN categories_json IS NOT NULL AND categories_json <> '' AND categories_json <> '[]' THEN categories_json ELSE '' END) AS categories_json,
+        MAX(CASE WHEN rule_ids_json IS NOT NULL AND rule_ids_json <> '' AND rule_ids_json <> '[]' THEN rule_ids_json ELSE '' END) AS rule_ids_json,
         MAX(CASE WHEN latest_reason IS NOT NULL AND latest_reason <> '' THEN latest_reason ELSE '' END) AS latest_reason,
         MAX(CASE WHEN block_reason IS NOT NULL AND block_reason <> '' THEN block_reason ELSE '' END) AS block_reason
       FROM probe_sources${whereSql}
@@ -1507,15 +1599,28 @@ function panelBlockStorageId(nodeId, block) {
 }
 
 function expandDatasetJsonColumns(table, rows) {
-  if (!["probe_sources", "attack_fingerprints", "nodes"].includes(table)) return rows;
+  if (!["probe_sources", "attack_fingerprints", "active_blocks", "incidents", "nodes"].includes(table)) return rows;
   const now = table === "nodes" ? new Date() : null;
   return rows.map((row) => {
     const expanded = { ...row };
-    if (table === "probe_sources" || table === "attack_fingerprints") {
-      expanded.categories = parseJsonField(expanded.categories_json, []);
+    if (table === "probe_sources" || table === "attack_fingerprints" || table === "active_blocks") {
+      expanded.categories = meaningfulArray(parseJsonField(expanded.categories_json, []));
       expanded.rule_ids = parseJsonField(expanded.rule_ids_json, []);
       delete expanded.categories_json;
       delete expanded.rule_ids_json;
+      if (table === "active_blocks" && !expanded.categories.length) {
+        expanded.categories = normalizedProbeCategories([], [expanded.rule_id]);
+      }
+      if (table === "active_blocks" && !expanded.category) {
+        expanded.category = expanded.categories[0] || baselineCategoryFromRule(expanded.rule_id);
+      }
+    }
+    if (table === "attack_fingerprints") {
+      expanded.conclusion = fingerprintConclusion(expanded);
+    }
+    if (table === "incidents") {
+      expanded.payload = parseJsonField(expanded.payload_json, {});
+      delete expanded.payload_json;
     }
     if (table === "nodes") {
       expanded.metrics = parseJsonField(expanded.metrics_json, {});
@@ -1524,6 +1629,24 @@ function expandDatasetJsonColumns(table, rows) {
     }
     return expanded;
   });
+}
+
+function meaningfulArray(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))];
+}
+
+function fingerprintConclusion(row) {
+  const verdict = String(row?.verdict || "").trim().toLowerCase();
+  if (["malicious", "benign", "false_positive"].includes(verdict)) {
+    return verdict === "false_positive" ? "benign" : verdict;
+  }
+  const score = Number(row?.score || 0) || 0;
+  const confidence = Number(row?.confidence || 0) || 0;
+  const sources = Number(row?.source_count || 0) || 0;
+  const seen = Number(row?.seen_count || 0) || 0;
+  if (score >= 75 || confidence >= 80 || sources >= 2 || seen >= 3) return "suspicious";
+  return "needs_review";
 }
 
 function shouldRedactDataset(dataset, role) {

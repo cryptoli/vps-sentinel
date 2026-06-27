@@ -255,6 +255,7 @@ export const PAGES = [
       "country",
       "asn",
       "organization",
+      "categories",
       "reason",
       "rule_id",
       "backend",
@@ -275,7 +276,7 @@ export const PAGES = [
       "node_count",
       "source_count",
       "seen_count",
-      "verdict",
+      "conclusion",
       "rule_ids",
       "categories",
       "title"

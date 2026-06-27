@@ -401,6 +401,7 @@ export function PanelApp() {
               onNavigate={(id) => navigatePage(id as PageId)}
               onDetails={(dataset, row) => setDrawer({ dataset, row })}
               onActionRequest={requestPanelAction}
+              onRefresh={() => loadVisibleData(currentPage, role)}
             />
           )}
         </section>
@@ -713,6 +714,7 @@ function Content({
   onNavigate,
   onDetails,
   onActionRequest,
+  onRefresh,
 }: {
   page: PageConfig;
   loading: boolean;
@@ -727,6 +729,7 @@ function Content({
   onNavigate: (id: string) => void;
   onDetails: (dataset: string, row: PanelRecord) => void;
   onActionRequest: (request: PanelActionRequestInput) => Promise<void>;
+  onRefresh: () => Promise<void>;
 }) {
   if (loading && !Object.keys(datasets).length) {
     return <div className="loading-card">{translate(language, "loading")}</div>;
@@ -756,6 +759,7 @@ function Content({
         role={role}
         onStateChange={(patch) => updateDatasetState("findings", patch)}
         onDetails={(row) => onDetails("findings", row)}
+        onReviewComplete={onRefresh}
       />
     );
   }
@@ -769,6 +773,7 @@ function Content({
         role={role}
         onStateChange={(patch) => updateDatasetState("incidents", patch)}
         onDetails={(row) => onDetails("incidents", row)}
+        onReviewComplete={onRefresh}
       />
     );
   }
@@ -783,6 +788,7 @@ function Content({
         dictionaries={dictionaries}
         onStateChange={(patch) => updateDatasetState("baseline_drifts", patch)}
         onDetails={(row) => onDetails("baseline_drifts", row)}
+        onReviewComplete={onRefresh}
       />
     );
   }

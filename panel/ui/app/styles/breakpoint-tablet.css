@@ -953,7 +953,7 @@
 
   .attack-chain {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(92px, 1fr));
     gap: 5px;
     overflow: visible;
     padding: 14px 8px 12px;

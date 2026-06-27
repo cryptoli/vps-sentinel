@@ -163,10 +163,10 @@ export function DonutChart({
   );
 }
 
-export function MiniBars({ values }: { values: number[] }) {
+export function MiniBars({ values, className = "" }: { values: number[]; className?: string }) {
   const max = Math.max(1, ...values);
   return (
-    <div className="mini-bars" aria-hidden="true">
+    <div className={`mini-bars ${className}`.trim()} aria-hidden="true">
       {values.slice(0, 22).map((value, index) => (
         <span key={index} style={{ height: `${Math.max(18, (value / max) * 100)}%` }} />
       ))}

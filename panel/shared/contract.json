@@ -112,7 +112,7 @@
       "minRole": "private",
       "endpoint": "/active-blocks",
       "columns": ["blocked_at", "node_name", "rule_id", "reason", "expires_at"],
-      "privateColumns": ["blocked_at", "node_name", "ip", "country", "asn", "organization", "reason", "rule_id", "backend", "expires_at"]
+      "privateColumns": ["blocked_at", "node_name", "ip", "country", "asn", "organization", "categories", "reason", "rule_id", "backend", "expires_at"]
     },
     {
       "id": "attack_fingerprints",
@@ -121,7 +121,7 @@
       "descriptionKey": "attackFingerprintsDescription",
       "minRole": "private",
       "endpoint": "/attack-fingerprints",
-      "columns": ["last_seen_at", "kind", "score", "node_count", "source_count", "seen_count", "verdict", "rule_ids", "categories", "title"]
+      "columns": ["last_seen_at", "kind", "score", "node_count", "source_count", "seen_count", "conclusion", "rule_ids", "categories", "title"]
     },
     {
       "id": "probe_sources",
@@ -208,6 +208,7 @@
         "(SELECT country FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND country IS NOT NULL AND country <> '' AND LOWER(country) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS country",
         "(SELECT asn FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND asn IS NOT NULL AND asn <> '' AND LOWER(asn) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS asn",
         "(SELECT organization FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND organization IS NOT NULL AND organization <> '' AND LOWER(organization) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS organization",
+        "(SELECT categories_json FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND categories_json IS NOT NULL AND categories_json <> '' AND categories_json <> '[]' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS categories_json",
         "rule_id",
         "backend",
         "reason",

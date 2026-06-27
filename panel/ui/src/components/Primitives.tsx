@@ -1,4 +1,4 @@
-import { countryDisplay, formatValue, number, rowTone } from "@/lib/format";
+import { categoryFromRuleId, countryDisplay, fingerprintConclusion, formatValue, number, rowTone } from "@/lib/format";
 import { formatTemplate, translate } from "@/lib/i18n";
 import type { Language, PanelRecord } from "@/types";
 import type { CSSProperties } from "react";
@@ -203,6 +203,7 @@ const TABLE_LAYOUTS: Record<string, TableLayout> = {
       blocked_at: "142px",
       node_name: "128px",
       ip: "138px",
+      categories: "138px",
       evidence: "106px",
       network_prefix: "138px",
       country: "84px",
@@ -223,6 +224,7 @@ const TABLE_LAYOUTS: Record<string, TableLayout> = {
       kind: "118px",
       score: "76px",
       confidence: "96px",
+      conclusion: "116px",
       verdict: "112px",
       node_count: "94px",
       source_count: "104px",
@@ -336,7 +338,7 @@ function renderCell(column: string, value: unknown, language: Language) {
   if (column === "reason") {
     return <span className="reason-chip">{formatValue(column, value, language)}</span>;
   }
-  if (["severity", "status", "block_status", "tier", "review_verdict"].includes(column)) {
+  if (["severity", "status", "block_status", "tier", "review_verdict", "verdict", "conclusion"].includes(column)) {
     const key = String(value || "unknown").toLowerCase();
     return <Badge value={translate(language, key)} tone={key} />;
   }
@@ -383,6 +385,7 @@ function cellValue(row: PanelRecord, column: string): unknown {
   if (row[column] !== undefined && row[column] !== null && row[column] !== "") return row[column];
   if (column === "evidence") return evidenceScore(row);
   if (column === "category") return categoryFromRow(row);
+  if (column === "conclusion") return fingerprintConclusion(row);
   return row[column];
 }
 
@@ -395,8 +398,7 @@ function evidenceScore(row: PanelRecord): number {
 }
 
 function categoryFromRow(row: PanelRecord): string {
-  const byRule = categoryFromRule(row.rule_id);
-  if (byRule !== "unknown") return byRule;
+  if (String(row.rule_id || "").trim()) return categoryFromRuleId(row.rule_id);
   const subject = String(row.subject || "").toLowerCase();
   if (subject.includes("service") || subject.includes("port") || subject.includes("listen")) return "network";
   if (subject.includes("authorized") || subject.includes(".ssh")) return "ssh";
@@ -404,26 +406,4 @@ function categoryFromRow(row: PanelRecord): string {
   if (subject.includes("process") || subject.includes("pid")) return "process";
   if (subject.includes("file") || subject.includes("/")) return "file_integrity";
   return "unknown";
-}
-
-function categoryFromRule(ruleId: unknown): string {
-  const prefix = String(ruleId || "").split("-")[0]?.toUpperCase();
-  const categories: Record<string, string> = {
-    AUTH: "ssh",
-    SSH: "ssh",
-    USER: "user",
-    PRIV: "privilege",
-    PERSIST: "persistence",
-    PROC: "process",
-    NET: "network",
-    SERVICE: "network",
-    FILE: "file_integrity",
-    WEB: "web",
-    DOCKER: "docker",
-    ROOTKIT: "rootkit",
-    CONFIG: "config_risk",
-    SYS: "system",
-    SYSTEM: "system",
-  };
-  return categories[prefix] || "unknown";
 }
