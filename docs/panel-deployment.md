@@ -11,6 +11,8 @@ The fleet panel is optional. Agents continue to monitor locally and push signed,
 
 Self-hosted and Cloudflare panels are expected to behave consistently for auth, public/private page access, privacy redaction, node display, blacklist display, review APIs, and theme loading. The main intentional difference is refresh transport: self-hosted Rust supports WebSocket events, while the current Cloudflare Worker deployment uses REST fallback unless a stateful broadcast layer is added.
 
+For personal fleets, prefer a private self-hosted panel binding such as `127.0.0.1:8858`, a Tailscale address, or another private interface. The self-hosted environment generator defaults to `PANEL_BIND='127.0.0.1:8858'`; set `PANEL_BIND='<tailscale-ip>:8858'` only when browser and agents reach that private network. Public HTTPS reverse proxy deployment remains supported, but it should be a deliberate choice.
+
 ## Token and Path Model
 
 | Setting | Meaning | Required |

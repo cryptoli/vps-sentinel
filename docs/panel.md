@@ -27,6 +27,8 @@ The self-hosted Rust panel supports WebSocket refresh events through `/api/v1/st
 
 Cloudflare Worker mode currently exposes the same API and D1 storage but returns `stream_unavailable` for WebSocket tickets. The UI detects this and switches to a non-reconnecting fallback state instead of repeatedly trying to reconnect.
 
+For small personal fleets, the panel is not required for bulk operations. Use the local `vs menu` command on a node or `scripts/vs-fleet.sh` from an admin workstation to run `vs` commands over SSH without exposing an HTTP panel endpoint.
+
 ## More Documentation
 
 - Deployment: [panel-deployment.md](panel-deployment.md)

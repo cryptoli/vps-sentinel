@@ -15,6 +15,7 @@ use crate::risk_score;
 use crate::rules::system::ACTIVE_RESPONSE_SUMMARY_RULE_ID;
 use crate::service_profile::evaluate_service_profile;
 use crate::storage::SqliteStore;
+use crate::suppress_rules::apply_suppress_rules;
 use crate::threat_intel;
 use crate::timeline;
 use crate::utils::fs::path_string;
@@ -225,6 +226,18 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         );
     }
     record_scan_stage(&mut stage_durations_ms, "finding_enrichment", stage_started);
+
+    let stage_started = Instant::now();
+    let (retained_findings, suppress_rules_report) =
+        apply_suppress_rules(findings, config.as_ref());
+    findings = retained_findings;
+    if suppress_rules_report.suppressed_count > 0 {
+        warn!(
+            suppressed_findings = suppress_rules_report.suppressed_count,
+            "configured suppress_rules removed findings from this scan"
+        );
+    }
+    record_scan_stage(&mut stage_durations_ms, "suppress_rules", stage_started);
 
     let stage_started = Instant::now();
     let mut attack_fingerprint_observation_count = 0;

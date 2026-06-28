@@ -65,7 +65,7 @@ const MAX_ACTION_PAYLOAD_STRING_CHARS: usize = 512;
 #[derive(Debug, Parser)]
 #[command(name = "vps-sentinel-panel", version)]
 struct Args {
-    #[arg(long, env = "PANEL_BIND", default_value = "0.0.0.0:8080")]
+    #[arg(long, env = "PANEL_BIND", default_value = "127.0.0.1:8858")]
     bind: SocketAddr,
 
     #[arg(long, env = "PANEL_DATABASE_URL", default_value = "sqlite://panel.db")]

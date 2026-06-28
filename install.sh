@@ -613,6 +613,26 @@ maybe_sync_config_defaults() {
   fi
 }
 
+snap_systemd_units_detected() {
+  command -v snap >/dev/null 2>&1 && return 0
+  [ -d /var/lib/snapd ] && return 0
+  find /etc/systemd/system -maxdepth 1 \( -name 'snap-*.mount' -o -name 'snap-*.scope' \) -print -quit 2>/dev/null | grep -q .
+}
+
+configure_snap_allowlist() {
+  config_path="$CONFIG_DIR/config.toml"
+  if [ ! -x "$PREFIX/bin/vps-sentinel" ] || [ ! -f "$config_path" ]; then
+    return
+  fi
+  if ! snap_systemd_units_detected; then
+    return
+  fi
+  "$PREFIX/bin/vps-sentinel" --config "$config_path" config allowlist add file-path "/etc/systemd/system/snap-*.mount" || \
+    echo "failed to add snap mount allowlist; continuing install" >&2
+  "$PREFIX/bin/vps-sentinel" --config "$config_path" config allowlist add file-path "/etc/systemd/system/snap-*.scope" || \
+    echo "failed to add snap scope allowlist; continuing install" >&2
+}
+
 cleanup_active_response_state() {
   config_path="$CONFIG_DIR/config.toml"
   "$PREFIX/bin/vps-sentinel" --config "$config_path" blocks cleanup || \
@@ -623,6 +643,7 @@ post_install_setup() {
   config_path="$CONFIG_DIR/config.toml"
   maybe_migrate_config
   maybe_sync_config_defaults
+  configure_snap_allowlist
   "$PREFIX/bin/vps-sentinel" --config "$config_path" config validate
   cleanup_active_response_state
   if yes_enabled "$RUN_DOCTOR"; then

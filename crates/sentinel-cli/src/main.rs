@@ -16,6 +16,7 @@ use commands::{
     incidents::{run_incidents, IncidentsCommand},
     init::run_init,
     maintenance::{run_maintenance, MaintenanceCommand},
+    menu::run_menu,
     notify::{run_notify, NotifyCommand},
     panel::{run_panel, PanelCommand},
     reload::run_reload,
@@ -150,6 +151,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    Menu,
 }
 
 #[tokio::main]
@@ -208,6 +210,7 @@ async fn main() -> Result<()> {
         }
         Command::Doctor => run_doctor(load_config(cli.config.as_deref())?),
         Command::Wizard { json } => run_wizard(load_config(cli.config.as_deref())?, json),
+        Command::Menu => run_menu(cli.config.as_deref()).await,
     }
 }
 

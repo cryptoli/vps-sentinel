@@ -245,6 +245,38 @@ sudo vs baseline approve <approval-key>
 
 Package upgrades and planned maintenance can create legitimate drift. Review evidence before refreshing a baseline.
 
+For repeatable configuration edits, prefer structured `vs config` commands instead of shell text replacement:
+
+```bash
+sudo vs config allowlist add file-path '/etc/systemd/system/snap-*.mount'
+sudo vs config allowlist add file-path '/etc/systemd/system/snap-*.scope'
+sudo vs config trusted-admin add 203.0.113.10
+sudo vs config suppress-rule add CONFIG-004
+sudo vs config normalize
+sudo vs config validate
+sudo vs reload
+```
+
+`config migrate` and `config sync-defaults` normalize the `[allowlist]` section into a stable array format so automated operations do not create duplicate TOML keys.
+
+For guided local operations, use:
+
+```bash
+sudo vs menu
+```
+
+The menu covers trusted admin IP edits, allowlist path edits, baseline refresh, active block listing and unblock, config validation, and service reload. It is a local CLI workflow and does not require exposing the fleet panel.
+
+For a small personal fleet, use the SSH-only helper when you do not want to expose a panel endpoint:
+
+```bash
+scripts/vs-fleet.sh --host root@vps1.example --host root@vps2.example -- sudo vs status
+scripts/vs-fleet.sh --host-file hosts.txt -- sudo vs config validate
+scripts/vs-fleet.sh --host-file hosts.txt -- sudo vs config allowlist add file-path '/etc/systemd/system/snap-*.mount'
+```
+
+`hosts.txt` contains one SSH target per line. Blank lines and `#` comments are ignored. The helper uses SSH only; no HTTP listener or browser token is required.
+
 ## Troubleshooting
 
 ```bash

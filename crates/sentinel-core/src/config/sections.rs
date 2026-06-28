@@ -988,6 +988,35 @@ impl Default for MaintenanceConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SuppressRulesConfig {
+    pub enabled: bool,
+    pub rule_ids: Vec<String>,
+    pub entries: Vec<SuppressRuleEntryConfig>,
+}
+
+impl Default for SuppressRulesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rule_ids: Vec::new(),
+            entries: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SuppressRuleEntryConfig {
+    pub id: String,
+    pub rule_ids: Vec<String>,
+    pub subjects: Vec<String>,
+    pub path_patterns: Vec<String>,
+    pub expires_at: String,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct AllowlistConfig {

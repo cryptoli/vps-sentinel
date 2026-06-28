@@ -369,6 +369,19 @@ suppress_baseline_drift = true
 suppress_interactive_logins = true
 max_duration_seconds = 7200
 
+[suppress_rules]
+enabled = true
+rule_ids = []
+
+# Use entries when a risk is accepted only for specific subjects or paths.
+# [[suppress_rules.entries]]
+# id = "accepted-root-login-config"
+# rule_ids = ["CONFIG-004"]
+# subjects = ["/etc/ssh/sshd_config"]
+# path_patterns = []
+# expires_at = "2026-12-31T23:59:59Z"
+# reason = "Documented operational exception; reviewed quarterly."
+
 [allowlist]
 users = []
 ips = []

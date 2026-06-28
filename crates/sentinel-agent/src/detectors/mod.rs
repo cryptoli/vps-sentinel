@@ -1,7 +1,7 @@
+use crate::path_match::PathMatcher;
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Evidence, Finding, RawEvent, SentinelConfig};
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 pub mod audit_rules;
@@ -31,12 +31,21 @@ pub(crate) const RESOURCE_DRIFT_DEDUP_KEYS: &[&str] = &["path", "change", "curre
 pub struct DetectContext {
     pub config: Arc<SentinelConfig>,
     pub host_id: String,
+    pub(crate) file_path_allowlist: PathMatcher,
+    pub(crate) process_path_allowlist: PathMatcher,
 }
 
 impl DetectContext {
     pub fn new(config: Arc<SentinelConfig>) -> Self {
         let host_id = config.host_id();
-        Self { config, host_id }
+        let file_path_allowlist = PathMatcher::from_paths(&config.allowlist.file_paths);
+        let process_path_allowlist = PathMatcher::from_paths(&config.allowlist.process_paths);
+        Self {
+            config,
+            host_id,
+            file_path_allowlist,
+            process_path_allowlist,
+        }
     }
 }
 
@@ -119,13 +128,6 @@ pub(crate) fn push_event_evidence_if_present(
 
 fn string_field(event: &RawEvent, key: &str) -> String {
     event.field(key).unwrap_or("").to_string()
-}
-
-fn path_is_allowlisted(path: &str, allowlist: &[PathBuf]) -> bool {
-    allowlist.iter().any(|allowed| {
-        let allowed = allowed.to_string_lossy().replace('\\', "/");
-        path == allowed || path.starts_with(&format!("{allowed}/"))
-    })
 }
 
 pub(crate) fn field_is_allowlisted(value: &str, allowlist: &[String]) -> bool {

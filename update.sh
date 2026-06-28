@@ -425,6 +425,25 @@ sync_config_defaults() {
   fi
 }
 
+snap_systemd_units_detected() {
+  command -v snap >/dev/null 2>&1 && return 0
+  [ -d /var/lib/snapd ] && return 0
+  find /etc/systemd/system -maxdepth 1 \( -name 'snap-*.mount' -o -name 'snap-*.scope' \) -print -quit 2>/dev/null | grep -q .
+}
+
+configure_snap_allowlist() {
+  if [ ! -x "$PREFIX/bin/vps-sentinel" ] || [ ! -f "$CONFIG_DIR/config.toml" ]; then
+    return
+  fi
+  if ! snap_systemd_units_detected; then
+    return
+  fi
+  "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" config allowlist add file-path "/etc/systemd/system/snap-*.mount" || \
+    echo "failed to add snap mount allowlist; continuing update" >&2
+  "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" config allowlist add file-path "/etc/systemd/system/snap-*.scope" || \
+    echo "failed to add snap scope allowlist; continuing update" >&2
+}
+
 cleanup_active_response_state() {
   "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" blocks cleanup || \
     echo "active-response cleanup failed; continuing update" >&2
@@ -564,6 +583,7 @@ ensure_config_exists() {
 post_update() {
   migrate_config
   sync_config_defaults
+  configure_snap_allowlist
 
   case "$VALIDATE_CONFIG" in
     yes|true|1)

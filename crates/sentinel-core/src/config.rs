@@ -18,8 +18,8 @@ pub use sections::{
     MaintenanceConfig, NetworkConfig, NoiseControlConfig, PackageManagerConfig, PanelConfig,
     PerformanceConfig, PersistenceConfig, PrivacyConfig, ProcessConfig, ReportsConfig,
     ResourceBudgetConfig, ResponsePolicyConfig, ResponsePolicyRule, RiskScoringConfig,
-    SentinelPaths, ServiceProfileConfig, SshConfig, StorageConfig, ThreatIntelConfig, WebConfig,
-    DEFAULT_DYNAMIC_UDP_MIN_PORT,
+    SentinelPaths, ServiceProfileConfig, SshConfig, StorageConfig, SuppressRuleEntryConfig,
+    SuppressRulesConfig, ThreatIntelConfig, WebConfig, DEFAULT_DYNAMIC_UDP_MIN_PORT,
 };
 
 const MIN_RESOURCE_EVIDENCE_ITEMS_PER_FINDING: usize = 16;
@@ -59,6 +59,7 @@ pub struct SentinelConfig {
     pub fleet: FleetConfig,
     pub panel: PanelConfig,
     pub maintenance: MaintenanceConfig,
+    pub suppress_rules: SuppressRulesConfig,
     pub allowlist: AllowlistConfig,
 }
 
@@ -295,6 +296,7 @@ impl SentinelConfig {
         validate_fleet(&self.fleet)?;
         validate_panel(&self.panel)?;
         validate_maintenance(&self.maintenance)?;
+        validate_suppress_rules(&self.suppress_rules)?;
         for quiet_hour in &self.noise_control.quiet_hours {
             quiet_hour.parse::<MinuteWindow>().map_err(|err| {
                 SentinelError::Config(format!(
@@ -455,6 +457,52 @@ fn validate_ip_patterns(name: &str, patterns: &[String]) -> SentinelResult<()> {
         } else if value.parse::<std::net::IpAddr>().is_err() {
             return Err(SentinelError::Config(format!(
                 "{name} entry '{value}' must be an IP address or CIDR"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_suppress_rules(config: &SuppressRulesConfig) -> SentinelResult<()> {
+    validate_rule_ids("suppress_rules.rule_ids", &config.rule_ids)?;
+    for (index, entry) in config.entries.iter().enumerate() {
+        let label = format!("suppress_rules.entries[{index}]");
+        validate_rule_ids(&format!("{label}.rule_ids"), &entry.rule_ids)?;
+        if entry.rule_ids.is_empty() {
+            return Err(SentinelError::Config(format!(
+                "{label}.rule_ids must contain at least one rule id"
+            )));
+        }
+        if entry.reason.trim().is_empty() {
+            return Err(SentinelError::Config(format!(
+                "{label}.reason must explain why the rule is suppressed"
+            )));
+        }
+        if !entry.expires_at.trim().is_empty()
+            && chrono::DateTime::parse_from_rfc3339(entry.expires_at.trim()).is_err()
+        {
+            return Err(SentinelError::Config(format!(
+                "{label}.expires_at must be empty or RFC3339"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_rule_ids(name: &str, values: &[String]) -> SentinelResult<()> {
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(SentinelError::Config(format!(
+                "{name} entries must not be empty"
+            )));
+        }
+        if !trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        {
+            return Err(SentinelError::Config(format!(
+                "{name} entry '{trimmed}' contains unsupported characters"
             )));
         }
     }

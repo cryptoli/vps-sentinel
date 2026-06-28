@@ -44,6 +44,10 @@ impl Detector for PersistenceDetector {
         let mut findings = Vec::new();
         let package_context = package_activity_context(events);
         for event in events {
+            let path = string_field(event, "path");
+            if !path.is_empty() && ctx.file_path_allowlist.matches(&path) {
+                continue;
+            }
             match event.kind.as_str() {
                 "persistence_created" | "persistence_modified" => {
                     if event.field("type") == Some("ld_preload") {
@@ -374,6 +378,25 @@ mod tests {
             .evidence
             .iter()
             .any(|item| item.key == "package_activity_recent" && item.value == "true"));
+    }
+
+    #[test]
+    fn persistence_drift_respects_file_path_glob_allowlist() {
+        let mut config = SentinelConfig::default();
+        config
+            .allowlist
+            .file_paths
+            .push("/etc/systemd/system/snap-*.mount".into());
+        let ctx = DetectContext::new(Arc::new(config));
+        let drift = RawEvent::new("baseline", "persistence_modified")
+            .with_field("path", "/etc/systemd/system/snap-core20-2890.mount")
+            .with_field("type", "systemd")
+            .with_field("previous_hash", "old")
+            .with_field("current_hash", "new");
+
+        let findings = PersistenceDetector.detect(&[drift], &ctx);
+
+        assert!(findings.is_empty());
     }
 
     #[test]
