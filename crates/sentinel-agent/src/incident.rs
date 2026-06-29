@@ -170,6 +170,11 @@ pub fn prune_incidents(store: &SqliteStore, retention_days: u32) -> SentinelResu
 fn build_incident(findings: &[&Finding], config: &SentinelConfig) -> Incident {
     let first = findings.first().expect("incident group is non-empty");
     let last = findings.last().expect("incident group is non-empty");
+    let included_findings = findings
+        .iter()
+        .take(config.incidents.max_findings_per_incident)
+        .copied()
+        .collect::<Vec<_>>();
     let mut subjects = BTreeSet::new();
     let mut categories = BTreeSet::new();
     let mut rules = BTreeSet::new();
@@ -178,10 +183,7 @@ fn build_incident(findings: &[&Finding], config: &SentinelConfig) -> Incident {
     let mut severity = Severity::Info;
     let mut score = 0u16;
 
-    for finding in findings
-        .iter()
-        .take(config.incidents.max_findings_per_incident)
-    {
+    for finding in &included_findings {
         subjects.insert(finding.subject.clone());
         categories.insert(finding.category.to_string());
         rules.insert(finding.rule_id.clone());
@@ -204,7 +206,7 @@ fn build_incident(findings: &[&Finding], config: &SentinelConfig) -> Incident {
     let subjects = subjects.into_iter().collect::<Vec<_>>();
     let rules = rules.into_iter().collect::<Vec<_>>();
     let title = incident_title(severity, &categories, &subjects);
-    let attack_chain = build_attack_chain(&timeline);
+    let attack_chain = build_attack_chain(&included_findings);
     let correlation = IncidentCorrelation {
         key: correlation_key.clone(),
         method: correlation_method(&correlation_key),
@@ -295,17 +297,27 @@ fn incident_title(severity: Severity, categories: &[String], subjects: &[String]
     format!("{severity} correlated {category} activity on {subject}")
 }
 
-fn build_attack_chain(timeline: &[IncidentTimelineItem]) -> Vec<IncidentAttackStage> {
-    let mut stages = BTreeMap::<String, Vec<&IncidentTimelineItem>>::new();
-    for item in timeline {
-        let stage = RuleAttackStage::from_signal(
-            &item.rule_id,
-            &format!("{} {}", item.subject, item.title),
-        );
-        stages
-            .entry(stage.key().to_string())
-            .or_default()
-            .push(item);
+#[derive(Clone)]
+struct AttackStageItem {
+    timestamp: DateTime<Utc>,
+    rule_id: String,
+    severity: Severity,
+    subject: String,
+}
+
+fn build_attack_chain(findings: &[&Finding]) -> Vec<IncidentAttackStage> {
+    let mut stages = BTreeMap::<String, Vec<AttackStageItem>>::new();
+    for finding in findings {
+        let stage_keys = expanded_attack_stage_keys(finding);
+        let item = AttackStageItem {
+            timestamp: finding.timestamp,
+            rule_id: finding.rule_id.clone(),
+            severity: finding.severity,
+            subject: finding.subject.clone(),
+        };
+        for stage_key in stage_keys {
+            stages.entry(stage_key).or_default().push(item.clone());
+        }
     }
     let mut result = Vec::new();
     for (stage, mut items) in stages {
@@ -342,6 +354,55 @@ fn build_attack_chain(timeline: &[IncidentTimelineItem]) -> Vec<IncidentAttackSt
     }
     result.sort_by_key(|stage| RuleAttackStage::from_key(&stage.stage).rank());
     result
+}
+
+fn expanded_attack_stage_keys(finding: &Finding) -> Vec<String> {
+    let mut stages = BTreeSet::new();
+    for phase in timeline_phases(finding) {
+        stages.insert(timeline_phase_attack_stage(phase).key().to_string());
+    }
+    if stages.is_empty() {
+        let stage = RuleAttackStage::from_signal(
+            &finding.rule_id,
+            &format!(
+                "{} {} {}",
+                finding.subject,
+                finding.title,
+                evidence_value(&finding.evidence, "timeline_chain").unwrap_or_default()
+            ),
+        );
+        stages.insert(stage.key().to_string());
+    }
+    stages.into_iter().collect()
+}
+
+fn timeline_phases(finding: &Finding) -> Vec<String> {
+    if finding.rule_id != "TIMELINE-001" {
+        return Vec::new();
+    }
+    let Some(raw) = evidence_value(&finding.evidence, "timeline_chain")
+        .or_else(|| evidence_value(&finding.evidence, "timeline_phases"))
+    else {
+        return Vec::new();
+    };
+    raw.split([',', '>'])
+        .map(|part| part.trim().trim_matches('-').trim())
+        .filter(|part| !part.is_empty())
+        .map(|part| part.to_ascii_lowercase())
+        .collect()
+}
+
+fn timeline_phase_attack_stage(phase: String) -> RuleAttackStage {
+    match phase.as_str() {
+        "web_probe" | "ssh_access" => RuleAttackStage::InitialAccess,
+        "process_execution" => RuleAttackStage::Execution,
+        "persistence" => RuleAttackStage::Persistence,
+        "file_change" => RuleAttackStage::Discovery,
+        "network_exposure" => RuleAttackStage::CommandAndControl,
+        "anti_forensics" => RuleAttackStage::Impact,
+        "rootkit_signal" => RuleAttackStage::PrivilegeEscalation,
+        _ => RuleAttackStage::from_text(&phase.replace('_', " ")),
+    }
 }
 
 fn correlation_method(key: &str) -> String {
@@ -392,5 +453,42 @@ mod tests {
         assert_eq!(incidents.len(), 1);
         assert_eq!(incidents[0].finding_ids.len(), 2);
         assert_eq!(incidents[0].severity, Severity::High);
+    }
+
+    #[test]
+    fn expands_timeline_finding_into_attack_chain_stages() {
+        let config = SentinelConfig::default();
+        let findings = vec![Finding::new(
+            "host",
+            "Correlated intrusion timeline detected",
+            "Multiple related signals form an intrusion-style timeline.",
+            Severity::High,
+            Category::System,
+            "TIMELINE-001",
+            "source_ip:198.51.100.10",
+        )
+        .with_evidence(vec![Evidence::new(
+            "timeline_chain",
+            "ssh_access -> process_execution -> persistence -> network_exposure",
+        )])];
+
+        let incidents = correlate_findings(&findings, &config);
+
+        assert_eq!(incidents.len(), 1);
+        let stages = incidents[0]
+            .attack_chain
+            .iter()
+            .map(|stage| stage.stage.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            stages,
+            vec![
+                "initial_access",
+                "execution",
+                "persistence",
+                "command_and_control"
+            ]
+        );
+        assert_eq!(incidents[0].correlation.stage_count, 4);
     }
 }
