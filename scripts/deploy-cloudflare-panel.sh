@@ -334,6 +334,7 @@ apply_d1_compat_migrations() {
 nodes|metrics_json|TEXT NOT NULL DEFAULT '{}'
 findings|review_signature|TEXT NOT NULL DEFAULT ''
 incidents|review_signature|TEXT NOT NULL DEFAULT ''
+baseline_drifts|category|TEXT NOT NULL DEFAULT 'system'
 baseline_drifts|review_signature|TEXT NOT NULL DEFAULT ''
 panel_reviews|review_signature|TEXT NOT NULL DEFAULT ''
 EOF
@@ -367,7 +368,7 @@ const config = {
     directory: "./web",
     binding: "ASSETS",
     not_found_handling: "single-page-application",
-    run_worker_first: ["/api/*"],
+    run_worker_first: ["/*"],
   },
   d1_databases: [
     {

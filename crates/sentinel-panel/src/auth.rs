@@ -1,4 +1,5 @@
 use super::*;
+use uuid::Uuid;
 
 pub(super) fn verify_panel_role(
     state: &AppState,

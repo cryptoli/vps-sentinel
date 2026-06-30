@@ -11,6 +11,8 @@
 
 自建面板和 Cloudflare 面板应在鉴权、公开/私有页面权限、隐私脱敏、节点展示、黑名单展示、复核接口和主题加载上保持一致。当前有意保留的差异只有刷新传输方式：自建 Rust 面板支持 WebSocket 事件，Cloudflare Worker 部署在未引入有状态广播层时使用 REST fallback。
 
+个人或少量 VPS 场景优先使用私有自建绑定，例如 `127.0.0.1:8858`、Tailscale 地址或其他内网地址。自建环境生成脚本默认写入 `PANEL_BIND='127.0.0.1:8858'`；只有浏览器和 agent 都能访问同一个私有网络时，才把它改成 `PANEL_BIND='<tailscale-ip>:8858'`。公网 HTTPS 反向代理仍然支持，但应当是明确选择，而不是默认暴露面。
+
 ## Token 和管理路径
 
 | 配置 | 含义 | 是否必须 |
@@ -26,6 +28,8 @@
 ## Cloudflare Worker/D1 部署
 
 ### 1. 构建前端
+
+`panel/web` 是 Cloudflare 和自建面板共用的已提交静态部署产物。前端源码以 `panel/ui` 为准；修改 UI 源码后，应在 `panel/ui` 下运行 `npm run build:web` 重新生成 `panel/web`。不要手工修改 `panel/web/_next` 下的打包文件，这些文件只能由前端构建产生。
 
 ```bash
 cd panel/ui

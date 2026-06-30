@@ -5,6 +5,7 @@ Security monitoring should be useful without waking users for expected operation
 ## Common Sources
 
 - Package upgrades changing systemd units or config files.
+- Snap package refreshes changing versioned systemd mount/scope units such as `/etc/systemd/system/snap-core20-2890.mount`.
 - Admin-created users and SSH keys.
 - Public ports intentionally exposed for services.
 - Framework files containing strings that resemble shell helpers.
@@ -13,12 +14,14 @@ Security monitoring should be useful without waking users for expected operation
 ## Mitigation
 
 - Add expected users, IPs, ports, file paths, or process paths to `[allowlist]`.
+- For snapd-managed units, prefer narrow file path patterns such as `/etc/systemd/system/snap-*.mount` and `/etc/systemd/system/snap-*.scope`; do not allowlist the whole systemd directory.
 - For legitimate forwarding or tunneling commands, prefer `allowlist.process_paths`; use `allowlist.process_command_contains` only with a precise identifying fragment.
 - For known miner/scanner findings, confirm the executable basename first. The rule records `matched_tool`, `match_source`, and `matched_value`; it matches process identity fields such as executable path, process name, and structured `argv[0]`, so ordinary arguments or longer unrelated names should not be treated as matches. If CPU evidence is present, compare `cpu_percent`, `cpu_total_seconds`, and `process_age_seconds` with expected workload before deciding whether this is authorized software or active resource abuse.
 - For file or persistence drift with `package_activity_recent=true`, compare the changed path against the listed package logs before refreshing the baseline. Package context explains possible maintenance activity; it is not an automatic allowlist.
 - For WebShell-like content, review the file location, owner, recent deployment history, and marker combination before isolation. The default score ignores a single weak marker, but legitimate admin scripts can still contain risky-looking constructs.
 - Put normal public service ports such as HTTP/HTTPS, or intentionally public high-risk business ports such as Redis, in `network.expected_public_ports`; they still receive process-risk and baseline-owner checks. Use `allowlist.listening_ports` only when a port should suppress all network findings, including suspicious owner checks.
 - Keep baselines fresh after planned maintenance, but only after reviewing drift. The installer writes its own systemd unit before first baseline bootstrap; `update.sh` preserves the existing baseline by default and refreshes it only when `REFRESH_BASELINE=yes` is set.
+- For accepted configuration risks, prefer `[suppress_rules]` over excluding the underlying file from integrity monitoring. For example, suppress `CONFIG-004` only when direct root SSH login is intentionally allowed and documented.
 - Route noisy rules at `Low` or `Medium`.
 - Before relying on active response, add trusted admin, office, monitoring, CDN, and reverse-proxy source IPs to `[allowlist].ips`. Active response only considers public source IPs and requires stricter thresholds than normal alerting, but it still changes firewall state.
 - Investigate correlations before taking destructive action.

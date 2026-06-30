@@ -26,6 +26,15 @@ pub fn profile_for_path(path: &str, text: &str) -> Option<SemanticProfile> {
     if normalized == "/etc/sudoers" || normalized.starts_with("/etc/sudoers.d/") {
         return sudoers_profile(text);
     }
+    if normalized == "/etc/ssh/sshd_config" || normalized.starts_with("/etc/ssh/sshd_config.d/") {
+        return sshd_config_profile(text);
+    }
+    if is_web_server_config(&normalized) {
+        return web_server_config_profile(text);
+    }
+    if is_package_manager_config(&normalized) {
+        return package_manager_config_profile(&normalized, text);
+    }
     None
 }
 
@@ -183,6 +192,119 @@ fn sudoers_profile(text: &str) -> Option<SemanticProfile> {
     ))
 }
 
+fn sshd_config_profile(text: &str) -> Option<SemanticProfile> {
+    let directives = semantic_lines(text)
+        .filter_map(|line| split_config_directive(&line))
+        .map(|(key, value)| {
+            format!(
+                "{}={}",
+                key.to_ascii_lowercase(),
+                normalize_command_value(&value.to_ascii_lowercase())
+            )
+        })
+        .collect::<Vec<_>>();
+    if directives.is_empty() {
+        return None;
+    }
+    let mut features = Vec::new();
+    if directives
+        .iter()
+        .any(|line| line == "passwordauthentication=yes")
+    {
+        features.push("password_auth_enabled".to_string());
+    }
+    if directives.iter().any(|line| line == "permitrootlogin=yes") {
+        features.push("root_login_enabled".to_string());
+    }
+    if directives
+        .iter()
+        .any(|line| line.starts_with("authorizedkeyscommand="))
+    {
+        features.push("authorized_keys_command".to_string());
+    }
+    Some(profile(
+        "sshd_config",
+        directives.clone(),
+        format!("directives={}", directives.len()),
+        features,
+    ))
+}
+
+fn web_server_config_profile(text: &str) -> Option<SemanticProfile> {
+    let directives = semantic_lines(text)
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.contains("server_name")
+                || lower.contains("listen")
+                || lower.contains("proxy_pass")
+                || lower.contains("root ")
+                || lower.contains("try_files")
+                || lower.contains("php")
+                || lower.contains("fastcgi")
+        })
+        .map(|line| normalize_command_value(&line.to_ascii_lowercase()))
+        .collect::<Vec<_>>();
+    if directives.is_empty() {
+        return None;
+    }
+    let mut features = Vec::new();
+    if directives
+        .iter()
+        .any(|line| line.contains("proxy_pass http://"))
+    {
+        features.push("plain_http_proxy".to_string());
+    }
+    if directives
+        .iter()
+        .any(|line| line.contains("fastcgi") || line.contains("php"))
+    {
+        features.push("dynamic_runtime".to_string());
+    }
+    Some(profile(
+        "web_server_config",
+        directives.clone(),
+        format!("directives={}", directives.len()),
+        features,
+    ))
+}
+
+fn package_manager_config_profile(path: &str, text: &str) -> Option<SemanticProfile> {
+    let entries = semantic_lines(text)
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            lower.contains("mirror")
+                || lower.contains("repo")
+                || lower.contains("baseurl")
+                || lower.contains("signed-by")
+                || lower.contains("trusted")
+                || lower.starts_with("deb ")
+        })
+        .map(|line| normalize_command_value(&line.to_ascii_lowercase()))
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        return None;
+    }
+    let mut features = Vec::new();
+    if entries.iter().any(|line| line.contains("trusted=yes")) {
+        features.push("trusted_repo".to_string());
+    }
+    if entries.iter().any(|line| line.contains("http://")) {
+        features.push("plain_http_repo".to_string());
+    }
+    Some(profile(
+        if path.contains("/apt/") {
+            "apt_source"
+        } else if path.contains("/yum") || path.contains("/dnf") {
+            "rpm_repo"
+        } else {
+            "package_manager_config"
+        },
+        entries.clone(),
+        format!("entries={}", entries.len()),
+        features,
+    ))
+}
+
 fn profile(
     kind: &'static str,
     normalized_items: Vec<String>,
@@ -222,6 +344,16 @@ fn semantic_lines(text: &str) -> impl Iterator<Item = String> + '_ {
     })
 }
 
+fn split_config_directive(line: &str) -> Option<(String, String)> {
+    if let Some((key, value)) = line.split_once('=') {
+        return Some((key.trim().to_string(), value.trim().to_string()));
+    }
+    let mut parts = line.split_whitespace();
+    let key = parts.next()?.trim().to_string();
+    let value = parts.collect::<Vec<_>>().join(" ");
+    (!key.is_empty() && !value.is_empty()).then_some((key, value))
+}
+
 fn normalize_command_value(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -247,6 +379,20 @@ fn is_cron_path(path: &str) -> bool {
     path == "/etc/crontab"
         || path.starts_with("/etc/cron.d/")
         || path.starts_with("/var/spool/cron/")
+}
+
+fn is_web_server_config(path: &str) -> bool {
+    (path.starts_with("/etc/nginx/") && path.ends_with(".conf"))
+        || path.starts_with("/etc/apache2/")
+        || path.starts_with("/etc/httpd/")
+        || path.starts_with("/etc/caddy/")
+}
+
+fn is_package_manager_config(path: &str) -> bool {
+    path.starts_with("/etc/apt/sources.list")
+        || path.starts_with("/etc/apt/sources.list.d/")
+        || path.starts_with("/etc/yum.repos.d/")
+        || path.starts_with("/etc/dnf/")
 }
 
 fn empty_as_missing(value: &str) -> &str {
@@ -290,5 +436,39 @@ mod tests {
             delta.as_deref(),
             Some("authorized_keys: keys=1 -> keys=2 options=from")
         );
+    }
+
+    #[test]
+    fn sshd_config_profile_flags_risky_auth_directives() {
+        let profile = profile_for_path(
+            "/etc/ssh/sshd_config",
+            "PasswordAuthentication yes\nPermitRootLogin yes\n",
+        )
+        .expect("profile");
+
+        assert_eq!(profile.kind, "sshd_config");
+        assert!(profile
+            .features
+            .contains(&"password_auth_enabled".to_string()));
+        assert!(profile.features.contains(&"root_login_enabled".to_string()));
+    }
+
+    #[test]
+    fn web_and_package_configs_have_semantic_profiles() {
+        let nginx = profile_for_path(
+            "/etc/nginx/conf.d/site.conf",
+            "server { listen 80; proxy_pass http://127.0.0.1:8080; }\n",
+        )
+        .expect("nginx profile");
+        let apt = profile_for_path(
+            "/etc/apt/sources.list.d/custom.list",
+            "deb [trusted=yes] http://example.invalid stable main\n",
+        )
+        .expect("apt profile");
+
+        assert_eq!(nginx.kind, "web_server_config");
+        assert!(nginx.features.contains(&"plain_http_proxy".to_string()));
+        assert_eq!(apt.kind, "apt_source");
+        assert!(apt.features.contains(&"trusted_repo".to_string()));
     }
 }

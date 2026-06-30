@@ -74,6 +74,7 @@ pub struct PanelScanSummary {
     pub active_response_applied: usize,
     pub active_response_failed: usize,
     pub collector_errors: usize,
+    pub stage_durations_ms: BTreeMap<String, u64>,
     pub event_count_by_source: BTreeMap<String, usize>,
 }
 
@@ -102,6 +103,22 @@ pub struct PanelIncident {
     pub first_seen: DateTime<Utc>,
     pub last_seen: DateTime<Utc>,
     pub summary: String,
+    #[serde(default)]
+    pub correlation_key: String,
+    #[serde(default)]
+    pub subjects: Vec<String>,
+    #[serde(default)]
+    pub categories: Vec<String>,
+    #[serde(default)]
+    pub rules: Vec<String>,
+    #[serde(default)]
+    pub finding_ids: Vec<String>,
+    #[serde(default)]
+    pub timeline: Vec<crate::incident::IncidentTimelineItem>,
+    #[serde(default)]
+    pub attack_chain: Vec<crate::incident::IncidentAttackStage>,
+    #[serde(default)]
+    pub correlation: crate::incident::IncidentCorrelation,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -254,7 +271,9 @@ pub async fn push_snapshot(
     retry_outbox(config, &mut state, None).await;
     let payload = build_snapshot_payload(config, store)?;
     match send_envelope(config, &payload).await {
-        Ok(()) => state.last_success_at = Some(Utc::now()),
+        Ok(()) => {
+            state.last_success_at = Some(Utc::now());
+        }
         Err(err) => enqueue_payload(config, &mut state, payload, err.to_string())?,
     }
     state.last_attempt_at = Some(Utc::now());
@@ -319,6 +338,7 @@ fn build_scan_payload(
         active_response_applied: report.active_response_applied_count,
         active_response_failed: report.active_response_failed_count,
         collector_errors: report.collector_errors.len(),
+        stage_durations_ms: report.stage_durations_ms.clone(),
         event_count_by_source: report.event_count_by_source.clone(),
     };
     limited_payload(
@@ -371,6 +391,7 @@ fn build_snapshot_payload(
         active_response_applied: 0,
         active_response_failed: 0,
         collector_errors: 0,
+        stage_durations_ms: BTreeMap::new(),
         event_count_by_source: BTreeMap::new(),
     };
     limited_payload(
@@ -468,7 +489,7 @@ async fn retry_outbox(
                 .and_then(|payload| validate_payload_size(config, &payload).map(|_| payload))
             {
                 Ok(payload) => match send_envelope(config, &payload).await {
-                    Ok(()) => {
+                    Ok(_) => {
                         sent += 1;
                         state.last_success_at = Some(Utc::now());
                         continue;
@@ -737,6 +758,9 @@ fn panel_probe_sources(
             block_reason: String::new(),
         });
         source.rule_ids.insert(block.rule_id.clone());
+        if let Some(category) = probe_source_category_from_rule(&block.rule_id) {
+            source.categories.insert(category.to_string());
+        }
         if block.blocked_at < source.first_seen {
             source.first_seen = block.blocked_at;
         }
@@ -798,6 +822,25 @@ fn panel_probe_sources(
     });
     items.truncate(config.panel.batch_size);
     items
+}
+
+fn probe_source_category_from_rule(rule_id: &str) -> Option<&'static str> {
+    let prefix = rule_id.split('-').next()?.to_ascii_uppercase();
+    match prefix.as_str() {
+        "AUTH" | "SSH" => Some("ssh"),
+        "USER" => Some("user"),
+        "PRIV" => Some("privilege"),
+        "PERSIST" => Some("persistence"),
+        "PROC" => Some("process"),
+        "NET" | "SERVICE" => Some("network"),
+        "FILE" => Some("file_integrity"),
+        "WEB" => Some("web"),
+        "DOCKER" => Some("docker"),
+        "ROOTKIT" => Some("rootkit"),
+        "CONFIG" => Some("config_risk"),
+        "SYS" | "SYSTEM" => Some("system"),
+        _ => None,
+    }
 }
 
 fn probe_source_lookup_weight(source: &ProbeSourceAggregate) -> u8 {
@@ -1175,6 +1218,46 @@ fn panel_incident(config: &SentinelConfig, incident: &Incident) -> PanelIncident
         first_seen: incident.first_seen,
         last_seen: incident.last_seen,
         summary: redact_text(config, &incident.summary),
+        correlation_key: redact_text(config, &incident.correlation_key),
+        subjects: incident
+            .subjects
+            .iter()
+            .map(|item| redact_subject(config, item))
+            .collect(),
+        categories: incident.categories.clone(),
+        rules: incident.rules.clone(),
+        finding_ids: incident.finding_ids.clone(),
+        timeline: incident
+            .timeline
+            .iter()
+            .map(|item| crate::incident::IncidentTimelineItem {
+                timestamp: item.timestamp,
+                finding_id: item.finding_id.clone(),
+                rule_id: item.rule_id.clone(),
+                severity: item.severity,
+                title: redact_text(config, &item.title),
+                subject: redact_subject(config, &item.subject),
+            })
+            .collect(),
+        attack_chain: incident
+            .attack_chain
+            .iter()
+            .map(|stage| crate::incident::IncidentAttackStage {
+                stage: stage.stage.clone(),
+                label: stage.label.clone(),
+                severity: stage.severity,
+                finding_count: stage.finding_count,
+                rule_ids: stage.rule_ids.clone(),
+                subjects: stage
+                    .subjects
+                    .iter()
+                    .map(|item| redact_subject(config, item))
+                    .collect(),
+                first_seen: stage.first_seen,
+                last_seen: stage.last_seen,
+            })
+            .collect(),
+        correlation: incident.correlation.clone(),
     }
 }
 
@@ -1395,6 +1478,23 @@ fn sanitize_panel_finding(config: &SentinelConfig, finding: &mut PanelFinding) {
 fn sanitize_panel_incident(config: &SentinelConfig, incident: &mut PanelIncident) {
     incident.title = redact_text(config, &incident.title);
     incident.summary = redact_text(config, &incident.summary);
+    incident.correlation_key = redact_text(config, &incident.correlation_key);
+    incident.subjects = incident
+        .subjects
+        .iter()
+        .map(|item| redact_subject(config, item))
+        .collect();
+    for item in &mut incident.timeline {
+        item.title = redact_text(config, &item.title);
+        item.subject = redact_subject(config, &item.subject);
+    }
+    for stage in &mut incident.attack_chain {
+        stage.subjects = stage
+            .subjects
+            .iter()
+            .map(|item| redact_subject(config, item))
+            .collect();
+    }
 }
 
 fn sanitize_panel_baseline_drift(config: &SentinelConfig, drift: &mut PanelBaselineDrift) {
@@ -1781,6 +1881,7 @@ mod tests {
                     active_response_applied: 0,
                     active_response_failed: 0,
                     collector_errors: 0,
+                    stage_durations_ms: BTreeMap::new(),
                     event_count_by_source: BTreeMap::new(),
                 },
                 findings: vec![PanelFinding {
@@ -1839,6 +1940,7 @@ mod tests {
             active_response_applied: 0,
             active_response_failed: 0,
             collector_errors: 0,
+            stage_durations_ms: BTreeMap::new(),
             event_count_by_source: BTreeMap::new(),
         };
         let payload = panel_envelope(
@@ -1912,6 +2014,7 @@ mod tests {
             active_response_applied: 0,
             active_response_failed: 0,
             collector_errors: 0,
+            stage_durations_ms: BTreeMap::new(),
             event_count_by_source: BTreeMap::new(),
         };
 
@@ -1965,6 +2068,7 @@ mod tests {
                     active_response_applied: 0,
                     active_response_failed: 0,
                     collector_errors: 0,
+                    stage_durations_ms: BTreeMap::new(),
                     event_count_by_source: BTreeMap::new(),
                 },
                 findings: Vec::new(),
@@ -2025,6 +2129,7 @@ mod tests {
             active_response_applied: 0,
             active_response_failed: 0,
             collector_errors: 0,
+            stage_durations_ms: BTreeMap::new(),
             event_count_by_source: BTreeMap::new(),
         };
         let mut payload = panel_envelope(
@@ -2068,6 +2173,14 @@ mod tests {
             first_seen: Utc::now(),
             last_seen: Utc::now(),
             summary: "198.51.100.8 correlated across events".to_string(),
+            correlation_key: "ssh:198.51.100.8".to_string(),
+            subjects: vec!["root@198.51.100.8".to_string()],
+            categories: vec!["ssh".to_string()],
+            rules: vec!["SSH-001".to_string()],
+            finding_ids: vec!["finding-1".to_string()],
+            timeline: Vec::new(),
+            attack_chain: Vec::new(),
+            correlation: crate::incident::IncidentCorrelation::default(),
         });
         payload.baseline_drifts.push(PanelBaselineDrift {
             finding_id: "finding-2".to_string(),
@@ -2277,6 +2390,30 @@ mod tests {
         assert!(source.rule_ids.contains(&"SSH-003".to_string()));
         assert!(source.latest_reason.contains("ssh_bruteforce"));
         assert!(source.block_reason.contains("failure_count=8"));
+    }
+
+    #[test]
+    fn panel_probe_sources_derive_category_from_block_rule() {
+        let config = SentinelConfig::default();
+        let now = Utc::now();
+        let blocks = vec![BlockEntry {
+            ip: "47.242.23.112".to_string(),
+            rule_id: "WEB-001".to_string(),
+            finding_id: "finding-web".to_string(),
+            reason: "web attack threshold reached".to_string(),
+            backend: "nftables".to_string(),
+            blocked_at: now,
+            expires_at: Some(now + ChronoDuration::hours(1)),
+            expired: false,
+            firewall_present: Some(true),
+        }];
+
+        let sources = super::panel_probe_sources(&config, &[], &blocks);
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].source_ip, "47.242.23.112");
+        assert!(sources[0].categories.contains(&"web".to_string()));
+        assert!(sources[0].rule_ids.contains(&"WEB-001".to_string()));
     }
 
     #[test]

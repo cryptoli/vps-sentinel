@@ -1,4 +1,4 @@
-import { countryDisplay, formatValue, rowTone } from "@/lib/format";
+import { categoryFromRuleId, countryDisplay, fingerprintConclusion, formatValue, number, rowTone } from "@/lib/format";
 import { formatTemplate, translate } from "@/lib/i18n";
 import type { Language, PanelRecord } from "@/types";
 import type { CSSProperties } from "react";
@@ -71,6 +71,8 @@ export function DataTable({
   language,
   onDetails,
   detailLabelKey = "details",
+  rowAction,
+  actionLabelKey = "actions",
   tableId,
 }: {
   rows: PanelRecord[];
@@ -78,10 +80,12 @@ export function DataTable({
   language: Language;
   onDetails?: (row: PanelRecord) => void;
   detailLabelKey?: string;
+  rowAction?: (row: PanelRecord) => React.ReactNode;
+  actionLabelKey?: string;
   tableId?: string;
 }) {
   if (!rows.length) return <div className="empty-state">{translate(language, "noData")}</div>;
-  const layout = tableLayout(tableId, columns, Boolean(onDetails));
+  const layout = tableLayout(tableId, columns, Boolean(onDetails || rowAction));
   return (
     <div className="table-wrap">
       <table
@@ -93,6 +97,7 @@ export function DataTable({
             <col key={column} style={{ width: layout.widths[column] || layout.defaultWidth }} />
           ))}
           {onDetails && <col style={{ width: layout.detailsWidth }} />}
+          {rowAction && <col style={{ width: layout.detailsWidth }} />}
         </colgroup>
         <thead>
           <tr>
@@ -100,6 +105,7 @@ export function DataTable({
               <th className={`col-${columnClass(column)}`} key={column}>{translate(language, column)}</th>
             ))}
             {onDetails && <th className="col-details">{translate(language, detailLabelKey)}</th>}
+            {rowAction && <th className="col-actions">{translate(language, actionLabelKey)}</th>}
           </tr>
         </thead>
         <tbody>
@@ -117,6 +123,7 @@ export function DataTable({
                   </button>
                 </td>
               )}
+              {rowAction && <td className="col-actions">{rowAction(row)}</td>}
             </tr>
           ))}
         </tbody>
@@ -191,19 +198,37 @@ const TABLE_LAYOUTS: Record<string, TableLayout> = {
   "active-blocks": {
     defaultWidth: "122px",
     detailsWidth: "96px",
-    minWidth: "1320px",
+    minWidth: "930px",
     widths: {
       blocked_at: "142px",
       node_name: "128px",
-      ip: "136px",
+      ip: "138px",
+      categories: "138px",
+      evidence: "106px",
       network_prefix: "138px",
       country: "84px",
       asn: "104px",
       organization: "180px",
       rule_id: "116px",
       backend: "96px",
-      reason: "260px",
+      reason: "210px",
       expires_at: "142px",
+    },
+  },
+  "attack-fingerprints": {
+    defaultWidth: "118px",
+    detailsWidth: "96px",
+    minWidth: "940px",
+    widths: {
+      last_seen_at: "146px",
+      kind: "118px",
+      score: "76px",
+      confidence: "96px",
+      conclusion: "116px",
+      verdict: "112px",
+      node_count: "94px",
+      source_count: "104px",
+      seen_count: "96px",
     },
   },
   probe_sources: {
@@ -293,7 +318,27 @@ export function Pagination({
 }
 
 function renderCell(column: string, value: unknown, language: Language) {
-  if (["severity", "status", "block_status", "tier", "review_verdict"].includes(column)) {
+  if (column === "score") {
+    const score = Math.max(0, Math.min(100, Number(value || 0)));
+    return (
+      <span className="score-badge" style={{ "--score": `${score}%` } as CSSProperties}>
+        {number(score)}
+      </span>
+    );
+  }
+  if (column === "evidence") {
+    const score = Math.max(0, Math.min(5, Number(value || 0)));
+    return (
+      <span className="evidence-dots" aria-label={`${score}/5`}>
+        {[0, 1, 2, 3, 4].map((item) => <i className={item < score ? "active" : ""} key={item} />)}
+        <small>{score} / 5</small>
+      </span>
+    );
+  }
+  if (column === "reason") {
+    return <span className="reason-chip">{formatValue(column, value, language)}</span>;
+  }
+  if (["severity", "status", "block_status", "tier", "review_verdict", "verdict", "conclusion"].includes(column)) {
     const key = String(value || "unknown").toLowerCase();
     return <Badge value={translate(language, key)} tone={key} />;
   }
@@ -338,13 +383,22 @@ function columnClass(column: string): string {
 
 function cellValue(row: PanelRecord, column: string): unknown {
   if (row[column] !== undefined && row[column] !== null && row[column] !== "") return row[column];
+  if (column === "evidence") return evidenceScore(row);
   if (column === "category") return categoryFromRow(row);
+  if (column === "conclusion") return fingerprintConclusion(row);
   return row[column];
 }
 
+function evidenceScore(row: PanelRecord): number {
+  const candidates = [row.evidence, row.evidence_count, row.seen_count, row.score, row.confidence];
+  const value = candidates.map(Number).find((item) => Number.isFinite(item) && item > 0) || 0;
+  if (value <= 5) return Math.round(value);
+  if (value <= 100) return Math.max(1, Math.ceil(value / 20));
+  return 5;
+}
+
 function categoryFromRow(row: PanelRecord): string {
-  const byRule = categoryFromRule(row.rule_id);
-  if (byRule !== "unknown") return byRule;
+  if (String(row.rule_id || "").trim()) return categoryFromRuleId(row.rule_id);
   const subject = String(row.subject || "").toLowerCase();
   if (subject.includes("service") || subject.includes("port") || subject.includes("listen")) return "network";
   if (subject.includes("authorized") || subject.includes(".ssh")) return "ssh";
@@ -352,26 +406,4 @@ function categoryFromRow(row: PanelRecord): string {
   if (subject.includes("process") || subject.includes("pid")) return "process";
   if (subject.includes("file") || subject.includes("/")) return "file_integrity";
   return "unknown";
-}
-
-function categoryFromRule(ruleId: unknown): string {
-  const prefix = String(ruleId || "").split("-")[0]?.toUpperCase();
-  const categories: Record<string, string> = {
-    AUTH: "ssh",
-    SSH: "ssh",
-    USER: "user",
-    PRIV: "privilege",
-    PERSIST: "persistence",
-    PROC: "process",
-    NET: "network",
-    SERVICE: "network",
-    FILE: "file_integrity",
-    WEB: "web",
-    DOCKER: "docker",
-    ROOTKIT: "rootkit",
-    CONFIG: "config_risk",
-    SYS: "system",
-    SYSTEM: "system",
-  };
-  return categories[prefix] || "unknown";
 }

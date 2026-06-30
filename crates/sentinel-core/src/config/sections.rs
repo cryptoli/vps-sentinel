@@ -112,6 +112,28 @@ impl Default for ResourceBudgetConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+pub struct RiskScoringConfig {
+    pub threat_intel_bonus: u16,
+    pub active_response_bonus: u16,
+    pub rootkit_context_bonus: u16,
+    pub state_drift_deduction: u16,
+    pub high_stage_count_bonus: u16,
+}
+
+impl Default for RiskScoringConfig {
+    fn default() -> Self {
+        Self {
+            threat_intel_bonus: 15,
+            active_response_bonus: 10,
+            rootkit_context_bonus: 10,
+            state_drift_deduction: 10,
+            high_stage_count_bonus: 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SshConfig {
     pub enabled: bool,
     pub auth_log_paths: Vec<PathBuf>,
@@ -964,6 +986,35 @@ impl Default for MaintenanceConfig {
             max_duration_seconds: 7200,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SuppressRulesConfig {
+    pub enabled: bool,
+    pub rule_ids: Vec<String>,
+    pub entries: Vec<SuppressRuleEntryConfig>,
+}
+
+impl Default for SuppressRulesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            rule_ids: Vec::new(),
+            entries: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct SuppressRuleEntryConfig {
+    pub id: String,
+    pub rule_ids: Vec<String>,
+    pub subjects: Vec<String>,
+    pub path_patterns: Vec<String>,
+    pub expires_at: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

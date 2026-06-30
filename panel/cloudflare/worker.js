@@ -8,6 +8,7 @@ import {
   DEFAULT_PUBLIC_PAGES,
   DEFAULT_THEMES,
   MAX_PAGE_LIMIT,
+  PANEL_DICTIONARIES,
   PANEL_TRANSPORT_ENCODING,
   PUBLIC_PROBE_SOURCE_HIDDEN_KEYS,
   ROLE_LEVELS,
@@ -18,8 +19,11 @@ const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
 };
-
+const SUMMARY_CACHE_TTL_MS = 5000;
+const MAX_SEARCH_QUERY_CHARS = 96;
+const DEFAULT_PANEL_WRITE_BODY_BYTES = 65536;
 let compatSchemaPromise = null;
+const summaryCache = new Map();
 
 export default {
   async fetch(request, env) {
@@ -53,8 +57,14 @@ export default {
           freshness_threshold_minutes: DEFAULT_FRESHNESS_THRESHOLD_MINUTES,
           offline_threshold_minutes: DEFAULT_OFFLINE_THRESHOLD_MINUTES,
           node_retired_threshold_minutes: DEFAULT_NODE_RETIRED_THRESHOLD_MINUTES,
+          dictionaries: PANEL_DICTIONARIES,
           server_time: new Date().toISOString(),
         }), request, env);
+      }
+      if (request.method === "GET" && url.pathname === "/api/v1/dictionaries") {
+        const auth = panelAuth(request, env, "public");
+        if (auth.error) return withCors(auth.error, request, env);
+        return withCors(json(PANEL_DICTIONARIES), request, env);
       }
       if (request.method === "GET" && url.pathname === "/api/v1/summary") {
         const auth = panelAuth(request, env, "public");
@@ -95,8 +105,8 @@ export default {
       if (request.method === "GET" && url.pathname === "/api/v1/stream-ticket") {
         return withCors(json({ error: "stream_unavailable", detail: "stream_unavailable" }, 501), request, env);
       }
-      if (request.method === "GET" && env.ASSETS) {
-        return env.ASSETS.fetch(request);
+      if ((request.method === "GET" || request.method === "HEAD") && env.ASSETS) {
+        return withCors(await env.ASSETS.fetch(request), request, env);
       }
       return withCors(json({ error: "not_found" }, 404), request, env);
     } catch (error) {
@@ -116,6 +126,7 @@ async function ensureCompatSchema(env) {
         ["nodes", "metrics_json", "TEXT NOT NULL DEFAULT '{}'"],
         ["findings", "review_signature", "TEXT NOT NULL DEFAULT ''"],
         ["incidents", "review_signature", "TEXT NOT NULL DEFAULT ''"],
+        ["baseline_drifts", "category", "TEXT NOT NULL DEFAULT 'system'"],
         ["baseline_drifts", "review_signature", "TEXT NOT NULL DEFAULT ''"],
         ["panel_reviews", "review_signature", "TEXT NOT NULL DEFAULT ''"],
       ];
@@ -124,11 +135,53 @@ async function ensureCompatSchema(env) {
           env.DB.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run(),
         );
       }
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS panel_action_requests (
+          id TEXT PRIMARY KEY,
+          action TEXT NOT NULL,
+          target_type TEXT NOT NULL,
+          target_id TEXT NOT NULL,
+          node_name TEXT NOT NULL DEFAULT '',
+          payload_json TEXT NOT NULL,
+          status TEXT NOT NULL,
+          requested_by TEXT NOT NULL,
+          requested_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )
+      `).run();
+      await env.DB.prepare(`
+        CREATE TABLE IF NOT EXISTS attack_fingerprints (
+          id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          title TEXT NOT NULL,
+          first_seen_at TEXT NOT NULL,
+          last_seen_at TEXT NOT NULL,
+          seen_count INTEGER NOT NULL,
+          node_count INTEGER NOT NULL,
+          source_count INTEGER NOT NULL,
+          nodes_json TEXT NOT NULL,
+          source_ips_json TEXT NOT NULL,
+          rule_ids_json TEXT NOT NULL,
+          categories_json TEXT NOT NULL,
+          score INTEGER NOT NULL,
+          confidence INTEGER NOT NULL,
+          verdict TEXT NOT NULL DEFAULT 'unknown',
+          summary TEXT NOT NULL DEFAULT '',
+          updated_at TEXT NOT NULL
+        )
+      `).run();
       const indexes = [
         "CREATE INDEX IF NOT EXISTS idx_findings_review_signature ON findings(review_signature)",
         "CREATE INDEX IF NOT EXISTS idx_incidents_review_signature ON incidents(review_signature)",
         "CREATE INDEX IF NOT EXISTS idx_baseline_review_signature ON baseline_drifts(review_signature)",
         "CREATE INDEX IF NOT EXISTS idx_panel_reviews_signature ON panel_reviews(target_type, review_signature, verdict, reviewed_at)",
+        "CREATE INDEX IF NOT EXISTS idx_panel_action_requests_status ON panel_action_requests(status, requested_at)",
+        "CREATE INDEX IF NOT EXISTS idx_panel_action_requests_target ON panel_action_requests(target_type, target_id)",
+        "CREATE INDEX IF NOT EXISTS idx_panel_action_requests_node_status ON panel_action_requests(node_name, status, requested_at)",
+        "CREATE INDEX IF NOT EXISTS idx_attack_fingerprints_seen ON attack_fingerprints(last_seen_at)",
+        "CREATE INDEX IF NOT EXISTS idx_attack_fingerprints_score ON attack_fingerprints(score, last_seen_at)",
+        "CREATE INDEX IF NOT EXISTS idx_attack_fingerprints_verdict ON attack_fingerprints(verdict, last_seen_at)",
+        "CREATE INDEX IF NOT EXISTS idx_incidents_score_time ON incidents(score, last_seen)",
       ];
       for (const statement of indexes) {
         await env.DB.prepare(statement).run();
@@ -155,38 +208,7 @@ async function ingest(request, env) {
     return json({ error: "body_too_large" }, 413);
   }
   const nodeName = ingestNodeName(request);
-  const timestamp = Number(requiredHeader(request, "x-vps-sentinel-timestamp"));
-  const nonce = requiredHeader(request, "x-vps-sentinel-nonce");
-  const bodyHash = requiredHeader(request, "x-vps-sentinel-body-sha256");
-  const signature = requiredHeader(request, "x-vps-sentinel-signature");
-  const now = Math.floor(Date.now() / 1000);
-  if (!Number.isFinite(timestamp) || Math.abs(now - timestamp) > SIGNATURE_WINDOW_SECONDS) {
-    return json({ error: "signature_timestamp_out_of_window" }, 401);
-  }
-  if (!nonce.startsWith(`${nodeName}:`)) {
-    return json({ error: "nonce_node_mismatch" }, 401);
-  }
-  const actualHash = await sha256Hex(body);
-  if (!timingSafeEqual(actualHash, bodyHash)) {
-    return json({ error: "body_hash_mismatch" }, 401);
-  }
-  const secret = secretForNode(env, nodeName);
-  if (!secret) {
-    return json({ error: "unknown_node_secret" }, 401);
-  }
-  const signing = ["POST", "/api/v1/ingest", String(timestamp), nonce, bodyHash].join("\n");
-  const expected = await hmacSha256Hex(secret, signing);
-  if (!timingSafeEqual(expected, signature)) {
-    return json({ error: "signature_mismatch" }, 401);
-  }
-  await env.DB.prepare("DELETE FROM ingest_nonces WHERE expires_at < ?").bind(now).run();
-  const seen = await env.DB.prepare("SELECT nonce FROM ingest_nonces WHERE nonce = ?").bind(nonce).first();
-  if (seen) {
-    return json({ error: "nonce_replay" }, 409);
-  }
-  await env.DB.prepare("INSERT INTO ingest_nonces (nonce, node_id, expires_at) VALUES (?, ?, ?)")
-    .bind(nonce, nodeName, now + SIGNATURE_WINDOW_SECONDS)
-    .run();
+  await verifyAgentRequest(request, env, body, nodeName);
 
   const payloadBody = decodePanelPayloadBody(request, body);
   const payload = JSON.parse(new TextDecoder().decode(payloadBody));
@@ -195,7 +217,43 @@ async function ingest(request, env) {
   }
   applyRequestLocation(payload, request);
   await persistPayload(env, payload, nodeName);
+  invalidateSummaryCache();
   return json({ ok: true, message_id: payload.message_id });
+}
+
+async function verifyAgentRequest(request, env, body, nodeName) {
+  const timestamp = Number(requiredHeader(request, "x-vps-sentinel-timestamp"));
+  const nonce = requiredHeader(request, "x-vps-sentinel-nonce");
+  const bodyHash = requiredHeader(request, "x-vps-sentinel-body-sha256");
+  const signature = requiredHeader(request, "x-vps-sentinel-signature");
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(timestamp) || Math.abs(now - timestamp) > SIGNATURE_WINDOW_SECONDS) {
+    throwHttp(401, "signature_timestamp_out_of_window");
+  }
+  if (!nonce.startsWith(`${nodeName}:`)) {
+    throwHttp(401, "nonce_node_mismatch");
+  }
+  const actualHash = await sha256Hex(body);
+  if (!timingSafeEqual(actualHash, bodyHash)) {
+    throwHttp(401, "body_hash_mismatch");
+  }
+  const secret = secretForNode(env, nodeName);
+  if (!secret) {
+    throwHttp(401, "unknown_node_secret");
+  }
+  const signing = [request.method.toUpperCase(), "/api/v1/ingest", String(timestamp), nonce, bodyHash].join("\n");
+  const expected = await hmacSha256Hex(secret, signing);
+  if (!timingSafeEqual(expected, signature)) {
+    throwHttp(401, "signature_mismatch");
+  }
+  await env.DB.prepare("DELETE FROM ingest_nonces WHERE expires_at < ?").bind(now).run();
+  const seen = await env.DB.prepare("SELECT nonce FROM ingest_nonces WHERE nonce = ?").bind(nonce).first();
+  if (seen) {
+    throwHttp(409, "nonce_replay");
+  }
+  await env.DB.prepare("INSERT INTO ingest_nonces (nonce, node_id, expires_at) VALUES (?, ?, ?)")
+    .bind(nonce, nodeName, now + SIGNATURE_WINDOW_SECONDS)
+    .run();
 }
 
 function ingestNodeName(request) {
@@ -337,6 +395,8 @@ async function persistPayload(env, payload, signedNodeName) {
       JSON.stringify(recommendations),
       receivedAt,
     ));
+    const fingerprintStatement = await attackFingerprintStatement(env, nodeName, finding, title, receivedAt);
+    if (fingerprintStatement) statements.push(fingerprintStatement);
   }
 
   for (const incident of payload.incidents || []) {
@@ -370,13 +430,14 @@ async function persistPayload(env, payload, signedNodeName) {
     const id = `${nodeName}:${drift.finding_id || drift.rule_id}:${subject}:${drift.timestamp}`;
     statements.push(env.DB.prepare(`
       INSERT OR REPLACE INTO baseline_drifts
-        (id, node_id, finding_id, rule_id, severity, subject, review_signature, timestamp, tier, score, review_action, reasons_json, received_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, node_id, finding_id, rule_id, category, severity, subject, review_signature, timestamp, tier, score, review_action, reasons_json, received_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).bind(
       id,
       nodeName,
       drift.finding_id || "",
       drift.rule_id,
+      category,
       drift.severity,
       subject,
       reviewSignature,
@@ -493,6 +554,117 @@ function panelNodeStatement(env, nodeName, node, sentAt, receivedAt, includeMetr
   );
 }
 
+function evidenceValue(evidence, key) {
+  const item = (evidence || []).find((entry) => String(entry?.key || "") === key);
+  return item ? String(item.value || "").trim() : "";
+}
+
+function firstEvidenceValue(evidence, keys) {
+  for (const key of keys) {
+    const value = evidenceValue(evidence, key);
+    if (value) return value;
+  }
+  return "";
+}
+
+function mergeJsonSet(existingJson, incoming) {
+  const values = parseJsonField(existingJson, []);
+  const value = String(incoming || "").trim();
+  if (value && value.toLowerCase() !== "unknown") values.push(value);
+  return [...new Set(values.map((item) => String(item || "").trim()).filter(Boolean))].sort();
+}
+
+function minTimeText(existing, incoming) {
+  if (!existing) return incoming;
+  return String(existing) <= String(incoming) ? String(existing) : String(incoming);
+}
+
+function maxTimeText(existing, incoming) {
+  if (!existing) return incoming;
+  return String(existing) >= String(incoming) ? String(existing) : String(incoming);
+}
+
+function strongestFingerprintVerdict(existing, candidate) {
+  return fingerprintVerdictRank(candidate) >= fingerprintVerdictRank(existing)
+    ? String(candidate || "unknown").trim().toLowerCase()
+    : String(existing || "unknown").trim().toLowerCase();
+}
+
+function fingerprintVerdictRank(value) {
+  const verdict = String(value || "").trim().toLowerCase();
+  if (verdict === "malicious") return 3;
+  if (verdict === "benign") return 2;
+  if (verdict === "unknown" || !verdict) return 1;
+  return 0;
+}
+
+async function attackFingerprintStatement(env, nodeName, finding, title, receivedAt) {
+  const evidence = finding.evidence || [];
+  const id = evidenceValue(evidence, "attack_fingerprint_id");
+  if (!id || id.toLowerCase() === "unknown") return null;
+  const sourceIp = firstEvidenceValue(evidence, ["source_ip", "ip", "remote_ip", "remote_addr", "active_response_ip"]);
+  const existing = await env.DB.prepare(`
+    SELECT first_seen_at, last_seen_at, seen_count, nodes_json, source_ips_json, rule_ids_json, categories_json, score, confidence, verdict, source_count
+    FROM attack_fingerprints
+    WHERE id = ?
+  `).bind(id).first();
+  const nodes = mergeJsonSet(existing?.nodes_json, nodeName);
+  const sourceIps = mergeJsonSet(existing?.source_ips_json, redactIpText(sourceIp || ""));
+  const ruleIds = mergeJsonSet(existing?.rule_ids_json, finding.rule_id || "");
+  const categories = mergeJsonSet(existing?.categories_json, finding.category || "");
+  const observedAt = String(finding.timestamp || receivedAt);
+  const firstSeen = minTimeText(existing?.first_seen_at, observedAt);
+  const lastSeen = maxTimeText(existing?.last_seen_at, observedAt);
+  const reportedSeen = Math.max(1, Number(evidenceValue(evidence, "attack_fingerprint_seen_count") || 1) || 1);
+  const seenCount = Math.max(Number(existing?.seen_count || 0) + 1, reportedSeen);
+  const reportedSourceCount = Math.max(0, Number(evidenceValue(evidence, "attack_fingerprint_source_ip_count") || (sourceIp ? 1 : 0)) || 0);
+  const sourceCount = Math.max(Number(existing?.source_count || 0), sourceIps.length, reportedSourceCount);
+  const score = Math.max(Number(existing?.score || 0), Number(evidenceValue(evidence, "attack_fingerprint_score") || 0) || 0);
+  const confidence = Math.max(Number(existing?.confidence || 0), Number(evidenceValue(evidence, "attack_fingerprint_confidence") || 0) || 0);
+  const verdict = strongestFingerprintVerdict(existing?.verdict || "unknown", evidenceValue(evidence, "attack_fingerprint_verdict") || "unknown");
+  return env.DB.prepare(`
+    INSERT INTO attack_fingerprints
+      (id, kind, title, first_seen_at, last_seen_at, seen_count, node_count, source_count,
+       nodes_json, source_ips_json, rule_ids_json, categories_json, score, confidence, verdict, summary, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      kind = excluded.kind,
+      title = excluded.title,
+      first_seen_at = excluded.first_seen_at,
+      last_seen_at = excluded.last_seen_at,
+      seen_count = excluded.seen_count,
+      node_count = excluded.node_count,
+      source_count = excluded.source_count,
+      nodes_json = excluded.nodes_json,
+      source_ips_json = excluded.source_ips_json,
+      rule_ids_json = excluded.rule_ids_json,
+      categories_json = excluded.categories_json,
+      score = excluded.score,
+      confidence = excluded.confidence,
+      verdict = excluded.verdict,
+      summary = excluded.summary,
+      updated_at = excluded.updated_at
+  `).bind(
+    String(id).slice(0, 191),
+    String(evidenceValue(evidence, "attack_fingerprint_kind") || "unknown").slice(0, 64),
+    String(title || finding.title || "").slice(0, 191),
+    firstSeen,
+    lastSeen,
+    seenCount,
+    nodes.length,
+    sourceCount,
+    JSON.stringify(nodes),
+    JSON.stringify(sourceIps),
+    JSON.stringify(ruleIds),
+    JSON.stringify(categories),
+    score,
+    confidence,
+    verdict,
+    String(title || finding.title || "").slice(0, 512),
+    receivedAt,
+  );
+}
+
 function probeSourceStatement(env, nodeName, source, receivedAt) {
   const sourceIp = String(source?.source_ip || "").trim();
   if (!sourceIp) return null;
@@ -500,6 +672,8 @@ function probeSourceStatement(env, nodeName, source, receivedAt) {
   const firstSeen = String(source.first_seen || receivedAt);
   const lastSeen = String(source.last_seen || firstSeen);
   const seenCount = Math.max(1, Number(source.seen_count || 1) || 1);
+  const ruleIds = (source.rule_ids || []).map((item) => String(item || "").trim()).filter(Boolean);
+  const categories = normalizedProbeCategories(source.categories || [], ruleIds);
   return env.DB.prepare(`
     INSERT INTO probe_sources
       (id, node_id, source_ip, ip_version, network_prefix, country, asn, organization,
@@ -536,8 +710,14 @@ function probeSourceStatement(env, nodeName, source, receivedAt) {
         ELSE excluded.last_seen
       END,
       seen_count = probe_sources.seen_count + excluded.seen_count,
-      categories_json = excluded.categories_json,
-      rule_ids_json = excluded.rule_ids_json,
+      categories_json = CASE
+        WHEN excluded.categories_json IS NOT NULL AND excluded.categories_json <> '' AND excluded.categories_json <> '[]' THEN excluded.categories_json
+        ELSE probe_sources.categories_json
+      END,
+      rule_ids_json = CASE
+        WHEN excluded.rule_ids_json IS NOT NULL AND excluded.rule_ids_json <> '' AND excluded.rule_ids_json <> '[]' THEN excluded.rule_ids_json
+        ELSE probe_sources.rule_ids_json
+      END,
       latest_reason = excluded.latest_reason,
       block_status = CASE
         WHEN LOWER(COALESCE(excluded.block_status, '')) LIKE '%permanent%' THEN excluded.block_status
@@ -560,8 +740,8 @@ function probeSourceStatement(env, nodeName, source, receivedAt) {
     firstSeen,
     lastSeen,
     seenCount,
-    JSON.stringify((source.categories || []).map((item) => String(item || "")).filter(Boolean)),
-    JSON.stringify((source.rule_ids || []).map((item) => String(item || "")).filter(Boolean)),
+    JSON.stringify(categories),
+    JSON.stringify(ruleIds),
     redactIpText(source.latest_reason || ""),
     String(source.block_status || "observed"),
     redactIpText(source.block_reason || ""),
@@ -569,21 +749,56 @@ function probeSourceStatement(env, nodeName, source, receivedAt) {
   );
 }
 
+function normalizedProbeCategories(categories, ruleIds) {
+  const values = [];
+  for (const item of categories || []) {
+    const category = String(item || "").trim().toLowerCase().replace(/[\s-]+/g, "_");
+    if (category && category !== "unknown") values.push(category);
+  }
+  if (!values.length) {
+    for (const ruleId of ruleIds || []) {
+      const category = baselineCategoryFromRule(ruleId);
+      if (category && category !== "unknown") values.push(category);
+    }
+  }
+  return [...new Set(values)];
+}
+
 async function summary(env, role = "public") {
+  const now = Date.now();
+  const cached = summaryCache.get(role);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+  const value = await buildSummary(env, role);
+  summaryCache.set(role, { value, expiresAt: now + SUMMARY_CACHE_TTL_MS });
+  return value;
+}
+
+function invalidateSummaryCache() {
+  summaryCache.clear();
+}
+
+async function buildSummary(env, role = "public") {
   const activeFindingsFilter = reviewNotFalsePositiveFilter("findings", "finding");
   const activeIncidentsFilter = reviewNotFalsePositiveFilter("incidents", "incident");
   const activeDriftsFilter = reviewNotFalsePositiveFilter("baseline_drifts", "baseline_drift");
-  const [nodes, findings, incidents, drifts, blocks, probeSources, bySeverity, byCategory, byBlockStatus, nodeRows] = await Promise.all([
+  const [nodes, findings, incidents, drifts, blocks, attackFingerprints, probeSources, bySeverity, byCategory, byBlockStatus, nodeRows] = await Promise.all([
     countDistinct(env, "nodes", "node_name"),
     countWhere(env, "findings", activeFindingsFilter),
     countWhere(env, "incidents", activeIncidentsFilter),
     countWhere(env, "baseline_drifts", activeDriftsFilter),
     countWhere(env, "active_blocks", "expired = 0"),
+    countOptional(env, "attack_fingerprints"),
     countDistinctWhereOptional(env, "probe_sources", "source_ip", blockedProbeSourceFilter()),
     queryAll(env, `SELECT severity, COUNT(*) AS count FROM findings WHERE ${activeFindingsFilter} GROUP BY severity`),
     queryAll(env, `SELECT category, COUNT(*) AS count FROM findings WHERE ${activeFindingsFilter} GROUP BY category`),
     queryAllOptional(env, `SELECT block_status, COUNT(DISTINCT source_ip) AS count FROM probe_sources WHERE ${blockedProbeSourceFilter()} GROUP BY block_status`, "probe_sources"),
     queryAll(env, "SELECT node_name, agent_version, last_seen_at FROM nodes"),
+  ]);
+  const [reviewFeedback, dataHealth] = await Promise.all([
+    reviewFeedbackSummary(env),
+    buildDataHealth(env, nodeRows),
   ]);
   const result = {
     nodes,
@@ -591,13 +806,75 @@ async function summary(env, role = "public") {
     incidents,
     baseline_drifts: drifts,
     active_blocks: blocks,
+    attack_fingerprints: attackFingerprints,
     probe_sources: probeSources,
     by_severity: bySeverity,
     by_category: byCategory,
     by_block_status: byBlockStatus,
+    review_feedback: reviewFeedback,
+    data_health: dataHealth,
     node_status: nodeStatusCounts(nodeRows),
   };
   return redactPanelValue(result);
+}
+
+async function buildDataHealth(env, nodeRows) {
+  const heartbeats = await queryAll(env, "SELECT node_id, received_at, scan_json FROM heartbeats ORDER BY received_at DESC LIMIT 100");
+  let latestHeartbeatAt = "";
+  let collectorErrors = 0;
+  let slowestStage = "";
+  let slowestStageMs = 0;
+  for (const heartbeat of heartbeats || []) {
+    if (!latestHeartbeatAt) latestHeartbeatAt = String(heartbeat.received_at || "");
+    const scan = parseJsonField(heartbeat.scan_json, {});
+    collectorErrors += Number(scan.collector_errors || 0) || 0;
+    const durations = scan.stage_durations_ms && typeof scan.stage_durations_ms === "object"
+      ? scan.stage_durations_ms
+      : {};
+    for (const [stage, rawDuration] of Object.entries(durations)) {
+      const duration = Number(rawDuration || 0) || 0;
+      if (duration > slowestStageMs) {
+        slowestStageMs = duration;
+        slowestStage = String(stage);
+      }
+    }
+  }
+  const statuses = nodeStatusCounts(nodeRows);
+  const staleNodes = Number(statuses.stale || 0);
+  const offlineNodes = Number(statuses.offline || 0);
+  const retiredNodes = Number(statuses.retired || 0);
+  const status = collectorErrors > 0 || offlineNodes > 0 || retiredNodes > 0
+    ? "degraded"
+    : staleNodes > 0
+      ? "attention"
+      : "healthy";
+  return {
+    status,
+    latest_heartbeat_at: latestHeartbeatAt,
+    heartbeat_samples: heartbeats.length,
+    collector_errors: collectorErrors,
+    stale_nodes: staleNodes,
+    offline_nodes: offlineNodes,
+    retired_nodes: retiredNodes,
+    slowest_stage: slowestStage,
+    slowest_stage_ms: slowestStageMs,
+  };
+}
+
+async function reviewFeedbackSummary(env) {
+  const panelRows = await queryAll(env, `
+    SELECT target_type, verdict, COUNT(*) AS count
+    FROM panel_reviews
+    GROUP BY target_type, verdict
+    ORDER BY count DESC, target_type ASC, verdict ASC
+  `);
+  if (panelRows.length) return panelRows;
+  return queryAll(env, `
+    SELECT 'finding' AS target_type, verdict, COUNT(*) AS count
+    FROM finding_reviews
+    GROUP BY verdict
+    ORDER BY count DESC, verdict ASC
+  `);
 }
 
 async function trendPoints(env, url) {
@@ -613,16 +890,21 @@ async function trendPoints(env, url) {
     parts.push("timestamp <= ?");
   }
   const whereSql = ` WHERE ${parts.join(" AND ")}`;
-  const result = await env.DB.prepare(
-    `SELECT timestamp, severity FROM findings${whereSql} ORDER BY timestamp DESC LIMIT ?`,
-  ).bind(...values, 5000).all();
+  const limit = Math.min(page.limit, 500);
+  const result = await env.DB.prepare(`
+    SELECT SUBSTR(timestamp, 1, 13) AS bucket, severity, COUNT(*) AS count
+    FROM findings${whereSql}
+    GROUP BY SUBSTR(timestamp, 1, 13), severity
+    ORDER BY bucket ASC
+    LIMIT ?
+  `).bind(...values, limit).all();
   const buckets = new Map();
   for (const row of result.results || []) {
-    const bucket = String(row.timestamp || "").slice(0, 13);
+    const bucket = String(row.bucket || "");
     if (bucket.length !== 13) continue;
     const severity = String(row.severity || "Unknown");
     const severities = buckets.get(bucket) || new Map();
-    severities.set(severity, (severities.get(severity) || 0) + 1);
+    severities.set(severity, (severities.get(severity) || 0) + Number(row.count || 0));
     buckets.set(bucket, severities);
   }
   return [...buckets.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([bucket, severities]) => {
@@ -663,6 +945,7 @@ async function queryPage(env, dataset, url, role = "private") {
     values.push(page.to);
     parts.push(`${dataset.filterColumn || dataset.orderColumn} <= ?`);
   }
+  pushSearchClause(parts, values, datasetSearchColumns(dataset, role), page.query);
   const whereSql = parts.length ? ` WHERE ${parts.join(" AND ")}` : "";
   try {
     const countRow = await env.DB.prepare(`SELECT COUNT(*) AS count FROM ${dataset.table}${whereSql}`)
@@ -699,6 +982,7 @@ async function queryProbeSourcesPage(env, dataset, url, role = "private") {
     values.push(page.to);
     parts.push("last_seen <= ?");
   }
+  pushSearchClause(parts, values, datasetSearchColumns(dataset, role), page.query);
   const whereSql = ` WHERE ${parts.join(" AND ")}`;
   try {
     const countRow = await env.DB.prepare(
@@ -721,8 +1005,8 @@ async function queryProbeSourcesPage(env, dataset, url, role = "private") {
         COALESCE(NULLIF(MAX(CASE WHEN country IS NOT NULL AND country <> '' AND LOWER(country) <> 'unknown' THEN country ELSE '' END), ''), 'unknown') AS country,
         COALESCE(NULLIF(MAX(CASE WHEN asn IS NOT NULL AND asn <> '' AND LOWER(asn) <> 'unknown' THEN asn ELSE '' END), ''), 'unknown') AS asn,
         COALESCE(NULLIF(MAX(CASE WHEN organization IS NOT NULL AND organization <> '' AND LOWER(organization) <> 'unknown' THEN organization ELSE '' END), ''), 'unknown') AS organization,
-        MAX(categories_json) AS categories_json,
-        MAX(rule_ids_json) AS rule_ids_json,
+        MAX(CASE WHEN categories_json IS NOT NULL AND categories_json <> '' AND categories_json <> '[]' THEN categories_json ELSE '' END) AS categories_json,
+        MAX(CASE WHEN rule_ids_json IS NOT NULL AND rule_ids_json <> '' AND rule_ids_json <> '[]' THEN rule_ids_json ELSE '' END) AS rule_ids_json,
         MAX(CASE WHEN latest_reason IS NOT NULL AND latest_reason <> '' THEN latest_reason ELSE '' END) AS latest_reason,
         MAX(CASE WHEN block_reason IS NOT NULL AND block_reason <> '' THEN block_reason ELSE '' END) AS block_reason
       FROM probe_sources${whereSql}
@@ -863,7 +1147,7 @@ async function panelReviewValue(env, targetType, targetId, reviewSignature = "")
 }
 
 async function findingReview(request, env) {
-  const payload = await request.json();
+  const payload = await readPanelJson(request, env);
   const review = normalizeFindingReview(payload);
   const exists = await env.DB.prepare("SELECT id FROM findings WHERE id = ?").bind(review.finding_id).first();
   if (!exists) throwHttp(404, "finding_not_found");
@@ -875,6 +1159,14 @@ async function findingReview(request, env) {
     review_signature: reviewSignature,
     verdict: review.verdict,
     note: review.note,
+    reviewer: review.reviewer,
+    reviewed_at: review.reviewed_at,
+  });
+  await syncReviewFeedback(env, {
+    target_type: "finding",
+    target_id: review.finding_id,
+    review_signature: reviewSignature,
+    verdict: review.verdict,
     reviewer: review.reviewer,
     reviewed_at: review.reviewed_at,
   });
@@ -890,6 +1182,7 @@ async function findingReview(request, env) {
     JSON.stringify({ verdict: review.verdict, note_present: Boolean(review.note) }),
     review.reviewed_at,
   ).run();
+  invalidateSummaryCache();
   return {
     ok: true,
     finding_id: review.finding_id,
@@ -906,7 +1199,7 @@ async function findingReview(request, env) {
 }
 
 async function panelReview(request, env) {
-  const payload = await request.json();
+  const payload = await readPanelJson(request, env);
   const review = normalizePanelReview(payload);
   const target = panelReviewTarget(review.target_type);
   const exists = await env.DB.prepare(`SELECT ${target.idColumn} FROM ${target.table} WHERE ${target.idColumn} = ?`)
@@ -925,6 +1218,7 @@ async function panelReview(request, env) {
       reviewed_at: review.reviewed_at,
     });
   }
+  await syncReviewFeedback(env, scopedReview);
   await env.DB.prepare(`
     INSERT INTO panel_audit_logs (id, action, actor, target_type, target_id, detail_json, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -937,7 +1231,27 @@ async function panelReview(request, env) {
     JSON.stringify({ verdict: review.verdict, note_present: Boolean(review.note) }),
     review.reviewed_at,
   ).run();
+  invalidateSummaryCache();
   return { ok: true, target_type: review.target_type, target_id: review.target_id, review: panelReviewResponse(scopedReview) };
+}
+
+async function readPanelJson(request, env) {
+  const body = new Uint8Array(await request.arrayBuffer());
+  if (body.byteLength > panelWriteMaxBodyBytes(env)) {
+    throwHttp(413, "body_too_large");
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    throwHttp(400, "invalid_json");
+  }
+}
+
+function panelWriteMaxBodyBytes(env) {
+  const configured = Number(env.PANEL_WRITE_MAX_BODY_BYTES || DEFAULT_PANEL_WRITE_BODY_BYTES);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.min(Math.trunc(configured), Number(env.PANEL_MAX_BODY_BYTES || 1048576))
+    : DEFAULT_PANEL_WRITE_BODY_BYTES;
 }
 
 function panelReviewResponse(review) {
@@ -1007,7 +1321,7 @@ async function targetReviewSignature(env, targetType, targetId) {
     ? "node_id, rule_id, category, subject, title, review_signature"
     : targetType === "incident"
       ? "node_id, severity, title, summary, review_signature"
-      : "node_id, rule_id, subject, tier, review_signature";
+      : "node_id, rule_id, category, subject, tier, review_signature";
   const row = await env.DB.prepare(`SELECT ${columns} FROM ${target.table} WHERE ${target.idColumn} = ?`)
     .bind(targetId)
     .first();
@@ -1030,7 +1344,7 @@ async function reviewSignatureFromRow(targetType, row) {
   return driftReviewSignature(
     row.node_id,
     row.rule_id,
-    baselineCategoryFromRule(row.rule_id),
+    row.category || baselineCategoryFromRule(row.rule_id),
     row.subject,
     row.tier,
   );
@@ -1152,6 +1466,49 @@ async function writePanelReview(env, review) {
   ).run();
 }
 
+async function syncReviewFeedback(env, review) {
+  if (review.target_type !== "finding") return;
+  const verdict = fingerprintVerdictFromReview(review.verdict);
+  if (!verdict) return;
+  const row = await env.DB.prepare("SELECT node_id, evidence_json FROM findings WHERE id = ?")
+    .bind(review.target_id)
+    .first();
+  const fingerprintId = evidenceValue(parseJsonField(row?.evidence_json, []), "attack_fingerprint_id");
+  if (!fingerprintId) return;
+  const existing = await env.DB.prepare("SELECT verdict FROM attack_fingerprints WHERE id = ?")
+    .bind(fingerprintId)
+    .first();
+  if (!existing) return;
+  const merged = strongestFingerprintVerdict(existing.verdict || "unknown", verdict);
+  await env.DB.prepare("UPDATE attack_fingerprints SET verdict = ?, updated_at = ? WHERE id = ?")
+    .bind(merged, new Date().toISOString(), fingerprintId)
+    .run();
+  await env.DB.prepare(`
+    INSERT INTO panel_audit_logs (id, action, actor, target_type, target_id, detail_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    `fingerprint_feedback:attack_fingerprint:${fingerprintId}:${crypto.randomUUID()}`,
+    "fingerprint_feedback",
+    review.reviewer || "panel",
+    "attack_fingerprint",
+    fingerprintId,
+    JSON.stringify({
+      source_review_target: review.target_id,
+      source_review_signature: review.review_signature || "",
+      review_verdict: review.verdict,
+      fingerprint_verdict: merged,
+    }),
+    review.reviewed_at,
+  ).run();
+}
+
+function fingerprintVerdictFromReview(verdict) {
+  const normalized = String(verdict || "").trim().toLowerCase();
+  if (normalized === "confirmed") return "malicious";
+  if (normalized === "false_positive") return "benign";
+  return null;
+}
+
 function panelBlockStorageId(nodeId, block) {
   const source = String(block?.finding_id || "").trim()
     || [block?.rule_id || "", block?.blocked_at || "", block?.backend || ""].join(":");
@@ -1159,21 +1516,54 @@ function panelBlockStorageId(nodeId, block) {
 }
 
 function expandDatasetJsonColumns(table, rows) {
-  if (!["probe_sources", "nodes"].includes(table)) return rows;
+  if (!["probe_sources", "attack_fingerprints", "active_blocks", "incidents", "nodes"].includes(table)) return rows;
+  const now = table === "nodes" ? new Date() : null;
   return rows.map((row) => {
     const expanded = { ...row };
-    if (table === "probe_sources") {
-      expanded.categories = parseJsonField(expanded.categories_json, []);
+    if (table === "probe_sources" || table === "attack_fingerprints" || table === "active_blocks") {
+      expanded.categories = meaningfulArray(parseJsonField(expanded.categories_json, []));
       expanded.rule_ids = parseJsonField(expanded.rule_ids_json, []);
       delete expanded.categories_json;
       delete expanded.rule_ids_json;
+      if (table === "active_blocks" && !expanded.categories.length) {
+        expanded.categories = normalizedProbeCategories([], [expanded.rule_id]);
+      }
+      if (table === "active_blocks" && !expanded.category) {
+        expanded.category = expanded.categories[0] || baselineCategoryFromRule(expanded.rule_id);
+      }
+    }
+    if (table === "attack_fingerprints") {
+      expanded.conclusion = fingerprintConclusion(expanded);
+    }
+    if (table === "incidents") {
+      expanded.payload = parseJsonField(expanded.payload_json, {});
+      delete expanded.payload_json;
     }
     if (table === "nodes") {
       expanded.metrics = parseJsonField(expanded.metrics_json, {});
       delete expanded.metrics_json;
+      expanded.status = panelNodeStatus(expanded.last_seen_at, now, expanded);
     }
     return expanded;
   });
+}
+
+function meaningfulArray(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map((item) => String(item || "").trim()).filter(Boolean))];
+}
+
+function fingerprintConclusion(row) {
+  const verdict = String(row?.verdict || "").trim().toLowerCase();
+  if (["malicious", "benign", "false_positive"].includes(verdict)) {
+    return verdict === "false_positive" ? "benign" : verdict;
+  }
+  const score = Number(row?.score || 0) || 0;
+  const confidence = Number(row?.confidence || 0) || 0;
+  const sources = Number(row?.source_count || 0) || 0;
+  const seen = Number(row?.seen_count || 0) || 0;
+  if (score >= 75 || confidence >= 80 || sources >= 2 || seen >= 3) return "suspicious";
+  return "needs_review";
 }
 
 function shouldRedactDataset(dataset, role) {
@@ -1316,9 +1706,36 @@ function pageRequest(url) {
   return {
     from,
     to,
+    query: normalizeSearchQuery(url.searchParams.get("q") || url.searchParams.get("query")),
     limit: clamp(Number(url.searchParams.get("limit") || DEFAULT_PAGE_LIMIT), 1, MAX_PAGE_LIMIT),
     offset: Math.max(0, Number(url.searchParams.get("offset") || 0) || 0),
   };
+}
+
+function normalizeSearchQuery(value) {
+  const normalized = String(value || "").trim().replace(/\s+/g, " ");
+  return normalized ? [...normalized].slice(0, MAX_SEARCH_QUERY_CHARS).join("") : "";
+}
+
+function datasetSearchColumns(dataset, role) {
+  if (role === "public" && Array.isArray(dataset.publicSearchColumns)) {
+    return dataset.publicSearchColumns;
+  }
+  return Array.isArray(dataset.searchColumns) ? dataset.searchColumns : [];
+}
+
+function pushSearchClause(parts, values, columns, query) {
+  if (!query || !columns.length) return;
+  const pattern = `%${escapeSqlLike(query.toLowerCase())}%`;
+  const predicates = columns.map((column) => {
+    values.push(pattern);
+    return `LOWER(COALESCE(${column}, '')) LIKE ? ESCAPE '\\'`;
+  });
+  parts.push(`(${predicates.join(" OR ")})`);
+}
+
+function escapeSqlLike(value) {
+  return String(value || "").replace(/[\\%_]/g, (match) => `\\${match}`);
 }
 
 function parsePanelTime(value) {

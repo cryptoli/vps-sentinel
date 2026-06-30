@@ -13,6 +13,8 @@ The panel has two browser access levels:
 
 Agent ingest uses a separate trust boundary: `panel.secret` on the agent must match `PANEL_SHARED_SECRET` or a node-specific value in `PANEL_NODE_SECRETS`.
 
+The panel is not a remote command or remediation control plane. It does not push SSH commands, allowlist changes, baseline refreshes, or unblock requests to agents. Privileged remediation stays on each node through local `vs` commands so a panel compromise cannot directly modify the rest of the fleet.
+
 ## Telemetry Shape
 
 Agent payloads use `node_name` as the display identity and strip node IDs, host IDs, public server IPs, raw logs, raw evidence, paths, command lines, and general internal network fields before upload. The panel receiver performs a second redaction pass before storage.
@@ -26,6 +28,8 @@ Node status is computed from the last successful report: fresh within 30 minutes
 The self-hosted Rust panel supports WebSocket refresh events through `/api/v1/stream-ticket` and `/api/v1/stream`.
 
 Cloudflare Worker mode currently exposes the same API and D1 storage but returns `stream_unavailable` for WebSocket tickets. The UI detects this and switches to a non-reconnecting fallback state instead of repeatedly trying to reconnect.
+
+For small personal fleets, the panel is not required for privileged operations. Use the local `vs menu` command on each node, or run SSH commands only from a separate administrator workstation that is not the panel host. The panel should not store SSH private keys or act as a general-purpose SSH control plane.
 
 ## More Documentation
 

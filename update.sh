@@ -11,6 +11,7 @@ DATA_DIR="${DATA_DIR:-/var/lib/vps-sentinel}"
 LOG_DIR="${LOG_DIR:-/var/log/vps-sentinel}"
 SERVICE_NAME="${SERVICE_NAME:-vps-sentinel}"
 SERVICE_PATH="${SERVICE_PATH:-/etc/systemd/system/${SERVICE_NAME}.service}"
+PANEL_SERVICE_NAME="${PANEL_SERVICE_NAME:-vps-sentinel-panel}"
 SYSTEMD_TEMPLATE="${SYSTEMD_TEMPLATE:-packaging/systemd/vps-sentinel.service}"
 INSTALL_DEPS="${INSTALL_DEPS:-yes}"
 INSTALL_METHOD="${INSTALL_METHOD:-auto}"
@@ -29,6 +30,7 @@ UPDATE_MAINTENANCE_SECONDS="${UPDATE_MAINTENANCE_SECONDS:-600}"
 SYSTEMD_UNIT_INSTALLED=0
 SERVICE_WAS_ACTIVE=0
 SERVICE_STOPPED_FOR_UPDATE=0
+PANEL_UPDATED=0
 
 cleanup_on_exit() {
   status=$?
@@ -295,6 +297,49 @@ restart_updated_service() {
   esac
 }
 
+restart_optional_panel_service() {
+  if [ "$PANEL_UPDATED" -ne 1 ]; then
+    return
+  fi
+
+  case "$RESTART_SERVICE" in
+    auto|yes|true|1) ;;
+    no|false|0)
+      echo "updated optional panel files; skipped panel service restart"
+      return
+      ;;
+    *)
+      echo "invalid RESTART_SERVICE value: $RESTART_SERVICE" >&2
+      exit 1
+      ;;
+  esac
+
+  if ! systemd_available; then
+    return
+  fi
+  if ! systemctl cat "$PANEL_SERVICE_NAME" >/dev/null 2>&1; then
+    echo "updated optional panel files; panel service $PANEL_SERVICE_NAME not found"
+    return
+  fi
+
+  systemctl daemon-reload
+  case "$RESTART_SERVICE" in
+    auto)
+      if systemctl is-active "$PANEL_SERVICE_NAME" >/dev/null 2>&1 \
+        || systemctl is-enabled "$PANEL_SERVICE_NAME" >/dev/null 2>&1; then
+        systemctl restart "$PANEL_SERVICE_NAME"
+        echo "restarted optional panel service $PANEL_SERVICE_NAME"
+      else
+        echo "updated optional panel files; panel service is not active or enabled"
+      fi
+      ;;
+    yes|true|1)
+      systemctl restart "$PANEL_SERVICE_NAME"
+      echo "restarted optional panel service $PANEL_SERVICE_NAME"
+      ;;
+  esac
+}
+
 start_update_maintenance() {
   case "$UPDATE_MAINTENANCE_SECONDS" in
     ''|*[!0-9]*)
@@ -380,6 +425,25 @@ sync_config_defaults() {
   fi
 }
 
+snap_systemd_units_detected() {
+  command -v snap >/dev/null 2>&1 && return 0
+  [ -d /var/lib/snapd ] && return 0
+  find /etc/systemd/system -maxdepth 1 \( -name 'snap-*.mount' -o -name 'snap-*.scope' \) -print -quit 2>/dev/null | grep -q .
+}
+
+configure_snap_allowlist() {
+  if [ ! -x "$PREFIX/bin/vps-sentinel" ] || [ ! -f "$CONFIG_DIR/config.toml" ]; then
+    return
+  fi
+  if ! snap_systemd_units_detected; then
+    return
+  fi
+  "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" config allowlist add file-path "/etc/systemd/system/snap-*.mount" || \
+    echo "failed to add snap mount allowlist; continuing update" >&2
+  "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" config allowlist add file-path "/etc/systemd/system/snap-*.scope" || \
+    echo "failed to add snap scope allowlist; continuing update" >&2
+}
+
 cleanup_active_response_state() {
   "$PREFIX/bin/vps-sentinel" --config "$CONFIG_DIR/config.toml" blocks cleanup || \
     echo "active-response cleanup failed; continuing update" >&2
@@ -460,6 +524,7 @@ install_optional_panel() {
   fi
   if [ -n "$panel_bin" ]; then
     install -m 0755 "$panel_bin" "$PREFIX/bin/vps-sentinel-panel"
+    PANEL_UPDATED=1
     echo "installed optional Rust panel binary to $PREFIX/bin/vps-sentinel-panel"
   fi
   if [ -d "$source_dir/panel/web" ]; then
@@ -467,6 +532,7 @@ install_optional_panel() {
     rm -rf "$SHARE_DIR/panel"
     install -d "$SHARE_DIR/panel"
     cp -R "$source_dir/panel/web" "$SHARE_DIR/panel/web"
+    PANEL_UPDATED=1
     echo "installed optional panel web assets to $SHARE_DIR/panel/web"
   fi
 }
@@ -517,6 +583,7 @@ ensure_config_exists() {
 post_update() {
   migrate_config
   sync_config_defaults
+  configure_snap_allowlist
 
   case "$VALIDATE_CONFIG" in
     yes|true|1)
@@ -534,6 +601,7 @@ post_update() {
   refresh_baseline
   post_update_scan
   restart_updated_service
+  restart_optional_panel_service
 }
 
 checkout_or_update() {

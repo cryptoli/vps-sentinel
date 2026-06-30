@@ -1,3 +1,5 @@
+"use client";
+
 import {
   Activity,
   Bell,
@@ -6,6 +8,7 @@ import {
   ClipboardList,
   Database,
   FileClock,
+  Fingerprint,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -34,6 +37,7 @@ import { selectedLanguage, translate } from "@/lib/i18n";
 import { roleAllows, selectedRole } from "@/lib/rbac";
 import {
   AuditPageView,
+  AttackFingerprintsPageView,
   BaselinePageView,
   BlocksPageView,
   DatasetPageView,
@@ -50,6 +54,7 @@ import type {
   NodeRecord,
   PageConfig,
   PageId,
+  PanelDictionaries,
   PanelRecord,
   PanelRole,
   PanelSettings,
@@ -65,17 +70,27 @@ const ICONS: Record<PageId, React.ReactNode> = {
   incidents: <ShieldAlert size={18} />,
   baseline_drifts: <FileClock size={18} />,
   active_blocks: <Blocks size={18} />,
+  attack_fingerprints: <Fingerprint size={18} />,
   probe_sources: <Shield size={18} />,
   audit_logs: <ClipboardList size={18} />,
   nodes: <Database size={18} />,
 };
+
+const MOBILE_NAV_MAX_ITEMS = 5;
+const MOBILE_PRIMARY_PAGES: PageId[] = ["overview", "findings", "incidents", "active_blocks", "nodes"];
+const NAV_GROUPS: Array<{ key: string; labels: Record<Language, string>; pages: PageId[] }> = [
+  { key: "monitor", labels: { zh: "监控", en: "Monitor" }, pages: ["overview", "findings", "incidents", "baseline_drifts"] },
+  { key: "response", labels: { zh: "响应", en: "Response" }, pages: ["active_blocks", "attack_fingerprints", "probe_sources"] },
+  { key: "assets", labels: { zh: "资产", en: "Assets" }, pages: ["nodes"] },
+  { key: "audit", labels: { zh: "审计", en: "Audit" }, pages: ["audit_logs"] },
+];
 
 export function PanelApp() {
   const [language, setLanguage] = useState<Language>("zh");
   const [theme, setTheme] = useState("default");
   const [role, setRole] = useState<PanelRole>("public");
   const [settings, setSettings] = useState<PanelSettings>({});
-  const [currentPage, setCurrentPage] = useState<PageId>(() => initialPageFromLocation());
+  const [currentPage, setCurrentPage] = useState<PageId>("overview");
   const [summary, setSummary] = useState<Summary>({});
   const [datasets, setDatasets] = useState<Record<string, DatasetPage>>({});
   const [trends, setTrends] = useState<TrendPoint[]>([]);
@@ -173,6 +188,11 @@ export function PanelApp() {
     setLanguage(selectedLanguage());
     const storedTheme = window.localStorage.getItem("vps-sentinel-theme") || "default";
     setTheme(storedTheme);
+  }, []);
+
+  useEffect(() => {
+    const pageFromLocation = initialPageFromLocation();
+    setCurrentPage((current) => (current === pageFromLocation ? current : pageFromLocation));
   }, []);
 
   useEffect(() => {
@@ -369,10 +389,12 @@ export function PanelApp() {
               summary={summary}
               datasets={datasets}
               trends={trends}
+              dictionaries={settings.dictionaries || {}}
               datasetState={datasetState}
               updateDatasetState={updateDatasetState}
               onNavigate={(id) => navigatePage(id as PageId)}
               onDetails={(dataset, row) => setDrawer({ dataset, row })}
+              onRefresh={() => loadVisibleData(currentPage, role)}
             />
           )}
         </section>
@@ -424,6 +446,29 @@ function Sidebar({
   language: Language;
   onNavigate: (id: PageId) => void;
 }) {
+  const mobilePageIds = useMemo(() => {
+    const visibleIds = new Set(pages.map((page) => page.id));
+    const primary = MOBILE_PRIMARY_PAGES.filter((id) => visibleIds.has(id));
+    const next = primary.includes(currentPage)
+      ? primary
+      : [...primary.slice(0, MOBILE_NAV_MAX_ITEMS - 1), currentPage].filter((id, index, list) => list.indexOf(id) === index);
+    return new Set(next.slice(0, MOBILE_NAV_MAX_ITEMS));
+  }, [currentPage, pages]);
+  const groupedPages = useMemo(() => {
+    const pageMap = new Map(pages.map((page) => [page.id, page]));
+    const used = new Set<PageId>();
+    const groups = NAV_GROUPS.map((group) => {
+      const items = group.pages.map((id) => pageMap.get(id)).filter(Boolean) as PageConfig[];
+      items.forEach((item) => used.add(item.id));
+      return { ...group, items };
+    }).filter((group) => group.items.length > 0);
+    const leftovers = pages.filter((page) => !used.has(page.id));
+    if (leftovers.length) {
+      groups.push({ key: "more", labels: { zh: "更多", en: "More" }, pages: leftovers.map((page) => page.id), items: leftovers });
+    }
+    return groups;
+  }, [pages]);
+
   return (
     <aside className="sidebar-shell">
       <div className="brand-lockup">
@@ -434,11 +479,21 @@ function Sidebar({
         </div>
       </div>
       <nav className="main-nav">
-        {pages.map((page) => (
-          <button className={page.id === currentPage ? "active" : ""} key={page.id} type="button" onClick={() => onNavigate(page.id)}>
-            {ICONS[page.id]}
-            <span>{translate(language, page.labelKey)}</span>
-          </button>
+        {groupedPages.map((group) => (
+          <div className="nav-group" key={group.key}>
+            <span className="nav-group-label">{group.labels[language]}</span>
+            {group.items.map((page) => (
+              <button
+                className={`${page.id === currentPage ? "active" : ""} ${mobilePageIds.has(page.id) ? "mobile-primary" : "mobile-secondary"}`}
+                key={page.id}
+                type="button"
+                onClick={() => onNavigate(page.id)}
+              >
+                {ICONS[page.id]}
+                <span>{translate(language, page.labelKey)}</span>
+              </button>
+            ))}
+          </div>
         ))}
       </nav>
       <div className="sidebar-status">
@@ -646,10 +701,12 @@ function Content({
   summary,
   datasets,
   trends,
+  dictionaries,
   datasetState,
   updateDatasetState,
   onNavigate,
   onDetails,
+  onRefresh,
 }: {
   page: PageConfig;
   loading: boolean;
@@ -658,10 +715,12 @@ function Content({
   summary: Summary;
   datasets: Record<string, DatasetPage>;
   trends: TrendPoint[];
+  dictionaries: PanelDictionaries;
   datasetState: (id: string) => DatasetState;
   updateDatasetState: (id: string, patch: Partial<DatasetState>) => void;
   onNavigate: (id: string) => void;
   onDetails: (dataset: string, row: PanelRecord) => void;
+  onRefresh: () => Promise<void>;
 }) {
   if (loading && !Object.keys(datasets).length) {
     return <div className="loading-card">{translate(language, "loading")}</div>;
@@ -674,7 +733,9 @@ function Content({
       <NodesPageView
         page={(datasets.nodes || emptyPage()) as DatasetPage<NodeRecord>}
         state={datasetState("nodes")}
+        summary={summary}
         language={language}
+        dictionaries={dictionaries}
         onStateChange={(patch) => updateDatasetState("nodes", patch)}
       />
     );
@@ -686,8 +747,10 @@ function Content({
         page={datasets.findings || emptyPage()}
         state={datasetState("findings")}
         language={language}
+        role={role}
         onStateChange={(patch) => updateDatasetState("findings", patch)}
         onDetails={(row) => onDetails("findings", row)}
+        onReviewComplete={onRefresh}
       />
     );
   }
@@ -698,8 +761,10 @@ function Content({
         page={datasets.incidents || emptyPage()}
         state={datasetState("incidents")}
         language={language}
+        role={role}
         onStateChange={(patch) => updateDatasetState("incidents", patch)}
         onDetails={(row) => onDetails("incidents", row)}
+        onReviewComplete={onRefresh}
       />
     );
   }
@@ -710,8 +775,11 @@ function Content({
         page={datasets.baseline_drifts || emptyPage()}
         state={datasetState("baseline_drifts")}
         language={language}
+        role={role}
+        dictionaries={dictionaries}
         onStateChange={(patch) => updateDatasetState("baseline_drifts", patch)}
         onDetails={(row) => onDetails("baseline_drifts", row)}
+        onReviewComplete={onRefresh}
       />
     );
   }
@@ -724,6 +792,17 @@ function Content({
         language={language}
         role={role}
         onStateChange={(patch) => updateDatasetState("active_blocks", patch)}
+      />
+    );
+  }
+  if (page.id === "attack_fingerprints") {
+    return (
+      <AttackFingerprintsPageView
+        config={page}
+        page={datasets.attack_fingerprints || emptyPage()}
+        state={datasetState("attack_fingerprints")}
+        language={language}
+        onStateChange={(patch) => updateDatasetState("attack_fingerprints", patch)}
       />
     );
   }
@@ -826,7 +905,7 @@ function parseStreamMessage(value: string): StreamMessage | null {
 function streamMessageTouchesPage(message: StreamMessage, page: PageId): boolean {
   if (!message.datasets?.length) return true;
   const datasets = new Set(message.datasets);
-  if (page === "overview") return ["summary", "trends", "nodes", "findings", "incidents", "baseline_drifts", "active_blocks"].some((item) => datasets.has(item));
+  if (page === "overview") return ["summary", "trends", "nodes", "findings", "incidents", "baseline_drifts", "active_blocks", "attack_fingerprints"].some((item) => datasets.has(item));
   return datasets.has(page);
 }
 

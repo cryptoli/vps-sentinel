@@ -1,0 +1,138 @@
+.app-shell {
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+}
+
+.sidebar-shell {
+  background:
+    radial-gradient(circle at 18% 8%, rgba(8, 169, 200, 0.12), transparent 30%),
+    linear-gradient(180deg, #071322 0%, #061527 100%);
+}
+
+.brand-mark,
+.user-avatar {
+  background:
+    radial-gradient(circle at 34% 22%, rgba(255, 255, 255, 0.28), transparent 24%),
+    linear-gradient(145deg, #16d5c4, var(--color-accent));
+  box-shadow: 0 16px 28px rgba(8, 169, 200, 0.18);
+}
+
+.topbar {
+  min-height: 64px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow:
+    0 1px 0 var(--color-border),
+    0 8px 22px rgba(18, 36, 59, 0.035);
+}
+
+.content-shell,
+.app-shell:not(.page-overview) .content-shell {
+  padding: 24px 28px 30px;
+  background: var(--color-canvas-muted);
+  box-shadow: none;
+}
+
+.page-stack,
+.feature-page,
+.feature-main-grid,
+.feature-side-stack,
+.overview-grid,
+.overview-triad,
+.overview-health-row,
+.overview-table-row {
+  gap: 14px;
+}
+
+.feature-header {
+  gap: 10px;
+  padding-bottom: 2px;
+}
+
+.feature-header h1,
+.topbar h1 {
+  font-size: 24px;
+  line-height: 1.16;
+}
+
+.feature-header p,
+.topbar > div:first-child span {
+  max-width: 760px;
+}
+
+.panel-card,
+.metric-card,
+.filter-card,
+.access-card,
+.stat-tile,
+.side-card,
+.feature-table-card,
+.attack-chain-card,
+.correlation-card,
+.baseline-timeline-card,
+.node-card,
+.detail-drawer,
+.review-card {
+  background: var(--color-surface);
+  border-color: var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow);
+}
+
+.metric-grid,
+.feature-metrics,
+.feature-metrics.five,
+.feature-metrics.six,
+.feature-metrics.four,
+.node-summary-grid,
+.baseline-summary-grid {
+  gap: 10px;
+}
+
+.metric-card {
+  min-height: 126px;
+  padding: 14px 15px;
+}
+
+.node-summary-grid .metric-card {
+  min-height: 118px;
+  padding: 14px;
+  background: var(--color-surface);
+  box-shadow: var(--shadow);
+}
+
+.stat-tile,
+.side-card {
+  min-height: auto;
+  padding: 12px;
+  background: var(--color-surface);
+}
+
+.stat-tile strong,
+.metric-copy strong {
+  font-size: 28px;
+}
+
+.stat-tile p,
+.stat-tile small,
+.metric-copy span,
+.metric-copy small,
+.side-card header span {
+  line-height: 1.35;
+}
+
+.primary-button {
+  background: var(--color-accent);
+  box-shadow: 0 10px 22px rgba(18, 109, 242, 0.16);
+}
+
+.ghost-button,
+.icon-button,
+.link-button,
+.chip-button {
+  box-shadow: none;
+}
+
+.mobile-overview-live,
+.live-pill,
+.timeframe-badge {
+  box-shadow: none;
+}

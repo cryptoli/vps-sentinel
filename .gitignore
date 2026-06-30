@@ -3,4 +3,5 @@
 *.sqlite
 *.log
 config.toml
+audit-ui-compare/
 .idea

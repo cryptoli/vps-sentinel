@@ -4,7 +4,7 @@ use crate::detectors::command_profile::{
 use crate::detectors::risk::RiskAssessment;
 use crate::detectors::{
     behavior_profile, evidence, package_activity_context, package_activity_context_from_events,
-    path_is_allowlisted, string_field, DetectContext, Detector, EventIndex,
+    string_field, DetectContext, Detector, EventIndex,
 };
 use crate::rules::model::RuleMetadata;
 use crate::utils::package::PackageOwnerCache;
@@ -134,7 +134,7 @@ fn detect_process_events(
         let event = &enriched;
         let exe_path = string_field(event, "exe_path");
         let cmdline = string_field(event, "cmdline");
-        if path_is_allowlisted(&exe_path, &ctx.config.allowlist.process_paths)
+        if ctx.process_path_allowlist.matches(&exe_path)
             || command_matches_allowlist(&cmdline, &ctx.config.allowlist.process_command_contains)
         {
             continue;

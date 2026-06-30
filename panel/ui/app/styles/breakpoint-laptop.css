@@ -1,0 +1,39 @@
+@media (max-width: 1280px) {
+  .metric-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .node-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .overview-grid,
+  .overview-triad,
+  .overview-health-row {
+    grid-template-columns: 1fr;
+  }
+
+  .feature-metrics.five,
+  .feature-metrics.six,
+  .feature-metrics.four,
+  .baseline-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .feature-main-grid,
+  .blocks-grid,
+  .incident-workbench,
+  .baseline-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .attack-chain {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .node-list-head,
+  .node-card {
+    min-width: 1040px;
+  }
+}
+

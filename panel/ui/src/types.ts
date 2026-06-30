@@ -7,13 +7,30 @@ export type PageId =
   | "incidents"
   | "baseline_drifts"
   | "active_blocks"
+  | "attack_fingerprints"
   | "probe_sources"
   | "audit_logs"
   | "nodes";
 
-export type Primitive = string | number | boolean | null;
-export type JsonValue = Primitive | JsonValue[] | { [key: string]: JsonValue };
 export type PanelRecord = Record<string, unknown>;
+
+export interface PanelReviewInput {
+  target_type: "finding" | "incident" | "baseline_drift";
+  target_id: string;
+  verdict: "needs_review" | "confirmed" | "false_positive";
+  note?: string;
+  reviewer?: string;
+}
+
+export interface PanelDictionaryItem {
+  value: string;
+  labelKey?: string;
+  labels?: Partial<Record<Language, string>>;
+  tone?: string;
+  rank?: number;
+}
+
+export type PanelDictionaries = Record<string, PanelDictionaryItem[]>;
 
 export interface PanelSettings {
   admin_path?: string | null;
@@ -29,6 +46,7 @@ export interface PanelSettings {
   freshness_threshold_minutes?: number;
   offline_threshold_minutes?: number;
   node_retired_threshold_minutes?: number;
+  dictionaries?: PanelDictionaries;
   server_time?: string;
 }
 
@@ -59,11 +77,24 @@ export interface Summary {
   incidents?: number;
   baseline_drifts?: number;
   active_blocks?: number;
+  attack_fingerprints?: number;
   probe_sources?: number;
   by_severity?: Array<{ severity: string; count: number }>;
   by_category?: Array<{ category: string; count: number }>;
   by_block_status?: Array<{ block_status: string; count: number }>;
   node_status?: Record<string, number>;
+  review_feedback?: Array<{ target_type: string; verdict: string; count: number }>;
+  data_health?: {
+    status?: string;
+    latest_heartbeat_at?: string;
+    heartbeat_samples?: number;
+    collector_errors?: number;
+    stale_nodes?: number;
+    offline_nodes?: number;
+    retired_nodes?: number;
+    slowest_stage?: string;
+    slowest_stage_ms?: number;
+  };
 }
 
 export interface TrendPoint {

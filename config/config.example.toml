@@ -24,6 +24,15 @@ max_findings_per_scan = 500
 max_evidence_items_per_finding = 64
 max_evidence_value_bytes = 2048
 
+[risk_scoring]
+# Bonuses/deductions are bounded to 0-100 and applied after rule severity,
+# confidence, evidence strength, threat intel, active response, and baseline context.
+threat_intel_bonus = 15
+active_response_bonus = 10
+rootkit_context_bonus = 10
+state_drift_deduction = 10
+high_stage_count_bonus = 5
+
 [storage]
 type = "sqlite"
 path = "/var/lib/vps-sentinel/sentinel.db"
@@ -369,6 +378,19 @@ enabled = false
 suppress_baseline_drift = true
 suppress_interactive_logins = true
 max_duration_seconds = 7200
+
+[suppress_rules]
+enabled = true
+rule_ids = []
+
+# Use entries when a risk is accepted only for specific subjects or paths.
+# [[suppress_rules.entries]]
+# id = "accepted-root-login-config"
+# rule_ids = ["CONFIG-004"]
+# subjects = ["/etc/ssh/sshd_config"]
+# path_patterns = []
+# expires_at = "2026-12-31T23:59:59Z"
+# reason = "Documented operational exception; reviewed quarterly."
 
 [allowlist]
 users = []

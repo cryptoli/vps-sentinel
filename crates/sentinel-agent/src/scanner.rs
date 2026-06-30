@@ -15,6 +15,7 @@ use crate::risk_score;
 use crate::rules::system::ACTIVE_RESPONSE_SUMMARY_RULE_ID;
 use crate::service_profile::evaluate_service_profile;
 use crate::storage::SqliteStore;
+use crate::suppress_rules::apply_suppress_rules;
 use crate::threat_intel;
 use crate::timeline;
 use crate::utils::fs::path_string;
@@ -32,6 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::IpAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tracing::{debug, warn};
 
 mod event_budget;
@@ -66,6 +68,7 @@ pub struct ScanReport {
     pub diff_event_count: usize,
     pub event_count_by_source: BTreeMap<String, usize>,
     pub event_count_by_kind: BTreeMap<String, usize>,
+    pub stage_durations_ms: BTreeMap<String, u64>,
     pub memory_rss_before_kb: Option<u64>,
     pub memory_rss_after_kb: Option<u64>,
     pub memory_rss_delta_kb: Option<i64>,
@@ -94,6 +97,8 @@ pub struct ScanReport {
 
 /// Run one complete scan: collect facts, diff baseline, detect findings, persist, and notify.
 pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelResult<ScanReport> {
+    let scan_started = Instant::now();
+    let mut stage_durations_ms = BTreeMap::new();
     debug!(
         persist = options.persist,
         notify = options.notify,
@@ -102,6 +107,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         "scan started"
     );
     let config = Arc::new(config);
+    let stage_started = Instant::now();
     let memory_rss_before_kb = config
         .performance
         .collect_memory_metrics
@@ -112,29 +118,14 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     } else {
         None
     };
-    let collect_context =
-        CollectContext::new(Arc::clone(&config)).with_scan_root(options.scan_root);
-    let mut raw_events = Vec::new();
-    let mut collector_errors = Vec::new();
+    record_scan_stage(&mut stage_durations_ms, "setup", stage_started);
 
-    for collector in default_collectors() {
-        debug!(collector = collector.name(), "collector started");
-        match collector.collect(&collect_context).await {
-            Ok(mut events) => {
-                debug!(
-                    collector = collector.name(),
-                    events = events.len(),
-                    "collector finished"
-                );
-                raw_events.append(&mut events);
-            }
-            Err(err) => {
-                warn!(collector = collector.name(), error = %err, "collector failed");
-                collector_errors.push(format!("{}: {err}", collector.name()));
-            }
-        }
-    }
+    let stage_started = Instant::now();
+    let (mut raw_events, collector_errors) =
+        collect_raw_events(Arc::clone(&config), options.scan_root.clone()).await;
+    record_scan_stage(&mut stage_durations_ms, "collectors", stage_started);
 
+    let stage_started = Instant::now();
     let raw_event_budget_report =
         event_budget::apply_raw_event_budget(&mut raw_events, config.as_ref());
     if raw_event_budget_report.dropped_events > 0 {
@@ -144,7 +135,9 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             "resource budget applied to raw events"
         );
     }
+    record_scan_stage(&mut stage_durations_ms, "raw_event_budget", stage_started);
 
+    let stage_started = Instant::now();
     let current_snapshot = BaselineSnapshot::from_events(&raw_events);
     let diff_events = match &store {
         Some(store) => match store.latest_baseline_snapshot()? {
@@ -156,6 +149,9 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     let changed_file_paths = changed_file_paths(&diff_events);
     let diff_event_count = diff_events.len();
     let raw_event_count = raw_events.len();
+    record_scan_stage(&mut stage_durations_ms, "baseline_diff", stage_started);
+
+    let stage_started = Instant::now();
     let mut detection_events = raw_events;
     detection_events.extend(diff_events);
     if config.file_integrity.incremental {
@@ -172,7 +168,9 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             }
         }
     }
+    record_scan_stage(&mut stage_durations_ms, "event_enrichment", stage_started);
 
+    let stage_started = Instant::now();
     let detect_context = DetectContext::new(Arc::clone(&config));
     let event_index = EventIndex::new(&detection_events);
     let mut findings = Vec::new();
@@ -187,6 +185,9 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             }
         }
     }
+    record_scan_stage(&mut stage_durations_ms, "detectors", stage_started);
+
+    let stage_started = Instant::now();
     normalize_finding_evidence(&mut findings);
     findings = coalesce_related_findings(findings);
     enrich_baseline_drift_findings(&mut findings);
@@ -194,7 +195,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     let intel = threat_intel::load_threat_intel(&config).await;
     threat_intel::enrich_findings(&mut findings, &intel);
     evidence_score::enrich_findings(&mut findings);
-    risk_score::enrich_findings(&mut findings);
+    risk_score::enrich_findings_with_scoring(&mut findings, &config.risk_scoring);
     let mut maintenance_suppressed_count = 0;
     if options.persist {
         let (retained, decision) = apply_maintenance_policy(findings, &config, store.as_ref())?;
@@ -224,7 +225,21 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             "resource budget applied before response processing"
         );
     }
+    record_scan_stage(&mut stage_durations_ms, "finding_enrichment", stage_started);
 
+    let stage_started = Instant::now();
+    let (retained_findings, suppress_rules_report) =
+        apply_suppress_rules(findings, config.as_ref());
+    findings = retained_findings;
+    if suppress_rules_report.suppressed_count > 0 {
+        warn!(
+            suppressed_findings = suppress_rules_report.suppressed_count,
+            "configured suppress_rules removed findings from this scan"
+        );
+    }
+    record_scan_stage(&mut stage_durations_ms, "suppress_rules", stage_started);
+
+    let stage_started = Instant::now();
     let mut attack_fingerprint_observation_count = 0;
     let mut attack_fingerprint_action_hint_count = 0;
     if config.attack_fingerprints.enabled && options.persist {
@@ -246,7 +261,13 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             }
         }
     }
+    record_scan_stage(
+        &mut stage_durations_ms,
+        "attack_fingerprints",
+        stage_started,
+    );
 
+    let stage_started = Instant::now();
     // Active response must evaluate current evidence before persisted duplicate
     // suppression can hide an escalated failure/probe count. Block state prevents
     // repeated firewall writes for already-blocked sources.
@@ -297,15 +318,19 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             "active response skipped because side effects are disabled for this scan"
         );
     }
+    record_scan_stage(&mut stage_durations_ms, "active_response", stage_started);
 
+    let stage_started = Instant::now();
     let mut timeline_findings = timeline::correlate_timelines(&findings, &config);
     if !timeline_findings.is_empty() {
         evidence_score::enrich_findings(&mut timeline_findings);
-        risk_score::enrich_findings(&mut timeline_findings);
+        risk_score::enrich_findings_with_scoring(&mut timeline_findings, &config.risk_scoring);
         findings.append(&mut timeline_findings);
         normalize_finding_evidence(&mut findings);
     }
+    record_scan_stage(&mut stage_durations_ms, "timeline", stage_started);
 
+    let stage_started = Instant::now();
     if options.persist {
         if let Some(store) = &store {
             let suppression = suppress_recent_duplicates(store, findings, &config)?;
@@ -319,14 +344,26 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             }
         }
     }
+    record_scan_stage(
+        &mut stage_durations_ms,
+        "duplicate_suppression",
+        stage_started,
+    );
 
+    let stage_started = Instant::now();
     if privacy_redaction_enabled(&config) {
         findings = redact_findings(findings, &config);
     }
 
     let incidents = correlate_findings(&findings, &config);
     let incident_count = incidents.len();
+    record_scan_stage(
+        &mut stage_durations_ms,
+        "incident_correlation",
+        stage_started,
+    );
 
+    let stage_started = Instant::now();
     if options.persist {
         if let Some(store) = &store {
             let storage_events = prepare_raw_events_for_storage(&detection_events, &config);
@@ -343,7 +380,9 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             store.record_scan_run(detection_events.len(), findings.len(), "ok")?;
         }
     }
+    record_scan_stage(&mut stage_durations_ms, "storage_persist", stage_started);
 
+    let stage_started = Instant::now();
     let mut notification_attempt_count = 0;
     let mut notification_success_count = 0;
     let mut notification_failure_count = 0;
@@ -442,7 +481,9 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             }
         }
     }
+    record_scan_stage(&mut stage_durations_ms, "notifications", stage_started);
 
+    let stage_started = Instant::now();
     if options.persist {
         if let Some(store) = &store {
             let pruned = store.prune_older_than(config.storage.retention_days)?;
@@ -488,7 +529,9 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
             }
         }
     }
+    record_scan_stage(&mut stage_durations_ms, "maintenance", stage_started);
 
+    let stage_started = Instant::now();
     let memory_rss_after_kb = config
         .performance
         .collect_memory_metrics
@@ -497,6 +540,7 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     let memory_rss_delta_kb = memory_rss_before_kb
         .zip(memory_rss_after_kb)
         .map(|(before, after)| after as i64 - before as i64);
+    record_scan_stage(&mut stage_durations_ms, "memory_metrics", stage_started);
 
     debug!(
         raw_events = raw_event_count,
@@ -525,13 +569,15 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
         resource_budget_truncated_evidence_values = budget_report.truncated_evidence_values,
         incidents = incident_count,
         collector_errors = collector_errors.len(),
+        stage_durations_ms = ?stage_durations_ms,
         "scan completed"
     );
-    let report = ScanReport {
+    let mut report = ScanReport {
         raw_event_count,
         diff_event_count,
         event_count_by_source,
         event_count_by_kind,
+        stage_durations_ms,
         memory_rss_before_kb,
         memory_rss_after_kb,
         memory_rss_delta_kb,
@@ -559,6 +605,12 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
     };
     if options.persist {
         if let Some(store) = &store {
+            record_scan_stage(
+                &mut report.stage_durations_ms,
+                "pre_publish_total",
+                scan_started,
+            );
+            let stage_started = Instant::now();
             match panel::publish_scan(config.as_ref(), store, &report, &incidents).await {
                 Ok(summary) if summary.pending > 0 => {
                     warn!(
@@ -569,9 +621,50 @@ pub async fn run_scan(config: SentinelConfig, options: ScanOptions) -> SentinelR
                 Ok(_) => {}
                 Err(err) => warn!(error = %err, "panel publish failed"),
             }
+            record_scan_stage(
+                &mut report.stage_durations_ms,
+                "panel_publish",
+                stage_started,
+            );
         }
     }
+    record_scan_stage(&mut report.stage_durations_ms, "total", scan_started);
     Ok(report)
+}
+
+async fn collect_raw_events(
+    config: Arc<SentinelConfig>,
+    scan_root: PathBuf,
+) -> (Vec<RawEvent>, Vec<String>) {
+    let collect_context = CollectContext::new(config).with_scan_root(scan_root);
+    let mut raw_events = Vec::new();
+    let mut collector_errors = Vec::new();
+    for collector in default_collectors() {
+        debug!(collector = collector.name(), "collector started");
+        match collector.collect(&collect_context).await {
+            Ok(mut events) => {
+                debug!(
+                    collector = collector.name(),
+                    events = events.len(),
+                    "collector finished"
+                );
+                raw_events.append(&mut events);
+            }
+            Err(err) => {
+                warn!(collector = collector.name(), error = %err, "collector failed");
+                collector_errors.push(format!("{}: {err}", collector.name()));
+            }
+        }
+    }
+    (raw_events, collector_errors)
+}
+
+fn record_scan_stage(
+    stage_durations_ms: &mut BTreeMap<String, u64>,
+    stage: &str,
+    started: Instant,
+) {
+    stage_durations_ms.insert(stage.to_string(), started.elapsed().as_millis() as u64);
 }
 
 fn count_events_by<'a>(

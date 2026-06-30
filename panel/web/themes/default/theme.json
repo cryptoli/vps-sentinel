@@ -1,6 +1,21 @@
 {
   "name": "default",
   "description": "Default VPS Sentinel React panel theme.",
+  "contract_version": 1,
   "styles": ["theme.css"],
-  "available_themes": ["default"]
+  "available_themes": ["default"],
+  "recommended_variables": [
+    "--theme-bg",
+    "--theme-bg-soft",
+    "--theme-surface",
+    "--theme-text",
+    "--theme-muted",
+    "--theme-border",
+    "--theme-accent",
+    "--theme-success",
+    "--theme-warning",
+    "--theme-danger",
+    "--theme-sidebar-bg",
+    "--theme-sidebar-text"
+  ]
 }

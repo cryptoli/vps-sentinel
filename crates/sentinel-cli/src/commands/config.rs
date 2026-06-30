@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
-use clap::Subcommand;
-use sentinel_core::{SentinelConfig, DEFAULT_DYNAMIC_UDP_MIN_PORT};
+use clap::{Subcommand, ValueEnum};
+use sentinel_core::{AllowlistConfig, SentinelConfig, DEFAULT_DYNAMIC_UDP_MIN_PORT};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -32,6 +32,75 @@ pub enum ConfigCommand {
     SyncDefaults {
         #[arg(long)]
         dry_run: bool,
+    },
+    Normalize {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    Allowlist {
+        #[command(subcommand)]
+        command: AllowlistCommand,
+    },
+    TrustedAdmin {
+        #[command(subcommand)]
+        command: TrustedAdminCommand,
+    },
+    SuppressRule {
+        #[command(subcommand)]
+        command: SuppressRuleCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AllowlistCommand {
+    Add {
+        field: AllowlistField,
+        value: String,
+    },
+    Remove {
+        field: AllowlistField,
+        value: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AllowlistField {
+    User,
+    Ip,
+    ProcessPath,
+    ProcessCommand,
+    ListeningPort,
+    FilePath,
+    WebPath,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum TrustedAdminCommand {
+    Add { ip: String },
+    Remove { ip: String },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SuppressRuleCommand {
+    Add {
+        rule_id: String,
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long)]
+        subject: Vec<String>,
+        #[arg(long = "path-pattern")]
+        path_pattern: Vec<String>,
+        #[arg(long)]
+        expires_at: Option<String>,
+        #[arg(long)]
+        global: bool,
+    },
+    Remove {
+        rule_id: String,
+        #[arg(long)]
+        entry_id: Option<String>,
+        #[arg(long)]
+        global: bool,
     },
 }
 
@@ -70,11 +139,35 @@ pub fn run_config(path: Option<&Path>, command: ConfigCommand) -> Result<()> {
             };
             sync_config_defaults(&path, dry_run)?;
         }
+        ConfigCommand::Normalize { dry_run } => {
+            let Some(path) = resolve_config_path(path) else {
+                bail!("no configuration file found");
+            };
+            normalize_config(&path, dry_run)?;
+        }
+        ConfigCommand::Allowlist { command } => {
+            let Some(path) = resolve_config_path(path) else {
+                bail!("no configuration file found");
+            };
+            update_allowlist(&path, command)?;
+        }
+        ConfigCommand::TrustedAdmin { command } => {
+            let Some(path) = resolve_config_path(path) else {
+                bail!("no configuration file found");
+            };
+            update_trusted_admin_ips(&path, command)?;
+        }
+        ConfigCommand::SuppressRule { command } => {
+            let Some(path) = resolve_config_path(path) else {
+                bail!("no configuration file found");
+            };
+            update_suppress_rule_ids(&path, command)?;
+        }
     }
     Ok(())
 }
 
-fn resolve_config_path(path: Option<&Path>) -> Option<PathBuf> {
+pub(crate) fn resolve_config_path(path: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = path {
         return Some(path.to_path_buf());
     }
@@ -139,12 +232,14 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
     let legacy_empty_ebpf_event_paths = contains_legacy_empty_ebpf_event_paths(&text);
     let legacy_dynamic_udp_min_port = contains_legacy_dynamic_udp_min_port(&text);
     let threshold_migration = legacy_ssh_threshold_migration(&text)?;
+    let allowlist_needs_normalization = normalize_allowlist_section(&text)? != text;
     if deprecated.is_empty()
         && !legacy_default_language
         && !legacy_ssh_response_policy
         && !legacy_empty_ebpf_event_paths
         && !legacy_dynamic_udp_min_port
         && threshold_migration.changes.is_empty()
+        && !allowlist_needs_normalization
     {
         println!(
             "configuration does not require migration: {}",
@@ -152,11 +247,14 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
         );
         return Ok(());
     }
-    let migrated = migrate_legacy_dynamic_udp_min_port(&migrate_legacy_ssh_response_policy(
-        &migrate_legacy_default_language(&migrate_legacy_empty_ebpf_event_paths(
-            &migrate_legacy_ssh_thresholds(&remove_deprecated_keys(&text), &threshold_migration)?,
-        )?),
-    ))?;
+    let without_deprecated = remove_deprecated_keys(&text);
+    let migrated_thresholds =
+        migrate_legacy_ssh_thresholds(&without_deprecated, &threshold_migration)?;
+    let migrated_ebpf = migrate_legacy_empty_ebpf_event_paths(&migrated_thresholds)?;
+    let migrated_language = migrate_legacy_default_language(&migrated_ebpf);
+    let migrated_policy = migrate_legacy_ssh_response_policy(&migrated_language);
+    let migrated_udp = migrate_legacy_dynamic_udp_min_port(&migrated_policy)?;
+    let migrated = normalize_allowlist_section(&migrated_udp)?;
     let _: SentinelConfig = toml::from_str(&migrated)?;
     if dry_run {
         if !deprecated.is_empty() {
@@ -192,6 +290,10 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
                 println!("- {}: {} -> {}", change.path, change.old, change.new);
             }
         }
+        if allowlist_needs_normalization {
+            println!("sections that would be normalized:");
+            println!("- allowlist");
+        }
         return Ok(());
     }
     let backup = write_config_backup(path, &text)?;
@@ -212,10 +314,14 @@ fn sync_config_defaults(path: &Path, dry_run: bool) -> Result<()> {
     let legacy_dynamic_udp_min_port = contains_legacy_dynamic_udp_min_port(&normalized_paths);
     let normalized = migrate_legacy_dynamic_udp_min_port(&normalized_paths)?;
     let missing = missing_default_entries(&normalized)?;
+    let missing_inserted = insert_missing_default_keys(&normalized, &missing)?;
+    let updated = normalize_allowlist_section(&missing_inserted)?;
+    let allowlist_needs_normalization = updated != missing_inserted;
     if missing.is_empty()
         && threshold_migration.changes.is_empty()
         && !legacy_empty_ebpf_event_paths
         && !legacy_dynamic_udp_min_port
+        && !allowlist_needs_normalization
     {
         println!(
             "configuration already contains all default keys: {}",
@@ -224,7 +330,6 @@ fn sync_config_defaults(path: &Path, dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
-    let updated = insert_missing_default_keys(&normalized, &missing)?;
     let config: SentinelConfig = toml::from_str(&updated)?;
     config.validate()?;
 
@@ -254,6 +359,10 @@ fn sync_config_defaults(path: &Path, dry_run: bool) -> Result<()> {
                 println!("- {}", entry.path);
             }
         }
+        if allowlist_needs_normalization {
+            println!("sections that would be normalized:");
+            println!("- allowlist");
+        }
         return Ok(());
     }
 
@@ -263,6 +372,576 @@ fn sync_config_defaults(path: &Path, dry_run: bool) -> Result<()> {
     println!("configuration defaults synchronized: {}", path.display());
     println!("backup written: {}", backup.display());
     Ok(())
+}
+
+pub(crate) fn add_allowlist_file_path(path: &Path, value: &str) -> Result<()> {
+    update_allowlist(
+        path,
+        AllowlistCommand::Add {
+            field: AllowlistField::FilePath,
+            value: value.to_string(),
+        },
+    )
+}
+
+pub(crate) fn remove_allowlist_file_path(path: &Path, value: &str) -> Result<()> {
+    update_allowlist(
+        path,
+        AllowlistCommand::Remove {
+            field: AllowlistField::FilePath,
+            value: value.to_string(),
+        },
+    )
+}
+
+pub(crate) fn add_trusted_admin_ip(path: &Path, ip: &str) -> Result<()> {
+    update_trusted_admin_ips(path, TrustedAdminCommand::Add { ip: ip.to_string() })
+}
+
+pub(crate) fn remove_trusted_admin_ip(path: &Path, ip: &str) -> Result<()> {
+    update_trusted_admin_ips(path, TrustedAdminCommand::Remove { ip: ip.to_string() })
+}
+
+fn normalize_config(path: &Path, dry_run: bool) -> Result<()> {
+    let text = fs::read_to_string(path)?;
+    let normalized = normalize_allowlist_section(&text)?;
+    let config: SentinelConfig = toml::from_str(&normalized)?;
+    config.validate()?;
+    if normalized == text {
+        println!("configuration already normalized: {}", path.display());
+        return Ok(());
+    }
+    if dry_run {
+        println!("configuration would be normalized: {}", path.display());
+        return Ok(());
+    }
+    let backup = write_config_backup(path, &text)?;
+    fs::write(path, normalized)?;
+    println!("configuration normalized: {}", path.display());
+    println!("backup written: {}", backup.display());
+    Ok(())
+}
+
+fn update_allowlist(path: &Path, command: AllowlistCommand) -> Result<()> {
+    let text = fs::read_to_string(path)?;
+    let mut value: toml::Value = toml::from_str(&text)?;
+    match command {
+        AllowlistCommand::Add { field, value: item } => {
+            update_allowlist_value(&mut value, field, item, ListEdit::Add)?;
+        }
+        AllowlistCommand::Remove { field, value: item } => {
+            update_allowlist_value(&mut value, field, item, ListEdit::Remove)?;
+        }
+    }
+    let config: SentinelConfig = value.clone().try_into()?;
+    config.validate()?;
+    let updated = replace_or_insert_section(
+        &text,
+        "allowlist",
+        &render_allowlist_section(&config.allowlist),
+    );
+    write_updated_config(path, &text, &updated, "allowlist updated")
+}
+
+fn update_trusted_admin_ips(path: &Path, command: TrustedAdminCommand) -> Result<()> {
+    let text = fs::read_to_string(path)?;
+    let mut value: toml::Value = toml::from_str(&text)?;
+    let item = match command {
+        TrustedAdminCommand::Add { ip } => {
+            update_array_path(
+                &mut value,
+                "ssh.trusted_admin_ips",
+                ListValue::String(ip.clone()),
+                ListEdit::Add,
+            )?;
+            ip
+        }
+        TrustedAdminCommand::Remove { ip } => {
+            update_array_path(
+                &mut value,
+                "ssh.trusted_admin_ips",
+                ListValue::String(ip.clone()),
+                ListEdit::Remove,
+            )?;
+            ip
+        }
+    };
+    let config: SentinelConfig = value.try_into()?;
+    config.validate()?;
+    let rendered = render_string_array(&config.ssh.trusted_admin_ips);
+    let updated = replace_or_insert_key(&text, "ssh", "trusted_admin_ips", &rendered);
+    write_updated_config(
+        path,
+        &text,
+        &updated,
+        &format!("trusted admin IPs updated: {item}"),
+    )
+}
+
+fn update_suppress_rule_ids(path: &Path, command: SuppressRuleCommand) -> Result<()> {
+    let text = fs::read_to_string(path)?;
+    let mut value: toml::Value = toml::from_str(&text)?;
+    let message = match command {
+        SuppressRuleCommand::Add {
+            rule_id,
+            reason,
+            subject,
+            path_pattern,
+            expires_at,
+            global,
+        } => {
+            if global {
+                update_array_path(
+                    &mut value,
+                    "suppress_rules.rule_ids",
+                    ListValue::String(rule_id.clone()),
+                    ListEdit::Add,
+                )?;
+                format!("global suppressed rule ID updated: {rule_id}")
+            } else {
+                let reason = reason
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "scoped suppress-rule add requires --reason; use --global to edit suppress_rules.rule_ids"
+                        )
+                    })?;
+                add_suppress_rule_entry(
+                    &mut value,
+                    &rule_id,
+                    subject,
+                    path_pattern,
+                    expires_at.unwrap_or_default(),
+                    reason,
+                )?;
+                format!("scoped suppress rule entry added: {rule_id}")
+            }
+        }
+        SuppressRuleCommand::Remove {
+            rule_id,
+            entry_id,
+            global,
+        } => {
+            if global {
+                update_array_path(
+                    &mut value,
+                    "suppress_rules.rule_ids",
+                    ListValue::String(rule_id.clone()),
+                    ListEdit::Remove,
+                )?;
+                format!("global suppressed rule ID removed: {rule_id}")
+            } else {
+                let removed =
+                    remove_suppress_rule_entries(&mut value, &rule_id, entry_id.as_deref())?;
+                if removed == 0 {
+                    bail!(
+                        "no scoped suppress rule entry matched rule_id={rule_id}; use --global to edit suppress_rules.rule_ids"
+                    );
+                }
+                format!("scoped suppress rule entries removed: {rule_id} ({removed})")
+            }
+        }
+    };
+    let config: SentinelConfig = value.clone().try_into()?;
+    config.validate()?;
+    let updated = toml::to_string_pretty(&value)?;
+    write_updated_config(path, &text, &updated, &message)
+}
+
+fn add_suppress_rule_entry(
+    root: &mut toml::Value,
+    rule_id: &str,
+    subjects: Vec<String>,
+    path_patterns: Vec<String>,
+    expires_at: String,
+    reason: String,
+) -> Result<()> {
+    let table = ensure_table_path(root, "suppress_rules")?;
+    table.insert("enabled".to_string(), toml::Value::Boolean(true));
+    let entries = table
+        .entry("entries".to_string())
+        .or_insert_with(|| toml::Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("suppress_rules.entries must be an array"))?;
+    let mut entry = toml::map::Map::new();
+    entry.insert(
+        "id".to_string(),
+        toml::Value::String(next_suppress_entry_id(entries, rule_id)),
+    );
+    entry.insert(
+        "rule_ids".to_string(),
+        toml::Value::Array(vec![toml::Value::String(rule_id.trim().to_string())]),
+    );
+    entry.insert("subjects".to_string(), string_array_value(subjects));
+    entry.insert(
+        "path_patterns".to_string(),
+        string_array_value(path_patterns),
+    );
+    entry.insert("expires_at".to_string(), toml::Value::String(expires_at));
+    entry.insert("reason".to_string(), toml::Value::String(reason));
+    entries.push(toml::Value::Table(entry));
+    Ok(())
+}
+
+fn remove_suppress_rule_entries(
+    root: &mut toml::Value,
+    rule_id: &str,
+    entry_id: Option<&str>,
+) -> Result<usize> {
+    let Some(entries) = root
+        .get_mut("suppress_rules")
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|table| table.get_mut("entries"))
+        .and_then(toml::Value::as_array_mut)
+    else {
+        return Ok(0);
+    };
+    let before = entries.len();
+    entries.retain(|entry| !suppress_entry_matches(entry, rule_id, entry_id));
+    Ok(before.saturating_sub(entries.len()))
+}
+
+fn suppress_entry_matches(entry: &toml::Value, rule_id: &str, entry_id: Option<&str>) -> bool {
+    let Some(table) = entry.as_table() else {
+        return false;
+    };
+    if let Some(entry_id) = entry_id {
+        return table
+            .get("id")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|value| value == entry_id);
+    }
+    table
+        .get("rule_ids")
+        .and_then(toml::Value::as_array)
+        .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(rule_id)))
+}
+
+fn next_suppress_entry_id(entries: &[toml::Value], rule_id: &str) -> String {
+    let base = rule_id
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let base = if base.is_empty() {
+        "rule".to_string()
+    } else {
+        base
+    };
+    let mut candidate = base.clone();
+    let mut index = 2usize;
+    let existing = entries
+        .iter()
+        .filter_map(|entry| entry.get("id").and_then(toml::Value::as_str))
+        .collect::<BTreeSet<_>>();
+    while existing.contains(candidate.as_str()) {
+        candidate = format!("{base}-{index}");
+        index += 1;
+    }
+    candidate
+}
+
+fn string_array_value(values: Vec<String>) -> toml::Value {
+    toml::Value::Array(
+        values
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(toml::Value::String)
+            .collect(),
+    )
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ListEdit {
+    Add,
+    Remove,
+}
+
+#[derive(Debug, Clone)]
+enum ListValue {
+    String(String),
+    Integer(i64),
+}
+
+fn update_allowlist_value(
+    root: &mut toml::Value,
+    field: AllowlistField,
+    raw_value: String,
+    edit: ListEdit,
+) -> Result<()> {
+    let path = match field {
+        AllowlistField::User => "allowlist.users",
+        AllowlistField::Ip => "allowlist.ips",
+        AllowlistField::ProcessPath => "allowlist.process_paths",
+        AllowlistField::ProcessCommand => "allowlist.process_command_contains",
+        AllowlistField::ListeningPort => "allowlist.listening_ports",
+        AllowlistField::FilePath => "allowlist.file_paths",
+        AllowlistField::WebPath => "allowlist.web_paths",
+    };
+    let value = match field {
+        AllowlistField::ListeningPort => {
+            let port = raw_value
+                .trim()
+                .parse::<u16>()
+                .map_err(|_| anyhow::anyhow!("listening port must be between 0 and 65535"))?;
+            ListValue::Integer(i64::from(port))
+        }
+        _ => ListValue::String(non_empty_config_value(&raw_value)?),
+    };
+    update_array_path(root, path, value, edit)
+}
+
+fn update_array_path(
+    root: &mut toml::Value,
+    path: &str,
+    value: ListValue,
+    edit: ListEdit,
+) -> Result<()> {
+    let (section, key) = path
+        .rsplit_once('.')
+        .ok_or_else(|| anyhow::anyhow!("invalid config array path: {path}"))?;
+    let table = ensure_table_path(root, section)?;
+    let entry = table
+        .entry(key.to_string())
+        .or_insert_with(|| toml::Value::Array(Vec::new()));
+    let array = entry
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("{path} must be an array"))?;
+    let toml_value = match value {
+        ListValue::String(value) => toml::Value::String(value),
+        ListValue::Integer(value) => toml::Value::Integer(value),
+    };
+    match edit {
+        ListEdit::Add => {
+            if !array.iter().any(|item| item == &toml_value) {
+                array.push(toml_value);
+            }
+        }
+        ListEdit::Remove => {
+            array.retain(|item| item != &toml_value);
+        }
+    }
+    sort_toml_array(array);
+    Ok(())
+}
+
+fn ensure_table_path<'a>(
+    root: &'a mut toml::Value,
+    section: &str,
+) -> Result<&'a mut toml::map::Map<String, toml::Value>> {
+    let mut current = root
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("configuration root must be a TOML table"))?;
+    for segment in section.split('.') {
+        let value = current
+            .entry(segment.to_string())
+            .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+        current = value
+            .as_table_mut()
+            .ok_or_else(|| anyhow::anyhow!("{section} must be a TOML table"))?;
+    }
+    Ok(current)
+}
+
+fn sort_toml_array(array: &mut [toml::Value]) {
+    array.sort_by_key(toml_value_sort_key);
+}
+
+fn toml_value_sort_key(value: &toml::Value) -> String {
+    match value {
+        toml::Value::String(value) => format!("s:{value}"),
+        toml::Value::Integer(value) => format!("i:{value:020}"),
+        other => format!("z:{other:?}"),
+    }
+}
+
+fn non_empty_config_value(value: &str) -> Result<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        bail!("config list value must not be empty");
+    }
+    Ok(trimmed.to_string())
+}
+
+fn write_updated_config(path: &Path, previous: &str, updated: &str, label: &str) -> Result<()> {
+    if previous == updated {
+        println!("configuration unchanged: {}", path.display());
+        return Ok(());
+    }
+    let backup = write_config_backup(path, previous)?;
+    fs::write(path, updated)?;
+    SentinelConfig::load(path)?.validate()?;
+    println!("{label}: {}", path.display());
+    println!("backup written: {}", backup.display());
+    Ok(())
+}
+
+fn normalize_allowlist_section(text: &str) -> Result<String> {
+    let config: SentinelConfig = toml::from_str(text)?;
+    Ok(replace_or_insert_section(
+        text,
+        "allowlist",
+        &render_allowlist_section(&config.allowlist),
+    ))
+}
+
+fn render_allowlist_section(allowlist: &AllowlistConfig) -> String {
+    format!(
+        "[allowlist]\nusers = {}\nips = {}\nprocess_paths = {}\nprocess_command_contains = {}\nlistening_ports = {}\nfile_paths = {}\nweb_paths = {}",
+        render_string_array(&allowlist.users),
+        render_string_array(&allowlist.ips),
+        render_path_array(&allowlist.process_paths),
+        render_string_array(&allowlist.process_command_contains),
+        render_u16_array(&allowlist.listening_ports),
+        render_path_array(&allowlist.file_paths),
+        render_path_array(&allowlist.web_paths),
+    )
+}
+
+fn render_string_array(values: &[String]) -> String {
+    render_array(
+        values
+            .iter()
+            .map(|value| toml::Value::String(value.clone())),
+    )
+}
+
+fn render_path_array(values: &[PathBuf]) -> String {
+    render_array(
+        values
+            .iter()
+            .map(|value| toml::Value::String(value.to_string_lossy().into_owned())),
+    )
+}
+
+fn render_u16_array(values: &[u16]) -> String {
+    let mut values = values.to_vec();
+    values.sort_unstable();
+    values.dedup();
+    render_array(
+        values
+            .iter()
+            .map(|value| toml::Value::Integer(i64::from(*value))),
+    )
+}
+
+fn render_array(values: impl IntoIterator<Item = toml::Value>) -> String {
+    let mut rendered = values
+        .into_iter()
+        .map(|value| format_toml_value(&value).unwrap_or_else(|_| "\"\"".to_string()))
+        .collect::<Vec<_>>();
+    rendered.sort();
+    rendered.dedup();
+    if rendered.is_empty() {
+        return "[]".to_string();
+    }
+    let mut output = String::from("[\n");
+    for value in rendered {
+        output.push_str("  ");
+        output.push_str(&value);
+        output.push_str(",\n");
+    }
+    output.push(']');
+    output
+}
+
+fn replace_or_insert_section(text: &str, section: &str, replacement: &str) -> String {
+    let mut output = Vec::new();
+    let mut in_target = false;
+    let mut replaced = false;
+
+    for line in text.lines() {
+        if let Some(next_section) = parse_toml_section_header(line) {
+            if in_target {
+                in_target = false;
+            }
+            if next_section == section {
+                if !output
+                    .last()
+                    .map_or(true, |line: &String| line.trim().is_empty())
+                {
+                    output.push(String::new());
+                }
+                output.extend(replacement.lines().map(str::to_string));
+                in_target = true;
+                replaced = true;
+                continue;
+            }
+        }
+        if !in_target {
+            output.push(line.to_string());
+        }
+    }
+
+    if !replaced {
+        ensure_blank_separator(&mut output);
+        output.extend(replacement.lines().map(str::to_string));
+    }
+
+    let mut updated = output.join("\n");
+    updated.push('\n');
+    updated
+}
+
+fn replace_or_insert_key(text: &str, section: &str, key: &str, rendered_value: &str) -> String {
+    let mut output = Vec::new();
+    let mut current_section = String::new();
+    let mut inserted = false;
+    let mut skipping_multiline_array = false;
+
+    for line in text.lines() {
+        if skipping_multiline_array {
+            if line.contains(']') {
+                skipping_multiline_array = false;
+            }
+            continue;
+        }
+        if let Some(next_section) = parse_toml_section_header(line) {
+            if current_section == section && !inserted {
+                output.push(format!("{key} = {rendered_value}"));
+                inserted = true;
+            }
+            current_section = next_section;
+            output.push(line.to_string());
+            continue;
+        }
+        if current_section == section && toml_line_key(line) == Some(key) {
+            output.push(format!("{key} = {rendered_value}"));
+            inserted = true;
+            skipping_multiline_array = toml_array_value_is_multiline(line);
+            continue;
+        }
+        output.push(line.to_string());
+    }
+
+    if !inserted {
+        if current_section != section {
+            ensure_blank_separator(&mut output);
+            output.push(format!("[{section}]"));
+        }
+        output.push(format!("{key} = {rendered_value}"));
+    }
+
+    let mut updated = output.join("\n");
+    updated.push('\n');
+    updated
+}
+
+fn toml_array_value_is_multiline(line: &str) -> bool {
+    let Some((_, value)) = line.split_once('=') else {
+        return false;
+    };
+    value.contains('[') && !value.contains(']')
 }
 
 fn deprecated_keys_in_file(path: &Path) -> Result<Vec<String>> {
@@ -873,13 +1552,14 @@ fn flatten_value(prefix: &str, value: &toml::Value, keys: &mut BTreeSet<String>)
 #[cfg(test)]
 mod tests {
     use super::{
-        contains_legacy_default_language, contains_legacy_dynamic_udp_min_port,
-        contains_legacy_empty_ebpf_event_paths, contains_legacy_ssh_response_policy,
-        deprecated_keys_in_text, flatten_toml_keys, insert_missing_default_keys,
-        legacy_ssh_threshold_migration, migrate_legacy_default_language,
-        migrate_legacy_dynamic_udp_min_port, migrate_legacy_empty_ebpf_event_paths,
-        migrate_legacy_ssh_response_policy, migrate_legacy_ssh_thresholds, missing_default_entries,
-        next_backup_path, remove_deprecated_keys,
+        add_allowlist_file_path, contains_legacy_default_language,
+        contains_legacy_dynamic_udp_min_port, contains_legacy_empty_ebpf_event_paths,
+        contains_legacy_ssh_response_policy, deprecated_keys_in_text, flatten_toml_keys,
+        insert_missing_default_keys, legacy_ssh_threshold_migration,
+        migrate_legacy_default_language, migrate_legacy_dynamic_udp_min_port,
+        migrate_legacy_empty_ebpf_event_paths, migrate_legacy_ssh_response_policy,
+        migrate_legacy_ssh_thresholds, missing_default_entries, next_backup_path,
+        normalize_allowlist_section, remove_deprecated_keys,
     };
     use sentinel_core::SentinelConfig;
     use std::fs;
@@ -1048,6 +1728,40 @@ mod tests {
         let text = SentinelConfig::default_toml().unwrap();
         let missing = missing_default_entries(&text).unwrap();
         assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn normalizes_allowlist_section_to_canonical_multiline_arrays() {
+        let text = "[allowlist]\nfile_paths = [\"/var/lib/app\", \"/etc/systemd/system/snap-*.mount\"]\nips = []\nusers = []\nprocess_paths = []\nprocess_command_contains = []\nlistening_ports = []\nweb_paths = []\n";
+
+        let normalized = normalize_allowlist_section(text).unwrap();
+
+        assert!(normalized.contains("[allowlist]\n"));
+        assert!(normalized.contains("file_paths = [\n"));
+        assert!(normalized.contains("  \"/etc/systemd/system/snap-*.mount\",\n"));
+        assert!(normalized.contains("  \"/var/lib/app\",\n"));
+        let config: SentinelConfig = toml::from_str(&normalized).unwrap();
+        assert_eq!(config.allowlist.file_paths.len(), 2);
+    }
+
+    #[test]
+    fn allowlist_add_file_path_deduplicates_and_validates_config() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "[allowlist]\nfile_paths = [\"/etc/systemd/system/snap-*.mount\"]\n",
+        )
+        .unwrap();
+
+        add_allowlist_file_path(&config_path, "/etc/systemd/system/snap-*.mount").unwrap();
+        add_allowlist_file_path(&config_path, "/etc/systemd/system/snap-*.scope").unwrap();
+
+        let text = fs::read_to_string(&config_path).unwrap();
+        assert_eq!(text.matches("snap-*.mount").count(), 1);
+        assert_eq!(text.matches("snap-*.scope").count(), 1);
+        let config: SentinelConfig = toml::from_str(&text).unwrap();
+        config.validate().unwrap();
     }
 
     #[test]

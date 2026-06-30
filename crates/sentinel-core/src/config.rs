@@ -3,8 +3,14 @@ mod sections;
 
 use crate::error::{SentinelError, SentinelResult};
 use crate::MinuteWindow;
+use glob::Pattern;
 use serde::{Deserialize, Serialize};
-use std::{env, fs, path::Path, process::Command, sync::OnceLock};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::OnceLock,
+};
 
 pub use notifications::{
     BarkConfig, DingTalkConfig, EmailConfig, EmailTlsMode, FeishuConfig, GotifyConfig,
@@ -17,9 +23,9 @@ pub use sections::{
     FileIntegrityConfig, FleetConfig, GpuConfig, IncidentConfig, LogIntegrityConfig,
     MaintenanceConfig, NetworkConfig, NoiseControlConfig, PackageManagerConfig, PanelConfig,
     PerformanceConfig, PersistenceConfig, PrivacyConfig, ProcessConfig, ReportsConfig,
-    ResourceBudgetConfig, ResponsePolicyConfig, ResponsePolicyRule, SentinelPaths,
-    ServiceProfileConfig, SshConfig, StorageConfig, ThreatIntelConfig, WebConfig,
-    DEFAULT_DYNAMIC_UDP_MIN_PORT,
+    ResourceBudgetConfig, ResponsePolicyConfig, ResponsePolicyRule, RiskScoringConfig,
+    SentinelPaths, ServiceProfileConfig, SshConfig, StorageConfig, SuppressRuleEntryConfig,
+    SuppressRulesConfig, ThreatIntelConfig, WebConfig, DEFAULT_DYNAMIC_UDP_MIN_PORT,
 };
 
 const MIN_RESOURCE_EVIDENCE_ITEMS_PER_FINDING: usize = 16;
@@ -32,6 +38,7 @@ pub struct SentinelConfig {
     pub privacy: PrivacyConfig,
     pub performance: PerformanceConfig,
     pub resource_budget: ResourceBudgetConfig,
+    pub risk_scoring: RiskScoringConfig,
     pub storage: StorageConfig,
     pub ssh: SshConfig,
     pub file_integrity: FileIntegrityConfig,
@@ -58,15 +65,19 @@ pub struct SentinelConfig {
     pub fleet: FleetConfig,
     pub panel: PanelConfig,
     pub maintenance: MaintenanceConfig,
+    pub suppress_rules: SuppressRulesConfig,
     pub allowlist: AllowlistConfig,
+    #[serde(skip)]
+    pub source_path: Option<PathBuf>,
 }
 
 impl SentinelConfig {
     /// Load configuration from TOML.
     pub fn load(path: &Path) -> SentinelResult<Self> {
         let text = fs::read_to_string(path).map_err(|err| SentinelError::io(path, err))?;
-        let config: Self =
+        let mut config: Self =
             toml::from_str(&text).map_err(|err| SentinelError::Config(err.to_string()))?;
+        config.source_path = Some(path.to_path_buf());
         config.validate()?;
         Ok(config)
     }
@@ -106,6 +117,8 @@ impl SentinelConfig {
             ));
         }
         validate_resource_budget(&self.resource_budget)?;
+        validate_risk_scoring(&self.risk_scoring)?;
+        validate_allowlist(&self.allowlist)?;
         validate_ip_patterns("ssh.trusted_admin_ips", &self.ssh.trusted_admin_ips)?;
         if self.ssh.failed_login_threshold == 0 {
             return Err(SentinelError::Config(
@@ -293,6 +306,7 @@ impl SentinelConfig {
         validate_fleet(&self.fleet)?;
         validate_panel(&self.panel)?;
         validate_maintenance(&self.maintenance)?;
+        validate_suppress_rules(&self.suppress_rules)?;
         for quiet_hour in &self.noise_control.quiet_hours {
             quiet_hour.parse::<MinuteWindow>().map_err(|err| {
                 SentinelError::Config(format!(
@@ -409,6 +423,23 @@ fn validate_response_policy(config: &ResponsePolicyConfig) -> SentinelResult<()>
     Ok(())
 }
 
+fn validate_risk_scoring(config: &RiskScoringConfig) -> SentinelResult<()> {
+    for (name, value) in [
+        ("threat_intel_bonus", config.threat_intel_bonus),
+        ("active_response_bonus", config.active_response_bonus),
+        ("rootkit_context_bonus", config.rootkit_context_bonus),
+        ("state_drift_deduction", config.state_drift_deduction),
+        ("high_stage_count_bonus", config.high_stage_count_bonus),
+    ] {
+        if value > 100 {
+            return Err(SentinelError::Config(format!(
+                "risk_scoring.{name} must be between 0 and 100"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_ip_patterns(name: &str, patterns: &[String]) -> SentinelResult<()> {
     for pattern in patterns {
         let value = pattern.trim();
@@ -436,6 +467,86 @@ fn validate_ip_patterns(name: &str, patterns: &[String]) -> SentinelResult<()> {
         } else if value.parse::<std::net::IpAddr>().is_err() {
             return Err(SentinelError::Config(format!(
                 "{name} entry '{value}' must be an IP address or CIDR"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_suppress_rules(config: &SuppressRulesConfig) -> SentinelResult<()> {
+    validate_rule_ids("suppress_rules.rule_ids", &config.rule_ids)?;
+    for (index, entry) in config.entries.iter().enumerate() {
+        let label = format!("suppress_rules.entries[{index}]");
+        validate_rule_ids(&format!("{label}.rule_ids"), &entry.rule_ids)?;
+        validate_glob_patterns(&format!("{label}.path_patterns"), &entry.path_patterns)?;
+        if entry.rule_ids.is_empty() {
+            return Err(SentinelError::Config(format!(
+                "{label}.rule_ids must contain at least one rule id"
+            )));
+        }
+        if entry.reason.trim().is_empty() {
+            return Err(SentinelError::Config(format!(
+                "{label}.reason must explain why the rule is suppressed"
+            )));
+        }
+        if !entry.expires_at.trim().is_empty()
+            && chrono::DateTime::parse_from_rfc3339(entry.expires_at.trim()).is_err()
+        {
+            return Err(SentinelError::Config(format!(
+                "{label}.expires_at must be empty or RFC3339"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_allowlist(config: &AllowlistConfig) -> SentinelResult<()> {
+    validate_path_glob_patterns("allowlist.process_paths", &config.process_paths)?;
+    validate_path_glob_patterns("allowlist.file_paths", &config.file_paths)?;
+    validate_path_glob_patterns("allowlist.web_paths", &config.web_paths)
+}
+
+fn validate_path_glob_patterns(name: &str, values: &[std::path::PathBuf]) -> SentinelResult<()> {
+    let patterns = values
+        .iter()
+        .map(|value| value.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    validate_glob_patterns(name, &patterns)
+}
+
+fn validate_glob_patterns(name: &str, values: &[String]) -> SentinelResult<()> {
+    for value in values {
+        let normalized = value.trim().replace('\\', "/");
+        if normalized.is_empty() || !path_pattern_has_glob_meta(&normalized) {
+            continue;
+        }
+        Pattern::new(&normalized).map_err(|err| {
+            SentinelError::Config(format!(
+                "{name} entry '{value}' has invalid glob syntax: {err}"
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn path_pattern_has_glob_meta(value: &str) -> bool {
+    value.contains('*') || value.contains('?') || value.contains('[')
+}
+
+fn validate_rule_ids(name: &str, values: &[String]) -> SentinelResult<()> {
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(SentinelError::Config(format!(
+                "{name} entries must not be empty"
+            )));
+        }
+        if !trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        {
+            return Err(SentinelError::Config(format!(
+                "{name} entry '{trimmed}' contains unsupported characters"
             )));
         }
     }

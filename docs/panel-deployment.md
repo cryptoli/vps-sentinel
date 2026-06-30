@@ -11,6 +11,8 @@ The fleet panel is optional. Agents continue to monitor locally and push signed,
 
 Self-hosted and Cloudflare panels are expected to behave consistently for auth, public/private page access, privacy redaction, node display, blacklist display, review APIs, and theme loading. The main intentional difference is refresh transport: self-hosted Rust supports WebSocket events, while the current Cloudflare Worker deployment uses REST fallback unless a stateful broadcast layer is added.
 
+For personal fleets, prefer a private self-hosted panel binding such as `127.0.0.1:8858`, a Tailscale address, or another private interface. The self-hosted environment generator defaults to `PANEL_BIND='127.0.0.1:8858'`; set `PANEL_BIND='<tailscale-ip>:8858'` only when browser and agents reach that private network. Public HTTPS reverse proxy deployment remains supported, but it should be a deliberate choice.
+
 ## Token and Path Model
 
 | Setting | Meaning | Required |
@@ -24,6 +26,8 @@ Self-hosted and Cloudflare panels are expected to behave consistently for auth, 
 Do not use a fixed `/admin` path for new deployments. The helper scripts generate a random path such as `/4f9a12d0c8ab` and save it with the generated token. Older `PANEL_ADMIN_TOKEN`, `PANEL_OPERATOR_TOKEN`, or `PANEL_VIEW_TOKEN` values in an old credential file are migrated into `PANEL_TOKEN`.
 
 ## Cloudflare Worker/D1
+
+`panel/web` is the checked-in static deployment artifact for Cloudflare and self-hosted panel packaging. Treat `panel/ui` as the frontend source of truth and regenerate `panel/web` with `npm run build:web` from `panel/ui` after UI source changes. Do not hand-edit bundled files under `panel/web/_next`; those files should only change as build output.
 
 ### 1. Build the UI
 

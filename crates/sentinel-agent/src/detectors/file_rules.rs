@@ -1,7 +1,7 @@
 use crate::detectors::risk::RiskAssessment;
 use crate::detectors::{
-    evidence, package_activity_context, path_is_allowlisted, push_event_evidence_if_present,
-    string_field, DetectContext, Detector, PackageActivityContext, RESOURCE_DRIFT_DEDUP_KEYS,
+    evidence, package_activity_context, push_event_evidence_if_present, string_field,
+    DetectContext, Detector, PackageActivityContext, RESOURCE_DRIFT_DEDUP_KEYS,
 };
 use crate::rules::model::RuleMetadata;
 use sentinel_core::{Category, Finding, RawEvent, Severity};
@@ -65,7 +65,7 @@ impl Detector for FileDetector {
         let package_context = package_activity_context(events);
         for event in events {
             let path = string_field(event, "path");
-            if path.is_empty() || path_is_allowlisted(&path, &ctx.config.allowlist.file_paths) {
+            if path.is_empty() || ctx.file_path_allowlist.matches(&path) {
                 continue;
             }
             match event.kind.as_str() {

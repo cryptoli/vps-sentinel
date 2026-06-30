@@ -22,7 +22,7 @@ pub fn find_rule(rule_id: &str) -> Option<RuleMetadata> {
 #[cfg(test)]
 mod tests {
     use super::{builtin_rules, find_rule};
-    use crate::rules::model::RuleResponseScope;
+    use crate::rules::model::{RuleAttackStage, RuleResponseScope};
     use sentinel_core::canonical_key;
     use std::collections::BTreeSet;
 
@@ -92,6 +92,26 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn attack_stage_classifier_uses_rule_prefix_before_text_fallback() {
+        assert_eq!(
+            RuleAttackStage::from_signal("SSH-003", "failed authentication"),
+            RuleAttackStage::InitialAccess
+        );
+        assert_eq!(
+            RuleAttackStage::from_signal("PROC-004", "network command"),
+            RuleAttackStage::Execution
+        );
+        assert_eq!(
+            RuleAttackStage::from_signal("NET-003", "outbound connection"),
+            RuleAttackStage::CommandAndControl
+        );
+        assert_eq!(
+            RuleAttackStage::from_signal("CUSTOM-001", "sudo root privilege"),
+            RuleAttackStage::PrivilegeEscalation
+        );
     }
 
     fn is_normalized_rule_id(rule_id: &str) -> bool {

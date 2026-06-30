@@ -3,8 +3,7 @@ use crate::detectors::process_rules::{
     command_matches_allowlist, event_contains_miner_or_scanner, path_in_suspicious_dirs,
 };
 use crate::detectors::{
-    behavior_profile, evidence, path_is_allowlisted, string_field, DetectContext, Detector,
-    EventIndex,
+    behavior_profile, evidence, string_field, DetectContext, Detector, EventIndex,
 };
 use crate::rules::model::RuleMetadata;
 use crate::utils::ip::is_public_listener_addr;
@@ -734,7 +733,7 @@ impl ListenerRiskProfile {
         let executable = string_field(event, "executable");
         let cmdline = string_field(event, "cmdline");
         let process_name = string_field(event, "process_name");
-        if path_is_allowlisted(&executable, &ctx.config.allowlist.process_paths)
+        if ctx.process_path_allowlist.matches(&executable)
             || command_matches_allowlist(&cmdline, &ctx.config.allowlist.process_command_contains)
         {
             return None;

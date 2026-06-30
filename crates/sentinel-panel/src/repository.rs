@@ -147,6 +147,17 @@ impl Repository {
                 "panel_reviews",
                 "target_type, review_signature, verdict, reviewed_at",
             ),
+            (
+                "idx_panel_action_requests_node_status",
+                "panel_action_requests",
+                "node_name, status, requested_at",
+            ),
+            (
+                "idx_attack_fingerprints_verdict",
+                "attack_fingerprints",
+                "verdict, last_seen_at",
+            ),
+            ("idx_incidents_score_time", "incidents", "score, last_seen"),
         ] {
             self.ensure_index(name, table, columns).await?;
         }
@@ -282,6 +293,14 @@ impl Repository {
         match self.backend {
             DatabaseBackend::Postgres => format!("${index}"),
             DatabaseBackend::Sqlite | DatabaseBackend::Mysql => "?".to_string(),
+        }
+    }
+
+    pub(super) fn hour_bucket_expr(&self, column: &str) -> String {
+        match self.backend {
+            DatabaseBackend::Sqlite | DatabaseBackend::Postgres | DatabaseBackend::Mysql => {
+                format!("SUBSTR({column}, 1, 13)")
+            }
         }
     }
 
@@ -448,7 +467,7 @@ impl Repository {
         request: &PageRequest,
         role: PanelRole,
     ) -> Result<(Value, i64), PanelApiError> {
-        let (where_sql, mut values) = self.probe_sources_where_clause(request);
+        let (where_sql, mut values) = self.probe_sources_where_clause(request, role);
         let count_sql = format!(
             "SELECT COUNT(*) AS count FROM (SELECT source_ip FROM probe_sources{where_sql} GROUP BY source_ip) grouped_sources"
         );
@@ -475,8 +494,8 @@ impl Repository {
             "COALESCE(NULLIF(MAX(CASE WHEN country IS NOT NULL AND country <> '' AND LOWER(country) <> 'unknown' THEN country ELSE '' END), ''), 'unknown') AS country",
             "COALESCE(NULLIF(MAX(CASE WHEN asn IS NOT NULL AND asn <> '' AND LOWER(asn) <> 'unknown' THEN asn ELSE '' END), ''), 'unknown') AS asn",
             "COALESCE(NULLIF(MAX(CASE WHEN organization IS NOT NULL AND organization <> '' AND LOWER(organization) <> 'unknown' THEN organization ELSE '' END), ''), 'unknown') AS organization",
-            "MAX(categories_json) AS categories_json",
-            "MAX(rule_ids_json) AS rule_ids_json",
+            "MAX(CASE WHEN categories_json IS NOT NULL AND categories_json <> '' AND categories_json <> '[]' THEN categories_json ELSE '' END) AS categories_json",
+            "MAX(CASE WHEN rule_ids_json IS NOT NULL AND rule_ids_json <> '' AND rule_ids_json <> '[]' THEN rule_ids_json ELSE '' END) AS rule_ids_json",
             "MAX(CASE WHEN latest_reason IS NOT NULL AND latest_reason <> '' THEN latest_reason ELSE '' END) AS latest_reason",
             "MAX(CASE WHEN block_reason IS NOT NULL AND block_reason <> '' THEN block_reason ELSE '' END) AS block_reason",
         ];
@@ -498,7 +517,7 @@ impl Repository {
         request: &PageRequest,
         role: PanelRole,
     ) -> Result<(Value, i64), PanelApiError> {
-        let rows = self.latest_node_rows(columns, Some(request)).await?;
+        let rows = self.latest_node_rows(columns, Some(request), role).await?;
         let total = rows.len() as i64;
         let start = request.offset.min(rows.len());
         let end = (start + request.limit).min(rows.len());
@@ -515,6 +534,7 @@ impl Repository {
         &self,
         columns: &'static [&'static str],
         request: Option<&PageRequest>,
+        role: PanelRole,
     ) -> Result<Vec<Value>, PanelApiError> {
         let (where_sql, values) = request
             .map(|request| {
@@ -523,6 +543,7 @@ impl Repository {
                         table: "nodes",
                         order_column: "last_seen_at",
                         active_filter: None,
+                        search_columns: node_search_columns(role),
                         columns,
                     },
                     request,
@@ -699,9 +720,14 @@ impl Repository {
         }
         let where_sql = format!(" WHERE {}", filters.join(" AND "));
         let limit_placeholder = self.placeholder(values.len() + 1);
-        values.push(DbValue::Integer(5000));
+        values.push(DbValue::Integer(request.limit.min(500) as i64));
+        let bucket_expr = self.hour_bucket_expr("timestamp");
         let sql = format!(
-            "SELECT timestamp, severity FROM findings{where_sql} ORDER BY timestamp DESC LIMIT {limit_placeholder}"
+            "SELECT {bucket_expr} AS bucket, severity, COUNT(*) AS count
+             FROM findings{where_sql}
+             GROUP BY {bucket_expr}, severity
+             ORDER BY bucket ASC
+             LIMIT {limit_placeholder}"
         );
         let rows = self.query_all_with_values(&sql, &values).await?;
         let Value::Array(rows) = rows else {
@@ -709,11 +735,11 @@ impl Repository {
         };
         let mut buckets: BTreeMap<String, BTreeMap<String, i64>> = BTreeMap::new();
         for row in rows {
-            let timestamp = row
-                .get("timestamp")
+            let bucket = row
+                .get("bucket")
                 .and_then(Value::as_str)
-                .unwrap_or_default();
-            let bucket = timestamp.chars().take(13).collect::<String>();
+                .unwrap_or_default()
+                .to_string();
             if bucket.len() != 13 {
                 continue;
             }
@@ -722,11 +748,12 @@ impl Repository {
                 .and_then(Value::as_str)
                 .unwrap_or("Unknown")
                 .to_string();
+            let count = row.get("count").and_then(Value::as_i64).unwrap_or(0);
             *buckets
                 .entry(bucket)
                 .or_default()
                 .entry(severity)
-                .or_default() += 1;
+                .or_default() += count;
         }
         let items = buckets
             .into_iter()
@@ -872,6 +899,7 @@ impl Repository {
             reviewed_at: review.reviewed_at,
         };
         self.write_panel_review_row(&panel_review).await?;
+        self.sync_review_feedback(&panel_review).await?;
         self.insert_audit_log(
             "finding_review",
             &review.reviewer,
@@ -924,6 +952,7 @@ impl Repository {
             };
             self.write_finding_review_row(&legacy_review).await?;
         }
+        self.sync_review_feedback(&scoped_review).await?;
         self.insert_audit_log(
             "panel_review",
             &scoped_review.reviewer,
@@ -938,6 +967,107 @@ impl Repository {
         )
         .await?;
         Ok(scoped_review)
+    }
+
+    pub(super) async fn sync_review_feedback(
+        &self,
+        review: &PanelReview,
+    ) -> Result<(), PanelApiError> {
+        if review.target_type != ReviewTargetType::Finding {
+            return Ok(());
+        }
+        let Some(verdict) = fingerprint_verdict_from_review(&review.verdict) else {
+            return Ok(());
+        };
+        let sql = format!(
+            "SELECT node_id, evidence_json FROM findings WHERE id = {}",
+            self.placeholder(1)
+        );
+        let Some(row) = self
+            .query_one_with_values(&sql, &[DbValue::Text(review.target_id.clone())])
+            .await?
+        else {
+            return Ok(());
+        };
+        let Some(fingerprint_id) =
+            evidence_value_from_json(row.get("evidence_json"), "attack_fingerprint_id")
+        else {
+            return Ok(());
+        };
+        if fingerprint_id.trim().is_empty() {
+            return Ok(());
+        }
+        let updated = self
+            .update_attack_fingerprint_verdict(&fingerprint_id, verdict)
+            .await?;
+        if updated {
+            self.insert_audit_log(
+                "fingerprint_feedback",
+                &review.reviewer,
+                "attack_fingerprint",
+                &fingerprint_id,
+                json!({
+                    "source_review_target": &review.target_id,
+                    "source_review_signature": &review.review_signature,
+                    "review_verdict": &review.verdict,
+                    "fingerprint_verdict": verdict
+                }),
+                review.reviewed_at,
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub(super) async fn update_attack_fingerprint_verdict(
+        &self,
+        fingerprint_id: &str,
+        verdict: &str,
+    ) -> Result<bool, PanelApiError> {
+        let existing = self
+            .query_one_with_values(
+                &format!(
+                    "SELECT verdict FROM attack_fingerprints WHERE id = {}",
+                    self.placeholder(1)
+                ),
+                &[DbValue::Text(fingerprint_id.to_string())],
+            )
+            .await?;
+        let Some(existing) = existing else {
+            return Ok(false);
+        };
+        let merged = strongest_fingerprint_verdict(
+            existing
+                .get("verdict")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            verdict,
+        );
+        self.execute_write(
+            &format!(
+                "UPDATE attack_fingerprints SET verdict = {}, updated_at = {} WHERE id = {}",
+                self.placeholder(1),
+                self.placeholder(2),
+                self.placeholder(3)
+            ),
+            &[
+                DbValue::Text(merged),
+                DbValue::Text(Utc::now().to_rfc3339()),
+                DbValue::Text(fingerprint_id.to_string()),
+            ],
+        )
+        .await?;
+        Ok(true)
+    }
+
+    pub(super) async fn review_feedback_summary(&self) -> Result<Value, PanelApiError> {
+        self.query_all(
+            "SELECT target_type, verdict, COUNT(*) AS count
+             FROM panel_reviews
+             GROUP BY target_type, verdict
+             ORDER BY target_type ASC, verdict ASC",
+        )
+        .await
     }
 
     pub(super) async fn write_finding_review_row(
@@ -1168,6 +1298,7 @@ impl Repository {
                 self.placeholder(values.len())
             ));
         }
+        self.push_search_clause(&mut parts, &mut values, dataset.search_columns, request);
         if parts.is_empty() {
             (String::new(), values)
         } else {
@@ -1178,6 +1309,7 @@ impl Repository {
     pub(super) fn probe_sources_where_clause(
         &self,
         request: &PageRequest,
+        role: PanelRole,
     ) -> (String, Vec<DbValue>) {
         let mut parts = vec![blocked_probe_source_filter().to_string()];
         let mut values = Vec::new();
@@ -1189,7 +1321,59 @@ impl Repository {
             values.push(DbValue::Text(to.to_rfc3339()));
             parts.push(format!("last_seen <= {}", self.placeholder(values.len())));
         }
+        let search_columns = match role {
+            PanelRole::Public => &[
+                "source_ip",
+                "block_status",
+                "country",
+                "asn",
+                "organization",
+                "categories_json",
+                "rule_ids_json",
+            ][..],
+            PanelRole::Private => &[
+                "node_id",
+                "source_ip",
+                "network_prefix",
+                "block_status",
+                "country",
+                "asn",
+                "organization",
+                "categories_json",
+                "rule_ids_json",
+                "latest_reason",
+                "block_reason",
+            ][..],
+        };
+        self.push_search_clause(&mut parts, &mut values, search_columns, request);
         (format!(" WHERE {}", parts.join(" AND ")), values)
+    }
+
+    fn push_search_clause(
+        &self,
+        parts: &mut Vec<String>,
+        values: &mut Vec<DbValue>,
+        columns: &[&str],
+        request: &PageRequest,
+    ) {
+        let Some(query) = request.query.as_deref() else {
+            return;
+        };
+        if columns.is_empty() {
+            return;
+        }
+        let pattern = format!("%{}%", escape_sql_like(query.to_lowercase().as_str()));
+        let predicates = columns
+            .iter()
+            .map(|column| {
+                values.push(DbValue::Text(pattern.clone()));
+                format!(
+                    "LOWER(COALESCE({column}, '')) LIKE {} ESCAPE '\\'",
+                    self.placeholder(values.len())
+                )
+            })
+            .collect::<Vec<_>>();
+        parts.push(format!("({})", predicates.join(" OR ")));
     }
 
     pub(super) async fn count(
@@ -1558,7 +1742,148 @@ impl Repository {
             ],
         )
         .await?;
+        if let Some(update) = panel_attack_fingerprint_update(node_id, finding) {
+            self.upsert_attack_fingerprint(&update).await?;
+        }
         Ok(())
+    }
+
+    pub(super) async fn upsert_attack_fingerprint(
+        &self,
+        update: &PanelAttackFingerprintUpdate,
+    ) -> Result<(), PanelApiError> {
+        let existing = self
+            .query_one_with_values(
+                &format!(
+                    "SELECT first_seen_at, last_seen_at, seen_count, nodes_json, source_ips_json, rule_ids_json, categories_json, score, confidence, verdict, source_count FROM attack_fingerprints WHERE id = {}",
+                    self.placeholder(1)
+                ),
+                &[DbValue::Text(update.id.clone())],
+            )
+            .await?;
+        let nodes = merge_json_set(
+            existing.as_ref().and_then(|row| row.get("nodes_json")),
+            &update.node_name,
+        );
+        let source_ips = merge_json_set(
+            existing.as_ref().and_then(|row| row.get("source_ips_json")),
+            &update.source_ip,
+        );
+        let rule_ids = merge_json_set(
+            existing.as_ref().and_then(|row| row.get("rule_ids_json")),
+            &update.rule_id,
+        );
+        let categories = merge_json_set(
+            existing.as_ref().and_then(|row| row.get("categories_json")),
+            &update.category,
+        );
+        let first_seen_at = existing
+            .as_ref()
+            .map(|row| min_time_string(row.get("first_seen_at"), update.first_seen_at))
+            .unwrap_or_else(|| update.first_seen_at.to_rfc3339());
+        let last_seen_at = existing
+            .as_ref()
+            .map(|row| max_time_string(row.get("last_seen_at"), update.last_seen_at))
+            .unwrap_or_else(|| update.last_seen_at.to_rfc3339());
+        let existing_seen = existing
+            .as_ref()
+            .and_then(|row| row.get("seen_count"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let seen_count = existing_seen.saturating_add(1).max(update.seen_count);
+        let score = existing
+            .as_ref()
+            .and_then(|row| row.get("score"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .max(update.score);
+        let confidence = existing
+            .as_ref()
+            .and_then(|row| row.get("confidence"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .max(update.confidence);
+        let verdict = strongest_fingerprint_verdict(
+            existing
+                .as_ref()
+                .and_then(|row| row.get("verdict"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown"),
+            &update.verdict,
+        );
+        let existing_source_count = existing
+            .as_ref()
+            .and_then(|row| row.get("source_count"))
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let source_count = existing_source_count
+            .max(update.source_count)
+            .max(source_ips.len() as i64);
+        let columns = [
+            "id",
+            "kind",
+            "title",
+            "first_seen_at",
+            "last_seen_at",
+            "seen_count",
+            "node_count",
+            "source_count",
+            "nodes_json",
+            "source_ips_json",
+            "rule_ids_json",
+            "categories_json",
+            "score",
+            "confidence",
+            "verdict",
+            "summary",
+            "updated_at",
+        ];
+        let sql = self.upsert_sql(
+            "attack_fingerprints",
+            &columns,
+            &["id"],
+            &[
+                "kind",
+                "title",
+                "first_seen_at",
+                "last_seen_at",
+                "seen_count",
+                "node_count",
+                "source_count",
+                "nodes_json",
+                "source_ips_json",
+                "rule_ids_json",
+                "categories_json",
+                "score",
+                "confidence",
+                "verdict",
+                "summary",
+                "updated_at",
+            ],
+        );
+        self.execute_write(
+            &sql,
+            &[
+                DbValue::Text(update.id.clone()),
+                DbValue::Text(update.kind.clone()),
+                DbValue::Text(update.title.clone()),
+                DbValue::Text(first_seen_at),
+                DbValue::Text(last_seen_at),
+                DbValue::Integer(seen_count),
+                DbValue::Integer(nodes.len() as i64),
+                DbValue::Integer(source_count),
+                DbValue::Text(json_string(&nodes)?),
+                DbValue::Text(json_string(&source_ips)?),
+                DbValue::Text(json_string(&rule_ids)?),
+                DbValue::Text(json_string(&categories)?),
+                DbValue::Integer(score),
+                DbValue::Integer(confidence),
+                DbValue::Text(verdict),
+                DbValue::Text(update.summary.clone()),
+                DbValue::Text(Utc::now().to_rfc3339()),
+            ],
+        )
+        .await
     }
 
     pub(super) async fn upsert_incident(

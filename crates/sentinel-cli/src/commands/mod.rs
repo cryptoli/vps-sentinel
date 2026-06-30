@@ -11,6 +11,7 @@ pub mod fleet;
 pub mod incidents;
 pub mod init;
 pub mod maintenance;
+pub mod menu;
 pub mod notify;
 pub mod panel;
 pub mod reload;

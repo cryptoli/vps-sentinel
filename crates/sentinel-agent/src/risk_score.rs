@@ -1,5 +1,5 @@
 use crate::evidence_score;
-use sentinel_core::{Category, Confidence, Evidence, Finding, Severity};
+use sentinel_core::{Category, Confidence, Evidence, Finding, RiskScoringConfig, Severity};
 use std::collections::BTreeSet;
 
 const SCORE_KEY: &str = "unified_risk_score";
@@ -14,8 +14,12 @@ pub struct UnifiedRisk {
 }
 
 pub fn enrich_findings(findings: &mut [Finding]) {
+    enrich_findings_with_scoring(findings, &RiskScoringConfig::default());
+}
+
+pub fn enrich_findings_with_scoring(findings: &mut [Finding], scoring: &RiskScoringConfig) {
     for finding in findings {
-        let risk = score_finding(finding);
+        let risk = score_finding_with_scoring(finding, scoring);
         upsert_evidence(
             &mut finding.evidence,
             SCORE_KEY,
@@ -31,6 +35,10 @@ pub fn enrich_findings(findings: &mut [Finding]) {
 }
 
 pub fn score_finding(finding: &Finding) -> UnifiedRisk {
+    score_finding_with_scoring(finding, &RiskScoringConfig::default())
+}
+
+pub fn score_finding_with_scoring(finding: &Finding, scoring: &RiskScoringConfig) -> UnifiedRisk {
     let mut score = severity_score(finding.severity);
     let mut features = BTreeSet::new();
     features.insert(format!("severity:{}", severity_feature(finding.severity)));
@@ -59,19 +67,25 @@ pub fn score_finding(finding: &Finding) -> UnifiedRisk {
         features.insert("evidence_score".to_string());
     }
     if evidence_value(finding, "threat_intel_match").as_deref() == Some("true") {
-        score = score.saturating_add(15).min(100);
+        score = score.saturating_add(scoring.threat_intel_bonus).min(100);
         features.insert("threat_intel_match".to_string());
     }
     if evidence_value(finding, "active_response_status").is_some() {
-        score = score.saturating_add(10).min(100);
+        score = score.saturating_add(scoring.active_response_bonus).min(100);
         features.insert("active_response".to_string());
     }
+    if evidence_score(finding, "attack_chain_stage_count").is_some_and(|value| value >= 3) {
+        score = score
+            .saturating_add(scoring.high_stage_count_bonus)
+            .min(100);
+        features.insert("attack_chain_stage_count".to_string());
+    }
     if is_state_drift(finding) {
-        score = score.saturating_sub(10);
+        score = score.saturating_sub(scoring.state_drift_deduction);
         features.insert("state_drift".to_string());
     }
     if finding.category == Category::Rootkit {
-        score = score.saturating_add(10).min(100);
+        score = score.saturating_add(scoring.rootkit_context_bonus).min(100);
         features.insert("rootkit_context".to_string());
     }
 

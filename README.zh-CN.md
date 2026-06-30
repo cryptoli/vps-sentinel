@@ -23,7 +23,8 @@
 | 网络与 Web 探查 | 公网监听 owner、防火墙上下文、可信代理真实客户端 IP 还原、Web 探查家族分类、攻击路径聚合、错误爆发和封禁候选。 |
 | 主动响应 | 对高置信 SSH/Web 攻击源执行可选 nftables/iptables 来源 IP 封禁，支持临时/永久升级、白名单、可信代理保护和 CLI 解封。 |
 | 攻击指纹 | 使用精确 hash 和 SimHash 风格近似匹配聚合同一攻击手法，即使来源 IP 变化也能归类。 |
-| 报告与通知 | 支持每日安全报告，以及 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan；通知默认中文。 |
+| 静默与本地运维 | 结构化配置迁移、allowlist 规范化渲染、按规则 ID 的已接受风险静默，以及本地 `vs menu`，不把面板变成 SSH 控制面。 |
+| 报告与通知 | 支持每日安全报告，以及 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan、钉钉和飞书；通知默认中文。 |
 | 多 VPS 面板 | 推模式 Rust 自建面板或 Cloudflare Worker/D1 面板，支持公开/私有访问、隐私脱敏、节点指标、黑名单归属、复核流程、自建 WebSocket 刷新和主题扩展入口。 |
 | 资源控制 | 有界日志解析、事件预算、SQLite 保留策略、数据库大小限制、原始证据裁剪，对小内存 VPS 友好。 |
 
@@ -74,8 +75,11 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 | `vs fingerprints explain <id>` | 解释攻击指纹聚类。 |
 | `vs report send` | 通过已启用通知渠道发送默认日报。 |
 | `vs panel push` | 向面板推送一次签名遥测。 |
+| `vs menu` | 本地引导式运维：可信管理员 IP、allowlist 路径、刷新基线、查看/解除封禁、配置校验和服务重载。 |
 | `vs config validate` | 校验配置文件。 |
 | `vs config migrate` | 执行兼容配置迁移。 |
+| `vs config normalize` | 将 `[allowlist]` 等支持的配置块重写成规范数组格式。 |
+| `vs config suppress-rule add CONFIG-004 --global` | 对已复核接受的风险按规则静默，不需要把底层文件排除出完整性监控。 |
 
 ## Token 类型
 
@@ -86,7 +90,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 | `panel.secret` / `PANEL_SHARED_SECRET` | Agent 和面板 | `POST /api/v1/ingest` HMAC 签名。 | 启用面板上报时必须 |
 | `PANEL_NODE_SECRETS` | 面板 | 按非敏感节点名称配置单节点上报密钥。 | 可选 |
 | `PANEL_TOKEN` | 浏览器和面板 | 私有访问 token，用于详情、复核、审计日志和管理入口。 | 使用私有面板功能时必须 |
-| 通知渠道 token | Agent 和通知服务 | Telegram/Gotify/ntfy/Bark/ServerChan/Webhook/邮件凭据。 | 仅启用对应渠道时需要 |
+| 通知渠道 token | Agent 和通知服务 | Telegram/Gotify/ntfy/Bark/ServerChan/钉钉/飞书/Webhook/邮件凭据。 | 仅启用对应渠道时需要 |
 
 部署脚本复用旧凭据文件时，会把旧的 `PANEL_ADMIN_TOKEN`、`PANEL_OPERATOR_TOKEN` 或 `PANEL_VIEW_TOKEN` 迁移为新的 `PANEL_TOKEN`。
 
@@ -99,6 +103,8 @@ Agent 面向常见 systemd Linux VPS，包括 Debian、Ubuntu、Alma/Rocky/RHEL 
 ## 隐私
 
 默认本地优先：不启用 `[panel]` 就不向面板上报，不配置通知就不发外部消息，文件扫描有大小限制，数据保存在本地 SQLite。面板遥测会移除节点 ID、主机 ID、服务器公网 IP、原始证据、路径、命令行和通用内部网络字段；节点名称、脱敏后的非 IP 主机名、国家、地区和城市等展示字段可以用于面板。已确认的外部攻击源 IP 可以在公开黑名单中展示，但公开黑名单不会展示节点名称。
+
+面板不是远程命令或 SSH 管理平面。刷新基线、修改 allowlist、解除封禁等特权操作保留在各节点本地 `vs` 命令中，避免面板被攻破后直接变成整组服务器的 SSH 跳板。
 
 token、密码、Webhook secret、SMTP 凭据、Cloudflare API token、面板 shared secret 应存放在本地配置、Worker secrets 或 systemd 环境文件中，源码仓库只保留示例占位符。
 

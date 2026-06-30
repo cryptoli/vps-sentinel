@@ -1,0 +1,136 @@
+.nodes-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.nodes-actions .nodes-search {
+  flex: 1 1 240px;
+  min-width: min(100%, 220px);
+}
+
+@media (max-width: 1180px) {
+  .filter-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .filter-fields .search-field,
+  .filter-fields > .ghost-button {
+    grid-column: auto;
+  }
+}
+
+@media (max-width: 860px) {
+  .app-shell {
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+    min-width: 0;
+    overflow-x: clip;
+  }
+
+  .stage {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .sidebar-shell {
+    width: 100%;
+  }
+
+  .topbar,
+  .content-shell,
+  .app-shell:not(.page-overview) .content-shell {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .topbar {
+    color: #edf6ff;
+    background:
+      radial-gradient(circle at 50% -60%, rgba(8, 169, 200, 0.2), transparent 38%),
+      linear-gradient(180deg, #071321, #071321);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: none;
+  }
+
+  .mobile-icon-button,
+  .mobile-brand strong,
+  .mobile-brand small {
+    color: inherit;
+  }
+
+  .content-shell,
+  .app-shell:not(.page-overview) .content-shell {
+    padding: 14px 12px calc(104px + env(safe-area-inset-bottom));
+  }
+
+  .feature-header {
+    align-items: stretch;
+  }
+
+  .feature-header h1,
+  .topbar h1 {
+    font-size: 21px;
+  }
+
+  .filter-fields {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .filter-fields .search-field {
+    grid-column: 1 / -1;
+  }
+
+  .filter-fields > .ghost-button {
+    grid-column: 1 / -1;
+  }
+
+  .nodes-actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    justify-content: stretch;
+    width: 100%;
+  }
+
+  .nodes-header,
+  .node-mobile-status-grid,
+  .nodes-actions .nodes-search {
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .nodes-filter,
+  .nodes-filter > .ghost-button {
+    width: auto;
+  }
+
+  .nodes-filter-menu {
+    position: static;
+    width: 100%;
+    margin-top: 8px;
+  }
+}
+
+@media (max-width: 520px) {
+  .filter-fields,
+  .feature-page .filter-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .feature-page .filter-fields .date-field,
+  .feature-page .filter-fields .page-size-field {
+    display: grid;
+  }
+
+  .feature-page .quick-ranges {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .quick-ranges .chip,
+  .quick-ranges .chip-button {
+    min-width: 0;
+    justify-content: center;
+  }
+
+}

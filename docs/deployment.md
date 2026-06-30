@@ -184,7 +184,7 @@ chat_id = "<chat-id>"
 min_severity = "Medium"
 ```
 
-Supported channels: Telegram, Email SMTP, webhook, ntfy, Gotify, Bark, and ServerChan.
+Supported channels: Telegram, Email SMTP, webhook, ntfy, Gotify, Bark, ServerChan, DingTalk, and Feishu.
 
 ## Panel Upload
 
@@ -244,6 +244,30 @@ sudo vs baseline approve <approval-key>
 ```
 
 Package upgrades and planned maintenance can create legitimate drift. Review evidence before refreshing a baseline.
+
+For repeatable configuration edits, prefer structured `vs config` commands instead of shell text replacement:
+
+```bash
+sudo vs config allowlist add file-path '/etc/systemd/system/snap-*.mount'
+sudo vs config allowlist add file-path '/etc/systemd/system/snap-*.scope'
+sudo vs config trusted-admin add 203.0.113.10
+sudo vs config suppress-rule add CONFIG-004 --global
+sudo vs config normalize
+sudo vs config validate
+sudo vs reload
+```
+
+`config migrate` and `config sync-defaults` normalize the `[allowlist]` section into a stable array format so automated operations do not create duplicate TOML keys.
+
+For guided local operations, use:
+
+```bash
+sudo vs menu
+```
+
+The menu covers trusted admin IP edits, allowlist path edits, baseline refresh, active block listing and unblock, config validation, and service reload. It is a local CLI workflow and does not require exposing the fleet panel.
+
+Do not place SSH private keys or broad SSH agent forwarding on a panel host. The panel is designed as a push-mode dashboard: agents report signed telemetry to the panel, and routine privileged operations should be performed locally on each node or from a separate administrator workstation. Keeping SSH management outside the panel host prevents a panel compromise from becoming a direct SSH pivot into the rest of the fleet.
 
 ## Troubleshooting
 

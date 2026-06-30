@@ -67,6 +67,39 @@ CREATE TABLE IF NOT EXISTS panel_audit_logs (
   created_at VARCHAR(64) NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS panel_action_requests (
+  id VARCHAR(191) PRIMARY KEY,
+  action VARCHAR(64) NOT NULL,
+  target_type VARCHAR(64) NOT NULL,
+  target_id VARCHAR(191) NOT NULL,
+  node_name VARCHAR(191) NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  requested_by VARCHAR(128) NOT NULL,
+  requested_at VARCHAR(64) NOT NULL,
+  updated_at VARCHAR(64) NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS attack_fingerprints (
+  id VARCHAR(191) PRIMARY KEY,
+  kind VARCHAR(64) NOT NULL,
+  title VARCHAR(191) NOT NULL,
+  first_seen_at VARCHAR(64) NOT NULL,
+  last_seen_at VARCHAR(64) NOT NULL,
+  seen_count INTEGER NOT NULL,
+  node_count INTEGER NOT NULL,
+  source_count INTEGER NOT NULL,
+  nodes_json TEXT NOT NULL,
+  source_ips_json TEXT NOT NULL,
+  rule_ids_json TEXT NOT NULL,
+  categories_json TEXT NOT NULL,
+  score INTEGER NOT NULL,
+  confidence INTEGER NOT NULL,
+  verdict VARCHAR(32) NOT NULL DEFAULT 'unknown',
+  summary TEXT NOT NULL,
+  updated_at VARCHAR(64) NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS incidents (
   id VARCHAR(191) PRIMARY KEY,
   node_id VARCHAR(191) NOT NULL,
@@ -146,7 +179,14 @@ CREATE INDEX idx_finding_reviews_verdict ON finding_reviews(verdict, reviewed_at
 CREATE INDEX idx_panel_reviews_verdict ON panel_reviews(target_type, verdict, reviewed_at);
 CREATE INDEX idx_panel_reviews_signature ON panel_reviews(target_type, review_signature, verdict, reviewed_at);
 CREATE INDEX idx_panel_audit_logs_created ON panel_audit_logs(created_at);
+CREATE INDEX idx_panel_action_requests_status ON panel_action_requests(status, requested_at);
+CREATE INDEX idx_panel_action_requests_target ON panel_action_requests(target_type, target_id);
+CREATE INDEX idx_panel_action_requests_node_status ON panel_action_requests(node_name, status, requested_at);
+CREATE INDEX idx_attack_fingerprints_seen ON attack_fingerprints(last_seen_at);
+CREATE INDEX idx_attack_fingerprints_score ON attack_fingerprints(score, last_seen_at);
+CREATE INDEX idx_attack_fingerprints_verdict ON attack_fingerprints(verdict, last_seen_at);
 CREATE INDEX idx_incidents_node_time ON incidents(node_id, last_seen);
+CREATE INDEX idx_incidents_score_time ON incidents(score, last_seen);
 CREATE INDEX idx_incidents_review_signature ON incidents(review_signature);
 CREATE INDEX idx_baseline_node_time ON baseline_drifts(node_id, timestamp);
 CREATE INDEX idx_baseline_review_signature ON baseline_drifts(review_signature);

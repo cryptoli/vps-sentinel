@@ -64,6 +64,42 @@ export function formatValue(column: string, value: unknown, language: "zh" | "en
   return String(value);
 }
 
+export function categoryFromRuleId(ruleId: unknown): string {
+  const prefix = String(ruleId || "").split("-")[0]?.toUpperCase();
+  const categories: Record<string, string> = {
+    AUTH: "ssh",
+    SSH: "ssh",
+    USER: "user",
+    PRIV: "privilege",
+    PERSIST: "persistence",
+    PROC: "process",
+    NET: "network",
+    SERVICE: "network",
+    FILE: "file_integrity",
+    WEB: "web",
+    DOCKER: "docker",
+    ROOTKIT: "rootkit",
+    CONFIG: "config_risk",
+    SYS: "system",
+    SYSTEM: "system",
+  };
+  return categories[prefix] || "system";
+}
+
+export function fingerprintConclusion(row: PanelRecord): string {
+  const existing = String(row.conclusion || "").trim().toLowerCase();
+  if (["malicious", "benign", "suspicious", "needs_review"].includes(existing)) return existing;
+  const verdict = String(row.verdict || "").trim().toLowerCase();
+  if (verdict === "malicious" || verdict === "benign") return verdict;
+  if (verdict === "false_positive") return "benign";
+  const score = Number(row.score || 0);
+  const confidence = Number(row.confidence || 0);
+  const sourceCount = Number(row.source_count || 0);
+  const seenCount = Number(row.seen_count || 0);
+  if (score >= 75 || confidence >= 80 || sourceCount >= 2 || seenCount >= 3) return "suspicious";
+  return "needs_review";
+}
+
 export function countryDisplay(value: unknown): { flag: string; label: string } {
   const label = String(value || "").trim();
   const code = countryCodeFromValue(label);

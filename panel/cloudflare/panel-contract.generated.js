@@ -13,6 +13,116 @@ export const PANEL_TRANSPORT_ENCODING = "json-base64";
 export const DEFAULT_PUBLIC_PAGES = "overview,probe_sources,nodes";
 export const DEFAULT_ADMIN_PATH = "/panel-admin";
 export const DEFAULT_THEMES = "default:Default";
+export const PANEL_DICTIONARIES = deepFreeze({
+  "severities": [
+    {
+      "value": "critical",
+      "labelKey": "critical",
+      "tone": "red",
+      "rank": 100
+    },
+    {
+      "value": "high",
+      "labelKey": "high",
+      "tone": "orange",
+      "rank": 80
+    },
+    {
+      "value": "medium",
+      "labelKey": "medium",
+      "tone": "amber",
+      "rank": 50
+    },
+    {
+      "value": "low",
+      "labelKey": "low",
+      "tone": "green",
+      "rank": 20
+    }
+  ],
+  "reviewVerdicts": [
+    {
+      "value": "needs_review",
+      "labelKey": "needs_review",
+      "tone": "orange",
+      "rank": 10
+    },
+    {
+      "value": "confirmed",
+      "labelKey": "confirmed",
+      "tone": "green",
+      "rank": 20
+    },
+    {
+      "value": "false_positive",
+      "labelKey": "false_positive",
+      "tone": "blue",
+      "rank": 30
+    }
+  ],
+  "nodeStatusFilters": [
+    {
+      "value": "all",
+      "labelKey": "allNodes",
+      "tone": "neutral",
+      "rank": 0
+    },
+    {
+      "value": "fresh",
+      "labelKey": "online",
+      "tone": "green",
+      "rank": 10
+    },
+    {
+      "value": "stale",
+      "labelKey": "stale",
+      "tone": "amber",
+      "rank": 20
+    },
+    {
+      "value": "offline",
+      "labelKey": "offline",
+      "tone": "orange",
+      "rank": 30
+    },
+    {
+      "value": "retired",
+      "labelKey": "retired",
+      "tone": "gray",
+      "rank": 40
+    }
+  ],
+  "baselineReviewFilters": [
+    {
+      "value": "",
+      "labels": {
+        "zh": "全部",
+        "en": "All"
+      },
+      "tone": "neutral",
+      "rank": 0
+    },
+    {
+      "value": "suspicious",
+      "labelKey": "suspicious",
+      "tone": "orange",
+      "rank": 10
+    },
+    {
+      "value": "needs_confirmation",
+      "labelKey": "needs_confirmation",
+      "tone": "blue",
+      "rank": 20
+    },
+    {
+      "value": "expected",
+      "labelKey": "expected",
+      "tone": "green",
+      "rank": 30
+    }
+  ]
+}
+);
 export const PUBLIC_PROBE_SOURCE_HIDDEN_KEYS = Object.freeze([
   "node_name",
   "network_prefix",
@@ -29,6 +139,16 @@ export const DATASETS = deepFreeze({
     "orderColumn": "node_name",
     "orderDirection": "ASC",
     "filterColumn": "last_seen_at",
+    "publicSearchColumns": [
+      "node_name",
+      "agent_version"
+    ],
+    "searchColumns": [
+      "node_name",
+      "hostname",
+      "agent_version",
+      "privacy_mode"
+    ],
     "columns": [
       "last_seen_at",
       "node_name",
@@ -42,6 +162,15 @@ export const DATASETS = deepFreeze({
     "minRole": "private",
     "table": "findings",
     "orderColumn": "timestamp",
+    "searchColumns": [
+      "node_id",
+      "severity",
+      "rule_id",
+      "category",
+      "confidence",
+      "subject",
+      "title"
+    ],
     "columns": [
       "id",
       "timestamp",
@@ -59,6 +188,12 @@ export const DATASETS = deepFreeze({
     "minRole": "private",
     "table": "incidents",
     "orderColumn": "last_seen",
+    "searchColumns": [
+      "node_id",
+      "severity",
+      "title",
+      "summary"
+    ],
     "columns": [
       "id",
       "last_seen",
@@ -67,7 +202,8 @@ export const DATASETS = deepFreeze({
       "score",
       "title",
       "summary",
-      "review_signature"
+      "review_signature",
+      "payload_json"
     ]
   },
   "/api/v1/baseline-drifts": {
@@ -75,6 +211,15 @@ export const DATASETS = deepFreeze({
     "minRole": "private",
     "table": "baseline_drifts",
     "orderColumn": "timestamp",
+    "searchColumns": [
+      "node_id",
+      "severity",
+      "rule_id",
+      "category",
+      "tier",
+      "subject",
+      "review_action"
+    ],
     "columns": [
       "id",
       "finding_id",
@@ -96,11 +241,23 @@ export const DATASETS = deepFreeze({
     "table": "active_blocks",
     "orderColumn": "blocked_at",
     "activeFilter": "expired = 0",
+    "publicSearchColumns": [
+      "node_id",
+      "rule_id"
+    ],
+    "searchColumns": [
+      "node_id",
+      "ip",
+      "rule_id",
+      "backend",
+      "reason"
+    ],
     "publicColumns": [
       "blocked_at",
       "node_id AS node_name"
     ],
     "columns": [
+      "id",
       "blocked_at",
       "node_id AS node_name",
       "ip",
@@ -108,10 +265,44 @@ export const DATASETS = deepFreeze({
       "(SELECT country FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND country IS NOT NULL AND country <> '' AND LOWER(country) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS country",
       "(SELECT asn FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND asn IS NOT NULL AND asn <> '' AND LOWER(asn) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS asn",
       "(SELECT organization FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND organization IS NOT NULL AND organization <> '' AND LOWER(organization) <> 'unknown' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS organization",
+      "(SELECT categories_json FROM probe_sources WHERE probe_sources.source_ip = active_blocks.ip AND categories_json IS NOT NULL AND categories_json <> '' AND categories_json <> '[]' ORDER BY probe_sources.last_seen DESC LIMIT 1) AS categories_json",
       "rule_id",
       "backend",
       "reason",
       "expires_at"
+    ]
+  },
+  "/api/v1/attack-fingerprints": {
+    "pageId": "attack_fingerprints",
+    "minRole": "private",
+    "table": "attack_fingerprints",
+    "orderColumn": "last_seen_at",
+    "searchColumns": [
+      "id",
+      "kind",
+      "title",
+      "verdict",
+      "summary",
+      "nodes_json",
+      "source_ips_json",
+      "rule_ids_json",
+      "categories_json"
+    ],
+    "columns": [
+      "id",
+      "last_seen_at",
+      "first_seen_at",
+      "kind",
+      "title",
+      "seen_count",
+      "node_count",
+      "source_count",
+      "rule_ids_json",
+      "categories_json",
+      "score",
+      "confidence",
+      "verdict",
+      "summary"
     ]
   },
   "/api/v1/probe-sources": {
@@ -121,6 +312,28 @@ export const DATASETS = deepFreeze({
     "optional": true,
     "table": "probe_sources",
     "orderColumn": "last_seen",
+    "publicSearchColumns": [
+      "source_ip",
+      "block_status",
+      "country",
+      "asn",
+      "organization",
+      "categories_json",
+      "rule_ids_json"
+    ],
+    "searchColumns": [
+      "node_id",
+      "source_ip",
+      "network_prefix",
+      "block_status",
+      "country",
+      "asn",
+      "organization",
+      "categories_json",
+      "rule_ids_json",
+      "latest_reason",
+      "block_reason"
+    ],
     "columns": [
       "last_seen",
       "node_id AS node_name",
@@ -143,6 +356,13 @@ export const DATASETS = deepFreeze({
     "minRole": "private",
     "table": "panel_audit_logs",
     "orderColumn": "created_at",
+    "searchColumns": [
+      "action",
+      "actor",
+      "target_type",
+      "target_id",
+      "detail_json"
+    ],
     "columns": [
       "created_at",
       "action",

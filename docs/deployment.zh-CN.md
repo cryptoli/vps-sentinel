@@ -183,7 +183,7 @@ chat_id = "<chat-id>"
 min_severity = "Medium"
 ```
 
-支持 Telegram、Email SMTP、webhook、ntfy、Gotify、Bark、ServerChan。
+支持 Telegram、Email SMTP、webhook、ntfy、Gotify、Bark、ServerChan、钉钉和飞书。
 
 ## 配置面板上报
 
@@ -243,6 +243,32 @@ sudo vs baseline approve <approval-key>
 ```
 
 软件包升级和计划维护可能产生合法漂移。刷新基线前请先看证据。
+
+## 结构化配置与本地菜单
+
+重复性配置修改建议使用结构化 `vs config` 命令，不要用 `sed` 直接改 TOML：
+
+```bash
+sudo vs config allowlist add file-path '/etc/systemd/system/snap-*.mount'
+sudo vs config allowlist add file-path '/etc/systemd/system/snap-*.scope'
+sudo vs config trusted-admin add 203.0.113.10
+sudo vs config suppress-rule add CONFIG-004 --global
+sudo vs config normalize
+sudo vs config validate
+sudo vs reload
+```
+
+`config migrate` 和 `config sync-defaults` 会把 `[allowlist]` 规范化为稳定数组格式，避免自动化脚本写出重复 key 或格式不一致的配置。
+
+需要引导式本地操作时可以使用：
+
+```bash
+sudo vs menu
+```
+
+菜单覆盖可信管理员 IP 编辑、allowlist 路径编辑、刷新基线、查看和解除主动封禁、配置校验和服务重载。它是本地 CLI 流程，不需要暴露 fleet panel。
+
+不要在面板服务器上放 SSH 私钥，也不要把大范围 SSH agent forwarding 放到面板服务器。面板是推模式仪表盘：agent 向面板上报签名遥测，常规特权操作应在各节点本地执行，或从独立管理员工作站执行。这样可以避免面板被攻破后直接成为横向进入所有节点的 SSH 跳板。
 
 ## 排障
 
