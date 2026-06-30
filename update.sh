@@ -535,6 +535,10 @@ install_optional_panel() {
     PANEL_UPDATED=1
     echo "installed optional panel web assets to $SHARE_DIR/panel/web"
   fi
+  if [ -f "$source_dir/scripts/create-panel-env.sh" ]; then
+    install -m 0755 "$source_dir/scripts/create-panel-env.sh" "$PREFIX/bin/vps-sentinel-panel-env"
+    echo "installed optional panel environment helper to $PREFIX/bin/vps-sentinel-panel-env"
+  fi
 }
 
 install_helper_scripts() {

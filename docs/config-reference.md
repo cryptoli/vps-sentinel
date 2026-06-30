@@ -41,4 +41,6 @@ The default system configuration path is `/etc/vps-sentinel/config.toml`. A user
 
 Rule suppression runs before fingerprinting, active response, storage, and notification. Suppressed findings are removed from the scan result, so do not suppress attack rules such as `SSH-003` unless that is intentional. Use `vs config suppress-rule add CONFIG-004 --global` for simple rule-level suppression, or edit `[[suppress_rules.entries]]` for a time-bounded, subject-specific accepted risk.
 
+`vs config migrate`, `vs config sync-defaults`, and `vs config normalize` render `[allowlist]` and `[suppress_rules]` in stable canonical array formats. Prefer these structured commands over `sed` when upgrading existing hosts; they preserve existing values, insert only missing defaults, and validate the resulting TOML before accepting it.
+
 See [config/config.example.toml](../config/config.example.toml) for a complete example.

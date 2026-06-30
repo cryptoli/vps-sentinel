@@ -258,7 +258,7 @@ sudo vs config validate
 sudo vs reload
 ```
 
-`config migrate` 和 `config sync-defaults` 会把 `[allowlist]` 规范化为稳定数组格式，避免自动化脚本写出重复 key 或格式不一致的配置。
+`config migrate` 和 `config sync-defaults` 会把 `[allowlist]`、`[suppress_rules]` 规范化为稳定数组格式，避免自动化脚本写出重复 key、单行/多行混用或格式不一致的配置。
 
 需要引导式本地操作时可以使用：
 
