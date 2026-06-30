@@ -257,7 +257,7 @@ sudo vs config validate
 sudo vs reload
 ```
 
-`config migrate` and `config sync-defaults` normalize the `[allowlist]` section into a stable array format so automated operations do not create duplicate TOML keys.
+`config migrate` and `config sync-defaults` normalize `[allowlist]` and `[suppress_rules]` into stable array formats so automated operations do not create duplicate TOML keys or mix one-line and multi-line styles.
 
 For guided local operations, use:
 

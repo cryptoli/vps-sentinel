@@ -56,17 +56,18 @@ jobs:
           set -euo pipefail
           target="${{ matrix.target }}"
           package_dir="dist/package-${target}"
-          mkdir -p "${package_dir}/packaging/systemd"
+          mkdir -p "${package_dir}/packaging/systemd" "${package_dir}/scripts"
           cp "target/${target}/release/vps-sentinel" "${package_dir}/vps-sentinel"
           cp "target/${target}/release/vps-sentinel-panel" "${package_dir}/vps-sentinel-panel"
           ln -s vps-sentinel "${package_dir}/vs"
           cp config/config.example.toml "${package_dir}/config.example.toml"
           cp -R panel "${package_dir}/panel"
           cp install.sh update.sh stop.sh "${package_dir}/"
+          cp scripts/create-panel-env.sh scripts/deploy-cloudflare-panel.sh "${package_dir}/scripts/"
           cp rust-toolchain.toml "${package_dir}/"
           cp README.md README.zh-CN.md LICENSE CHANGELOG.md SECURITY.md "${package_dir}/"
           cp packaging/systemd/vps-sentinel.service "${package_dir}/packaging/systemd/"
-          chmod 0755 "${package_dir}/vps-sentinel" "${package_dir}/vps-sentinel-panel" "${package_dir}"/*.sh
+          chmod 0755 "${package_dir}/vps-sentinel" "${package_dir}/vps-sentinel-panel" "${package_dir}"/*.sh "${package_dir}/scripts"/*.sh
           tar -czf "dist/vps-sentinel-${target}.tar.gz" -C "${package_dir}" .
           tar -tzf "dist/vps-sentinel-${target}.tar.gz" | sed 's#^\./##' > "dist/vps-sentinel-${target}.manifest"
           grep -qx "vps-sentinel" "dist/vps-sentinel-${target}.manifest"
@@ -78,6 +79,8 @@ jobs:
           grep -qx "install.sh" "dist/vps-sentinel-${target}.manifest"
           grep -qx "update.sh" "dist/vps-sentinel-${target}.manifest"
           grep -qx "stop.sh" "dist/vps-sentinel-${target}.manifest"
+          grep -qx "scripts/create-panel-env.sh" "dist/vps-sentinel-${target}.manifest"
+          grep -qx "scripts/deploy-cloudflare-panel.sh" "dist/vps-sentinel-${target}.manifest"
           grep -qx "rust-toolchain.toml" "dist/vps-sentinel-${target}.manifest"
           grep -qx "packaging/systemd/vps-sentinel.service" "dist/vps-sentinel-${target}.manifest"
           sha256sum "dist/vps-sentinel-${target}.tar.gz" > "dist/vps-sentinel-${target}.tar.gz.sha256"
@@ -122,6 +125,7 @@ jobs:
           install -m 0755 "${work}/stop.sh" "${root}/usr/local/bin/vps-sentinel-stop"
           install -m 0755 "${work}/update.sh" "${root}/usr/local/bin/vps-sentinel-update"
           install -m 0755 "${work}/install.sh" "${root}/usr/local/bin/vps-sentinel-install"
+          install -m 0755 "${work}/scripts/create-panel-env.sh" "${root}/usr/local/bin/vps-sentinel-panel-env"
           install -m 0644 "${work}/config.example.toml" "${root}/etc/vps-sentinel/config.toml"
           sed \
             -e "s|@BIN_PATH@|/usr/local/bin/vps-sentinel|g" \

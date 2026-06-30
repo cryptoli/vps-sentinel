@@ -1,6 +1,9 @@
 use anyhow::{bail, Result};
 use clap::{Subcommand, ValueEnum};
-use sentinel_core::{AllowlistConfig, SentinelConfig, DEFAULT_DYNAMIC_UDP_MIN_PORT};
+use sentinel_core::{
+    AllowlistConfig, SentinelConfig, SuppressRuleEntryConfig, SuppressRulesConfig,
+    DEFAULT_DYNAMIC_UDP_MIN_PORT,
+};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -232,14 +235,16 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
     let legacy_empty_ebpf_event_paths = contains_legacy_empty_ebpf_event_paths(&text);
     let legacy_dynamic_udp_min_port = contains_legacy_dynamic_udp_min_port(&text);
     let threshold_migration = legacy_ssh_threshold_migration(&text)?;
-    let allowlist_needs_normalization = normalize_allowlist_section(&text)? != text;
+    let section_normalization = managed_section_normalization(&text)?;
+    let sections_need_normalization =
+        section_normalization.allowlist_changed || section_normalization.suppress_rules_changed;
     if deprecated.is_empty()
         && !legacy_default_language
         && !legacy_ssh_response_policy
         && !legacy_empty_ebpf_event_paths
         && !legacy_dynamic_udp_min_port
         && threshold_migration.changes.is_empty()
-        && !allowlist_needs_normalization
+        && !sections_need_normalization
     {
         println!(
             "configuration does not require migration: {}",
@@ -254,7 +259,7 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
     let migrated_language = migrate_legacy_default_language(&migrated_ebpf);
     let migrated_policy = migrate_legacy_ssh_response_policy(&migrated_language);
     let migrated_udp = migrate_legacy_dynamic_udp_min_port(&migrated_policy)?;
-    let migrated = normalize_allowlist_section(&migrated_udp)?;
+    let migrated = normalize_managed_sections(&migrated_udp)?;
     let _: SentinelConfig = toml::from_str(&migrated)?;
     if dry_run {
         if !deprecated.is_empty() {
@@ -290,9 +295,14 @@ fn migrate_config(path: &Path, dry_run: bool) -> Result<()> {
                 println!("- {}: {} -> {}", change.path, change.old, change.new);
             }
         }
-        if allowlist_needs_normalization {
+        if sections_need_normalization {
             println!("sections that would be normalized:");
-            println!("- allowlist");
+            if section_normalization.allowlist_changed {
+                println!("- allowlist");
+            }
+            if section_normalization.suppress_rules_changed {
+                println!("- suppress_rules");
+            }
         }
         return Ok(());
     }
@@ -315,13 +325,15 @@ fn sync_config_defaults(path: &Path, dry_run: bool) -> Result<()> {
     let normalized = migrate_legacy_dynamic_udp_min_port(&normalized_paths)?;
     let missing = missing_default_entries(&normalized)?;
     let missing_inserted = insert_missing_default_keys(&normalized, &missing)?;
-    let updated = normalize_allowlist_section(&missing_inserted)?;
-    let allowlist_needs_normalization = updated != missing_inserted;
+    let section_normalization = managed_section_normalization(&missing_inserted)?;
+    let updated = section_normalization.normalized;
+    let sections_need_normalization =
+        section_normalization.allowlist_changed || section_normalization.suppress_rules_changed;
     if missing.is_empty()
         && threshold_migration.changes.is_empty()
         && !legacy_empty_ebpf_event_paths
         && !legacy_dynamic_udp_min_port
-        && !allowlist_needs_normalization
+        && !sections_need_normalization
     {
         println!(
             "configuration already contains all default keys: {}",
@@ -359,9 +371,14 @@ fn sync_config_defaults(path: &Path, dry_run: bool) -> Result<()> {
                 println!("- {}", entry.path);
             }
         }
-        if allowlist_needs_normalization {
+        if sections_need_normalization {
             println!("sections that would be normalized:");
-            println!("- allowlist");
+            if section_normalization.allowlist_changed {
+                println!("- allowlist");
+            }
+            if section_normalization.suppress_rules_changed {
+                println!("- suppress_rules");
+            }
         }
         return Ok(());
     }
@@ -404,7 +421,7 @@ pub(crate) fn remove_trusted_admin_ip(path: &Path, ip: &str) -> Result<()> {
 
 fn normalize_config(path: &Path, dry_run: bool) -> Result<()> {
     let text = fs::read_to_string(path)?;
-    let normalized = normalize_allowlist_section(&text)?;
+    let normalized = normalize_managed_sections(&text)?;
     let config: SentinelConfig = toml::from_str(&normalized)?;
     config.validate()?;
     if normalized == text {
@@ -545,7 +562,11 @@ fn update_suppress_rule_ids(path: &Path, command: SuppressRuleCommand) -> Result
     };
     let config: SentinelConfig = value.clone().try_into()?;
     config.validate()?;
-    let updated = toml::to_string_pretty(&value)?;
+    let updated = replace_or_insert_section(
+        &text,
+        "suppress_rules",
+        &render_suppress_rules_section(&config.suppress_rules)?,
+    );
     write_updated_config(path, &text, &updated, &message)
 }
 
@@ -795,6 +816,35 @@ fn normalize_allowlist_section(text: &str) -> Result<String> {
     ))
 }
 
+fn normalize_suppress_rules_section(text: &str) -> Result<String> {
+    let config: SentinelConfig = toml::from_str(text)?;
+    Ok(replace_or_insert_section(
+        text,
+        "suppress_rules",
+        &render_suppress_rules_section(&config.suppress_rules)?,
+    ))
+}
+
+fn normalize_managed_sections(text: &str) -> Result<String> {
+    Ok(managed_section_normalization(text)?.normalized)
+}
+
+struct ManagedSectionNormalization {
+    normalized: String,
+    allowlist_changed: bool,
+    suppress_rules_changed: bool,
+}
+
+fn managed_section_normalization(text: &str) -> Result<ManagedSectionNormalization> {
+    let normalized_allowlist = normalize_allowlist_section(text)?;
+    let normalized = normalize_suppress_rules_section(&normalized_allowlist)?;
+    Ok(ManagedSectionNormalization {
+        allowlist_changed: normalized_allowlist != text,
+        suppress_rules_changed: normalized != normalized_allowlist,
+        normalized,
+    })
+}
+
 fn render_allowlist_section(allowlist: &AllowlistConfig) -> String {
     format!(
         "[allowlist]\nusers = {}\nips = {}\nprocess_paths = {}\nprocess_command_contains = {}\nlistening_ports = {}\nfile_paths = {}\nweb_paths = {}",
@@ -806,6 +856,42 @@ fn render_allowlist_section(allowlist: &AllowlistConfig) -> String {
         render_path_array(&allowlist.file_paths),
         render_path_array(&allowlist.web_paths),
     )
+}
+
+fn render_suppress_rules_section(config: &SuppressRulesConfig) -> Result<String> {
+    let mut output = vec![
+        "[suppress_rules]".to_string(),
+        format!("enabled = {}", config.enabled),
+        format!("rule_ids = {}", render_string_array(&config.rule_ids)),
+    ];
+    if config.entries.is_empty() {
+        output.push("entries = []".to_string());
+    } else {
+        output.push("entries = [".to_string());
+        let mut entries = config.entries.clone();
+        entries.sort_by_key(suppress_entry_sort_key);
+        for entry in entries {
+            output.push(format!("  {},", render_suppress_rule_entry(&entry)?));
+        }
+        output.push(']'.to_string());
+    }
+    Ok(output.join("\n"))
+}
+
+fn suppress_entry_sort_key(entry: &SuppressRuleEntryConfig) -> String {
+    format!("{}:{}", entry.id, entry.rule_ids.join(","))
+}
+
+fn render_suppress_rule_entry(entry: &SuppressRuleEntryConfig) -> Result<String> {
+    Ok(format!(
+        "{{ id = {}, rule_ids = {}, subjects = {}, path_patterns = {}, expires_at = {}, reason = {} }}",
+        format_toml_string(&entry.id)?,
+        render_inline_string_array(&entry.rule_ids)?,
+        render_inline_string_array(&entry.subjects)?,
+        render_inline_string_array(&entry.path_patterns)?,
+        format_toml_string(&entry.expires_at)?,
+        format_toml_string(&entry.reason)?,
+    ))
 }
 
 fn render_string_array(values: &[String]) -> String {
@@ -853,6 +939,20 @@ fn render_array(values: impl IntoIterator<Item = toml::Value>) -> String {
     }
     output.push(']');
     output
+}
+
+fn render_inline_string_array(values: &[String]) -> Result<String> {
+    let mut rendered = values
+        .iter()
+        .map(|value| format_toml_string(value))
+        .collect::<Result<Vec<_>>>()?;
+    rendered.sort();
+    rendered.dedup();
+    Ok(format!("[{}]", rendered.join(", ")))
+}
+
+fn format_toml_string(value: &str) -> Result<String> {
+    format_toml_value(&toml::Value::String(value.to_string()))
 }
 
 fn replace_or_insert_section(text: &str, section: &str, replacement: &str) -> String {
@@ -1559,7 +1659,8 @@ mod tests {
         migrate_legacy_default_language, migrate_legacy_dynamic_udp_min_port,
         migrate_legacy_empty_ebpf_event_paths, migrate_legacy_ssh_response_policy,
         migrate_legacy_ssh_thresholds, missing_default_entries, next_backup_path,
-        normalize_allowlist_section, remove_deprecated_keys,
+        normalize_allowlist_section, normalize_managed_sections, remove_deprecated_keys,
+        update_suppress_rule_ids, SuppressRuleCommand,
     };
     use sentinel_core::SentinelConfig;
     use std::fs;
@@ -1742,6 +1843,55 @@ mod tests {
         assert!(normalized.contains("  \"/var/lib/app\",\n"));
         let config: SentinelConfig = toml::from_str(&normalized).unwrap();
         assert_eq!(config.allowlist.file_paths.len(), 2);
+    }
+
+    #[test]
+    fn normalizes_managed_sections_without_duplicate_suppress_rules() {
+        let text = "[agent]\nscan_interval_seconds = 60\n\n[suppress_rules]\nrule_ids = [\"CONFIG-004\", \"SSH-CFG-001\"]\nenabled = true\nentries = [{ id = \"ssh\", rule_ids = [\"SSH-CFG-001\"], subjects = [\"sshd_config\"], path_patterns = [\"/etc/ssh/*\"], expires_at = \"\", reason = \"accepted hardening\" }]\n\n[allowlist]\nfile_paths = [\"/var/lib/app\"]\n";
+
+        let normalized = normalize_managed_sections(text).unwrap();
+
+        assert_eq!(normalized.matches("[suppress_rules]").count(), 1);
+        assert!(normalized.contains("rule_ids = [\n"));
+        assert!(normalized.contains("  \"CONFIG-004\",\n"));
+        assert!(normalized.contains("entries = [\n"));
+        assert!(normalized.contains("reason = \"accepted hardening\""));
+        let config: SentinelConfig = toml::from_str(&normalized).unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.suppress_rules.rule_ids.len(), 2);
+        assert_eq!(config.suppress_rules.entries.len(), 1);
+    }
+
+    #[test]
+    fn suppress_rule_update_preserves_unrelated_config_text() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+        fs::write(
+            &config_path,
+            "# keep this comment\n[agent]\nscan_interval_seconds = 120\n\n[suppress_rules]\nenabled = true\nrule_ids = []\nentries = []\n",
+        )
+        .unwrap();
+
+        update_suppress_rule_ids(
+            &config_path,
+            SuppressRuleCommand::Add {
+                rule_id: "SSH-CFG-001".to_string(),
+                reason: None,
+                subject: Vec::new(),
+                path_pattern: Vec::new(),
+                expires_at: None,
+                global: true,
+            },
+        )
+        .unwrap();
+
+        let text = fs::read_to_string(&config_path).unwrap();
+        assert!(text.contains("# keep this comment"));
+        assert!(text.contains("scan_interval_seconds = 120"));
+        assert_eq!(text.matches("[suppress_rules]").count(), 1);
+        assert!(text.contains("  \"SSH-CFG-001\",\n"));
+        let config: SentinelConfig = toml::from_str(&text).unwrap();
+        config.validate().unwrap();
     }
 
     #[test]

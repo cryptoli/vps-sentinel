@@ -44,7 +44,7 @@ sudo vs config validate
 sudo vs reload
 ```
 
-`config migrate`、`config sync-defaults` 和 `config normalize` 会把 `[allowlist]` 规范化成稳定数组格式，避免自动化脚本写出重复 key 或单行/多行混用格式。
+`config migrate`、`config sync-defaults` 和 `config normalize` 会把 `[allowlist]`、`[suppress_rules]` 规范化成稳定数组格式，避免自动化脚本写出重复 key 或单行/多行混用格式。
 
 ## 噪音控制与规则静默
 

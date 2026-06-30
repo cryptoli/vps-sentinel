@@ -133,7 +133,29 @@ credential_value() {
   file="$1"
   key="$2"
   [ -f "$file" ] || return 0
-  sed -n "s/^${key}='\\([^']*\\)'$/\\1/p" "$file" | tail -n 1
+  line="$(grep "^${key}='" "$file" 2>/dev/null | tail -n 1 || true)"
+  [ -n "$line" ] || return 0
+  value="${line#"$key='"}"
+  value="${value%"'"}"
+  unescape_shell_quote_value "$value"
+}
+
+unescape_shell_quote_value() {
+  value="$1"
+  quote_escape="'\\''"
+  while :; do
+    case "$value" in
+      *"$quote_escape"*)
+        prefix="${value%%"$quote_escape"*}"
+        suffix="${value#*"$quote_escape"}"
+        value="${prefix}'${suffix}"
+        ;;
+      *)
+        printf '%s\n' "$value"
+        return
+        ;;
+    esac
+  done
 }
 
 shell_quote_value() {

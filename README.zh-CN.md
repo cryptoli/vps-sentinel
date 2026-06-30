@@ -23,7 +23,7 @@
 | 网络与 Web 探查 | 公网监听 owner、防火墙上下文、可信代理真实客户端 IP 还原、Web 探查家族分类、攻击路径聚合、错误爆发和封禁候选。 |
 | 主动响应 | 对高置信 SSH/Web 攻击源执行可选 nftables/iptables 来源 IP 封禁，支持临时/永久升级、白名单、可信代理保护和 CLI 解封。 |
 | 攻击指纹 | 使用精确 hash 和 SimHash 风格近似匹配聚合同一攻击手法，即使来源 IP 变化也能归类。 |
-| 静默与本地运维 | 结构化配置迁移、allowlist 规范化渲染、按规则 ID 的已接受风险静默，以及本地 `vs menu`，不把面板变成 SSH 控制面。 |
+| 静默与本地运维 | 结构化配置迁移、allowlist 和 suppress_rules 规范化渲染、按规则 ID 的已接受风险静默，以及本地 `vs menu`，不把面板变成 SSH 控制面。 |
 | 报告与通知 | 支持每日安全报告，以及 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan、钉钉和飞书；通知默认中文。 |
 | 多 VPS 面板 | 推模式 Rust 自建面板或 Cloudflare Worker/D1 面板，支持公开/私有访问、隐私脱敏、节点指标、黑名单归属、复核流程、自建 WebSocket 刷新和主题扩展入口。 |
 | 资源控制 | 有界日志解析、事件预算、SQLite 保留策略、数据库大小限制、原始证据裁剪，对小内存 VPS 友好。 |
@@ -78,7 +78,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 | `vs menu` | 本地引导式运维：可信管理员 IP、allowlist 路径、刷新基线、查看/解除封禁、配置校验和服务重载。 |
 | `vs config validate` | 校验配置文件。 |
 | `vs config migrate` | 执行兼容配置迁移。 |
-| `vs config normalize` | 将 `[allowlist]` 等支持的配置块重写成规范数组格式。 |
+| `vs config normalize` | 将 `[allowlist]`、`[suppress_rules]` 等支持的配置块重写成规范数组格式。 |
 | `vs config suppress-rule add CONFIG-004 --global` | 对已复核接受的风险按规则静默，不需要把底层文件排除出完整性监控。 |
 
 ## Token 类型

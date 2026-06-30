@@ -11,7 +11,7 @@
 
 自建面板和 Cloudflare 面板应在鉴权、公开/私有页面权限、隐私脱敏、节点展示、黑名单展示、复核接口和主题加载上保持一致。当前有意保留的差异只有刷新传输方式：自建 Rust 面板支持 WebSocket 事件，Cloudflare Worker 部署在未引入有状态广播层时使用 REST fallback。
 
-个人或少量 VPS 场景优先使用私有自建绑定，例如 `127.0.0.1:8858`、Tailscale 地址或其他内网地址。自建环境生成脚本默认写入 `PANEL_BIND='127.0.0.1:8858'`；只有浏览器和 agent 都能访问同一个私有网络时，才把它改成 `PANEL_BIND='<tailscale-ip>:8858'`。公网 HTTPS 反向代理仍然支持，但应当是明确选择，而不是默认暴露面。
+个人或少量 VPS 场景优先使用私有自建绑定，例如 `127.0.0.1:8858`、Tailscale 地址或其他内网地址。自建环境生成脚本默认写入 `PANEL_BIND='127.0.0.1:8858'`；只有浏览器和 agent 都能访问同一个私有网络时，才把它改成 `PANEL_BIND='<tailscale-ip>:8858'`。重复运行生成脚本会保留已有面板环境值，包括绑定地址、数据库 URL、Web 目录、公开页面列表、单节点 secret、主题、body limit、token、共享 secret 和管理路径；只有显式传入新的环境变量时才覆盖。公网 HTTPS 反向代理仍然支持，但应当是明确选择，而不是默认暴露面。
 
 ## Token 和管理路径
 
@@ -140,7 +140,36 @@ sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env scripts/create-panel-env.s
 sudo cat /etc/vps-sentinel-panel/panel.env
 ```
 
-如果环境文件已经存在，生成脚本会复用已有值；缺少的 `PANEL_SHARED_SECRET`、`PANEL_TOKEN`、`PANEL_ADMIN_PATH` 会随机生成。
+通过一键安装脚本或 deb/rpm 包安装后，同一个助手命令会安装为：
+
+```bash
+sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env vps-sentinel-panel-env
+```
+
+下面的环境文件示例统一使用安装后的 helper；如果你是在源码 checkout 里直接运行、还没有安装，请把 `vps-sentinel-panel-env` 替换成 `scripts/create-panel-env.sh`。
+
+如果环境文件已经存在，生成脚本会复用已有值；缺少的 `PANEL_SHARED_SECRET`、`PANEL_TOKEN`、`PANEL_ADMIN_PATH` 会随机生成。如果要运行完全私有、无公开页面的面板，请显式设置 `PANEL_PUBLIC_PAGES=""`；如果不传该变量，会保留已有值或默认公开页面列表。
+
+私有 Tailscale 或内网绑定示例：
+
+```bash
+sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env \
+PANEL_BIND="<tailscale-or-private-ip>:8858" \
+vps-sentinel-panel-env
+```
+
+每台 agent 使用同一个可达的私有地址：
+
+```toml
+[panel]
+enabled = true
+url = "http://<tailscale-or-private-ip>:8858/api/v1/ingest"
+node_name = "prod-sg-1"
+secret = "<panel.env 里的 PANEL_SHARED_SECRET>"
+privacy_mode = "strict"
+```
+
+不要绑定 `0.0.0.0`，除非主机防火墙、VPN 策略和 TLS/反向代理规则已经限制访问来源。
 
 可选本地 GeoIP 数据库：
 
@@ -148,7 +177,7 @@ sudo cat /etc/vps-sentinel-panel/panel.env
 sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env \
 PANEL_GEOIP_CITY_DB="/opt/geoip/GeoLite2-City.mmdb" \
 PANEL_GEOIP_ASN_DB="/opt/geoip/GeoLite2-ASN.mmdb" \
-scripts/create-panel-env.sh
+vps-sentinel-panel-env
 ```
 
 `PANEL_GEOIP_CITY_DB` 和 `PANEL_GEOIP_ASN_DB` 支持 MaxMind 兼容的 MMDB 文件，包括 MaxMind GeoLite2/GeoIP2 和 DB-IP Lite/Commercial 数据库。它们是可选项，只用于自建面板看到的真实远端请求 IP；如果 agent 上报到 `localhost` 或经过内网代理，面板会使用 agent 自己上传的脱敏国家/地区/城市，而不是把 `127.0.0.1` 当成节点地域。
@@ -159,21 +188,21 @@ scripts/create-panel-env.sh
 sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env \
 PANEL_DB_BACKEND=sqlite \
 PANEL_DATABASE_URL='sqlite:///var/lib/vps-sentinel-panel/panel.db' \
-scripts/create-panel-env.sh
+vps-sentinel-panel-env
 ```
 
 ```bash
 sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env \
 PANEL_DB_BACKEND=postgres \
 PANEL_DATABASE_URL='postgres://vps_sentinel:password@127.0.0.1:5432/vps_sentinel' \
-scripts/create-panel-env.sh
+vps-sentinel-panel-env
 ```
 
 ```bash
 sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env \
 PANEL_DB_BACKEND=mysql \
 PANEL_DATABASE_URL='mysql://vps_sentinel:password@127.0.0.1:3306/vps_sentinel' \
-scripts/create-panel-env.sh
+vps-sentinel-panel-env
 ```
 
 ### 3. 创建 systemd 服务

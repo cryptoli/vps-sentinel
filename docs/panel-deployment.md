@@ -11,7 +11,7 @@ The fleet panel is optional. Agents continue to monitor locally and push signed,
 
 Self-hosted and Cloudflare panels are expected to behave consistently for auth, public/private page access, privacy redaction, node display, blacklist display, review APIs, and theme loading. The main intentional difference is refresh transport: self-hosted Rust supports WebSocket events, while the current Cloudflare Worker deployment uses REST fallback unless a stateful broadcast layer is added.
 
-For personal fleets, prefer a private self-hosted panel binding such as `127.0.0.1:8858`, a Tailscale address, or another private interface. The self-hosted environment generator defaults to `PANEL_BIND='127.0.0.1:8858'`; set `PANEL_BIND='<tailscale-ip>:8858'` only when browser and agents reach that private network. Public HTTPS reverse proxy deployment remains supported, but it should be a deliberate choice.
+For personal fleets, prefer a private self-hosted panel binding such as `127.0.0.1:8858`, a Tailscale address, or another private interface. The self-hosted environment generator defaults to `PANEL_BIND='127.0.0.1:8858'`; set `PANEL_BIND='<tailscale-ip>:8858'` only when browser and agents reach that private network. Re-running the generator preserves existing panel environment values, including bind address, database URL, web directory, public-page list, per-node secrets, theme settings, body limits, token, shared secret, and admin path unless you explicitly pass replacement environment variables. Public HTTPS reverse proxy deployment remains supported, but it should be a deliberate choice.
 
 ## Token and Path Model
 
@@ -140,7 +140,36 @@ sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env scripts/create-panel-env.s
 sudo cat /etc/vps-sentinel-panel/panel.env
 ```
 
-The generator preserves existing values when the file already exists. Missing `PANEL_SHARED_SECRET`, `PANEL_TOKEN`, and `PANEL_ADMIN_PATH` are generated randomly.
+When installed from the one-line installer or deb/rpm packages, the same helper is available as:
+
+```bash
+sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env vps-sentinel-panel-env
+```
+
+The remaining environment examples use the installed helper. If you are running directly from a source checkout before installation, replace `vps-sentinel-panel-env` with `scripts/create-panel-env.sh`.
+
+The generator preserves existing values when the file already exists. Missing `PANEL_SHARED_SECRET`, `PANEL_TOKEN`, and `PANEL_ADMIN_PATH` are generated randomly. To run a private-only panel with no public pages, explicitly set `PANEL_PUBLIC_PAGES=""`; an omitted value preserves the existing setting or the default public page list.
+
+Private Tailscale or intranet binding example:
+
+```bash
+sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env \
+PANEL_BIND="<tailscale-or-private-ip>:8858" \
+vps-sentinel-panel-env
+```
+
+Use the same reachable private address in each agent:
+
+```toml
+[panel]
+enabled = true
+url = "http://<tailscale-or-private-ip>:8858/api/v1/ingest"
+node_name = "prod-sg-1"
+secret = "<PANEL_SHARED_SECRET from panel.env>"
+privacy_mode = "strict"
+```
+
+Do not bind to `0.0.0.0` unless the host firewall, VPN policy, and TLS/reverse proxy rules already restrict access.
 
 Optional local GeoIP databases:
 
@@ -148,7 +177,7 @@ Optional local GeoIP databases:
 sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env \
 PANEL_GEOIP_CITY_DB="/opt/geoip/GeoLite2-City.mmdb" \
 PANEL_GEOIP_ASN_DB="/opt/geoip/GeoLite2-ASN.mmdb" \
-scripts/create-panel-env.sh
+vps-sentinel-panel-env
 ```
 
 `PANEL_GEOIP_CITY_DB` and `PANEL_GEOIP_ASN_DB` accept MaxMind-compatible MMDB files, including MaxMind GeoLite2/GeoIP2 and DB-IP Lite/Commercial databases. They are optional. They enrich real remote request IPs seen by the self-hosted panel; when an agent reports to `localhost` or through an internal proxy, the panel uses the agent's own sanitized country/region/city fields instead of treating `127.0.0.1` as the node location.
@@ -159,21 +188,21 @@ Optional database examples:
 sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env \
 PANEL_DB_BACKEND=sqlite \
 PANEL_DATABASE_URL='sqlite:///var/lib/vps-sentinel-panel/panel.db' \
-scripts/create-panel-env.sh
+vps-sentinel-panel-env
 ```
 
 ```bash
 sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env \
 PANEL_DB_BACKEND=postgres \
 PANEL_DATABASE_URL='postgres://vps_sentinel:password@127.0.0.1:5432/vps_sentinel' \
-scripts/create-panel-env.sh
+vps-sentinel-panel-env
 ```
 
 ```bash
 sudo PANEL_ENV_FILE=/etc/vps-sentinel-panel/panel.env \
 PANEL_DB_BACKEND=mysql \
 PANEL_DATABASE_URL='mysql://vps_sentinel:password@127.0.0.1:3306/vps_sentinel' \
-scripts/create-panel-env.sh
+vps-sentinel-panel-env
 ```
 
 ### 3. Create systemd service

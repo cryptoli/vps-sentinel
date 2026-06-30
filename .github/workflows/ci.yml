@@ -48,6 +48,7 @@ jobs:
           bash -n install.sh
           bash -n update.sh
           bash -n stop.sh
+          bash -n scripts/create-panel-env.sh
           bash -n tests/install_script_smoke.sh
       - name: Installer smoke test
         run: bash tests/install_script_smoke.sh
