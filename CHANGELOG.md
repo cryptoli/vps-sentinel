@@ -12,6 +12,7 @@
 - Notifications: added DingTalk and Feishu webhook channels with business-response validation so HTTP 200 provider errors are reported as delivery failures.
 - Panel security posture: kept the panel as a push-mode dashboard rather than an SSH command plane, defaulted self-hosted binding to `127.0.0.1:8858`, documented Tailscale/private binding guidance, and capped self-hosted panel write body sizes.
 - Trusted-proxy active-response safety: ensured IPs matching `[web].trusted_proxy_cidrs` never become block candidates, so CDN/reverse-proxy edges are not blocked even when a web log cannot resolve the true client IP.
+- Upgrade and packaging safety: preserved existing self-hosted panel environment values across reruns, allowed explicit private-only `PANEL_PUBLIC_PAGES=""`, installed the panel environment helper from release/deb/rpm packages, and normalized `[suppress_rules]` without rewriting unrelated TOML.
 
 ## 0.3.0
 
