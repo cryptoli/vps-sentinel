@@ -6,7 +6,7 @@ use crate::detectors::web_rules::{probe_family_blocks_on_single_attempt, probe_f
 use crate::risk_score::{confidence_percent, unified_score};
 use crate::storage::SqliteStore;
 use crate::utils::command::command_output;
-use crate::utils::ip::is_public_remote_ip;
+use crate::utils::ip::{ip_matches_patterns, is_public_remote_ip};
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use sentinel_core::{Finding, SentinelConfig, SentinelError, SentinelResult};
 use serde::{Deserialize, Serialize};
@@ -849,6 +849,9 @@ fn filter_block_candidate(
     config: &SentinelConfig,
 ) -> Option<BlockCandidate> {
     if field_is_allowlisted(&candidate.ip.to_string(), &config.allowlist.ips) {
+        return None;
+    }
+    if ip_matches_patterns(&candidate.ip.to_string(), &config.web.trusted_proxy_cidrs) {
         return None;
     }
     if !is_public_remote_ip(candidate.ip) {
@@ -1848,6 +1851,20 @@ mod tests {
         let candidates = block_candidates(&[finding], &config);
 
         assert!(candidates.is_empty());
+    }
+
+    #[test]
+    fn trusted_proxy_cidr_ips_are_never_block_candidates() {
+        let mut config = SentinelConfig::default();
+        config.active_response.enabled = true;
+        config.active_response.web_probe_block_threshold = 1;
+        let cloudflare_edge = web_finding("104.22.7.51", "env_file", "successful_response", 1);
+        let direct_source = web_finding("8.8.8.8", "env_file", "successful_response", 1);
+
+        let candidates = block_candidates(&[cloudflare_edge, direct_source], &config);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].ip.to_string(), "8.8.8.8");
     }
 
     #[test]
