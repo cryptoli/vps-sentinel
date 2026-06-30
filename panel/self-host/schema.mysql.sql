@@ -181,6 +181,7 @@ CREATE INDEX idx_panel_reviews_signature ON panel_reviews(target_type, review_si
 CREATE INDEX idx_panel_audit_logs_created ON panel_audit_logs(created_at);
 CREATE INDEX idx_panel_action_requests_status ON panel_action_requests(status, requested_at);
 CREATE INDEX idx_panel_action_requests_target ON panel_action_requests(target_type, target_id);
+CREATE INDEX idx_panel_action_requests_node_status ON panel_action_requests(node_name, status, requested_at);
 CREATE INDEX idx_attack_fingerprints_seen ON attack_fingerprints(last_seen_at);
 CREATE INDEX idx_attack_fingerprints_score ON attack_fingerprints(score, last_seen_at);
 CREATE INDEX idx_attack_fingerprints_verdict ON attack_fingerprints(verdict, last_seen_at);

@@ -3,10 +3,10 @@ use super::{
     parse_panel_themes, redact_ip_text, redact_panel_value, request_path_matches_admin,
     resolve_panel_role, scope_panel_value, scope_probe_source_rows, settings, verify_private_auth,
     verify_private_write_auth, AppState, DbValue, FindingReview, FindingReviewRequest, PageQuery,
-    PageRequest, PanelActionRequest, PanelActionRequestBody, PanelDataset, PanelReview,
-    PanelReviewRequest, PanelRole, PanelStreamEvent, Repository, RepositoryDriver,
-    ReviewTargetType, SecretResolver, SettingsQuery, DEFAULT_ADMIN_PATH, DEFAULT_MAX_BODY_BYTES,
-    DEFAULT_PANEL_WRITE_BODY_BYTES, DEFAULT_THEMES, MAX_PAGE_LIMIT,
+    PageRequest, PanelDataset, PanelReview, PanelReviewRequest, PanelRole, PanelStreamEvent,
+    Repository, RepositoryDriver, ReviewTargetType, SecretResolver, SettingsQuery,
+    DEFAULT_ADMIN_PATH, DEFAULT_MAX_BODY_BYTES, DEFAULT_PANEL_WRITE_BODY_BYTES, DEFAULT_THEMES,
+    MAX_PAGE_LIMIT,
 };
 use crate::geoip::PanelGeoIpResolver;
 use axum::extract::{Query, State};
@@ -124,55 +124,6 @@ fn baseline_drift_review_signature_uses_stored_category() {
             "suspicious"
         )
     );
-}
-
-#[test]
-fn panel_action_request_requires_object_payload() {
-    let valid = PanelActionRequest::try_from(PanelActionRequestBody {
-        action: "unblock".to_string(),
-        target_type: "active_block".to_string(),
-        target_id: "block-1".to_string(),
-        node_name: "node-a".to_string(),
-        payload: serde_json::json!({"reason": "operator review"}),
-        requester: "panel".to_string(),
-    })
-    .expect("object payload should be valid");
-
-    assert_eq!(valid.payload["reason"], "operator review");
-
-    let invalid = PanelActionRequest::try_from(PanelActionRequestBody {
-        action: "unblock".to_string(),
-        target_type: "active_block".to_string(),
-        target_id: "block-1".to_string(),
-        node_name: "node-a".to_string(),
-        payload: serde_json::json!("not-an-object"),
-        requester: "panel".to_string(),
-    })
-    .expect_err("scalar payload should fail");
-
-    assert_eq!(invalid.code, "invalid_action_payload");
-
-    let traversal = PanelActionRequest::try_from(PanelActionRequestBody {
-        action: "unblock".to_string(),
-        target_type: "active_block".to_string(),
-        target_id: "block-1".to_string(),
-        node_name: "node-a".to_string(),
-        payload: serde_json::json!({"reason": "../etc/passwd"}),
-        requester: "panel".to_string(),
-    })
-    .expect_err("path traversal payload should fail");
-    assert_eq!(traversal.code, "invalid_action_payload_path");
-
-    let bad_key = PanelActionRequest::try_from(PanelActionRequestBody {
-        action: "unblock".to_string(),
-        target_type: "active_block".to_string(),
-        target_id: "block-1".to_string(),
-        node_name: "node-a".to_string(),
-        payload: serde_json::json!({"../path": "value"}),
-        requester: "panel".to_string(),
-    })
-    .expect_err("payload keys should be constrained");
-    assert_eq!(bad_key.code, "invalid_action_payload_key");
 }
 
 #[test]

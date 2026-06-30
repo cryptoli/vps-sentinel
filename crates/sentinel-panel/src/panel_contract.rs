@@ -25,7 +25,6 @@ const STREAM_REFRESH_DATASETS: &[&str] = &[
     "attack_fingerprints",
     "probe_sources",
     "audit_logs",
-    "action_requests",
 ];
 pub(crate) const PUBLIC_PROBE_SOURCE_HIDDEN_KEYS: &[&str] = &[
     "node_name",
@@ -160,58 +159,6 @@ pub(crate) fn panel_dictionaries() -> serde_json::Value {
           "labelKey": "expected",
           "tone": "green",
           "rank": 30
-        }
-      ],
-      "actionKinds": [
-        {
-          "value": "unblock",
-          "labelKey": "unblock",
-          "tone": "green",
-          "rank": 10
-        },
-        {
-          "value": "refresh_baseline",
-          "labelKey": "refresh_baseline",
-          "tone": "blue",
-          "rank": 20
-        },
-        {
-          "value": "allowlist",
-          "labelKey": "allowlist",
-          "tone": "orange",
-          "rank": 30
-        }
-      ],
-      "actionTargetTypes": [
-        {
-          "value": "active_block",
-          "labelKey": "blocks",
-          "tone": "blue",
-          "rank": 10
-        },
-        {
-          "value": "probe_source",
-          "labelKey": "blacklist",
-          "tone": "orange",
-          "rank": 20
-        },
-        {
-          "value": "baseline_drift",
-          "labelKey": "drifts",
-          "tone": "green",
-          "rank": 30
-        },
-        {
-          "value": "finding",
-          "labelKey": "findings",
-          "tone": "red",
-          "rank": 40
-        },
-        {
-          "value": "incident",
-          "labelKey": "incidents",
-          "tone": "red",
-          "rank": 50
         }
       ]
     })

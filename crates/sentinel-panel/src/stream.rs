@@ -1,4 +1,5 @@
 use super::*;
+use uuid::Uuid;
 
 pub(super) async fn stream_ticket(
     State(state): State<AppState>,

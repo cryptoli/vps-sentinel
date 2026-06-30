@@ -3,8 +3,14 @@ mod sections;
 
 use crate::error::{SentinelError, SentinelResult};
 use crate::MinuteWindow;
+use glob::Pattern;
 use serde::{Deserialize, Serialize};
-use std::{env, fs, path::Path, process::Command, sync::OnceLock};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::OnceLock,
+};
 
 pub use notifications::{
     BarkConfig, EmailConfig, EmailTlsMode, GotifyConfig, NotificationLanguage,
@@ -61,14 +67,17 @@ pub struct SentinelConfig {
     pub maintenance: MaintenanceConfig,
     pub suppress_rules: SuppressRulesConfig,
     pub allowlist: AllowlistConfig,
+    #[serde(skip)]
+    pub source_path: Option<PathBuf>,
 }
 
 impl SentinelConfig {
     /// Load configuration from TOML.
     pub fn load(path: &Path) -> SentinelResult<Self> {
         let text = fs::read_to_string(path).map_err(|err| SentinelError::io(path, err))?;
-        let config: Self =
+        let mut config: Self =
             toml::from_str(&text).map_err(|err| SentinelError::Config(err.to_string()))?;
+        config.source_path = Some(path.to_path_buf());
         config.validate()?;
         Ok(config)
     }
@@ -109,6 +118,7 @@ impl SentinelConfig {
         }
         validate_resource_budget(&self.resource_budget)?;
         validate_risk_scoring(&self.risk_scoring)?;
+        validate_allowlist(&self.allowlist)?;
         validate_ip_patterns("ssh.trusted_admin_ips", &self.ssh.trusted_admin_ips)?;
         if self.ssh.failed_login_threshold == 0 {
             return Err(SentinelError::Config(
@@ -468,6 +478,7 @@ fn validate_suppress_rules(config: &SuppressRulesConfig) -> SentinelResult<()> {
     for (index, entry) in config.entries.iter().enumerate() {
         let label = format!("suppress_rules.entries[{index}]");
         validate_rule_ids(&format!("{label}.rule_ids"), &entry.rule_ids)?;
+        validate_glob_patterns(&format!("{label}.path_patterns"), &entry.path_patterns)?;
         if entry.rule_ids.is_empty() {
             return Err(SentinelError::Config(format!(
                 "{label}.rule_ids must contain at least one rule id"
@@ -487,6 +498,39 @@ fn validate_suppress_rules(config: &SuppressRulesConfig) -> SentinelResult<()> {
         }
     }
     Ok(())
+}
+
+fn validate_allowlist(config: &AllowlistConfig) -> SentinelResult<()> {
+    validate_path_glob_patterns("allowlist.process_paths", &config.process_paths)?;
+    validate_path_glob_patterns("allowlist.file_paths", &config.file_paths)?;
+    validate_path_glob_patterns("allowlist.web_paths", &config.web_paths)
+}
+
+fn validate_path_glob_patterns(name: &str, values: &[std::path::PathBuf]) -> SentinelResult<()> {
+    let patterns = values
+        .iter()
+        .map(|value| value.to_string_lossy().to_string())
+        .collect::<Vec<_>>();
+    validate_glob_patterns(name, &patterns)
+}
+
+fn validate_glob_patterns(name: &str, values: &[String]) -> SentinelResult<()> {
+    for value in values {
+        let normalized = value.trim().replace('\\', "/");
+        if normalized.is_empty() || !path_pattern_has_glob_meta(&normalized) {
+            continue;
+        }
+        Pattern::new(&normalized).map_err(|err| {
+            SentinelError::Config(format!(
+                "{name} entry '{value}' has invalid glob syntax: {err}"
+            ))
+        })?;
+    }
+    Ok(())
+}
+
+fn path_pattern_has_glob_meta(value: &str) -> bool {
+    value.contains('*') || value.contains('?') || value.contains('[')
 }
 
 fn validate_rule_ids(name: &str, values: &[String]) -> SentinelResult<()> {

@@ -181,9 +181,12 @@ CREATE INDEX IF NOT EXISTS idx_panel_reviews_signature ON panel_reviews(target_t
 CREATE INDEX IF NOT EXISTS idx_panel_audit_logs_created ON panel_audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_panel_action_requests_status ON panel_action_requests(status, requested_at);
 CREATE INDEX IF NOT EXISTS idx_panel_action_requests_target ON panel_action_requests(target_type, target_id);
+CREATE INDEX IF NOT EXISTS idx_panel_action_requests_node_status ON panel_action_requests(node_name, status, requested_at);
 CREATE INDEX IF NOT EXISTS idx_attack_fingerprints_seen ON attack_fingerprints(last_seen_at);
 CREATE INDEX IF NOT EXISTS idx_attack_fingerprints_score ON attack_fingerprints(score, last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_attack_fingerprints_verdict ON attack_fingerprints(verdict, last_seen_at);
 CREATE INDEX IF NOT EXISTS idx_incidents_node_time ON incidents(node_id, last_seen);
+CREATE INDEX IF NOT EXISTS idx_incidents_score_time ON incidents(score, last_seen);
 CREATE INDEX IF NOT EXISTS idx_incidents_review_signature ON incidents(review_signature);
 CREATE INDEX IF NOT EXISTS idx_baseline_node_time ON baseline_drifts(node_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_baseline_review_signature ON baseline_drifts(review_signature);

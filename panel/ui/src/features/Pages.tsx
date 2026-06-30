@@ -37,7 +37,7 @@ import { submitPanelReview } from "@/lib/api";
 import { countryDisplay, fingerprintConclusion, metricsFromNode, nodeLocation, number, percent, relativeTime, bitrate, bytes, sortedNodes } from "@/lib/format";
 import { formatTemplate, translate } from "@/lib/i18n";
 import { roleAllows } from "@/lib/rbac";
-import type { DatasetPage, DatasetState, Language, NodeRecord, PageConfig, PanelActionRequestInput, PanelDictionaries, PanelDictionaryItem, PanelRecord, PanelRole, Summary, TrendPoint } from "@/types";
+import type { DatasetPage, DatasetState, Language, NodeRecord, PageConfig, PanelDictionaries, PanelDictionaryItem, PanelRecord, PanelRole, Summary, TrendPoint } from "@/types";
 
 export function OverviewPage({
   summary,
@@ -222,7 +222,7 @@ export function FindingsPageView({
       </section>
       <footer className="feature-page-footer">
         <span>© 2026 VPS Sentinel</span>
-        <span>Version 0.3.0</span>
+        <span>Version 0.3.1</span>
       </footer>
     </div>
   );
@@ -274,9 +274,10 @@ export function IncidentsPageView({
             <div className="attack-chain">
               {chainStages.length ? (
                 chainStages.map((stage) => (
-                  <div className={`chain-stage ${stage.observed === false ? "is-muted" : "is-observed"}`} key={stage.label}>
+                  <div className={`chain-stage is-${stage.source || (stage.observed ? "observed" : "missing")}`} key={stage.label}>
                     <span>{stage.icon}</span>
                     <strong>{copy(language, stage.label, chainZh(stage.label))}</strong>
+                    <em className="chain-source">{attackChainSourceLabel(stage.source, language)}</em>
                     <Badge value={translate(language, stage.severity)} tone={stage.severity} />
                     <small>{stage.evidence}</small>
                   </div>
@@ -419,7 +420,6 @@ export function BlocksPageView({
   language,
   role,
   onStateChange,
-  onActionRequest,
 }: {
   config: PageConfig;
   page: DatasetPage;
@@ -427,10 +427,7 @@ export function BlocksPageView({
   language: Language;
   role: PanelRole;
   onStateChange: (patch: Partial<DatasetState>) => void;
-  onActionRequest?: (request: PanelActionRequestInput) => Promise<void>;
 }) {
-  const [pendingActionId, setPendingActionId] = useState("");
-  const [actionMessage, setActionMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const rows = page.items;
   const temporaryBlocks = rows.filter((row) => blockMode(row) === "temporary").length;
   const permanentBlocks = rows.length - temporaryBlocks;
@@ -441,61 +438,6 @@ export function BlocksPageView({
   const columns = roleAllows(role, "private")
     ? ["ip", "categories", "reason", "evidence", "asn", "country", "blocked_at", "expires_at"]
     : config.columns || ["blocked_at", "node_name", "rule_id", "reason", "expires_at"];
-  const canRequestActions = roleAllows(role, "private") && Boolean(onActionRequest);
-
-  async function requestBlockAction(row: PanelRecord, action: "unblock" | "allowlist") {
-    if (!onActionRequest) return;
-    const targetId = String(row.id || "");
-    if (!targetId) {
-      setActionMessage({ type: "error", text: translate(language, "actionFailed") });
-      return;
-    }
-    setPendingActionId(targetId);
-    setActionMessage(null);
-    try {
-      await onActionRequest({
-        action,
-        target_type: "active_block",
-        target_id: targetId,
-        node_name: String(row.node_name || ""),
-        payload: {
-          ip: String(row.ip || ""),
-          rule_id: String(row.rule_id || ""),
-          backend: String(row.backend || ""),
-          reason: String(row.reason || ""),
-        },
-      });
-      setActionMessage({ type: "success", text: translate(language, "actionQueued") });
-    } catch {
-      setActionMessage({ type: "error", text: translate(language, "actionFailed") });
-    } finally {
-      setPendingActionId("");
-    }
-  }
-
-  function blockActionButtons(row: PanelRecord) {
-    const targetId = String(row.id || "");
-    return (
-      <div className="row-action-pair">
-        <button
-          className="ghost-button compact"
-          type="button"
-          disabled={!targetId || pendingActionId === targetId}
-          onClick={() => void requestBlockAction(row, "unblock")}
-        >
-          {translate(language, "requestUnblock")}
-        </button>
-        <button
-          className="ghost-button compact"
-          type="button"
-          disabled={!targetId || pendingActionId === targetId}
-          onClick={() => void requestBlockAction(row, "allowlist")}
-        >
-          {translate(language, "allowlist")}
-        </button>
-      </div>
-    );
-  }
 
   return (
     <div className="page-stack feature-page blocks-design">
@@ -510,21 +452,18 @@ export function BlocksPageView({
         <div className="blocks-main">
           <Filters state={state} language={language} onChange={onStateChange} />
           <Card title={translate(language, config.labelKey)} className="feature-table-card">
-            {actionMessage && <p className={`review-message review-message-${actionMessage.type}`}>{actionMessage.text}</p>}
             <div className="desktop-table-panel">
               <DataTable
                 rows={rows}
                 columns={columns}
                 language={language}
                 tableId="active-blocks"
-                rowAction={canRequestActions ? blockActionButtons : undefined}
               />
             </div>
             <MobileBlocksList
               rows={rows}
               language={language}
               visibleColumns={columns}
-              rowAction={canRequestActions ? blockActionButtons : undefined}
             />
             <Pagination total={page.total} limit={page.limit} offset={page.offset} language={language} onPage={(offset) => onStateChange({ offset })} />
           </Card>
@@ -1644,6 +1583,7 @@ interface AttackChainStage {
   severity: string;
   evidence: string;
   icon: React.ReactNode;
+  source: "observed" | "inferred" | "missing";
   observed?: boolean;
 }
 
@@ -1743,20 +1683,29 @@ function attackChainFromIncident(row: PanelRecord, language: Language): AttackCh
         severity: observedSeverity,
         evidence: evidence || recordText(row, ["summary", "title"], copy(language, "Observed in incident payload", "来自事件载荷")),
         icon: stage.icon,
+        source: "observed",
         observed: true,
       };
     }
     const matched = stage.matches.some((keyword) => text.includes(keyword));
     const inferredImpact = stage.label === "Impact" && (score >= 70 || ["critical", "high"].includes(severity));
-    const stageSeverity = matched || inferredImpact ? severity : "unknown";
+    const inferred = matched || inferredImpact;
+    const stageSeverity = inferred ? severity : "unknown";
     return {
       label: stage.label,
       severity: stageSeverity,
-      evidence: matched ? primaryEvidence : stage.fallback,
+      evidence: inferred ? primaryEvidence : stage.fallback,
       icon: stage.icon,
-      observed: matched || inferredImpact,
+      source: inferred ? "inferred" : "missing",
+      observed: false,
     };
   });
+}
+
+function attackChainSourceLabel(source: AttackChainStage["source"] | undefined, language: Language): string {
+  if (source === "observed") return copy(language, "Observed", "已观测");
+  if (source === "inferred") return copy(language, "Inferred", "推断");
+  return copy(language, "Missing", "未观测");
 }
 
 function normalizedStageKey(stage: string): string {
@@ -2042,13 +1991,6 @@ function DataHealthPanel({ summary, language, compact = false }: { summary: Summ
       detail: copy(language, "Latest heartbeat sample", "最近心跳样本"),
       icon: <AlertTriangle size={16} />,
       tone: Number(health.collector_errors || 0) > 0 ? "orange" : "green",
-    },
-    {
-      label: translate(language, "queuedActions"),
-      value: number(Number(health.queued_actions || 0)),
-      detail: translate(language, "responsePolicy"),
-      icon: <ListChecks size={16} />,
-      tone: Number(health.queued_actions || 0) > 0 ? "blue" : "green",
     },
     {
       label: translate(language, "slowestStage"),

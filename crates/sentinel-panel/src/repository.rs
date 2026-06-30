@@ -148,6 +148,11 @@ impl Repository {
                 "target_type, review_signature, verdict, reviewed_at",
             ),
             (
+                "idx_panel_action_requests_node_status",
+                "panel_action_requests",
+                "node_name, status, requested_at",
+            ),
+            (
                 "idx_attack_fingerprints_verdict",
                 "attack_fingerprints",
                 "verdict, last_seen_at",
@@ -455,43 +460,6 @@ impl Repository {
             redact_panel_value(&mut items);
         }
         Ok((items, total))
-    }
-
-    pub(super) async fn action_requests_page(
-        &self,
-        request: &PageRequest,
-    ) -> Result<(Value, i64), PanelApiError> {
-        self.query_page(
-            PanelDataset {
-                table: "panel_action_requests",
-                order_column: "requested_at",
-                active_filter: None,
-                search_columns: &[
-                    "action",
-                    "target_type",
-                    "target_id",
-                    "node_name",
-                    "status",
-                    "requested_by",
-                    "payload_json",
-                ],
-                columns: &[
-                    "id",
-                    "action",
-                    "target_type",
-                    "target_id",
-                    "node_name",
-                    "payload_json",
-                    "status",
-                    "requested_by",
-                    "requested_at",
-                    "updated_at",
-                ],
-            },
-            request,
-            PanelRole::Private,
-        )
-        .await
     }
 
     pub(super) async fn probe_sources_page(
@@ -1012,7 +980,7 @@ impl Repository {
             return Ok(());
         };
         let sql = format!(
-            "SELECT evidence_json FROM findings WHERE id = {}",
+            "SELECT node_id, evidence_json FROM findings WHERE id = {}",
             self.placeholder(1)
         );
         let Some(row) = self
@@ -1299,118 +1267,6 @@ impl Repository {
                 DbValue::Text(target_id.to_string()),
                 DbValue::Text(json_string(detail)?),
                 DbValue::Text(created_at.to_rfc3339()),
-            ],
-        )
-        .await
-    }
-
-    pub(super) async fn insert_action_request(
-        &self,
-        request: &PanelActionRequest,
-    ) -> Result<PanelActionRequest, PanelApiError> {
-        if let Some(existing) = self
-            .existing_queued_action_request(request)
-            .await?
-            .and_then(panel_action_request_from_value)
-        {
-            self.insert_audit_log(
-                "action_request_duplicate",
-                &request.requested_by,
-                &request.target_type,
-                &request.target_id,
-                json!({
-                    "action_id": &existing.id,
-                    "action": &request.action,
-                    "status": &existing.status,
-                    "node_name": &request.node_name
-                }),
-                request.requested_at,
-            )
-            .await?;
-            return Ok(existing);
-        }
-        let columns = [
-            "id",
-            "action",
-            "target_type",
-            "target_id",
-            "node_name",
-            "payload_json",
-            "status",
-            "requested_by",
-            "requested_at",
-            "updated_at",
-        ];
-        let sql = format!(
-            "INSERT INTO panel_action_requests ({}) VALUES ({})",
-            columns.join(", "),
-            self.placeholders(columns.len())
-        );
-        self.execute_write(
-            &sql,
-            &[
-                DbValue::Text(request.id.clone()),
-                DbValue::Text(request.action.clone()),
-                DbValue::Text(request.target_type.clone()),
-                DbValue::Text(request.target_id.clone()),
-                DbValue::Text(request.node_name.clone()),
-                DbValue::Text(json_string(&request.payload)?),
-                DbValue::Text(request.status.clone()),
-                DbValue::Text(request.requested_by.clone()),
-                DbValue::Text(request.requested_at.to_rfc3339()),
-                DbValue::Text(request.updated_at.to_rfc3339()),
-            ],
-        )
-        .await?;
-        self.insert_audit_log(
-            "action_request",
-            &request.requested_by,
-            &request.target_type,
-            &request.target_id,
-            json!({
-                "action_id": &request.id,
-                "action": &request.action,
-                "status": &request.status,
-                "node_name": &request.node_name,
-                "payload_present": !request.payload.is_null(),
-            }),
-            request.requested_at,
-        )
-        .await?;
-        Ok(request.clone())
-    }
-
-    async fn existing_queued_action_request(
-        &self,
-        request: &PanelActionRequest,
-    ) -> Result<Option<Value>, PanelApiError> {
-        let columns = [
-            "id",
-            "action",
-            "target_type",
-            "target_id",
-            "node_name",
-            "payload_json",
-            "status",
-            "requested_by",
-            "requested_at",
-            "updated_at",
-        ];
-        let sql = format!(
-            "SELECT {} FROM panel_action_requests
-             WHERE action = {} AND target_type = {} AND target_id = {} AND status = 'queued'
-             ORDER BY requested_at DESC LIMIT 1",
-            columns.join(", "),
-            self.placeholder(1),
-            self.placeholder(2),
-            self.placeholder(3)
-        );
-        self.query_one_with_values(
-            &sql,
-            &[
-                DbValue::Text(request.action.clone()),
-                DbValue::Text(request.target_type.clone()),
-                DbValue::Text(request.target_id.clone()),
             ],
         )
         .await

@@ -271,7 +271,9 @@ pub async fn push_snapshot(
     retry_outbox(config, &mut state, None).await;
     let payload = build_snapshot_payload(config, store)?;
     match send_envelope(config, &payload).await {
-        Ok(()) => state.last_success_at = Some(Utc::now()),
+        Ok(()) => {
+            state.last_success_at = Some(Utc::now());
+        }
         Err(err) => enqueue_payload(config, &mut state, payload, err.to_string())?,
     }
     state.last_attempt_at = Some(Utc::now());
@@ -487,7 +489,7 @@ async fn retry_outbox(
                 .and_then(|payload| validate_payload_size(config, &payload).map(|_| payload))
             {
                 Ok(payload) => match send_envelope(config, &payload).await {
-                    Ok(()) => {
+                    Ok(_) => {
                         sent += 1;
                         state.last_success_at = Some(Utc::now());
                         continue;

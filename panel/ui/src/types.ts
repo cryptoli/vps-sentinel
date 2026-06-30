@@ -12,21 +12,7 @@ export type PageId =
   | "audit_logs"
   | "nodes";
 
-export type Primitive = string | number | boolean | null;
-export type JsonObject = { [key: string]: JsonValue };
-export type JsonValue = Primitive | JsonValue[] | JsonObject;
 export type PanelRecord = Record<string, unknown>;
-export type PanelActionKind = "unblock" | "refresh_baseline" | "allowlist";
-export type PanelActionTargetType = "active_block" | "baseline_drift" | "probe_source" | "finding" | "incident";
-
-export interface PanelActionRequestInput {
-  action: PanelActionKind;
-  target_type: PanelActionTargetType;
-  target_id: string;
-  node_name?: string;
-  payload?: JsonObject;
-  requester?: string;
-}
 
 export interface PanelReviewInput {
   target_type: "finding" | "incident" | "baseline_drift";
@@ -103,7 +89,6 @@ export interface Summary {
     latest_heartbeat_at?: string;
     heartbeat_samples?: number;
     collector_errors?: number;
-    queued_actions?: number;
     stale_nodes?: number;
     offline_nodes?: number;
     retired_nodes?: number;

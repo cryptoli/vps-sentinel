@@ -27,6 +27,8 @@
 
 ### 1. 构建前端
 
+`panel/web` 是 Cloudflare 和自建面板共用的已提交静态部署产物。前端源码以 `panel/ui` 为准；修改 UI 源码后，应在 `panel/ui` 下运行 `npm run build:web` 重新生成 `panel/web`。不要手工修改 `panel/web/_next` 下的打包文件，这些文件只能由前端构建产生。
+
 ```bash
 cd panel/ui
 npm install

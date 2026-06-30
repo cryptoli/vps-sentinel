@@ -22,7 +22,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DetailDrawer } from "@/components/DetailDrawer";
 import { SelectMenu, TextField } from "@/components/Controls";
-import { PanelApiError, clearPanelToken, fetchDataset, fetchJson, fetchSettings, fetchTrends, panelToken, postJson, setPanelToken } from "@/lib/api";
+import { PanelApiError, clearPanelToken, fetchDataset, fetchJson, fetchSettings, fetchTrends, panelToken, setPanelToken } from "@/lib/api";
 import {
   API_BASE,
   DATASET_BY_ID,
@@ -54,7 +54,6 @@ import type {
   NodeRecord,
   PageConfig,
   PageId,
-  PanelActionRequestInput,
   PanelDictionaries,
   PanelRecord,
   PanelRole,
@@ -77,8 +76,8 @@ const ICONS: Record<PageId, React.ReactNode> = {
   nodes: <Database size={18} />,
 };
 
-const MOBILE_NAV_MAX_ITEMS = 7;
-const MOBILE_PRIMARY_PAGES: PageId[] = ["overview", "findings", "incidents", "baseline_drifts", "active_blocks", "probe_sources", "nodes"];
+const MOBILE_NAV_MAX_ITEMS = 5;
+const MOBILE_PRIMARY_PAGES: PageId[] = ["overview", "findings", "incidents", "active_blocks", "nodes"];
 const NAV_GROUPS: Array<{ key: string; labels: Record<Language, string>; pages: PageId[] }> = [
   { key: "monitor", labels: { zh: "监控", en: "Monitor" }, pages: ["overview", "findings", "incidents", "baseline_drifts"] },
   { key: "response", labels: { zh: "响应", en: "Response" }, pages: ["active_blocks", "attack_fingerprints", "probe_sources"] },
@@ -184,11 +183,6 @@ export function PanelApp() {
       setLoading(false);
     }
   }, [language, settings.public_pages]);
-
-  const requestPanelAction = useCallback(async (request: PanelActionRequestInput) => {
-    await postJson("/action-request", role, { ...request, requester: request.requester || "panel" });
-    await loadVisibleData(currentPage, role);
-  }, [currentPage, loadVisibleData, role]);
 
   useEffect(() => {
     setLanguage(selectedLanguage());
@@ -400,7 +394,6 @@ export function PanelApp() {
               updateDatasetState={updateDatasetState}
               onNavigate={(id) => navigatePage(id as PageId)}
               onDetails={(dataset, row) => setDrawer({ dataset, row })}
-              onActionRequest={requestPanelAction}
               onRefresh={() => loadVisibleData(currentPage, role)}
             />
           )}
@@ -713,7 +706,6 @@ function Content({
   updateDatasetState,
   onNavigate,
   onDetails,
-  onActionRequest,
   onRefresh,
 }: {
   page: PageConfig;
@@ -728,7 +720,6 @@ function Content({
   updateDatasetState: (id: string, patch: Partial<DatasetState>) => void;
   onNavigate: (id: string) => void;
   onDetails: (dataset: string, row: PanelRecord) => void;
-  onActionRequest: (request: PanelActionRequestInput) => Promise<void>;
   onRefresh: () => Promise<void>;
 }) {
   if (loading && !Object.keys(datasets).length) {
@@ -801,7 +792,6 @@ function Content({
         language={language}
         role={role}
         onStateChange={(patch) => updateDatasetState("active_blocks", patch)}
-        onActionRequest={onActionRequest}
       />
     );
   }

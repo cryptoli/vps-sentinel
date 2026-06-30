@@ -82,8 +82,26 @@ pub enum TrustedAdminCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum SuppressRuleCommand {
-    Add { rule_id: String },
-    Remove { rule_id: String },
+    Add {
+        rule_id: String,
+        #[arg(long)]
+        reason: Option<String>,
+        #[arg(long)]
+        subject: Vec<String>,
+        #[arg(long = "path-pattern")]
+        path_pattern: Vec<String>,
+        #[arg(long)]
+        expires_at: Option<String>,
+        #[arg(long)]
+        global: bool,
+    },
+    Remove {
+        rule_id: String,
+        #[arg(long)]
+        entry_id: Option<String>,
+        #[arg(long)]
+        global: bool,
+    },
 }
 
 pub fn run_config(path: Option<&Path>, command: ConfigCommand) -> Result<()> {
@@ -463,36 +481,183 @@ fn update_trusted_admin_ips(path: &Path, command: TrustedAdminCommand) -> Result
 fn update_suppress_rule_ids(path: &Path, command: SuppressRuleCommand) -> Result<()> {
     let text = fs::read_to_string(path)?;
     let mut value: toml::Value = toml::from_str(&text)?;
-    let item = match command {
-        SuppressRuleCommand::Add { rule_id } => {
-            update_array_path(
-                &mut value,
-                "suppress_rules.rule_ids",
-                ListValue::String(rule_id.clone()),
-                ListEdit::Add,
-            )?;
-            rule_id
+    let message = match command {
+        SuppressRuleCommand::Add {
+            rule_id,
+            reason,
+            subject,
+            path_pattern,
+            expires_at,
+            global,
+        } => {
+            if global {
+                update_array_path(
+                    &mut value,
+                    "suppress_rules.rule_ids",
+                    ListValue::String(rule_id.clone()),
+                    ListEdit::Add,
+                )?;
+                format!("global suppressed rule ID updated: {rule_id}")
+            } else {
+                let reason = reason
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "scoped suppress-rule add requires --reason; use --global to edit suppress_rules.rule_ids"
+                        )
+                    })?;
+                add_suppress_rule_entry(
+                    &mut value,
+                    &rule_id,
+                    subject,
+                    path_pattern,
+                    expires_at.unwrap_or_default(),
+                    reason,
+                )?;
+                format!("scoped suppress rule entry added: {rule_id}")
+            }
         }
-        SuppressRuleCommand::Remove { rule_id } => {
-            update_array_path(
-                &mut value,
-                "suppress_rules.rule_ids",
-                ListValue::String(rule_id.clone()),
-                ListEdit::Remove,
-            )?;
-            rule_id
+        SuppressRuleCommand::Remove {
+            rule_id,
+            entry_id,
+            global,
+        } => {
+            if global {
+                update_array_path(
+                    &mut value,
+                    "suppress_rules.rule_ids",
+                    ListValue::String(rule_id.clone()),
+                    ListEdit::Remove,
+                )?;
+                format!("global suppressed rule ID removed: {rule_id}")
+            } else {
+                let removed =
+                    remove_suppress_rule_entries(&mut value, &rule_id, entry_id.as_deref())?;
+                if removed == 0 {
+                    bail!(
+                        "no scoped suppress rule entry matched rule_id={rule_id}; use --global to edit suppress_rules.rule_ids"
+                    );
+                }
+                format!("scoped suppress rule entries removed: {rule_id} ({removed})")
+            }
         }
     };
-    let config: SentinelConfig = value.try_into()?;
+    let config: SentinelConfig = value.clone().try_into()?;
     config.validate()?;
-    let rendered = render_string_array(&config.suppress_rules.rule_ids);
-    let mut updated = replace_or_insert_key(&text, "suppress_rules", "enabled", "true");
-    updated = replace_or_insert_key(&updated, "suppress_rules", "rule_ids", &rendered);
-    write_updated_config(
-        path,
-        &text,
-        &updated,
-        &format!("suppressed rule IDs updated: {item}"),
+    let updated = toml::to_string_pretty(&value)?;
+    write_updated_config(path, &text, &updated, &message)
+}
+
+fn add_suppress_rule_entry(
+    root: &mut toml::Value,
+    rule_id: &str,
+    subjects: Vec<String>,
+    path_patterns: Vec<String>,
+    expires_at: String,
+    reason: String,
+) -> Result<()> {
+    let table = ensure_table_path(root, "suppress_rules")?;
+    table.insert("enabled".to_string(), toml::Value::Boolean(true));
+    let entries = table
+        .entry("entries".to_string())
+        .or_insert_with(|| toml::Value::Array(Vec::new()))
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("suppress_rules.entries must be an array"))?;
+    let mut entry = toml::map::Map::new();
+    entry.insert(
+        "id".to_string(),
+        toml::Value::String(next_suppress_entry_id(entries, rule_id)),
+    );
+    entry.insert(
+        "rule_ids".to_string(),
+        toml::Value::Array(vec![toml::Value::String(rule_id.trim().to_string())]),
+    );
+    entry.insert("subjects".to_string(), string_array_value(subjects));
+    entry.insert(
+        "path_patterns".to_string(),
+        string_array_value(path_patterns),
+    );
+    entry.insert("expires_at".to_string(), toml::Value::String(expires_at));
+    entry.insert("reason".to_string(), toml::Value::String(reason));
+    entries.push(toml::Value::Table(entry));
+    Ok(())
+}
+
+fn remove_suppress_rule_entries(
+    root: &mut toml::Value,
+    rule_id: &str,
+    entry_id: Option<&str>,
+) -> Result<usize> {
+    let Some(entries) = root
+        .get_mut("suppress_rules")
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|table| table.get_mut("entries"))
+        .and_then(toml::Value::as_array_mut)
+    else {
+        return Ok(0);
+    };
+    let before = entries.len();
+    entries.retain(|entry| !suppress_entry_matches(entry, rule_id, entry_id));
+    Ok(before.saturating_sub(entries.len()))
+}
+
+fn suppress_entry_matches(entry: &toml::Value, rule_id: &str, entry_id: Option<&str>) -> bool {
+    let Some(table) = entry.as_table() else {
+        return false;
+    };
+    if let Some(entry_id) = entry_id {
+        return table
+            .get("id")
+            .and_then(toml::Value::as_str)
+            .is_some_and(|value| value == entry_id);
+    }
+    table
+        .get("rule_ids")
+        .and_then(toml::Value::as_array)
+        .is_some_and(|items| items.iter().any(|item| item.as_str() == Some(rule_id)))
+}
+
+fn next_suppress_entry_id(entries: &[toml::Value], rule_id: &str) -> String {
+    let base = rule_id
+        .trim()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    let base = if base.is_empty() {
+        "rule".to_string()
+    } else {
+        base
+    };
+    let mut candidate = base.clone();
+    let mut index = 2usize;
+    let existing = entries
+        .iter()
+        .filter_map(|entry| entry.get("id").and_then(toml::Value::as_str))
+        .collect::<BTreeSet<_>>();
+    while existing.contains(candidate.as_str()) {
+        candidate = format!("{base}-{index}");
+        index += 1;
+    }
+    candidate
+}
+
+fn string_array_value(values: Vec<String>) -> toml::Value {
+    toml::Value::Array(
+        values
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(toml::Value::String)
+            .collect(),
     )
 }
 

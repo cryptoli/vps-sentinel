@@ -22,16 +22,6 @@ const JSON_HEADERS = {
 const SUMMARY_CACHE_TTL_MS = 5000;
 const MAX_SEARCH_QUERY_CHARS = 96;
 const DEFAULT_PANEL_WRITE_BODY_BYTES = 65536;
-const ACTION_REQUEST_SEARCH_COLUMNS = Object.freeze([
-  "action",
-  "target_type",
-  "target_id",
-  "node_name",
-  "status",
-  "requested_by",
-  "payload_json",
-]);
-
 let compatSchemaPromise = null;
 const summaryCache = new Map();
 
@@ -112,16 +102,6 @@ export default {
         if (authError) return withCors(authError, request, env);
         return withCors(json(await panelReview(request, env)), request, env);
       }
-      if (request.method === "POST" && url.pathname === "/api/v1/action-request") {
-        const authError = privateWriteAuthError(request, env);
-        if (authError) return withCors(authError, request, env);
-        return withCors(json(await actionRequest(request, env)), request, env);
-      }
-      if (request.method === "GET" && url.pathname === "/api/v1/action-requests") {
-        const authError = privateAuthError(request, env);
-        if (authError) return withCors(authError, request, env);
-        return withCors(json(await actionRequests(env, url)), request, env);
-      }
       if (request.method === "GET" && url.pathname === "/api/v1/stream-ticket") {
         return withCors(json({ error: "stream_unavailable", detail: "stream_unavailable" }, 501), request, env);
       }
@@ -197,8 +177,11 @@ async function ensureCompatSchema(env) {
         "CREATE INDEX IF NOT EXISTS idx_panel_reviews_signature ON panel_reviews(target_type, review_signature, verdict, reviewed_at)",
         "CREATE INDEX IF NOT EXISTS idx_panel_action_requests_status ON panel_action_requests(status, requested_at)",
         "CREATE INDEX IF NOT EXISTS idx_panel_action_requests_target ON panel_action_requests(target_type, target_id)",
+        "CREATE INDEX IF NOT EXISTS idx_panel_action_requests_node_status ON panel_action_requests(node_name, status, requested_at)",
         "CREATE INDEX IF NOT EXISTS idx_attack_fingerprints_seen ON attack_fingerprints(last_seen_at)",
         "CREATE INDEX IF NOT EXISTS idx_attack_fingerprints_score ON attack_fingerprints(score, last_seen_at)",
+        "CREATE INDEX IF NOT EXISTS idx_attack_fingerprints_verdict ON attack_fingerprints(verdict, last_seen_at)",
+        "CREATE INDEX IF NOT EXISTS idx_incidents_score_time ON incidents(score, last_seen)",
       ];
       for (const statement of indexes) {
         await env.DB.prepare(statement).run();
@@ -225,38 +208,7 @@ async function ingest(request, env) {
     return json({ error: "body_too_large" }, 413);
   }
   const nodeName = ingestNodeName(request);
-  const timestamp = Number(requiredHeader(request, "x-vps-sentinel-timestamp"));
-  const nonce = requiredHeader(request, "x-vps-sentinel-nonce");
-  const bodyHash = requiredHeader(request, "x-vps-sentinel-body-sha256");
-  const signature = requiredHeader(request, "x-vps-sentinel-signature");
-  const now = Math.floor(Date.now() / 1000);
-  if (!Number.isFinite(timestamp) || Math.abs(now - timestamp) > SIGNATURE_WINDOW_SECONDS) {
-    return json({ error: "signature_timestamp_out_of_window" }, 401);
-  }
-  if (!nonce.startsWith(`${nodeName}:`)) {
-    return json({ error: "nonce_node_mismatch" }, 401);
-  }
-  const actualHash = await sha256Hex(body);
-  if (!timingSafeEqual(actualHash, bodyHash)) {
-    return json({ error: "body_hash_mismatch" }, 401);
-  }
-  const secret = secretForNode(env, nodeName);
-  if (!secret) {
-    return json({ error: "unknown_node_secret" }, 401);
-  }
-  const signing = ["POST", "/api/v1/ingest", String(timestamp), nonce, bodyHash].join("\n");
-  const expected = await hmacSha256Hex(secret, signing);
-  if (!timingSafeEqual(expected, signature)) {
-    return json({ error: "signature_mismatch" }, 401);
-  }
-  await env.DB.prepare("DELETE FROM ingest_nonces WHERE expires_at < ?").bind(now).run();
-  const seen = await env.DB.prepare("SELECT nonce FROM ingest_nonces WHERE nonce = ?").bind(nonce).first();
-  if (seen) {
-    return json({ error: "nonce_replay" }, 409);
-  }
-  await env.DB.prepare("INSERT INTO ingest_nonces (nonce, node_id, expires_at) VALUES (?, ?, ?)")
-    .bind(nonce, nodeName, now + SIGNATURE_WINDOW_SECONDS)
-    .run();
+  await verifyAgentRequest(request, env, body, nodeName);
 
   const payloadBody = decodePanelPayloadBody(request, body);
   const payload = JSON.parse(new TextDecoder().decode(payloadBody));
@@ -267,6 +219,41 @@ async function ingest(request, env) {
   await persistPayload(env, payload, nodeName);
   invalidateSummaryCache();
   return json({ ok: true, message_id: payload.message_id });
+}
+
+async function verifyAgentRequest(request, env, body, nodeName) {
+  const timestamp = Number(requiredHeader(request, "x-vps-sentinel-timestamp"));
+  const nonce = requiredHeader(request, "x-vps-sentinel-nonce");
+  const bodyHash = requiredHeader(request, "x-vps-sentinel-body-sha256");
+  const signature = requiredHeader(request, "x-vps-sentinel-signature");
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(timestamp) || Math.abs(now - timestamp) > SIGNATURE_WINDOW_SECONDS) {
+    throwHttp(401, "signature_timestamp_out_of_window");
+  }
+  if (!nonce.startsWith(`${nodeName}:`)) {
+    throwHttp(401, "nonce_node_mismatch");
+  }
+  const actualHash = await sha256Hex(body);
+  if (!timingSafeEqual(actualHash, bodyHash)) {
+    throwHttp(401, "body_hash_mismatch");
+  }
+  const secret = secretForNode(env, nodeName);
+  if (!secret) {
+    throwHttp(401, "unknown_node_secret");
+  }
+  const signing = [request.method.toUpperCase(), "/api/v1/ingest", String(timestamp), nonce, bodyHash].join("\n");
+  const expected = await hmacSha256Hex(secret, signing);
+  if (!timingSafeEqual(expected, signature)) {
+    throwHttp(401, "signature_mismatch");
+  }
+  await env.DB.prepare("DELETE FROM ingest_nonces WHERE expires_at < ?").bind(now).run();
+  const seen = await env.DB.prepare("SELECT nonce FROM ingest_nonces WHERE nonce = ?").bind(nonce).first();
+  if (seen) {
+    throwHttp(409, "nonce_replay");
+  }
+  await env.DB.prepare("INSERT INTO ingest_nonces (nonce, node_id, expires_at) VALUES (?, ?, ?)")
+    .bind(nonce, nodeName, now + SIGNATURE_WINDOW_SECONDS)
+    .run();
 }
 
 function ingestNodeName(request) {
@@ -832,10 +819,7 @@ async function buildSummary(env, role = "public") {
 }
 
 async function buildDataHealth(env, nodeRows) {
-  const [heartbeats, queuedActions] = await Promise.all([
-    queryAll(env, "SELECT node_id, received_at, scan_json FROM heartbeats ORDER BY received_at DESC LIMIT 100"),
-    countWhere(env, "panel_action_requests", "status = 'queued'"),
-  ]);
+  const heartbeats = await queryAll(env, "SELECT node_id, received_at, scan_json FROM heartbeats ORDER BY received_at DESC LIMIT 100");
   let latestHeartbeatAt = "";
   let collectorErrors = 0;
   let slowestStage = "";
@@ -861,7 +845,7 @@ async function buildDataHealth(env, nodeRows) {
   const retiredNodes = Number(statuses.retired || 0);
   const status = collectorErrors > 0 || offlineNodes > 0 || retiredNodes > 0
     ? "degraded"
-    : staleNodes > 0 || queuedActions > 0
+    : staleNodes > 0
       ? "attention"
       : "healthy";
   return {
@@ -869,7 +853,6 @@ async function buildDataHealth(env, nodeRows) {
     latest_heartbeat_at: latestHeartbeatAt,
     heartbeat_samples: heartbeats.length,
     collector_errors: collectorErrors,
-    queued_actions: queuedActions,
     stale_nodes: staleNodes,
     offline_nodes: offlineNodes,
     retired_nodes: retiredNodes,
@@ -907,16 +890,21 @@ async function trendPoints(env, url) {
     parts.push("timestamp <= ?");
   }
   const whereSql = ` WHERE ${parts.join(" AND ")}`;
-  const result = await env.DB.prepare(
-    `SELECT timestamp, severity FROM findings${whereSql} ORDER BY timestamp DESC LIMIT ?`,
-  ).bind(...values, 5000).all();
+  const limit = Math.min(page.limit, 500);
+  const result = await env.DB.prepare(`
+    SELECT SUBSTR(timestamp, 1, 13) AS bucket, severity, COUNT(*) AS count
+    FROM findings${whereSql}
+    GROUP BY SUBSTR(timestamp, 1, 13), severity
+    ORDER BY bucket ASC
+    LIMIT ?
+  `).bind(...values, limit).all();
   const buckets = new Map();
   for (const row of result.results || []) {
-    const bucket = String(row.timestamp || "").slice(0, 13);
+    const bucket = String(row.bucket || "");
     if (bucket.length !== 13) continue;
     const severity = String(row.severity || "Unknown");
     const severities = buckets.get(bucket) || new Map();
-    severities.set(severity, (severities.get(severity) || 0) + 1);
+    severities.set(severity, (severities.get(severity) || 0) + Number(row.count || 0));
     buckets.set(bucket, severities);
   }
   return [...buckets.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([bucket, severities]) => {
@@ -1174,6 +1162,14 @@ async function findingReview(request, env) {
     reviewer: review.reviewer,
     reviewed_at: review.reviewed_at,
   });
+  await syncReviewFeedback(env, {
+    target_type: "finding",
+    target_id: review.finding_id,
+    review_signature: reviewSignature,
+    verdict: review.verdict,
+    reviewer: review.reviewer,
+    reviewed_at: review.reviewed_at,
+  });
   await env.DB.prepare(`
     INSERT INTO panel_audit_logs (id, action, actor, target_type, target_id, detail_json, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1222,6 +1218,7 @@ async function panelReview(request, env) {
       reviewed_at: review.reviewed_at,
     });
   }
+  await syncReviewFeedback(env, scopedReview);
   await env.DB.prepare(`
     INSERT INTO panel_audit_logs (id, action, actor, target_type, target_id, detail_json, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -1236,95 +1233,6 @@ async function panelReview(request, env) {
   ).run();
   invalidateSummaryCache();
   return { ok: true, target_type: review.target_type, target_id: review.target_id, review: panelReviewResponse(scopedReview) };
-}
-
-async function actionRequest(request, env) {
-  const payload = await readPanelJson(request, env);
-  const action = normalizePanelActionRequest(payload);
-  await env.DB.prepare(`
-    INSERT INTO panel_action_requests
-      (id, action, target_type, target_id, node_name, payload_json, status, requested_by, requested_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    action.id,
-    action.action,
-    action.target_type,
-    action.target_id,
-    action.node_name,
-    JSON.stringify(action.payload),
-    action.status,
-    action.requested_by,
-    action.requested_at,
-    action.updated_at,
-  ).run();
-  await env.DB.prepare(`
-    INSERT INTO panel_audit_logs (id, action, actor, target_type, target_id, detail_json, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    `action_request:${action.target_type}:${action.target_id}:${crypto.randomUUID()}`,
-    "action_request",
-    action.requested_by || "panel",
-    action.target_type,
-    action.target_id,
-    JSON.stringify({
-      action_id: action.id,
-      action: action.action,
-      status: action.status,
-      node_name: action.node_name,
-      payload_present: action.payload !== null && action.payload !== undefined,
-    }),
-    action.requested_at,
-  ).run();
-  invalidateSummaryCache();
-  return { ok: true, action_request: action };
-}
-
-async function actionRequests(env, url) {
-  const page = pageRequest(url);
-  const values = [];
-  const parts = [];
-  pushSearchClause(parts, values, ACTION_REQUEST_SEARCH_COLUMNS, page.query);
-  const whereSql = parts.length ? ` WHERE ${parts.join(" AND ")}` : "";
-  const countRow = await env.DB.prepare(`SELECT COUNT(*) AS count FROM panel_action_requests${whereSql}`)
-    .bind(...values)
-    .first();
-  const result = await env.DB.prepare(`
-    SELECT id, action, target_type, target_id, node_name, payload_json, status, requested_by, requested_at, updated_at
-    FROM panel_action_requests${whereSql}
-    ORDER BY requested_at DESC
-    LIMIT ? OFFSET ?
-  `).bind(...values, page.limit, page.offset).all();
-  return {
-    items: (result.results || []).map((row) => ({
-      ...row,
-      payload: parseJsonField(row.payload_json, null),
-      payload_json: undefined,
-    })).map(({ payload_json, ...row }) => row),
-    total: Number(countRow?.count || 0),
-    limit: page.limit,
-    offset: page.offset,
-  };
-}
-
-function normalizePanelActionRequest(payload) {
-  const action = normalizePanelAction(payload?.action);
-  const targetType = normalizeActionTargetType(payload?.target_type);
-  if (!panelActionTargetAllowed(action, targetType)) throwHttp(400, "invalid_action_target");
-  const targetId = String(payload?.target_id || "").trim();
-  if (!targetId || targetId.length > 191) throwHttp(400, "invalid_action_target_id");
-  const now = new Date().toISOString();
-  return {
-    id: crypto.randomUUID(),
-    action,
-    target_type: targetType,
-    target_id: targetId,
-    node_name: String(payload?.node_name || "").trim().slice(0, 191),
-    payload: normalizeActionPayload(payload?.payload),
-    status: "queued",
-    requested_by: String(payload?.requester || "").trim().slice(0, 128),
-    requested_at: now,
-    updated_at: now,
-  };
 }
 
 async function readPanelJson(request, env) {
@@ -1344,40 +1252,6 @@ function panelWriteMaxBodyBytes(env) {
   return Number.isFinite(configured) && configured > 0
     ? Math.min(Math.trunc(configured), Number(env.PANEL_MAX_BODY_BYTES || 1048576))
     : DEFAULT_PANEL_WRITE_BODY_BYTES;
-}
-
-function normalizeActionPayload(value) {
-  if (value === null || value === undefined) return {};
-  if (typeof value === "object" && !Array.isArray(value)) return value;
-  throwHttp(400, "invalid_action_payload");
-}
-
-function normalizePanelAction(value) {
-  const action = String(value || "").trim().toLowerCase().replaceAll("-", "_");
-  if (["unblock", "refresh_baseline", "allowlist"].includes(action)) return action;
-  throwHttp(400, "invalid_panel_action");
-}
-
-function normalizeActionTargetType(value) {
-  const targetType = String(value || "").trim().toLowerCase().replaceAll("-", "_");
-  if (["active_block", "active_blocks", "block", "blocks"].includes(targetType)) return "active_block";
-  if (["baseline_drift", "baseline_drifts", "baseline", "drift"].includes(targetType)) return "baseline_drift";
-  if (["probe_source", "probe_sources", "source", "sources"].includes(targetType)) return "probe_source";
-  if (["finding", "findings"].includes(targetType)) return "finding";
-  if (["incident", "incidents"].includes(targetType)) return "incident";
-  throwHttp(400, "invalid_action_target_type");
-}
-
-function panelActionTargetAllowed(action, targetType) {
-  return [
-    ["unblock", "active_block"],
-    ["unblock", "probe_source"],
-    ["refresh_baseline", "baseline_drift"],
-    ["allowlist", "active_block"],
-    ["allowlist", "probe_source"],
-    ["allowlist", "finding"],
-    ["allowlist", "baseline_drift"],
-  ].some(([allowedAction, allowedTarget]) => allowedAction === action && allowedTarget === targetType);
 }
 
 function panelReviewResponse(review) {
@@ -1590,6 +1464,49 @@ async function writePanelReview(env, review) {
     review.reviewer,
     review.reviewed_at,
   ).run();
+}
+
+async function syncReviewFeedback(env, review) {
+  if (review.target_type !== "finding") return;
+  const verdict = fingerprintVerdictFromReview(review.verdict);
+  if (!verdict) return;
+  const row = await env.DB.prepare("SELECT node_id, evidence_json FROM findings WHERE id = ?")
+    .bind(review.target_id)
+    .first();
+  const fingerprintId = evidenceValue(parseJsonField(row?.evidence_json, []), "attack_fingerprint_id");
+  if (!fingerprintId) return;
+  const existing = await env.DB.prepare("SELECT verdict FROM attack_fingerprints WHERE id = ?")
+    .bind(fingerprintId)
+    .first();
+  if (!existing) return;
+  const merged = strongestFingerprintVerdict(existing.verdict || "unknown", verdict);
+  await env.DB.prepare("UPDATE attack_fingerprints SET verdict = ?, updated_at = ? WHERE id = ?")
+    .bind(merged, new Date().toISOString(), fingerprintId)
+    .run();
+  await env.DB.prepare(`
+    INSERT INTO panel_audit_logs (id, action, actor, target_type, target_id, detail_json, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    `fingerprint_feedback:attack_fingerprint:${fingerprintId}:${crypto.randomUUID()}`,
+    "fingerprint_feedback",
+    review.reviewer || "panel",
+    "attack_fingerprint",
+    fingerprintId,
+    JSON.stringify({
+      source_review_target: review.target_id,
+      source_review_signature: review.review_signature || "",
+      review_verdict: review.verdict,
+      fingerprint_verdict: merged,
+    }),
+    review.reviewed_at,
+  ).run();
+}
+
+function fingerprintVerdictFromReview(verdict) {
+  const normalized = String(verdict || "").trim().toLowerCase();
+  if (normalized === "confirmed") return "malicious";
+  if (normalized === "false_positive") return "benign";
+  return null;
 }
 
 function panelBlockStorageId(nodeId, block) {

@@ -1,7 +1,7 @@
 {
   "name": "vps-sentinel-panel-ui",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1 --port 3000",

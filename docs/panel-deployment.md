@@ -27,6 +27,8 @@ Do not use a fixed `/admin` path for new deployments. The helper scripts generat
 
 ## Cloudflare Worker/D1
 
+`panel/web` is the checked-in static deployment artifact for Cloudflare and self-hosted panel packaging. Treat `panel/ui` as the frontend source of truth and regenerate `panel/web` with `npm run build:web` from `panel/ui` after UI source changes. Do not hand-edit bundled files under `panel/web/_next`; those files should only change as build output.
+
 ### 1. Build the UI
 
 ```bash

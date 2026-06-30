@@ -1,4 +1,5 @@
 use super::*;
+use axum::body::Bytes;
 
 pub(super) async fn ingest(
     State(state): State<AppState>,
@@ -41,12 +42,13 @@ pub(super) async fn ingest(
             "probe_sources",
         ],
     ));
-    Ok(Json(
-        json!({ "ok": true, "message_id": payload.message_id }),
-    ))
+    Ok(Json(json!({
+        "ok": true,
+        "message_id": payload.message_id,
+    })))
 }
 
-fn ingest_node_name(headers: &HeaderMap) -> Result<String, PanelApiError> {
+pub(super) fn ingest_node_name(headers: &HeaderMap) -> Result<String, PanelApiError> {
     header(headers, "x-vps-sentinel-node-name").or_else(|_| header(headers, "x-vps-sentinel-node"))
 }
 

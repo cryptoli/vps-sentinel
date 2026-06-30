@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Context, Result};
 use axum::body::Body;
-use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Request, StatusCode};
@@ -33,7 +32,6 @@ use std::time::Duration;
 use tokio::sync::broadcast;
 use tower_http::services::{ServeDir, ServeFile};
 use tracing::{info, warn};
-use uuid::Uuid;
 
 mod auth;
 mod http_security;
@@ -57,10 +55,6 @@ const STREAM_HEARTBEAT_SECONDS: u64 = 30;
 const STREAM_RETRY_SECONDS: u64 = 5;
 const SUMMARY_CACHE_TTL_SECONDS: i64 = 5;
 const MAX_SEARCH_QUERY_CHARS: usize = 96;
-const MAX_ACTION_PAYLOAD_DEPTH: usize = 4;
-const MAX_ACTION_PAYLOAD_KEYS: usize = 24;
-const MAX_ACTION_PAYLOAD_ARRAY_ITEMS: usize = 32;
-const MAX_ACTION_PAYLOAD_STRING_CHARS: usize = 512;
 
 #[derive(Debug, Parser)]
 #[command(name = "vps-sentinel-panel", version)]
@@ -271,19 +265,6 @@ struct PanelReviewRequest {
     note: String,
     #[serde(default)]
     reviewer: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct PanelActionRequestBody {
-    action: String,
-    target_type: String,
-    target_id: String,
-    #[serde(default)]
-    node_name: String,
-    #[serde(default)]
-    payload: Value,
-    #[serde(default)]
-    requester: String,
 }
 
 #[derive(Debug)]
@@ -499,71 +480,6 @@ impl PanelReview {
     }
 }
 
-#[derive(Debug, Clone)]
-struct PanelActionRequest {
-    id: String,
-    action: String,
-    target_type: String,
-    target_id: String,
-    node_name: String,
-    payload: Value,
-    status: String,
-    requested_by: String,
-    requested_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
-}
-
-impl PanelActionRequest {
-    fn response_value(&self) -> Value {
-        json!({
-            "id": &self.id,
-            "action": &self.action,
-            "target_type": &self.target_type,
-            "target_id": &self.target_id,
-            "node_name": &self.node_name,
-            "payload": &self.payload,
-            "status": &self.status,
-            "requested_by": &self.requested_by,
-            "requested_at": self.requested_at.to_rfc3339(),
-            "updated_at": self.updated_at.to_rfc3339(),
-        })
-    }
-}
-
-fn panel_action_request_from_value(value: Value) -> Option<PanelActionRequest> {
-    let payload = value
-        .get("payload_json")
-        .and_then(Value::as_str)
-        .and_then(|text| serde_json::from_str::<Value>(text).ok())
-        .unwrap_or_else(|| json!({}));
-    Some(PanelActionRequest {
-        id: value.get("id")?.as_str()?.to_string(),
-        action: value.get("action")?.as_str()?.to_string(),
-        target_type: value.get("target_type")?.as_str()?.to_string(),
-        target_id: value.get("target_id")?.as_str()?.to_string(),
-        node_name: value
-            .get("node_name")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        payload,
-        status: value.get("status")?.as_str()?.to_string(),
-        requested_by: value
-            .get("requested_by")
-            .and_then(Value::as_str)
-            .unwrap_or("panel")
-            .to_string(),
-        requested_at: parse_panel_value_time(value.get("requested_at")?)?,
-        updated_at: parse_panel_value_time(value.get("updated_at")?)?,
-    })
-}
-
-fn parse_panel_value_time(value: &Value) -> Option<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value.as_str()?)
-        .ok()
-        .map(|time| time.with_timezone(&Utc))
-}
-
 #[derive(Debug, Serialize)]
 struct ApiError {
     error: String,
@@ -613,41 +529,6 @@ impl TryFrom<PanelReviewRequest> for PanelReview {
             note: value.note.trim().chars().take(1000).collect(),
             reviewer: value.reviewer.trim().chars().take(128).collect::<String>(),
             reviewed_at: Utc::now(),
-        })
-    }
-}
-
-impl TryFrom<PanelActionRequestBody> for PanelActionRequest {
-    type Error = PanelApiError;
-
-    fn try_from(value: PanelActionRequestBody) -> Result<Self, Self::Error> {
-        let action = normalize_panel_action(&value.action)?;
-        let target_type = normalize_action_target_type(&value.target_type)?;
-        if !panel_action_target_allowed(&action, &target_type) {
-            return Err(PanelApiError::new(
-                StatusCode::BAD_REQUEST,
-                "invalid_action_target",
-            ));
-        }
-        let target_id = value.target_id.trim();
-        if target_id.is_empty() || target_id.len() > 191 {
-            return Err(PanelApiError::new(
-                StatusCode::BAD_REQUEST,
-                "invalid_action_target_id",
-            ));
-        }
-        let now = Utc::now();
-        Ok(Self {
-            id: Uuid::new_v4().to_string(),
-            action,
-            target_type,
-            target_id: target_id.to_string(),
-            node_name: value.node_name.trim().chars().take(191).collect(),
-            payload: normalize_action_payload(value.payload)?,
-            status: "queued".to_string(),
-            requested_by: value.requester.trim().chars().take(128).collect::<String>(),
-            requested_at: now,
-            updated_at: now,
         })
     }
 }
@@ -707,145 +588,6 @@ fn normalize_review_verdict(value: &str) -> Result<String, PanelApiError> {
         ));
     }
     Ok(verdict.to_string())
-}
-
-fn normalize_panel_action(value: &str) -> Result<String, PanelApiError> {
-    let action = value.trim().to_ascii_lowercase().replace('-', "_");
-    if matches!(
-        action.as_str(),
-        "unblock" | "refresh_baseline" | "allowlist"
-    ) {
-        Ok(action)
-    } else {
-        Err(PanelApiError::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_panel_action",
-        ))
-    }
-}
-
-fn normalize_action_target_type(value: &str) -> Result<String, PanelApiError> {
-    let target_type = value.trim().to_ascii_lowercase().replace('-', "_");
-    let normalized = match target_type.as_str() {
-        "active_block" | "active_blocks" | "block" | "blocks" => "active_block",
-        "baseline_drift" | "baseline_drifts" | "baseline" | "drift" => "baseline_drift",
-        "probe_source" | "probe_sources" | "source" | "sources" => "probe_source",
-        "finding" | "findings" => "finding",
-        "incident" | "incidents" => "incident",
-        _ => {
-            return Err(PanelApiError::new(
-                StatusCode::BAD_REQUEST,
-                "invalid_action_target_type",
-            ))
-        }
-    };
-    Ok(normalized.to_string())
-}
-
-fn panel_action_target_allowed(action: &str, target_type: &str) -> bool {
-    matches!(
-        (action, target_type),
-        ("unblock", "active_block")
-            | ("unblock", "probe_source")
-            | ("refresh_baseline", "baseline_drift")
-            | ("allowlist", "active_block")
-            | ("allowlist", "probe_source")
-            | ("allowlist", "finding")
-            | ("allowlist", "baseline_drift")
-    )
-}
-
-fn normalize_action_payload(value: Value) -> Result<Value, PanelApiError> {
-    match value {
-        Value::Null => Ok(json!({})),
-        Value::Object(_) => {
-            validate_action_payload_value(&value, 0)?;
-            Ok(value)
-        }
-        _ => Err(PanelApiError::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_action_payload",
-        )),
-    }
-}
-
-fn validate_action_payload_value(value: &Value, depth: usize) -> Result<(), PanelApiError> {
-    if depth > MAX_ACTION_PAYLOAD_DEPTH {
-        return Err(PanelApiError::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_action_payload_depth",
-        ));
-    }
-    match value {
-        Value::Null | Value::Bool(_) | Value::Number(_) => Ok(()),
-        Value::String(text) => validate_action_payload_string(text),
-        Value::Array(items) => {
-            if items.len() > MAX_ACTION_PAYLOAD_ARRAY_ITEMS {
-                return Err(PanelApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_action_payload_array",
-                ));
-            }
-            for item in items {
-                validate_action_payload_value(item, depth + 1)?;
-            }
-            Ok(())
-        }
-        Value::Object(map) => {
-            if map.len() > MAX_ACTION_PAYLOAD_KEYS {
-                return Err(PanelApiError::new(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_action_payload_size",
-                ));
-            }
-            for (key, value) in map {
-                validate_action_payload_key(key)?;
-                validate_action_payload_value(value, depth + 1)?;
-            }
-            Ok(())
-        }
-    }
-}
-
-fn validate_action_payload_key(key: &str) -> Result<(), PanelApiError> {
-    let valid = !key.is_empty()
-        && key.len() <= 64
-        && key
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-');
-    if valid {
-        Ok(())
-    } else {
-        Err(PanelApiError::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_action_payload_key",
-        ))
-    }
-}
-
-fn validate_action_payload_string(text: &str) -> Result<(), PanelApiError> {
-    if text.chars().count() > MAX_ACTION_PAYLOAD_STRING_CHARS {
-        return Err(PanelApiError::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_action_payload_string",
-        ));
-    }
-    let trimmed = text.trim();
-    let looks_like_absolute_windows_path = trimmed.len() >= 3
-        && trimmed.as_bytes()[1] == b':'
-        && matches!(trimmed.as_bytes()[2], b'\\' | b'/');
-    if trimmed.contains("../")
-        || trimmed.contains("..\\")
-        || trimmed.starts_with('/')
-        || trimmed.starts_with('\\')
-        || looks_like_absolute_windows_path
-    {
-        return Err(PanelApiError::new(
-            StatusCode::BAD_REQUEST,
-            "invalid_action_payload_path",
-        ));
-    }
-    Ok(())
 }
 
 fn panel_write_body_limit(max_body_bytes: usize, configured_write_bytes: usize) -> usize {
@@ -941,11 +683,6 @@ async fn main() -> Result<()> {
             "/api/v1/review",
             post(panel_review).layer(DefaultBodyLimit::max(write_body_limit)),
         )
-        .route(
-            "/api/v1/action-request",
-            post(action_request).layer(DefaultBodyLimit::max(write_body_limit)),
-        )
-        .route("/api/v1/action-requests", get(action_requests))
         .route("/api/v1/incidents", get(incidents))
         .route("/api/v1/incident", get(incident_detail))
         .route("/api/v1/baseline-drifts", get(baseline_drifts))
@@ -1086,10 +823,6 @@ async fn build_data_health(state: &AppState, nodes: &Value) -> Result<Value, Pan
         .repo
         .query_all("SELECT node_id, received_at, scan_json FROM heartbeats ORDER BY received_at DESC LIMIT 100")
         .await?;
-    let queued_actions = state
-        .repo
-        .count("panel_action_requests", Some("status = 'queued'"))
-        .await?;
     let mut latest_received_at = String::new();
     let mut collector_errors = 0i64;
     let mut slowest_stage_ms = 0i64;
@@ -1140,7 +873,7 @@ async fn build_data_health(state: &AppState, nodes: &Value) -> Result<Value, Pan
         .unwrap_or(0);
     let status = if collector_errors > 0 || offline_nodes > 0 || retired_nodes > 0 {
         "degraded"
-    } else if stale_nodes > 0 || queued_actions > 0 {
+    } else if stale_nodes > 0 {
         "attention"
     } else {
         "healthy"
@@ -1150,7 +883,6 @@ async fn build_data_health(state: &AppState, nodes: &Value) -> Result<Value, Pan
         "latest_heartbeat_at": latest_received_at,
         "heartbeat_samples": heartbeats.as_array().map(Vec::len).unwrap_or(0),
         "collector_errors": collector_errors,
-        "queued_actions": queued_actions,
         "stale_nodes": stale_nodes,
         "offline_nodes": offline_nodes,
         "retired_nodes": retired_nodes,
@@ -1373,42 +1105,6 @@ async fn panel_review(
         "target_type": review.target_type.as_str(),
         "target_id": &review.target_id,
         "review": review.response_review(),
-    })))
-}
-
-async fn action_request(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(request): Json<PanelActionRequestBody>,
-) -> Result<Json<Value>, PanelApiError> {
-    verify_private_write_auth(&state, &headers)?;
-    let action = PanelActionRequest::try_from(request)?;
-    let action = state.repo.insert_action_request(&action).await?;
-    invalidate_summary_cache(&state);
-    let _ = state.events.send(PanelStreamEvent::refresh_datasets(
-        PanelRole::Private,
-        vec!["action_requests", "audit_logs"],
-    ));
-    Ok(Json(json!({
-        "ok": true,
-        "action_request": action.response_value(),
-    })))
-}
-
-async fn action_requests(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Query(query): Query<PageQuery>,
-) -> Result<Json<Value>, PanelApiError> {
-    verify_panel_role(&state, &headers, PanelRole::Private)?;
-    let request = PageRequest::try_from(query)?;
-    let (mut items, total) = state.repo.action_requests_page(&request).await?;
-    scope_panel_value(&mut items, PanelRole::Private);
-    Ok(Json(json!({
-        "items": items,
-        "total": total,
-        "limit": request.limit,
-        "offset": request.offset
     })))
 }
 
@@ -2396,9 +2092,6 @@ fn expand_dataset_json_columns(table: &str, rows: &mut Value) {
             expand_json_column(row, "storage_json", "storage");
             expand_json_column(row, "metrics_json", "metrics");
         }
-        if table == "panel_action_requests" {
-            expand_json_column(row, "payload_json", "payload");
-        }
     }
 }
 
@@ -2508,12 +2201,7 @@ fn attach_node_statuses(rows: &mut Value) {
 }
 
 fn should_redact_dataset(table: &str, role: PanelRole) -> bool {
-    if role == PanelRole::Private
-        && matches!(
-            table,
-            "active_blocks" | "probe_sources" | "panel_action_requests"
-        )
-    {
+    if role == PanelRole::Private && matches!(table, "active_blocks" | "probe_sources") {
         return false;
     }
     if table == "probe_sources" {

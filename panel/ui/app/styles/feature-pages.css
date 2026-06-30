@@ -330,18 +330,6 @@
   font-size: 12px;
 }
 
-.row-action-pair {
-  display: inline-flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 7px;
-}
-
-.row-action-pair .ghost-button {
-  min-height: 28px;
-  padding-inline: 9px;
-}
-
 .bulk-review-bar,
 .data-health-panel,
 .review-feedback-list {
@@ -713,23 +701,62 @@
   white-space: nowrap;
 }
 
+.chain-source {
+  align-self: start;
+  justify-self: start;
+  padding: 2px 7px;
+  color: #56708d;
+  background: #eef6ff;
+  border: 1px solid #d9e8f8;
+  border-radius: 999px;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 760;
+}
+
+.chain-stage.is-inferred {
+  border-style: dashed;
+}
+
+.chain-stage.is-inferred > span:not(.badge) {
+  color: #e58a00;
+  background: #fff3df;
+}
+
+.chain-stage.is-inferred .chain-source {
+  color: #a46200;
+  background: #fff8ea;
+  border-color: #f5ddb6;
+}
+
+.chain-stage.is-missing,
 .chain-stage.is-muted {
   background: #f8fbff;
   border-style: dashed;
 }
 
+.chain-stage.is-missing > span:not(.badge),
 .chain-stage.is-muted > span:not(.badge) {
   color: #7b8da6;
   background: #eef4fb;
 }
 
+.chain-stage.is-missing strong,
+.chain-stage.is-missing small,
 .chain-stage.is-muted strong,
 .chain-stage.is-muted small {
   color: #70819a;
 }
 
+.chain-stage.is-missing .badge,
 .chain-stage.is-muted .badge {
   opacity: 0.72;
+}
+
+.chain-stage.is-missing .chain-source {
+  color: #70819a;
+  background: #f1f5f9;
+  border-color: #e2e8f0;
 }
 
 .score-panel {

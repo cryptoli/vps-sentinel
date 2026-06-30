@@ -152,7 +152,7 @@
 
   .main-nav {
     display: grid;
-    grid-template-columns: repeat(7, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     width: 100%;
     gap: 3px;
     margin: 0;
@@ -208,8 +208,8 @@
     display: block;
     max-width: 100%;
     overflow: hidden;
-    font-size: 8.8px;
-    font-weight: 680;
+    font-size: 10.5px;
+    font-weight: 720;
     line-height: 1.1;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1185,12 +1185,17 @@
     overflow-x: visible;
   }
 
+  .node-list-head {
+    display: none;
+  }
+
   .node-card {
     position: relative;
-    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 72px;
-    gap: 5px 10px;
+    grid-template-columns: minmax(0, 1fr) 68px;
+    grid-template-rows: auto auto auto auto;
+    gap: 7px 10px;
     min-width: 0;
-    min-height: 124px;
+    min-height: 136px;
     padding: 10px 12px;
     background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
     border-color: #dde8f4;
@@ -1198,7 +1203,7 @@
   }
 
   .node-main {
-    grid-column: 1 / 3;
+    grid-column: 1;
     grid-row: 1;
     gap: 8px;
     padding-right: 0;
@@ -1238,7 +1243,7 @@
   }
 
   .node-status-badge {
-    grid-column: 3;
+    grid-column: 2;
     grid-row: 1;
     align-self: start;
     justify-self: end;
@@ -1290,12 +1295,16 @@
   .metric-cpu {
     grid-column: 1;
     grid-row: 2;
+    width: calc(50% - 5px);
+    justify-self: start;
   }
 
   .metric-memory {
-    grid-column: 2;
+    grid-column: 1;
     grid-row: 2;
     margin-left: 0;
+    width: calc(50% - 5px);
+    justify-self: end;
   }
 
   .load-cell {
@@ -1304,11 +1313,11 @@
 
   .traffic-cell {
     grid-template-columns: repeat(2, minmax(0, auto));
-    grid-column: 1 / 3;
+    grid-column: 1;
     grid-row: 3;
     justify-content: start;
     gap: 10px;
-    max-width: 72%;
+    max-width: 100%;
     font-size: 9.8px;
   }
 
@@ -1333,12 +1342,12 @@
 
   .version-cell {
     display: grid;
-    grid-column: 2;
-    grid-row: 3;
+    grid-column: 1;
+    grid-row: 4;
     align-self: end;
-    justify-self: end;
+    justify-self: start;
     gap: 2px;
-    max-width: 56px;
+    max-width: 100%;
   }
 
   .version-cell strong {
@@ -1354,7 +1363,7 @@
   }
 
   .posture-cell {
-    grid-column: 3;
+    grid-column: 2;
     grid-row: 2 / span 2;
     align-self: center;
     justify-items: center;
@@ -1382,8 +1391,8 @@
 
   .last-report {
     position: static;
-    grid-column: 3;
-    grid-row: 1;
+    grid-column: 2;
+    grid-row: 4;
     align-self: end;
     justify-self: end;
     justify-content: flex-end;
