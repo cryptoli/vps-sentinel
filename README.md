@@ -23,6 +23,7 @@ It is not antivirus software, an exploit framework, a brute-force tool, a third-
 | Network and web probes | Public listener ownership, firewall context, trusted-proxy client-IP recovery, Web probe family classification, exploit-path aggregation, error bursts, and source-IP response candidates. |
 | Active response | Optional nftables/iptables source-IP blocking for high-confidence SSH and Web attack sources, temporary/permanent escalation, allowlists, trusted-proxy safety, and CLI unblock commands. |
 | Attack fingerprints | Method-based fingerprints using exact hashes plus SimHash-style similarity, so repeated attack methods can be grouped even when source IPs rotate. |
+| Suppression and local ops | Structured config migration, canonical allowlist rendering, rule-level accepted-risk suppression, and a local `vs menu` for routine node operations without turning the panel into an SSH control plane. |
 | Reports and notifications | Daily reports and alert messages through Telegram, Email SMTP, webhook, ntfy, Gotify, Bark, and ServerChan; Chinese is the default notification language. |
 | Fleet panel | Push-mode Rust or Cloudflare Worker/D1 panel with public/private access, privacy redaction, node metrics, blocklist attribution, review flows, WebSocket refresh on self-hosted panel, and theme extension hooks. |
 | Resource control | Bounded log parsing, event budgets, SQLite retention, database size limits, raw-evidence reduction, and small daemon RSS on VPS-class hosts. |
@@ -74,8 +75,11 @@ The installer and updater preserve existing `/etc/vps-sentinel/config.toml` unle
 | `vs fingerprints explain <id>` | Explain an attack fingerprint cluster. |
 | `vs report send` | Send the default daily report through configured notification channels. |
 | `vs panel push` | Push one signed telemetry snapshot to the configured panel. |
+| `vs menu` | Guided local operations for trusted admin IPs, allowlist paths, baseline refresh, block review/unblock, config validation, and service reload. |
 | `vs config validate` | Validate the config file. |
 | `vs config migrate` | Apply compatible config migrations. |
+| `vs config normalize` | Rewrite supported config sections such as `[allowlist]` into canonical array format. |
+| `vs config suppress-rule add CONFIG-004 --global` | Suppress a reviewed accepted-risk rule without excluding the monitored file from integrity checks. |
 
 ## Token Types
 
@@ -99,6 +103,8 @@ Runtime footprint depends on enabled collectors, log volume, and file-integrity 
 ## Privacy
 
 Defaults are local-first: no panel upload unless `[panel].enabled = true`, no notification channel unless configured, bounded file scanning, and local SQLite storage. Panel telemetry removes node IDs, host IDs, public server IPs, raw evidence, paths, command lines, and general internal network fields before remote storage. Safe display fields such as node name, sanitized hostname, country, region, and city may be uploaded for dashboard use. Confirmed external attacker IPs can be shown on the public blocklist when active-response evidence supports it, but public blocklist rows do not expose node names.
+
+The panel is not a remote command or SSH management plane. Privileged operations such as baseline refreshes, allowlist changes, and unblock actions stay on each node through local `vs` commands, so a panel compromise does not directly become SSH control of the fleet.
 
 Secrets belong in local config files, Worker secrets, or systemd environment files. Repository files only contain placeholder examples for tokens, passwords, webhook secrets, SMTP credentials, Cloudflare API tokens, and panel shared secrets.
 

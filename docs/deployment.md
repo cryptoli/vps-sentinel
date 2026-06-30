@@ -251,7 +251,7 @@ For repeatable configuration edits, prefer structured `vs config` commands inste
 sudo vs config allowlist add file-path '/etc/systemd/system/snap-*.mount'
 sudo vs config allowlist add file-path '/etc/systemd/system/snap-*.scope'
 sudo vs config trusted-admin add 203.0.113.10
-sudo vs config suppress-rule add CONFIG-004
+sudo vs config suppress-rule add CONFIG-004 --global
 sudo vs config normalize
 sudo vs config validate
 sudo vs reload
