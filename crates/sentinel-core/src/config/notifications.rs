@@ -15,6 +15,8 @@ pub struct NotificationsConfig {
     pub gotify: GotifyConfig,
     pub bark: BarkConfig,
     pub serverchan: ServerChanConfig,
+    pub dingtalk: DingTalkConfig,
+    pub feishu: FeishuConfig,
 }
 
 impl Default for NotificationsConfig {
@@ -31,6 +33,8 @@ impl Default for NotificationsConfig {
             gotify: GotifyConfig::default(),
             bark: BarkConfig::default(),
             serverchan: ServerChanConfig::default(),
+            dingtalk: DingTalkConfig::default(),
+            feishu: FeishuConfig::default(),
         }
     }
 }
@@ -207,6 +211,42 @@ impl Default for ServerChanConfig {
         Self {
             enabled: false,
             send_key: String::new(),
+            min_severity: Severity::Medium,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DingTalkConfig {
+    pub enabled: bool,
+    pub access_token: String,
+    pub min_severity: Severity,
+}
+
+impl Default for DingTalkConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            access_token: String::new(),
+            min_severity: Severity::Medium,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FeishuConfig {
+    pub enabled: bool,
+    pub webhook_url: String,
+    pub min_severity: Severity,
+}
+
+impl Default for FeishuConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            webhook_url: String::new(),
             min_severity: Severity::Medium,
         }
     }

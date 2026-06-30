@@ -24,7 +24,7 @@ It is not antivirus software, an exploit framework, a brute-force tool, a third-
 | Active response | Optional nftables/iptables source-IP blocking for high-confidence SSH and Web attack sources, temporary/permanent escalation, allowlists, trusted-proxy safety, and CLI unblock commands. |
 | Attack fingerprints | Method-based fingerprints using exact hashes plus SimHash-style similarity, so repeated attack methods can be grouped even when source IPs rotate. |
 | Suppression and local ops | Structured config migration, canonical allowlist rendering, rule-level accepted-risk suppression, and a local `vs menu` for routine node operations without turning the panel into an SSH control plane. |
-| Reports and notifications | Daily reports and alert messages through Telegram, Email SMTP, webhook, ntfy, Gotify, Bark, and ServerChan; Chinese is the default notification language. |
+| Reports and notifications | Daily reports and alert messages through Telegram, Email SMTP, webhook, ntfy, Gotify, Bark, ServerChan, DingTalk, and Feishu; Chinese is the default notification language. |
 | Fleet panel | Push-mode Rust or Cloudflare Worker/D1 panel with public/private access, privacy redaction, node metrics, blocklist attribution, review flows, WebSocket refresh on self-hosted panel, and theme extension hooks. |
 | Resource control | Bounded log parsing, event budgets, SQLite retention, database size limits, raw-evidence reduction, and small daemon RSS on VPS-class hosts. |
 
@@ -90,7 +90,7 @@ The installer and updater preserve existing `/etc/vps-sentinel/config.toml` unle
 | `panel.secret` / `PANEL_SHARED_SECRET` | Agent and panel | HMAC signing for `POST /api/v1/ingest`. | Required when panel upload is enabled. |
 | `PANEL_NODE_SECRETS` | Panel | Optional per-node ingest secrets keyed by non-sensitive node name. | Optional. |
 | `PANEL_TOKEN` | Browser and panel | Single private access token for details, reviews, audit logs, and management pages. | Required for private panel workflows. |
-| Notification tokens | Agent and notification provider | Telegram/Gotify/ntfy/Bark/ServerChan/webhook/email credentials. | Only required for enabled channels. |
+| Notification tokens | Agent and notification provider | Telegram/Gotify/ntfy/Bark/ServerChan/DingTalk/Feishu/webhook/email credentials. | Only required for enabled channels. |
 
 Deployment scripts migrate old `PANEL_ADMIN_TOKEN`, `PANEL_OPERATOR_TOKEN`, or `PANEL_VIEW_TOKEN` values into `PANEL_TOKEN` when an existing credential file is reused.
 

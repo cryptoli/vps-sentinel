@@ -24,7 +24,7 @@
 | 主动响应 | 对高置信 SSH/Web 攻击源执行可选 nftables/iptables 来源 IP 封禁，支持临时/永久升级、白名单、可信代理保护和 CLI 解封。 |
 | 攻击指纹 | 使用精确 hash 和 SimHash 风格近似匹配聚合同一攻击手法，即使来源 IP 变化也能归类。 |
 | 静默与本地运维 | 结构化配置迁移、allowlist 规范化渲染、按规则 ID 的已接受风险静默，以及本地 `vs menu`，不把面板变成 SSH 控制面。 |
-| 报告与通知 | 支持每日安全报告，以及 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan；通知默认中文。 |
+| 报告与通知 | 支持每日安全报告，以及 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan、钉钉和飞书；通知默认中文。 |
 | 多 VPS 面板 | 推模式 Rust 自建面板或 Cloudflare Worker/D1 面板，支持公开/私有访问、隐私脱敏、节点指标、黑名单归属、复核流程、自建 WebSocket 刷新和主题扩展入口。 |
 | 资源控制 | 有界日志解析、事件预算、SQLite 保留策略、数据库大小限制、原始证据裁剪，对小内存 VPS 友好。 |
 
@@ -90,7 +90,7 @@ curl -fsSL https://raw.githubusercontent.com/cryptoli/vps-sentinel/main/update.s
 | `panel.secret` / `PANEL_SHARED_SECRET` | Agent 和面板 | `POST /api/v1/ingest` HMAC 签名。 | 启用面板上报时必须 |
 | `PANEL_NODE_SECRETS` | 面板 | 按非敏感节点名称配置单节点上报密钥。 | 可选 |
 | `PANEL_TOKEN` | 浏览器和面板 | 私有访问 token，用于详情、复核、审计日志和管理入口。 | 使用私有面板功能时必须 |
-| 通知渠道 token | Agent 和通知服务 | Telegram/Gotify/ntfy/Bark/ServerChan/Webhook/邮件凭据。 | 仅启用对应渠道时需要 |
+| 通知渠道 token | Agent 和通知服务 | Telegram/Gotify/ntfy/Bark/ServerChan/钉钉/飞书/Webhook/邮件凭据。 | 仅启用对应渠道时需要 |
 
 部署脚本复用旧凭据文件时，会把旧的 `PANEL_ADMIN_TOKEN`、`PANEL_OPERATOR_TOKEN` 或 `PANEL_VIEW_TOKEN` 迁移为新的 `PANEL_TOKEN`。
 

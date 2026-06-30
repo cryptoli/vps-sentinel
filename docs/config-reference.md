@@ -23,6 +23,8 @@ The default system configuration path is `/etc/vps-sentinel/config.toml`. A user
 - `[notifications.gotify]`: Gotify server, app token, and minimum severity.
 - `[notifications.bark]`: Bark server, device key, and minimum severity.
 - `[notifications.serverchan]`: ServerChan send key and minimum severity.
+- `[notifications.dingtalk]`: DingTalk robot access token and minimum severity. HTTP success responses are still checked for DingTalk business errors.
+- `[notifications.feishu]`: Feishu/Lark webhook URL and minimum severity. HTTP success responses are still checked for Feishu business errors.
 - `[reports]`: optional scheduled security report. `scheduled_hour` is evaluated once per calendar day in `notifications.time_zone`; the daemon records the concrete daily slot it sent, so delayed scans do not move the next day's report time. `scheduled_period` accepts `today` or `last24h`.
 - `[panel]`: optional push-mode panel upload. `url` and `secret` configure signed ingest, `node_name` is the non-sensitive dashboard identity, `privacy_mode = "strict"` removes public server IPs, node IDs, raw evidence, paths, and command lines, `upload_hostname` permits only sanitized non-IP hostnames, and `node_location_enabled` uploads country/region/city display metadata without uploading the public IP used to derive it.
 - `[noise_control]`: dedup, durable-state reminder, and alert volume controls. `rate_limit_bypass_min_severity` and `quiet_hours_bypass_min_severity` default to `High`, so high-value alerts bypass the hourly budget and quiet-hours suppression.

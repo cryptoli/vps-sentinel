@@ -9,6 +9,7 @@
 - Response and blacklist operations: improved active-response review flows, block attribution, probe-source classification, attack-fingerprint conclusions, and panel refresh behavior after bulk review.
 - Local operations and config safety: added `vs menu`, structured trusted-admin/allowlist/suppress-rule commands, canonical `[allowlist]` rendering for `migrate`/`sync-defaults`/`normalize`, automatic snapd systemd-unit allowlists, and documented local-first remediation.
 - Rule suppression and false-positive control: added `[suppress_rules]` with global and scoped entries, validation, scan-time suppression before fingerprinting/response/storage/notification, and documentation for accepted configuration risks such as `CONFIG-004`.
+- Notifications: added DingTalk and Feishu webhook channels with business-response validation so HTTP 200 provider errors are reported as delivery failures.
 - Panel security posture: kept the panel as a push-mode dashboard rather than an SSH command plane, defaulted self-hosted binding to `127.0.0.1:8858`, documented Tailscale/private binding guidance, and capped self-hosted panel write body sizes.
 - Trusted-proxy active-response safety: ensured IPs matching `[web].trusted_proxy_cidrs` never become block candidates, so CDN/reverse-proxy edges are not blocked even when a web log cannot resolve the true client IP.
 

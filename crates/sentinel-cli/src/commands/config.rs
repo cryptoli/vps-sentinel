@@ -754,7 +754,7 @@ fn ensure_table_path<'a>(
 }
 
 fn sort_toml_array(array: &mut [toml::Value]) {
-    array.sort_by(|left, right| toml_value_sort_key(left).cmp(&toml_value_sort_key(right)));
+    array.sort_by_key(toml_value_sort_key);
 }
 
 fn toml_value_sort_key(value: &toml::Value) -> String {

@@ -184,7 +184,7 @@ chat_id = "<chat-id>"
 min_severity = "Medium"
 ```
 
-Supported channels: Telegram, Email SMTP, webhook, ntfy, Gotify, Bark, and ServerChan.
+Supported channels: Telegram, Email SMTP, webhook, ntfy, Gotify, Bark, ServerChan, DingTalk, and Feishu.
 
 ## Panel Upload
 

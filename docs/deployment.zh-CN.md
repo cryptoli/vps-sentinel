@@ -183,7 +183,7 @@ chat_id = "<chat-id>"
 min_severity = "Medium"
 ```
 
-支持 Telegram、Email SMTP、webhook、ntfy、Gotify、Bark、ServerChan。
+支持 Telegram、Email SMTP、webhook、ntfy、Gotify、Bark、ServerChan、钉钉和飞书。
 
 ## 配置面板上报
 

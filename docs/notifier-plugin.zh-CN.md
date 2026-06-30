@@ -1,6 +1,6 @@
 # 通知扩展
 
-内置通知渠道包括 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark 和 ServerChan。
+内置通知渠道包括 Telegram、Email SMTP、Webhook、ntfy、Gotify、Bark、ServerChan、钉钉和飞书。
 
 新增通知渠道时应遵守以下约定：
 

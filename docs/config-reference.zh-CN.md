@@ -23,7 +23,7 @@ sudo vs reload
 - `[persistence]`：cron、systemd、shell profile、preload 等持久化入口。启动命令会按下载执行、临时路径、自编码 payload、网络执行桥等信号评分。
 - `[active_response]`：主动封禁策略、nftables/iptables 后端、SSH/Web 阈值、临时/永久封禁升级和可信代理保护。命中 `[allowlist].ips` 或 `[web].trusted_proxy_cidrs` 的 IP 不会成为封禁候选。
 - `[panel]`：推模式面板上报。`url` 和 `secret` 配置签名上报，`node_name` 是非敏感展示身份，`privacy_mode = "strict"` 会移除公网 IP、节点 ID、路径、命令行和原始证据。
-- `[notifications]`：Telegram、邮件、Webhook、ntfy、Gotify、Bark、ServerChan 以及通用通知语言、时区、超时和技术字段显示。
+- `[notifications]`：Telegram、邮件、Webhook、ntfy、Gotify、Bark、ServerChan、钉钉、飞书，以及通用通知语言、时区、超时和技术字段显示。钉钉/飞书会检查业务响应码，HTTP 200 但平台拒收时仍会作为通知失败处理。
 - `[reports]`：每日安全报告。`scheduled_hour` 按 `notifications.time_zone` 的日历日固定小时发送，延迟扫描不会把第二天报告时间滚动推迟。
 - `[noise_control]`：重复告警、状态提醒和每小时告警量控制。`rate_limit_bypass_min_severity` 和 `quiet_hours_bypass_min_severity` 默认是 `High`，高价值告警会绕过小时预算和静默时段。
 - `[allowlist]`：可信用户、IP、进程路径、命令片段、监听端口、文件路径和 Web 路径。多个路径建议通过 `vs config allowlist add ...` 修改，避免手写 TOML 格式出错。
